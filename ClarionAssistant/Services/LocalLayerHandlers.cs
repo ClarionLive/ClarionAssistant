@@ -366,11 +366,14 @@ namespace ClarionAssistant.Services
             if (!m.Success || m.Length < 2) return result;
             if (m.Index > 0 && (upTo[m.Index - 1] == '.' || upTo[m.Index - 1] == ':')) return result;
             string prefix = m.Value;
-            foreach (string db in new[] { ProjectDb(options), LibraryDb() })
+            string projectDb = ProjectDb(options), libraryDb = LibraryDb();
+            // File-level equates only from .inc files this file includes (null = no filtering).
+            var includedFiles = SymbolIndex.IncludeClosure(options == null ? null : options.FileName, new[] { projectDb, libraryDb }, fastOnly: true);
+            foreach (string db in new[] { projectDb, libraryDb })
             {
                 var idx = SymbolIndex.For(db);
                 if (idx == null) continue;
-                foreach (var s in idx.ByPrefix(prefix, DbLimit, fastOnly: true))
+                foreach (var s in idx.ByPrefix(prefix, DbLimit, fastOnly: true, equateFiles: includedFiles))
                     if (s != null && !string.IsNullOrEmpty(s.Name) && seen.Add(s.Name)) result.Add(SymbolIndex.ToCompletionItem(s));
             }
             AddAll(result, seen, ClarionKeywordIndex.Complete(prefix));

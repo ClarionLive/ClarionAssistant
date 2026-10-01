@@ -287,6 +287,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86"
                Args = @($RepoDir) }
+            # File-level EQUATEs in a .inc (outside any CLASS body) must become CodeGraph symbols.
+            @{ Name = "ClarionParser.IncEquates.Test"
+               Sources = @("tests\ClarionParser.IncEquates.Test.cs", "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

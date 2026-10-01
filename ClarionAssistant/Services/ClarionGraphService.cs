@@ -47,7 +47,8 @@ namespace ClarionAssistant.Services
         // DBs built by an older parser are treated as stale and auto-rebuilt (LibSrc mtimes alone can't detect
         // a parser change). v2: capture CLASS data members (dotted "Class.Member"); member queries dotted-only.
         // v3: index keycodes.clw + errors.clw equates (MouseRight, NoFileErr, …) so F12/hover resolve them.
-        private const int ParserVersion = 3;
+        // v4: index file-level EQUATEs in library .inc files (declared outside any CLASS body).
+        private const int ParserVersion = 4;
 
         // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan. keycodes.clw
         // (MouseRight, Key* …) and errors.clw (NoFileErr, …) added so their equates resolve for F12/hover. (task 37e2079f)
@@ -356,6 +357,11 @@ namespace ClarionAssistant.Services
 
                         foreach (string incPath in incFiles)
                         {
+                            // A flat equate file that is also a .inc (winerr.inc) is ingested by the EQUATE scan
+                            // below; since v4 ParseIncFile also emits file-level equates, parsing it here too would
+                            // index every one of them twice (PR #243 review). It declares no classes.
+                            if (Array.Exists(EquateFileNames, n => string.Equals(n, Path.GetFileName(incPath), StringComparison.OrdinalIgnoreCase)))
+                                continue;
                             try
                             {
                                 var pr = parser.ParseIncFile(incPath, projectId);
