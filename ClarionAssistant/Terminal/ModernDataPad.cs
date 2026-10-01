@@ -1157,7 +1157,7 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// 16d140e9: the header's APP / VERSION / ROOT values. APP is the open .app's full path, else the
+        /// 16d140e9: the header's APP / VERSION / ROOT (and, since f3b47441, RED) values. APP is the open .app's full path, else the
         /// solution's (labelled SOLUTION); VERSION and ROOT are CA's effective version entry (EffectiveClarionVersion:
         /// the IDE's Build > Set Clarion Version; CA has no version picker of its own, 286f2e57) - the one it builds
         /// with, which may not be the install the IDE runs from. VERSION names the source that chose it, e.g.
@@ -1187,6 +1187,18 @@ namespace ClarionAssistant
             data["appPath"] = m.AppPath;
             data["versionName"] = m.VersionName;
             data["rootPath"] = m.RootPath;
+
+            // f3b47441: RED rides with VERSION and ROOT. It used to come only from setRedIndex, which the
+            // environment watcher sends only while the Files tab is showing, so after Build > Set Clarion Version
+            // the other tabs kept the previous version's .red under the new VERSION until Files was opened.
+            string redPath = "";
+            try
+            {
+                var red = Services.RedFileService.Active ?? EnsureOwnRedFile();
+                if (red != null) redPath = red.RedFilePath ?? "";
+            }
+            catch { }
+            data["redPath"] = redPath;
         }
 
         /// <summary>
