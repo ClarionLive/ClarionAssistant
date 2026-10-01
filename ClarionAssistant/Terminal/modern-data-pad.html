@@ -1208,7 +1208,7 @@
     // ===================== Environment header (16d140e9) =====================
     // The APP / VERSION / ROOT / RED lines under the title (RED also by the setRedIndex handler). Source of
     // truth = the host: setVersionInfo and the setExplorerData payload both carry appLabel / appPath /
-    // versionName / rootPath, so the header self-corrects once the solution or an app finishes loading.
+    // versionName / rootPath / redPath, so the header self-corrects once the solution or an app finishes loading.
     // A missing value renders as a dash and is not clickable. A clickable line posts only WHICH line it is
     // ('app' / 'root'); the host opens the path it last sent, so no path from the page reaches explorer.exe.
     var HDR_DASH = '—';
