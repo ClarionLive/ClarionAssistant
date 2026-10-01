@@ -357,6 +357,11 @@ namespace ClarionAssistant.Services
 
                         foreach (string incPath in incFiles)
                         {
+                            // A flat equate file that is also a .inc (winerr.inc) is ingested by the EQUATE scan
+                            // below; since v4 ParseIncFile also emits file-level equates, parsing it here too would
+                            // index every one of them twice (PR #243 review). It declares no classes.
+                            if (Array.Exists(EquateFileNames, n => string.Equals(n, Path.GetFileName(incPath), StringComparison.OrdinalIgnoreCase)))
+                                continue;
                             try
                             {
                                 var pr = parser.ParseIncFile(incPath, projectId);
