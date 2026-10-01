@@ -277,6 +277,16 @@ namespace ClarionAssistant.Services
         public bool IncludeMultiTerminal { get; set; }
         public string MultiTerminalMcpPath { get; set; }
 
+        /// <summary>
+        /// True when the Claude MCP config actually gets a "multiterminal" server: the setting is on
+        /// AND its index.js exists. The one condition both the config below and anything that tells
+        /// the model about MultiTerminal tools (ticket c175492a) must agree on.
+        /// </summary>
+        public bool MultiTerminalConfigured
+        {
+            get { return IncludeMultiTerminal && !string.IsNullOrEmpty(MultiTerminalMcpPath) && File.Exists(MultiTerminalMcpPath); }
+        }
+
         public enum McpConfigFormat
         {
             Claude,
@@ -374,8 +384,7 @@ namespace ClarionAssistant.Services
             }
 
             // Conditionally add MultiTerminal (Claude-only for now)
-            if (format == McpConfigFormat.Claude && IncludeMultiTerminal && !string.IsNullOrEmpty(MultiTerminalMcpPath)
-                && File.Exists(MultiTerminalMcpPath))
+            if (format == McpConfigFormat.Claude && MultiTerminalConfigured)
             {
                 var mt = new Dictionary<string, object>
                 {

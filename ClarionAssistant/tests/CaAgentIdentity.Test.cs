@@ -36,6 +36,11 @@ static class CaAgentIdentityTest
         Ok("warns against deriving it from list_terminals", p != null && p.Contains("list_terminals"));
         Ok("says it survives /clear", p != null && p.Contains("/clear"));
         Ok("has a heading", p != null && p.StartsWith("## Your MultiTerminal identity"));
+        // Pipeline run 1 (adversary [high]): the name can be refused by the broker after launch, so
+        // the prompt must say what to do then rather than assert the name unconditionally.
+        Ok("says what to do if the name is held or unregistered", p != null && p.Contains("held by another terminal") && p.Contains("not registered"));
+        // Pipeline run 1 (code-reviewer): the example must not build "<name>-2-2" from a suffixed name.
+        Ok("no doubled suffix in the example", !CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC-2").Contains("CA-Terminal-1-CC-2-2"));
         Ok("trims surrounding whitespace", (CaAgentIdentity.BuildIdentityPrompt("  CA-X  ") ?? "").Contains("`CA-X`")
             && !(CaAgentIdentity.BuildIdentityPrompt("  CA-X  ") ?? "").Contains("`  CA-X"));
         Ok("null name -> null", CaAgentIdentity.BuildIdentityPrompt(null) == null);
@@ -71,6 +76,10 @@ static class CaAgentIdentityTest
                 int resolve = src.IndexOf("string agentName = ResolveUniqueAgentName(tab,", StringComparison.Ordinal);
                 int compose = src.IndexOf("string systemPromptExtra = BuildSystemPromptInjection(", StringComparison.Ordinal);
                 int append = src.IndexOf("CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName)", StringComparison.Ordinal);
+                int gate = src.IndexOf("_mcpServer.MultiTerminalConfigured)", compose < 0 ? 0 : compose, StringComparison.Ordinal);
+                int abort = src.IndexOf("private void AbortLaunch(", StringComparison.Ordinal);
+                int abortClear = abort < 0 ? -1 : src.IndexOf("tab.AgentName = null;", abort, StringComparison.Ordinal);
+                int abortEnd = abort < 0 ? -1 : src.IndexOf("\n        }", abort, StringComparison.Ordinal);
                 int write = src.IndexOf("\"system-prompt-extra-\"", StringComparison.Ordinal);
                 Ok("launch resolves the agent name", resolve >= 0);
                 Ok("launch composes the system prompt", compose >= 0);
@@ -79,6 +88,12 @@ static class CaAgentIdentityTest
                 Ok("identity appended to the prompt", append >= 0);
                 Ok("identity appended before the prompt file is written", append >= 0 && write >= 0 && append < write,
                     "append@" + append + " write@" + write);
+                // Pipeline run 1: gated on the same condition as the MCP config, not the bare setting.
+                Ok("identity gated on MultiTerminalConfigured", gate >= 0 && append >= 0 && gate < append,
+                    "gate@" + gate + " append@" + append);
+                // Pipeline run 1: an aborted launch must not keep a name other tabs then avoid.
+                Ok("AbortLaunch clears tab.AgentName", abortClear >= 0 && abortEnd >= 0 && abortClear < abortEnd,
+                    "clear@" + abortClear + " end@" + abortEnd);
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");

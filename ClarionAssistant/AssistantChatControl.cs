@@ -3551,6 +3551,8 @@ namespace ClarionAssistant
         {
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
+            // An aborted launch holds no MultiTerminal name: other tabs' uniqueness checks read it.
+            tab.AgentName = null;
             try { if (tab.Terminal != null) tab.Terminal.Dispose(); } catch { }
             tab.Terminal = null;
         }
@@ -3626,8 +3628,9 @@ namespace ClarionAssistant
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
             systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
                 claudeMdDelivered, claudeMdDelivered ? null : ReadClarionAssistantPrompt(), systemPromptExtra);
-            // Only when the multiterminal MCP is configured: the section is about its tools.
-            if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
+            // Only when the multiterminal MCP is really in this tab's config: the section is about
+            // its tools, and that server is what registers the name with MultiTerminal.
+            if (_mcpServer != null && _mcpServer.MultiTerminalConfigured)
                 systemPromptExtra = Services.CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName);
             string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
