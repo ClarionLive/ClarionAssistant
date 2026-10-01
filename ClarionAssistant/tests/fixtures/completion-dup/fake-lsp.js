@@ -12,6 +12,10 @@ const fs = require('fs');
 const path = require('path');
 
 const items = JSON.parse(fs.readFileSync(path.join(__dirname, 'completion-items.json'), 'utf8'));
+// Optional per-line answers ({ "<0-based line>": [items] }) for a request whose fixed answer has to
+// differ, e.g. a GROUP's fields after "Group."; every other line keeps the fixed list above.
+const byLinePath = path.join(__dirname, 'completion-items-by-line.json');
+const itemsByLine = fs.existsSync(byLinePath) ? JSON.parse(fs.readFileSync(byLinePath, 'utf8')) : {};
 let buf = Buffer.alloc(0);
 
 function send(msg) {
@@ -27,7 +31,10 @@ function handle(msg) {
     }
     let result = null;
     if (msg.method === 'initialize') result = { capabilities: { completionProvider: { triggerCharacters: ['.'] } } };
-    else if (msg.method === 'textDocument/completion') result = { isIncomplete: false, items: items };
+    else if (msg.method === 'textDocument/completion') {
+        const line = msg.params && msg.params.position ? String(msg.params.position.line) : '';
+        result = { isIncomplete: false, items: itemsByLine[line] || items };
+    }
     send({ jsonrpc: '2.0', id: msg.id, result: result });
 }
 
