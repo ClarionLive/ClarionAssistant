@@ -113,6 +113,7 @@ static class CaAgentIdentityTest
                 int abort = src.IndexOf("private void AbortLaunch(", StringComparison.Ordinal);
                 int abortClear = abort < 0 ? -1 : src.IndexOf("tab.AgentName = null;", abort, StringComparison.Ordinal);
                 int abortEnd = abort < 0 ? -1 : src.IndexOf("\n        }", abort, StringComparison.Ordinal);
+                int abortRelabel = abort < 0 ? -1 : src.IndexOf("ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend)", abort, StringComparison.Ordinal);
                 int write = src.IndexOf("\"system-prompt-extra-\"", StringComparison.Ordinal);
                 Ok("launch resolves the agent name", resolve >= 0);
                 Ok("launch composes the system prompt", compose >= 0);
@@ -132,6 +133,9 @@ static class CaAgentIdentityTest
                 // Pipeline run 1: an aborted launch must not keep a name other tabs then avoid.
                 Ok("AbortLaunch clears tab.AgentName", abortClear >= 0 && abortEnd >= 0 && abortClear < abortEnd,
                     "clear@" + abortClear + " end@" + abortEnd);
+                // 7792e3e0 (verifier note): an aborted launch drops the CA<n> label with the name.
+                Ok("AbortLaunch drops the CA<n> tab label", abortRelabel >= 0 && abortEnd >= 0 && abortRelabel < abortEnd,
+                    "relabel@" + abortRelabel + " end@" + abortEnd);
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");

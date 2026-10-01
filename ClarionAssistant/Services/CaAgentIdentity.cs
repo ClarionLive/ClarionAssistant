@@ -86,7 +86,8 @@ namespace ClarionAssistant.Services
             sb.AppendLine("Your MultiTerminal name is `" + n + "`. It is the address other agents use to message this terminal, and it is fixed for this session (it does not change on /clear).");
             sb.AppendLine();
             sb.AppendLine("- Whenever a MultiTerminal tool asks for YOUR name or terminal id (`fromTerminalId` in `send_message`, `agentName`, `updatedBy`, `createdBy`, and the like), pass exactly `" + n + "`.");
-            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, have names that differ from yours only by their number (`CA1`, `CA2`, ...). Never work out your own name from `list_terminals`; it is the one stated here.");            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
+            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, have names that differ from yours only by their number (`CA1`, `CA2`, ...). Never work out your own name from `list_terminals`; it is the one stated here.");
+            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
             sb.AppendLine("- If a MultiTerminal tool reports that `" + n + "` is held by another terminal, or that this session is not registered, do not send messages as `" + n + "`: tell the developer instead. Never use another terminal's name.");
             return sb.ToString();
         }

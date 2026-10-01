@@ -65,9 +65,6 @@ namespace ClarionAssistant
         private string _redFileCss = "warning";
         private DiffService _diffService;
 
-        // Counter used when a tab's display name is empty, to give the
-        // tab a unique MultiTerminal agent name.
-
         // LSP UI state: bottom status bar + stay-on-top diagnostics form
         private System.Windows.Forms.Timer _lspUiTimer;
         private Terminal.LspStatusBar _lspStatusBar;
@@ -3550,6 +3547,10 @@ namespace ClarionAssistant
         /// the prepare or builder phases.</summary>
         private void AbortLaunch(TerminalTab tab)
         {
+            // Drop the CA<n> label with the name: a tab showing a name it no longer holds would
+            // send the developer to message an address nobody answers (ticket 7792e3e0).
+            if (tab.AgentName != null && tab.BaseName != null)
+                _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend));
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
             // An aborted launch holds no MultiTerminal name: other tabs' uniqueness checks read it.
