@@ -271,7 +271,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # host's qualifier scoping once CodeGraph has supplied a match of its own.
             @{ Name = "ColonQualifierScope.Test"
                Sources = @("tests\ColonQualifierScope.Test.cs", "Services\ColonQualifierScope.cs", "Services\LspClient.cs",
-                           "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+                           "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
             # leak, inherited members across both DBs, the old-schema fallback, and the connection
