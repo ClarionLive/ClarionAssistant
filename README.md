@@ -95,6 +95,8 @@ In a large procedure, hovering a global such as `GlobalRequest` in the CA Embedi
 
 Switching versions with Build > Set Clarion Version only reached the language server and the redirection file when the Clarion Assistant chat panel was open. Without it, the language server went on resolving through the old version's redirection file and libraries until the IDE was restarted. The addin now follows the IDE's version from startup: on a switch it reloads the redirection file and restarts the language server on the new version, whether or not a chat tab exists.
 
+If the new version's redirection file can't be read (missing, or held open by another program), Clarion Assistant no longer goes on quietly using the previous version's. It stops using a redirection file until the right one loads, and it retries every 30 seconds, so it recovers by itself once the file is readable.
+
 ### Thanks
 
 - **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#235](https://github.com/ClarionLive/ClarionAssistant/issues/235): a production crash traced to its root cause with DebugView timings, a complete patch, and a retest on the affected install before we had even looked at it.
