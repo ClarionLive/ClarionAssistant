@@ -66,26 +66,33 @@ namespace ClarionAssistant.Services
         /// typed by hand in the leftover shell cannot come back as a released name, and sets the
         /// console title to a per-tab marker. ConPTY forwards title changes to the terminal as an
         /// OSC sequence, which <see cref="SeesExitSignal"/> spots in the output stream.
-        /// Single quotes only: the whole command sits inside pwsh -Command "...".
+        /// Single quotes only: the whole command sits inside pwsh -Command "...". The marker is
+        /// concatenated at run time so the command line never contains it verbatim - Claude
+        /// listing processes would otherwise print it while still running (pipeline run 3).
         /// </summary>
         public static string WrapWithExitSignal(string invocation, string tabId)
         {
+            int split = ExitTitlePrefix.Length / 2;
             return "try { " + invocation + " } finally { "
                 + "Remove-Item Env:MULTITERMINAL_NAME -ErrorAction SilentlyContinue; "
-                + "$Host.UI.RawUI.WindowTitle = '" + ExitTitlePrefix + EscapeForPowerShellSingleQuote(tabId) + "' }";
+                + "$Host.UI.RawUI.WindowTitle = '" + ExitTitlePrefix.Substring(0, split) + "' + '"
+                + ExitTitlePrefix.Substring(split) + EscapeForPowerShellSingleQuote(tabId) + "' }";
         }
 
         /// <summary>
-        /// True once the exit marker for <paramref name="tabId"/> appears in the terminal output.
-        /// <paramref name="carry"/> holds the tail of the previous chunk, so a marker split across
-        /// two reads is still seen; pass the same variable for every chunk of one tab.
+        /// True once the exit marker for <paramref name="tabId"/> arrives as a console-title
+        /// change (OSC 0 or OSC 2), the only way the wrapper emits it. Plain text containing the
+        /// marker - a printed command line, a log - is not the signal. <paramref name="carry"/>
+        /// holds the tail of the previous chunk, so a sequence split across two reads is still
+        /// seen; pass the same variable for every chunk of one tab.
         /// </summary>
         public static bool SeesExitSignal(string tabId, string chunk, ref string carry)
         {
             string marker = ExitTitlePrefix + tabId;
             string text = (carry ?? "") + (chunk ?? "");
-            bool seen = text.IndexOf(marker, StringComparison.Ordinal) >= 0;
-            int keep = Math.Min(text.Length, marker.Length - 1);
+            bool seen = text.IndexOf("\x1b]0;" + marker, StringComparison.Ordinal) >= 0
+                     || text.IndexOf("\x1b]2;" + marker, StringComparison.Ordinal) >= 0;
+            int keep = Math.Min(text.Length, marker.Length + 3);   // framed length ("ESC ] n ;" + marker) - 1
             carry = text.Substring(text.Length - keep);
             return seen;
         }

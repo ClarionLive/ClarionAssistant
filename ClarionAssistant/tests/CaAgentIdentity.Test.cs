@@ -88,13 +88,23 @@ static class CaAgentIdentityTest
         string wrapped = CaAgentIdentity.WrapWithExitSignal("& 'claude' -n 'CA4'", "ab12cd34");
         Ok("invocation sits inside try", wrapped.StartsWith("try { & 'claude' -n 'CA4' } finally { "));
         Ok("finally drops MULTITERMINAL_NAME", wrapped.Contains("Remove-Item Env:MULTITERMINAL_NAME"));
-        Ok("finally retitles with the tab's marker", wrapped.Contains("WindowTitle = 'ca-assistant-exited:ab12cd34'"));
+        Ok("finally retitles the console", wrapped.Contains("$Host.UI.RawUI.WindowTitle = '"));
+        Ok("finally's title concatenates to the tab's marker",
+            wrapped.Replace("' + '", "").Contains("WindowTitle = 'ca-assistant-exited:ab12cd34'"));
+        // Pipeline run 3 (debugger): the command line itself must not carry the marker verbatim.
+        Ok("command line never contains the marker verbatim", !wrapped.Contains("ca-assistant-exited:ab12cd34"));
         Ok("no double quotes (command lives inside -Command \"...\")", !wrapped.Contains("\""));
         string c = null;
         Ok("plain output is not the signal", !CaAgentIdentity.SeesExitSignal("ab12cd34", "hello world", ref c));
         c = null;
         Ok("OSC title with the marker is the signal",
             CaAgentIdentity.SeesExitSignal("ab12cd34", "\x1b]0;ca-assistant-exited:ab12cd34\x07PS H:\\> ", ref c));
+        c = null;
+        Ok("OSC 2 title with the marker is the signal",
+            CaAgentIdentity.SeesExitSignal("ab12cd34", "\x1b]2;ca-assistant-exited:ab12cd34\x1b\\", ref c));
+        c = null;
+        Ok("bare marker text (e.g. a listed command line) is NOT the signal",
+            !CaAgentIdentity.SeesExitSignal("ab12cd34", "pwsh -Command \"... WindowTitle = 'ca-assistant-exited:ab12cd34' }\"", ref c));
         c = null;
         Ok("another tab's marker is not this tab's signal",
             !CaAgentIdentity.SeesExitSignal("ab12cd34", "\x1b]0;ca-assistant-exited:ffffffff\x07", ref c));
@@ -104,7 +114,11 @@ static class CaAgentIdentityTest
         Ok("marker split across two reads is still seen", !first && second);
         c = null;
         CaAgentIdentity.SeesExitSignal("ab12cd34", new string('x', 5000), ref c);
-        Ok("carry stays bounded", c != null && c.Length < "ca-assistant-exited:ab12cd34".Length);
+        Ok("carry stays bounded", c != null && c.Length < "\x1b]0;ca-assistant-exited:ab12cd34".Length);
+        c = null;
+        bool a1 = CaAgentIdentity.SeesExitSignal("ab12cd34", "out\x1b", ref c);
+        bool a2 = CaAgentIdentity.SeesExitSignal("ab12cd34", "]0;ca-assistant-exited:ab12cd34\x07", ref c);
+        Ok("split right after ESC is still seen", !a1 && a2);
 
         // ---- AppendIdentityPrompt ----
         string extra = "## Last Session Recap\nwe did things\n";
