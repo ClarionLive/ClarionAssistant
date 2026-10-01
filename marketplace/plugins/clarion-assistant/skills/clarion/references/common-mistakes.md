@@ -212,14 +212,15 @@ MyClass.Init    PROCEDURE         ! CORRECT
 
 ## Returning Procedures Called as Statements
 ❌ `GetVal('a')` as a statement when `GetVal PROCEDURE(STRING),LONG` has no `,PROC`.
-✅ Add `,PROC` to the prototype, or assign the result. `GETINI(...)` must always be assigned.
+This compiles, but with the warning `Calling function as procedure`.
+✅ Add `,PROC` to the prototype, or assign the result. Assign `GETINI(...)`'s result (it has no `,PROC`).
 
 ## No POWER()
 ❌ `D = POWER(2, n)` → `Unknown function label`
 ✅ `D = (2) ^ (n)`
 
 ## Redeclaring Globals in a MEMBER
-❌ `Flag BYTE,EXTERNAL` in a MEMBER file for a PROGRAM global → compile error.
+❌ `Flag BYTE,EXTERNAL` in a MEMBER file for a PROGRAM global → `Label duplicated` warning, then `Unresolved External` at link time.
 ✅ Just use `Flag` — MEMBER modules see the PROGRAM's global data.
 
 ## Class Construct

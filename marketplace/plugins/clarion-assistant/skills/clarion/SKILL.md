@@ -33,7 +33,7 @@ You are an expert Clarion language programmer. This file holds the most critical
 14. **COM methods use direct brace syntax** `ctrl{'MethodName()'}` — never `ctrl{PROP:OLE} = '...'` (unreliable). COM property names are case-sensitive.
 15. **Template files (.tpl/.tpw): `#AT` cannot be nested inside `#IF`** — put the `#IF` INSIDE the `#AT` body. And `OMITTED()` only works in the scope where the parameter is declared (fails silently inside ABC class methods) — stash params into procedure-locals at top level. Details and working embeds in references/templates.md.
 
-16. **`DECIMAL` cannot be a value parameter or a return type** (compile errors). Use `*DECIMAL` by reference, or `REAL`/`LONG`. There is no `POWER()` — use `(2) ^ (n)`. A returning procedure called as a statement needs `,PROC`; `GETINI` must have its result assigned.
+16. **`DECIMAL` cannot be a value parameter or a return type** (compile errors). Use `*DECIMAL` by reference, or `REAL`/`LONG`. There is no `POWER()` — use `(2) ^ (n)`. Calling a returning procedure as a statement without `,PROC` (including `GETINI`) draws the warning `Calling function as procedure` — add `,PROC` to the prototype or assign the result.
 17. **`OMIT('token')` ends at the first occurrence of that exact text anywhere, even inside a `!`/`!!` comment.** `MODULE` blocks belong inside a `MAP`, and the `MODULE('name')` must match the .clw that defines the procedure.
 
 ## When Generating Clarion Examples

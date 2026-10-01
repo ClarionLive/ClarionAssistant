@@ -11,8 +11,8 @@ Read this before writing or reviewing non-trivial Clarion code. The last section
 | `DECIMAL` cannot be a **value parameter**: `Dv PROCEDURE(DECIMAL pV)`. Use `*DECIMAL`, `LONG` or `REAL`. | `Invalid data type for value parameter` |
 | `DECIMAL` cannot be a **return type**: `Dr PROCEDURE(),DECIMAL`. Return `REAL`/`LONG` and assign to a DECIMAL variable. | `Illegal return type or attribute` |
 | `Dp PROCEDURE(*DECIMAL pV),REAL` compiles; a local `D DECIMAL(15,2)` and `D = GetR()` (REAL return) compile. | compiles clean |
-| A returning procedure called as a statement needs `,PROC` in its prototype (`GetVal PROCEDURE(STRING pK),LONG,PROC`). | call without `,PROC` fails to compile |
-| `GETINI(...)` is a function — assign the result (`S = GETINI('a','b','c','x.ini')`); calling it as a statement fails. | compile error |
+| A returning procedure called as a statement should have `,PROC` in its prototype (`GetVal PROCEDURE(STRING pK),LONG,PROC`), or have its result assigned. | without `,PROC` it compiles with a warning: `Calling function as procedure` |
+| `GETINI(...)` is a function — assign the result (`S = GETINI('a','b','c','x.ini')`). | as a statement it compiles with a warning: `Calling function as procedure` |
 | There is no `POWER()`. Use the `^` operator: `D = (2) ^ (N)`. | `Unknown function label` |
 | A class `Construct` cannot take parameters and cannot be `VIRTUAL`. | `Illegal return type or attribute` (both) |
 | Parameter **names** in prototypes are legal: `MyApi PROCEDURE(LONG hWnd, *CSTRING text)`. | compiles clean |
@@ -24,7 +24,7 @@ Read this before writing or reviewing non-trivial Clarion code. The last section
 - **`MODULE` must be inside a `MAP`.** Outside one: `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP`.
 - **The `MODULE('name')` must match the `.clw` that contains the procedure.** With `MODULE('WrongName')` while `M1.clw` defines the procedure: `Procedure doesn't belong to module: WORK`.
 - **`MEMBER('Parent.clw')` is required** in a module implementing procedures prototyped in the parent's global MAP; bare `MEMBER` gives `No matching prototype available`. In a class-implementation `.clw` (`CLASS,MODULE(...),LINK(...)`) both bare `MEMBER` and `MEMBER('Parent.clw')` compile.
-- **A MEMBER module sees the PROGRAM file's global data and program-level EQUATEs automatically.** Do not redeclare a global with `,EXTERNAL` in the member file — that fails to compile.
+- **A MEMBER module sees the PROGRAM file's global data and program-level EQUATEs automatically.** Do not redeclare a global with `,EXTERNAL` in the member file — the build fails: a `Label duplicated, second used` warning, then `Unresolved External <MODULE>$<LABEL>` at link time.
 
 ## Layout, strings and dates
 
