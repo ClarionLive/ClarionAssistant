@@ -3275,8 +3275,11 @@ namespace ClarionAssistant
             // Annotate the tab with the backend abbreviation so the tab strip
             // makes it obvious at a glance which assistant is driving each tab.
             // Built from the undecorated name, so a relaunch never stacks labels. A Claude
-            // tab is relabelled again with its MultiTerminal name once that is resolved.
-            if (tab.BaseName == null) tab.BaseName = StripBackendSuffix(tab.Name);
+            // tab is relabelled again with its MultiTerminal name once that is resolved, and
+            // drops the CC suffix then (every registered tab is Claude, so it says nothing).
+            // Captured as is, not stripped: nothing has decorated the name before the first
+            // launch, so stripping could only eat real text (a solution named "Billing CO").
+            if (tab.BaseName == null) tab.BaseName = tab.Name;
             _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, backend));
 
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase))
@@ -3547,14 +3550,12 @@ namespace ClarionAssistant
         /// the prepare or builder phases.</summary>
         private void AbortLaunch(TerminalTab tab)
         {
-            // Drop the CA<n> label with the name: a tab showing a name it no longer holds would
-            // send the developer to message an address nobody answers (ticket 7792e3e0).
-            if (tab.AgentName != null && tab.BaseName != null)
-                _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend));
+            // An aborted launch holds no MultiTerminal name (other tabs' uniqueness checks read
+            // it), and its tab drops the CA<n> label. Before AssistantBackend is cleared: the
+            // restored label is built from it.
+            ReleaseAgentName(tab);
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
-            // An aborted launch holds no MultiTerminal name: other tabs' uniqueness checks read it.
-            tab.AgentName = null;
             try { if (tab.Terminal != null) tab.Terminal.Dispose(); } catch { }
             tab.Terminal = null;
         }
@@ -4197,9 +4198,27 @@ namespace ClarionAssistant
             else
                 label = "Claude Code exited";
             if (InvokeRequired)
-                BeginInvoke((Action)(() => UpdateStatus(label)));
+                BeginInvoke((Action)(() => { ReleaseAgentName(tab); UpdateStatus(label); }));
             else
+            {
+                ReleaseAgentName(tab);
                 UpdateStatus(label);
+            }
+        }
+
+        /// <summary>
+        /// Give up the tab's CA&lt;n&gt; name and its label once no session holds it - an aborted
+        /// launch, or the assistant exiting (ticket 7792e3e0). Without this a dead tab keeps
+        /// showing CA2, so the developer is sent to message an address nobody answers; once the
+        /// broker reaps the row another IDE can take CA2, and two tabs show one name. UI thread
+        /// only: it renames the tab strip, and ResolveUniqueAgentName reads AgentName there.
+        /// </summary>
+        private void ReleaseAgentName(TerminalTab tab)
+        {
+            if (tab.AgentName == null) return;
+            if (tab.BaseName != null)
+                _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend));
+            tab.AgentName = null;
         }
 
         private void OnWorkWithSolution()

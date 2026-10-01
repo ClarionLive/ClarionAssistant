@@ -29,9 +29,9 @@ static class CaAgentIdentityTest
         Console.WriteLine("CaAgentIdentity identity prompt (c175492a) and numbered names (7792e3e0)");
 
         // ---- BuildIdentityPrompt ----
-        string p = CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC-2");
+        string p = CaAgentIdentity.BuildIdentityPrompt("CA2");
         Ok("prompt produced for a name", p != null);
-        Ok("states the exact name in backticks", p != null && p.Contains("`CA-Terminal-1-CC-2`"));
+        Ok("states the exact name in backticks", p != null && p.Contains("`CA2`"));
         Ok("names fromTerminalId", p != null && p.Contains("fromTerminalId"));
         Ok("warns against deriving it from list_terminals", p != null && p.Contains("list_terminals"));
         Ok("says it survives /clear", p != null && p.Contains("/clear"));
@@ -40,19 +40,19 @@ static class CaAgentIdentityTest
         // the prompt must say what to do then rather than assert the name unconditionally.
         Ok("says what to do if the name is held or unregistered", p != null && p.Contains("held by another terminal") && p.Contains("not registered"));
         // Pipeline run 1 (code-reviewer): the example must not build "<name>-2-2" from a suffixed name.
-        Ok("no doubled suffix in the example", !CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC-2").Contains("CA-Terminal-1-CC-2-2"));
-        Ok("trims surrounding whitespace", (CaAgentIdentity.BuildIdentityPrompt("  CA-X  ") ?? "").Contains("`CA-X`")
-            && !(CaAgentIdentity.BuildIdentityPrompt("  CA-X  ") ?? "").Contains("`  CA-X"));
+        Ok("no doubled suffix in the example", !CaAgentIdentity.BuildIdentityPrompt("CA2").Contains("CA2-2"));
+        Ok("trims surrounding whitespace", (CaAgentIdentity.BuildIdentityPrompt("  CA9  ") ?? "").Contains("`CA9`")
+            && !(CaAgentIdentity.BuildIdentityPrompt("  CA9  ") ?? "").Contains("`  CA9"));
         Ok("null name -> null", CaAgentIdentity.BuildIdentityPrompt(null) == null);
         Ok("empty name -> null", CaAgentIdentity.BuildIdentityPrompt("") == null);
         Ok("blank name -> null", CaAgentIdentity.BuildIdentityPrompt("   ") == null);
 
         // Two tabs, two IDEs: each prompt names only its own tab as "your name".
-        string a = CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC");
-        string b = CaAgentIdentity.BuildIdentityPrompt("CA-Terminal-1-CC-2");
-        Ok("tab A's prompt says its name is A", a.Contains("Your MultiTerminal name is `CA-Terminal-1-CC`."));
-        Ok("tab B's prompt says its name is B", b.Contains("Your MultiTerminal name is `CA-Terminal-1-CC-2`."));
-        Ok("tab A's prompt does not claim B's name", !a.Contains("Your MultiTerminal name is `CA-Terminal-1-CC-2`"));
+        string a = CaAgentIdentity.BuildIdentityPrompt("CA1");
+        string b = CaAgentIdentity.BuildIdentityPrompt("CA2");
+        Ok("tab A's prompt says its name is A", a.Contains("Your MultiTerminal name is `CA1`."));
+        Ok("tab B's prompt says its name is B", b.Contains("Your MultiTerminal name is `CA2`."));
+        Ok("tab A's prompt does not claim B's name", !a.Contains("Your MultiTerminal name is `CA2`"));
 
         // ---- NextFreeName (7792e3e0): CA1, CA2, ... lowest free, case-insensitive per caller ----
         var held = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -86,12 +86,12 @@ static class CaAgentIdentityTest
 
         // ---- AppendIdentityPrompt ----
         string extra = "## Last Session Recap\nwe did things\n";
-        string both = CaAgentIdentity.AppendIdentityPrompt(extra, "CA-Tab1");
+        string both = CaAgentIdentity.AppendIdentityPrompt(extra, "CA1");
         Ok("extra kept, first", both.StartsWith("## Last Session Recap"));
         Ok("identity appended after extra", both.IndexOf("## Your MultiTerminal identity") > both.IndexOf("we did things"));
         Ok("blank line between them", both.Contains("we did things" + Environment.NewLine + Environment.NewLine + "## Your MultiTerminal identity"));
-        Ok("empty extra -> identity alone", CaAgentIdentity.AppendIdentityPrompt("", "CA-Tab1") == CaAgentIdentity.BuildIdentityPrompt("CA-Tab1"));
-        Ok("null extra -> identity alone", CaAgentIdentity.AppendIdentityPrompt(null, "CA-Tab1") == CaAgentIdentity.BuildIdentityPrompt("CA-Tab1"));
+        Ok("empty extra -> identity alone", CaAgentIdentity.AppendIdentityPrompt("", "CA1") == CaAgentIdentity.BuildIdentityPrompt("CA1"));
+        Ok("null extra -> identity alone", CaAgentIdentity.AppendIdentityPrompt(null, "CA1") == CaAgentIdentity.BuildIdentityPrompt("CA1"));
         Ok("no name -> extra unchanged", CaAgentIdentity.AppendIdentityPrompt(extra, null) == extra);
         Ok("no name, no extra -> null stays null", CaAgentIdentity.AppendIdentityPrompt(null, "") == null);
 
@@ -105,15 +105,22 @@ static class CaAgentIdentityTest
                 string src = File.ReadAllText(path);
                 int resolve = src.IndexOf("string agentName = ResolveUniqueAgentName(tab);", StringComparison.Ordinal);
                 int relabel = resolve < 0 ? -1 : src.IndexOf("CaAgentIdentity.TabLabel(agentName, tab.BaseName)", resolve, StringComparison.Ordinal);
-                int baseCapture = src.IndexOf("if (tab.BaseName == null) tab.BaseName = StripBackendSuffix(tab.Name);", StringComparison.Ordinal);
+                int baseCapture = src.IndexOf("if (tab.BaseName == null) tab.BaseName = tab.Name;", StringComparison.Ordinal);
                 int launchClaude = src.IndexOf("LaunchClaudeForTab(tab);", baseCapture < 0 ? 0 : baseCapture, StringComparison.Ordinal);
                 int compose = src.IndexOf("string systemPromptExtra = BuildSystemPromptInjection(", StringComparison.Ordinal);
                 int append = src.IndexOf("CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName)", StringComparison.Ordinal);
                 int gate = src.IndexOf("_mcpServer.MultiTerminalConfigured)", compose < 0 ? 0 : compose, StringComparison.Ordinal);
                 int abort = src.IndexOf("private void AbortLaunch(", StringComparison.Ordinal);
-                int abortClear = abort < 0 ? -1 : src.IndexOf("tab.AgentName = null;", abort, StringComparison.Ordinal);
+                int abortRelease = abort < 0 ? -1 : src.IndexOf("ReleaseAgentName(tab);", abort, StringComparison.Ordinal);
+                int abortBackendNull = abort < 0 ? -1 : src.IndexOf("tab.AssistantBackend = null;", abort, StringComparison.Ordinal);
+                int release = src.IndexOf("private void ReleaseAgentName(TerminalTab tab)", StringComparison.Ordinal);
+                int releaseEnd = release < 0 ? -1 : src.IndexOf("\n        }", release, StringComparison.Ordinal);
+                int releaseClear = release < 0 ? -1 : src.IndexOf("tab.AgentName = null;", release, StringComparison.Ordinal);
+                int releaseRelabel = release < 0 ? -1 : src.IndexOf("ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend)", release, StringComparison.Ordinal);
+                int exited = src.IndexOf("private void OnTabTerminalProcessExited(TerminalTab tab)", StringComparison.Ordinal);
+                int exitedEnd = exited < 0 ? -1 : src.IndexOf("\n        }", exited, StringComparison.Ordinal);
+                int exitedRelease = exited < 0 ? -1 : src.IndexOf("ReleaseAgentName(tab)", exited, StringComparison.Ordinal);
                 int abortEnd = abort < 0 ? -1 : src.IndexOf("\n        }", abort, StringComparison.Ordinal);
-                int abortRelabel = abort < 0 ? -1 : src.IndexOf("ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend)", abort, StringComparison.Ordinal);
                 int write = src.IndexOf("\"system-prompt-extra-\"", StringComparison.Ordinal);
                 Ok("launch resolves the agent name", resolve >= 0);
                 Ok("launch composes the system prompt", compose >= 0);
@@ -131,11 +138,18 @@ static class CaAgentIdentityTest
                 Ok("identity gated on MultiTerminalConfigured", gate >= 0 && append >= 0 && gate < append,
                     "gate@" + gate + " append@" + append);
                 // Pipeline run 1: an aborted launch must not keep a name other tabs then avoid.
-                Ok("AbortLaunch clears tab.AgentName", abortClear >= 0 && abortEnd >= 0 && abortClear < abortEnd,
-                    "clear@" + abortClear + " end@" + abortEnd);
-                // 7792e3e0 (verifier note): an aborted launch drops the CA<n> label with the name.
-                Ok("AbortLaunch drops the CA<n> tab label", abortRelabel >= 0 && abortEnd >= 0 && abortRelabel < abortEnd,
-                    "relabel@" + abortRelabel + " end@" + abortEnd);
+                // 7792e3e0: the name and its CA<n> label are released together, by one helper.
+                Ok("AbortLaunch releases the name", abortRelease >= 0 && abortEnd >= 0 && abortRelease < abortEnd,
+                    "release@" + abortRelease + " end@" + abortEnd);
+                Ok("AbortLaunch releases before clearing the backend the label is built from",
+                    abortRelease >= 0 && abortBackendNull > abortRelease, "release@" + abortRelease + " backendNull@" + abortBackendNull);
+                Ok("ReleaseAgentName clears tab.AgentName", releaseClear >= 0 && releaseClear < releaseEnd,
+                    "clear@" + releaseClear + " end@" + releaseEnd);
+                Ok("ReleaseAgentName drops the CA<n> tab label", releaseRelabel >= 0 && releaseRelabel < releaseEnd,
+                    "relabel@" + releaseRelabel + " end@" + releaseEnd);
+                // Pipeline run 1 (debugger): an exited assistant must release its name too.
+                Ok("process exit releases the name", exitedRelease >= 0 && exitedEnd >= 0 && exitedRelease < exitedEnd,
+                    "release@" + exitedRelease + " end@" + exitedEnd);
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");

@@ -54,7 +54,8 @@ namespace ClarionAssistant.Services
             return agentName + " · " + context;
         }
 
-        /// <summary>True for the "Terminal N" name TabManager gives a tab nobody named.</summary>
+        /// <summary>True for the "Terminal N" name TabManager.CreateTerminalTab gives a tab nobody
+        /// named - keep the two in step, or plain tabs start showing "CA2 · Terminal 2".</summary>
         public static bool IsDefaultTabName(string name)
         {
             const string word = "Terminal ";

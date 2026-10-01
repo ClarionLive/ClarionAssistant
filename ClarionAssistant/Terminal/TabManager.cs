@@ -97,6 +97,7 @@ namespace ClarionAssistant.Terminal
         public TerminalTab CreateTerminalTab(string name, WebViewTerminalRenderer renderer)
         {
             _terminalCounter++;
+            // "Terminal N" is matched by CaAgentIdentity.IsDefaultTabName: keep the two in step.
             var tab = new TerminalTab
             {
                 Name = string.IsNullOrEmpty(name) ? "Terminal " + _terminalCounter : name,
