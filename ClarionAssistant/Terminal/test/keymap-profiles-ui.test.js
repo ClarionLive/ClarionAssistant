@@ -45,7 +45,9 @@ function section(t) { console.log('\n' + t); }
 
 const gearMarkup = slice(html, '<div class="gear-pane" id="gearPaneEditor">', '</div><!-- /gearPaneEditor -->', 'gear pane markup', true);
 const keySrc = slice(html, '    var keyBindings = {};', '    // Map a keydown to a canonical chord', 'key command section');
-const tableSrc = slice(html, '    // ----- Keyboard rebinding table (gear panel) -----', '    function startKeyCapture', 'Keyboard table section');
+const tableSrc = slice(html, '    // ----- Keyboard rebinding table (gear panel) -----', '    // ===================== Code Snippets manager', 'Keyboard table section');
+const chordSrc = slice(html, '    // Map a keydown to a canonical chord', '    function installKeyBindings() {', 'chord mapping');
+const FIXTURE = JSON.parse(fs.readFileSync(require('path').join(__dirname, 'fixtures', 'monaco-keybindings.json'), 'utf8'));
 const escHtmlSrc = slice(html, '    function escHtml(s) {', '    }', 'escHtml', true);
 
 function makeEnv() {
@@ -60,14 +62,14 @@ function makeEnv() {
     const scope = {
         document: dom.window.document,
         persistSettings: () => { spy.persisted++; },
-        showToast: (msg, ok) => { spy.toasts.push({ msg, ok }); },
-        startKeyCapture: () => { }, cancelKeyCapture: () => { }
+        showToast: (msg, ok) => { spy.toasts.push({ msg, ok }); }
     };
     const params = names.concat(Object.keys(scope));
     const args = names.map(() => function stub() { }).concat(Object.values(scope));
-    const page = new Function(...params, escHtmlSrc + keySrc + tableSrc +
+    const page = new Function(...params, escHtmlSrc + keySrc + chordSrc + tableSrc +
         '\nreturn { buildKeybindTable: buildKeybindTable, onKeyProfileChosen: onKeyProfileChosen,' +
-        ' setKeyProfile: setKeyProfile, KEY_PROFILES: KEY_PROFILES,' +
+        ' setKeyProfile: setKeyProfile, KEY_PROFILES: KEY_PROFILES, loadEditorActions: loadEditorActions,' +
+        ' wireKeybindFilters: wireKeybindFilters, startKeyCapture: startKeyCapture, handleKeyCapture: handleKeyCapture,' +
         ' setBindings: function (b) { keyBindings = b; }, getBindings: function () { return keyBindings; } };')(...args);
     return { page, spy, doc: dom.window.document };
 }
@@ -123,6 +125,79 @@ if (env) {
     check('the toast says so, as a warning', last && last.ok === false && /1 of your keys reset/.test(last.msg), JSON.stringify(last));
     check('Remove Line gets the Notepad++ chord', row(doc, 'removeLine').key === 'Ctrl+L');
     check('Uppercase falls back to its profile chord, not to nothing', row(doc, 'upperCase').key === 'Ctrl+Shift+U');
+
+    // ---------- the editor's own commands ----------
+    section('The editor\'s own commands');
+    page.onKeyProfileChosen('clarion');
+    page.setBindings({});
+    page.wireKeybindFilters();
+    const chip = f => doc.querySelector('#kbFilters .kb-chip[data-filter="' + f + '"]');
+    const click = el => el.dispatchEvent(new doc.defaultView.Event('click'));
+    const typeSearch = t => { const s = doc.getElementById('kbSearch'); s.value = t; s.dispatchEvent(new doc.defaultView.Event('input')); };
+    const rowCount = () => doc.querySelectorAll('#keybindRows tr').length;
+    const fakeKs = {
+        getKeybindings: () => [].concat(...FIXTURE.actions.map(a => a.keys.map(k => ({
+            command: a.id, resolvedKeybinding: { getUserSettingsLabel: () => k.toLowerCase() } })))),
+        lookupKeybinding: id => { const a = FIXTURE.actions.find(x => x.id === id); return a && a.keys.length ? { getUserSettingsLabel: () => a.keys[0].toLowerCase() } : null; }
+    };
+    page.loadEditorActions({ _standaloneKeybindingService: fakeKs, getSupportedActions: () => FIXTURE.actions.map(a => ({ id: a.id, label: a.label })) });
+    page.buildKeybindTable();
+    const clarionRows = rowCount();
+    check('the table opens on the Clarion commands alone', chip('clarion').classList.contains('on')
+        && !row(doc, 'editor.action.selectHighlights') && !!row(doc, 'removeLine'));
+    check('Clarion rows are tagged Clarion', /Clarion/.test(doc.querySelector('#keybindRows tr').textContent));
+    click(chip('all'));
+    check('"All" adds every Monaco action', rowCount() === clarionRows + FIXTURE.actions.length, rowCount() + ' rows');
+    check('a Monaco row shows Monaco\'s key', row(doc, 'editor.action.selectHighlights').def === 'Ctrl+Shift+L');
+    check('a Monaco action with two keys shows both', row(doc, 'editor.action.triggerSuggest').def === 'Ctrl+Space, Ctrl+I');
+    click(chip('editor'));
+    check('"Editor" shows only Monaco actions', rowCount() === FIXTURE.actions.length && !row(doc, 'removeLine'));
+
+    click(chip('clarion'));
+    typeSearch('occurrences');
+    check('searching the Clarion view for a Monaco action finds nothing, and says to try All',
+        rowCount() === 0 && /try All/.test(doc.getElementById('kbEmpty').textContent)
+        && !doc.getElementById('kbEmpty').classList.contains('hidden'));
+    click(chip('all'));
+    check('... while All finds it', !!row(doc, 'editor.action.selectHighlights'));
+    typeSearch('ctrl+shift+l');
+    check('search matches keys too', !!row(doc, 'editor.action.selectHighlights') && !!row(doc, 'lowerCase'));
+    typeSearch('');
+
+    click(chip('clashes'));
+    const noteOf = id => { const i = doc.querySelector('#keybindRows .kb-input[data-cmd="' + id + '"]'); const n = i && i.closest('tr').querySelector('.kb-note'); return n ? n.textContent : ''; };
+    check('"Clashes" lists Lowercase, noting the Monaco key it takes', /takes Ctrl\+Shift\+L from Select All Occurrences/.test(noteOf('lowerCase')), noteOf('lowerCase'));
+    check('... and Select All Occurrences, noting who took it', /taken by Lowercase/.test(noteOf('editor.action.selectHighlights')), noteOf('editor.action.selectHighlights'));
+    check('... and not a command with no clash', !row(doc, 'invertCase'));
+    page.onKeyProfileChosen('vscode');
+    check('VS Code profile: Select All Occurrences no longer clashes', !row(doc, 'editor.action.selectHighlights'));
+    page.onKeyProfileChosen('clarion');
+
+    section('Setting keys');
+    click(chip('all'));
+    const press = (code, mods) => page.handleKeyCapture(Object.assign({ key: 'x', code: code,
+        ctrlKey: false, shiftKey: false, altKey: false, metaKey: false,
+        preventDefault() { }, stopImmediatePropagation() { } }, mods));
+    const capture = id => page.startKeyCapture(doc.querySelector('#keybindRows .kb-input[data-cmd="' + id + '"]'));
+    const persistedBefore = spy.persisted;
+    capture('editor.action.gotoLine');
+    press('KeyQ', { ctrlKey: true, altKey: true });
+    check('a Monaco action takes a free key', page.getBindings()['editor.action.gotoLine'] === 'Ctrl+Alt+Q'
+        && spy.persisted === persistedBefore + 1, JSON.stringify(page.getBindings()));
+    capture('editor.action.gotoLine');
+    press('KeyD', { ctrlKey: true });
+    let t = spy.toasts[spy.toasts.length - 1];
+    check('a Monaco action cannot take a Clarion command\'s key', page.getBindings()['editor.action.gotoLine'] === 'Ctrl+Alt+Q'
+        && t.ok === false && /Structure Designer/.test(t.msg), JSON.stringify(t));
+    press('KeyF', { ctrlKey: true });
+    t = spy.toasts[spy.toasts.length - 1];
+    check('nothing can take a key the page handles', /used by the CA Editor \(Find\)/.test(t.msg), JSON.stringify(t));
+    page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });
+    capture('upperCase');
+    press('KeyL', { ctrlKey: true });   // Monaco's Expand Line Selection (Go to Line was moved above)
+    t = spy.toasts[spy.toasts.length - 1];
+    check('a Clarion command may take a Monaco key, and the toast says what it took',
+        page.getBindings().upperCase === 'Ctrl+L' && t.ok === true && /Expand Line Selection/.test(t.msg), JSON.stringify(t));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
