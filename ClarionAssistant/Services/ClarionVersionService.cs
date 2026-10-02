@@ -219,10 +219,87 @@ namespace ClarionAssistant.Services
         {
             try
             {
-                string exePath = Process.GetCurrentProcess().MainModule.FileName;
+                string exe = Process.GetCurrentProcess().MainModule.FileName;
+                // GH #247: a host that is not Clarion.exe (the standalone MCP server) detects for the Clarion tree
+                // it is installed under — every caller there, EffectiveClarionVersion included, not just one.
+                if (!string.Equals(Path.GetFileName(exe), "Clarion.exe", StringComparison.OrdinalIgnoreCase))
+                {
+                    string root = InstalledClarionRoot();
+                    if (root != null) return DetectForInstall(root, exe, DefaultSettingsRoot());
+                }
+                return Detect(exe, DefaultSettingsRoot());
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// The Clarion root this code is installed under, or null when it is not inside one.
+        ///
+        /// The installer places CA at &lt;ClarionRoot&gt;\accessory\addins\ClarionAssistant\, so the root is three
+        /// levels up. VERIFIED rather than assumed: the folder names must actually be accessory\addins\ClarionAssistant,
+        /// and the result must contain a bin directory. A path-arithmetic guess with no check would happily return
+        /// "H:\DevLaptop" for a development build and then hand every redirection lookup a fabricated root - worse than
+        /// admitting it does not know, because it would look like an answer.
+        /// </summary>
+        public static string InstalledClarionRoot()
+        {
+            try { return InstalledClarionRoot(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location)); }
+            catch { return null; }
+        }
+
+        // internal (not private) so tests\ClarionVersionService.InstallDetectTest.cs can pass its own folder.
+        internal static string InstalledClarionRoot(string dir)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(dir)) return null;
+
+                var expected = new[] { "ClarionAssistant", "addins", "accessory" };
+                string cursor = dir;
+                foreach (var name in expected)
+                {
+                    if (cursor == null) return null;
+                    if (!string.Equals(Path.GetFileName(cursor.TrimEnd('\\')), name,
+                                       StringComparison.OrdinalIgnoreCase))
+                        return null;
+                    cursor = Path.GetDirectoryName(cursor.TrimEnd('\\'));
+                }
+
+                if (string.IsNullOrEmpty(cursor)) return null;
+                return Directory.Exists(Path.Combine(cursor, "bin")) ? cursor : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Detect for a host that is NOT Clarion.exe but is installed under the Clarion tree at
+        /// <paramref name="clarionRoot"/> (the standalone MCP server, in &lt;root&gt;\accessory\addins\ClarionAssistant).
+        /// internal (not private) so tests\ClarionVersionService.InstallDetectTest.cs can pass its own settings root.
+        /// </summary>
+        internal static ClarionVersionInfo DetectForInstall(string clarionRoot, string hostExePath, string settingsRoot)
+        {
+            // GH #247: detect as that tree's Clarion.exe. From the host's own exe (5.9.0.x) there is no 5.9 settings
+            // folder, so the newest one was read: another Clarion's ClarionProperties.xml. Clarion.exe's version names
+            // the folder its IDE uses, and its path lets the bin-folder match work here too.
+            string clarionExe = string.IsNullOrEmpty(clarionRoot) ? null : Path.Combine(clarionRoot, "bin", "Clarion.exe");
+            return Detect(clarionExe != null && File.Exists(clarionExe) ? clarionExe : hostExePath, settingsRoot);
+        }
+
+        /// <summary>%APPDATA%\SoftVelocity\Clarion: the parent of each Clarion version's settings folder.</summary>
+        private static string DefaultSettingsRoot()
+        {
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "SoftVelocity", "Clarion");
+        }
+
+        private static ClarionVersionInfo Detect(string exePath, string settingsRoot)
+        {
+            try
+            {
                 if (string.IsNullOrEmpty(exePath)) return null;
 
-                string xmlPath = FindPropertiesXml(exePath);
+                string xmlPath = FindPropertiesXml(exePath, settingsRoot);
                 if (string.IsNullOrEmpty(xmlPath) || !File.Exists(xmlPath)) return null;
 
                 var info = ParsePropertiesXml(xmlPath);
@@ -326,7 +403,7 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        private static string FindPropertiesXml(string exePath)
+        private static string FindPropertiesXml(string exePath, string appDataDir)
         {
             try
             {
@@ -344,10 +421,7 @@ namespace ClarionAssistant.Services
                     // has not been written yet is a legitimate first-run state.
                 }
 
-                string appDataDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "SoftVelocity", "Clarion");
-                if (!Directory.Exists(appDataDir)) return null;
+                if (string.IsNullOrEmpty(appDataDir) || !Directory.Exists(appDataDir)) return null;
 
                 var versionInfo = FileVersionInfo.GetVersionInfo(exePath);
                 if (versionInfo.FileMajorPart > 0)

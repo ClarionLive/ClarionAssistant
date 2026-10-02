@@ -189,6 +189,8 @@ namespace ClarionAssistant.McpServer
                         _versionResolved = true;
                         try
                         {
+                            // Detects for the Clarion tree this server is installed under (GH #247), not by this
+                            // exe's own version, which named no settings folder and read the newest one's XML.
                             var info = ClarionVersionService.Detect();
                             if (info == null)
                             {
@@ -256,7 +258,7 @@ namespace ClarionAssistant.McpServer
                                 //
                                 // Its own location is the better signal and cannot drift: the exe
                                 // sits at <ClarionRoot>\accessory\addins\ClarionAssistant\.
-                                string ownRoot = DeriveClarionRootFromLocation();
+                                string ownRoot = ClarionVersionService.InstalledClarionRoot();
                                 if (ownRoot != null && info.Versions != null)
                                     _versionConfig = info.ResolveByRoot(ownRoot);
                                 if (_versionConfig != null)
@@ -395,41 +397,6 @@ namespace ClarionAssistant.McpServer
         {
             var cfg = CurrentVersionConfig;
             return cfg != null ? cfg.RootPath : null;
-        }
-
-        /// <summary>
-        /// The Clarion root this executable is installed under, or null when it is not inside one.
-        ///
-        /// The installer places the server at &lt;ClarionRoot&gt;\accessory\addins\ClarionAssistant\,
-        /// so the root is three levels up. VERIFIED rather than assumed: the folder names must
-        /// actually be accessory\addins\ClarionAssistant, and the result must contain a bin
-        /// directory. A path-arithmetic guess with no check would happily return "H:\DevLaptop"
-        /// for a development build and then hand every redirection lookup a fabricated root -
-        /// worse than admitting it does not know, because it would look like an answer.
-        /// </summary>
-        private static string DeriveClarionRootFromLocation()
-        {
-            try
-            {
-                string dir = Path.GetDirectoryName(
-                    System.Reflection.Assembly.GetExecutingAssembly().Location);
-                if (string.IsNullOrEmpty(dir)) return null;
-
-                var expected = new[] { "ClarionAssistant", "addins", "accessory" };
-                string cursor = dir;
-                foreach (var name in expected)
-                {
-                    if (cursor == null) return null;
-                    if (!string.Equals(Path.GetFileName(cursor.TrimEnd('\\')), name,
-                                       StringComparison.OrdinalIgnoreCase))
-                        return null;
-                    cursor = Path.GetDirectoryName(cursor.TrimEnd('\\'));
-                }
-
-                if (string.IsNullOrEmpty(cursor)) return null;
-                return Directory.Exists(Path.Combine(cursor, "bin")) ? cursor : null;
-            }
-            catch { return null; }
         }
 
         public RedFileService RedFile
