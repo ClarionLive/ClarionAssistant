@@ -5039,16 +5039,15 @@
             }
         });
     }
-    // Diagnostic (ticket 38158e98): one line per completion query and per late-refresh decision, into
-    // monaco-spike.log via the host - the only log that survives a deployed build. Never throws.
+    // Diagnostic (ticket 38158e98): late-refresh decisions and provider exceptions, into monaco-spike.log via
+    // the host - the only log that survives a deployed build. Rare lines only: the per-keystroke query lines
+    // that found the g: bug were removed once it was fixed. Never throws.
     function complLog(line) { try { postToHost({ action: 'log', line: line }); } catch (e) { } }
-    // Log every entry into the completion provider, and any SYNCHRONOUS throw: Monaco swallows a provider's
-    // exception and shows "No suggestions" with nothing in our log - the g: case on 1327 (38158e98).
+    // Log any SYNCHRONOUS throw from the completion provider: Monaco swallows a provider's exception and shows
+    // "No suggestions" with nothing in our log, which is how the g: bug hid until it was instrumented.
     function wrapProviderForLog(provider) {
         var inner = provider.provideCompletionItems;
         provider.provideCompletionItems = function (model, position, context) {
-            complLog('[compl] enter line=' + position.lineNumber + ' col=' + position.column +
-                ' trig=' + (context && context.triggerKind) + (context && context.triggerCharacter ? ' ch=' + context.triggerCharacter : ''));
             try { return inner.apply(this, arguments); }
             catch (e) {
                 complLog('[compl] SYNC-ERROR ' + (e && (e.stack || e.message) || e));
@@ -5296,13 +5295,6 @@
                         if (kws.length) sugg = sugg.concat(kws);
                         // Empty now, LSP still on its way: re-open once it lands (ticket 38158e98).
                         if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp, prefix);
-                        complLog('[compl] run=' + JSON.stringify(colonRun) + ' prefix=' + JSON.stringify(prefix) +
-                            ' trig=' + (context && context.triggerKind) + ' local=' + localItems.length +
-                            ' lsp=' + (lsp.done ? (lspItems.length + (lsp.resp ? '' : ' (null)')) : 'pending') +
-                            ' skip=' + ((lspComplMisses[modelKey(model)] || 0) >= LSP_MISSES_TO_SKIP ? 1 : 0) +
-                            ' shown=' + sugg.length +
-                            (sugg.length ? ' first=' + JSON.stringify(String(sugg[0].label)) +
-                                ' range=' + sugg[0].range.startColumn + '-' + sugg[0].range.endColumn : ''));
                         return { suggestions: sugg, incomplete: true };
                     })
                     .catch(function (e) {
