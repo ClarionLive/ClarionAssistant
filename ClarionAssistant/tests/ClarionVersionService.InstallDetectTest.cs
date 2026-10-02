@@ -99,6 +99,7 @@ static class ClarionVersionServiceInstallDetectTest
                    info.ClarionExeVersion != null && info.ClarionExeVersion.Major == 11, info.ClarionExeVersion + "");
                 Ok("... so its exe is that tree's Clarion.exe",
                    string.Equals(info.ClarionExePath, clarionExe, StringComparison.OrdinalIgnoreCase), info.ClarionExePath);
+                Ok("... and is flagged as not hosted by an IDE (its log line claims no running IDE)", info.HostIsNotIde);
                 var cfg = info.ResolveByRoot(@"C:\Clarion\v11");
                 Ok("... and the root lookup gives Clarion110.red",
                    cfg != null && cfg.RedFileName == "Clarion110.red", cfg != null ? cfg.Name + " / " + cfg.RedFileName : "(null)");

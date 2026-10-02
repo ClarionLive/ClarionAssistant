@@ -135,6 +135,36 @@ static class ClarionVersionServiceExeMatchTest
         Expect("C12, .NET listed first: root lookup -> Clarion120.red", "Clarion120.red", Red(c12.ResolveByRoot(@"C:\Clarion\C12")));
         Expect("C12, .NET listed first: first listed -> Clarion120.red", "Clarion120.red", Red(c12.GetCurrentConfig()));
 
+        // Two Win32 entries on one root: a custom profile listed before the stock one, with its own .red. In the server
+        // DetectForInstall makes the exe the tree's bin\Clarion.exe, so its build picks the stock entry, as on a shared bin.
+        var custom = new ClarionVersionInfo { ClarionExePath = @"C:\Clarion\C12\bin\Clarion.exe",
+            ClarionExeVersion = new Version(12, 0, 0, 14373) };
+        custom.Versions.Add(new ClarionVersionConfig { Name = "Clarion 12 Custom", BinPath = @"C:\Clarion\C12\bin",
+            RootPath = @"C:\Clarion\C12", IsWindowsVersion = true, CWVersion = 12026, RedFileName = "Custom120.red" });
+        custom.Versions.Add(new ClarionVersionConfig { Name = "Clarion.NET 4.0.14373", BinPath = @"C:\Clarion\C12\bin",
+            RootPath = @"C:\Clarion\C12", IsWindowsVersion = false, CWVersion = 2000, RedFileName = "ClarionNet40.red" });
+        custom.Versions.Add(new ClarionVersionConfig { Name = "Clarion 12.0.14373", BinPath = @"C:\Clarion\C12\bin",
+            RootPath = @"C:\Clarion\C12", IsWindowsVersion = true, CWVersion = 12026, RedFileName = "Clarion120.red" });
+        Expect("root lookup, two Win32 entries: the one naming the tree's Clarion.exe build wins though listed second",
+               "Clarion120.red", Red(custom.ResolveByRoot(@"C:\Clarion\C12")));
+        custom.ClarionExeVersion = new Version(12, 0, 0, 99999);
+        Expect("root lookup, two Win32 entries, neither names the build: the first Win32 one",
+               "Custom120.red", Red(custom.ResolveByRoot(@"C:\Clarion\C12")));
+        custom.ClarionExeVersion = null;
+        Expect("root lookup, two Win32 entries, exe version unreadable: the first Win32 one",
+               "Custom120.red", Red(custom.ResolveByRoot(@"C:\Clarion\C12")));
+
+        // The RunningExe tier's log line names no IDE when there is none (the standalone server).
+        var inIde = ClarionVersionSelector.Select(new ClarionVersionInfo { ClarionExePath = V11,
+            CurrentVersionName = "", ClarionExeVersion = new Version(11, 0, 0, 13372), Versions = parsed.Versions });
+        Ok("Describe in the IDE: the running Clarion.exe", inIde.Tier == ClarionVersionTier.RunningExe &&
+           inIde.Describe().Contains("the running Clarion.exe (the IDE's"), inIde.Describe());
+        var inServer = ClarionVersionSelector.Select(new ClarionVersionInfo { ClarionExePath = V11,
+            CurrentVersionName = "", ClarionExeVersion = new Version(11, 0, 0, 13372), Versions = parsed.Versions, HostIsNotIde = true });
+        Ok("Describe in the server: the install tree's Clarion.exe, no running IDE claimed",
+           inServer.Tier == ClarionVersionTier.RunningExe && inServer.Describe().Contains("the install tree's Clarion.exe")
+           && !inServer.Describe().Contains("running Clarion.exe"), inServer.Describe());
+
         // Degrade, never to none: with only .NET entries there is nothing better, so the old answer stands.
         var netOnly = new ClarionVersionInfo { ClarionExePath = @"D:\Elsewhere\bin\Clarion.exe" };
         netOnly.Versions.Add(new ClarionVersionConfig { Name = "Clarion.NET 4.0.14373", BinPath = @"C:\Clarion\C12\bin",
