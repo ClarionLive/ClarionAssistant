@@ -5038,6 +5038,21 @@
     // Diagnostic (ticket 38158e98): one line per completion query and per late-refresh decision, into
     // monaco-spike.log via the host - the only log that survives a deployed build. Never throws.
     function complLog(line) { try { postToHost({ action: 'log', line: line }); } catch (e) { } }
+    // Log every entry into the completion provider, and any SYNCHRONOUS throw: Monaco swallows a provider's
+    // exception and shows "No suggestions" with nothing in our log - the g: case on 1327 (38158e98).
+    function wrapProviderForLog(provider) {
+        var inner = provider.provideCompletionItems;
+        provider.provideCompletionItems = function (model, position, context) {
+            complLog('[compl] enter line=' + position.lineNumber + ' col=' + position.column +
+                ' trig=' + (context && context.triggerKind) + (context && context.triggerCharacter ? ' ch=' + context.triggerCharacter : ''));
+            try { return inner.apply(this, arguments); }
+            catch (e) {
+                complLog('[compl] SYNC-ERROR ' + (e && (e.stack || e.message) || e));
+                return { suggestions: [], incomplete: true };
+            }
+        };
+        return provider;
+    }
     // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
     // is a miss for model `id`. No race (resolved at once) when `c` already answered, is still deferred to the
     // idle sync (typing: not a miss), or `id` is in skip mode.
@@ -5163,7 +5178,7 @@
             }
             return out;
         }
-        monaco.languages.registerCompletionItemProvider('clarion', {
+        monaco.languages.registerCompletionItemProvider('clarion', wrapProviderForLog({
             triggerCharacters: ['.', ':', '?'],
             provideCompletionItems: function (model, position, context) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
@@ -5291,7 +5306,7 @@
                         return { suggestions: [], incomplete: true };
                     });
             }
-        });
+        }));
         // Code Snippets appear IN the completion list (classic Clarion Ctrl+J parity): typing a trigger
         // prefix shows the snippet with a snippet icon + an expansion preview; Enter/Tab (or space on an
         // exact full-trigger match) expands it via OUR engine — Monaco's native snippet insert is undone

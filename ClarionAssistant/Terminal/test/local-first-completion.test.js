@@ -251,7 +251,9 @@ async function main() {
         ask(s, 2, 3);                  // column-1 typing
         ask(s, 3, 12);                 // inside a string
         ask(s, 4, 15);                 // inside a comment
-        check('5.17 col-1 typing, strings and comments post nothing', s.posted.length === 0, JSON.stringify(s.posted.map(m => m.action)));
+        // ('log' = the [compl] diagnostic line, 38158e98 - not a request.)
+        const sent = s.posted.filter(m => m.action !== 'log');
+        check('5.17 col-1 typing, strings and comments post nothing', sent.length === 0, JSON.stringify(sent.map(m => m.action)));
 
         const lc = e.requests('localCompletion')[0];
         check('5.18 localCompletion\'s timeoutMs is at most 500', lc && lc.timeoutMs <= 500, lc && String(lc.timeoutMs));
