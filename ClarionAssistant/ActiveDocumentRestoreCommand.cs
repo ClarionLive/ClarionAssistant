@@ -335,12 +335,19 @@ namespace ClarionAssistant
                 if (_selected)
                 {
                     if (now - _selectedTick < ReassertAfterMs) return;
+                    bool again = false;
                     if (!SamePath(ActivePath(), _target))
                     {
                         MonacoSpikeLog.Write("[active-doc] another tab was selected after us (" + Short(ActivePath()) + ") -> selecting again");
                         SelectTarget();
+                        again = true;
                     }
-                    Finish("verified", false);
+                    // b9d70104: say what is active now, not "verified" regardless - after the Start Page closes the
+                    // IDE can report no active window at all, which is not proof the saved tab is showing.
+                    string active = ActivePath();
+                    Finish(SamePath(active, _target) ? (again ? "verified after selecting again" : "verified")
+                        : active == null ? "selected again; the IDE reports no active window, so not verified"
+                        : "selected again, but another tab is still active", false);
                     return;
                 }
 
