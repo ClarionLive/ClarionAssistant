@@ -59,6 +59,13 @@ namespace ClarionAssistant.Services
         public Dictionary<string, string> KeyBindings = new Dictionary<string, string>(StringComparer.Ordinal);
 
         /// <summary>
+        /// GH #206: the keymap profile the overrides sit on ("clarion", "vscode", "vs", "npp"). The profiles' chords
+        /// live in the HTML (KEY_PROFILES) like the command defaults do; C# stores only the id. Global per developer,
+        /// persisted under "ModernEmbeditor.KeyProfile".
+        /// </summary>
+        public string KeyProfile = "clarion";
+
+        /// <summary>
         /// Smart Formatter gear-panel options (deac3d16). Pass-through bag: the host stays agnostic to
         /// formatter semantics — the HTML's formatterOptions() chokepoint re-clamps/coerces every value on
         /// the way into the engine — so C# only needs to ferry these through Save/Load AND the cross-tab
@@ -109,6 +116,7 @@ namespace ClarionAssistant.Services
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
                 s.SplitOrientation = NormalizeSplitOrientation(sv.Get(Prefix + "SplitOrientation"));
                 s.CursorBehindEOL = GetBool(sv, "CursorBehindEOL", s.CursorBehindEOL);
+                s.KeyProfile = NormalizeKeyProfile(sv.Get(Prefix + "KeyProfile"));
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
@@ -135,6 +143,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "CursorBehindEOL", CursorBehindEOL ? "true" : "false");
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
+            sv.Set(Prefix + "KeyProfile", NormalizeKeyProfile(KeyProfile));
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
             // Compact JSON, single line (the serializer never emits CR/LF, which SettingsService rejects).
             // Empty map persists as "{}" — the panel then seeds every formatter control from DEFAULTS.
@@ -165,6 +174,9 @@ namespace ClarionAssistant.Services
             if (d.TryGetValue("splitOrientation", out so) && so != null)
                 s.SplitOrientation = NormalizeSplitOrientation(so.ToString());
             s.CursorBehindEOL = ToBool(d, "cursorBehindEOL", s.CursorBehindEOL);
+            object kp;
+            if (d.TryGetValue("keyProfile", out kp) && kp != null)
+                s.KeyProfile = NormalizeKeyProfile(kp.ToString());
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
             {
@@ -202,6 +214,7 @@ namespace ClarionAssistant.Services
                 { "horizontalScrollbar", HorizontalScrollbar },
                 { "splitOrientation", SplitOrientation },
                 { "cursorBehindEOL", CursorBehindEOL },
+                { "keyProfile", NormalizeKeyProfile(KeyProfile) },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
@@ -380,6 +393,19 @@ namespace ClarionAssistant.Services
         private static string NormalizeScrollbar(string v)
         {
             return (v == "visible" || v == "hidden") ? v : "auto";
+        }
+
+        /// <summary>
+        /// A keymap profile id: lowercase letters, digits and '-', at most 32 chars. The HTML owns the list of real
+        /// profiles (an unknown id falls back to Clarion there); C# only keeps a garbage or crafted value out of
+        /// settings.txt. Anything else is "clarion".
+        /// </summary>
+        private static string NormalizeKeyProfile(string v)
+        {
+            if (string.IsNullOrEmpty(v) || v.Length > 32) return "clarion";
+            foreach (char ch in v)
+                if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-')) return "clarion";
+            return v;
         }
 
         private static string NormalizeSplitOrientation(string v)

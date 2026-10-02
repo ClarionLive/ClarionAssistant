@@ -1722,6 +1722,60 @@
     </li>
   </ul>
 
+  <h3 id="ca-keymap-profiles">Keyboard and keymap profiles</h3>
+
+  <p>
+    The gear panel's Keyboard section lists every key the CA Editor answers to. It opens on the
+    <strong>Clarion</strong> commands, so the Clarion keys are all you see by default. <strong>All</strong>
+    and <strong>Editor</strong> add the editor's own commands, the 130-odd that its command palette
+    (<kbd>F1</kbd>) offers, such as Select All Occurrences, Add Cursor Below and Fold All. <strong>Changed</strong>
+    shows the keys you've set, and <strong>Clashes</strong> shows keys shared between two commands. The search box
+    matches command names and keys.
+  </p>
+
+  <p>
+    The <strong>Keymap profile</strong> picker brings your keys from another editor instead of rebinding them
+    one at a time. <strong>Clarion (default)</strong> is the Clarion editor's layout. <strong>VS Code</strong>,
+    <strong>Visual Studio</strong> and <strong>Notepad++</strong> move the commands that have an equivalent in
+    that editor. For example, Visual Studio and Notepad++ put Duplicate Line on <kbd>Ctrl</kbd>+<kbd>D</kbd>.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Clarion commands win a shared key</strong> &mdash; if a Clarion command uses a key the editor
+      also uses, the Clarion command gets it, and both rows say so in the <strong>Clashes</strong> view. In the
+      Clarion profile, for example, Lowercase takes <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> from Select All
+      Occurrences.
+    </li>
+    <li>
+      <strong>VS Code means the editor's own keys</strong> &mdash; the editor's keys already are VS Code's, so the
+      VS Code profile moves Clarion commands out of their way. <kbd>Ctrl</kbd>+<kbd>D</kbd>,
+      <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>L</kbd> and <kbd>F2</kbd> behave as in VS Code, while Structure Designer
+      moves to <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd>. The only editor keys it keeps for Clarion commands are
+      ones where the Clarion command does the same job: Comment Line, Duplicate Line, Remove Line, and Format
+      Selection on <kbd>Ctrl</kbd>+<kbd>I</kbd>.
+    </li>
+    <li>
+      <strong>Clarion-only commands keep their keys</strong> &mdash; embed navigation, Invert Case and Mark Word
+      stay where they are in every profile. Where a profile needs a Clarion key, that command moves rather than
+      disappearing. In Notepad++, where <kbd>Ctrl</kbd>+<kbd>Q</kbd> comments a line, Save and Exit goes to
+      <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd>.
+    </li>
+    <li>
+      <strong>Your own keys sit on top</strong> &mdash; click any key cell, including an editor command's, and
+      press the new key. The <em>Default</em> column shows the profile's key, which is what the reset arrow and
+      <strong>Reset all keys</strong> return to. A key the CA Editor handles itself (Find, Save, the Clarion IDE's
+      keys) can't be taken. An editor command can't take a key another command holds, but a Clarion command can
+      take an editor key, and a message says which. If switching profile makes one of your keys clash, your key is
+      reset and a message says how many were.
+    </li>
+    <li>
+      <strong>Two-step keys</strong> &mdash; the editor's own two-step keys work, such as
+      <kbd>Ctrl</kbd>+<kbd>K</kbd> <kbd>Ctrl</kbd>+<kbd>C</kbd> to comment, which is also Visual Studio's.
+      Keys you set yourself are single keys.
+    </li>
+  </ul>
+
   <h3 id="ca-snippets">Code Snippets (Ctrl+Shift+J)</h3>
 
   <p>
