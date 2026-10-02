@@ -33,11 +33,16 @@ namespace ClarionAssistant
     ///             (ProjectService.ParserServiceCreatedProjectContents, a plain FileService.OpenFile loop posted
     ///             by the parser's loadSolutionProjects thread after SolutionLoaded). It raises nothing when it
     ///             finishes, but a message posted to the UI thread from inside that loop only runs after the loop
-    ///             returns. So the first ViewOpened of the restore posts the selection, which lands right after
-    ///             the last file has opened. A verify pass 2 s later re-selects once if something selected
+    ///             returns. So a ViewOpened of the restore posts the selection, which lands right after
+    ///             the last file has opened. The post waits until the saved file itself is open: a view that
+    ///             opens BEFORE the loop (the .app tab when the solution comes from Recent Applications, a
+    ///             start page) is not the loop. A verify pass 2 s later re-selects once if something selected
     ///             another tab; if the post is somehow delivered early, any later ViewOpened pushes that verify
     ///             back, and a quiet-window check (no view opened for 2.5 s) is the fallback if it never runs.
-    ///             Recording resumes when the restore ends.
+    ///             Recording resumes when the restore ends. Only the quiet window and the caps give up, and a
+    ///             give-up HOLDS recording until the developer's own next tab change, so a reopen loop that
+    ///             arrives late never records its last file over the saved choice (and if it opens the saved
+    ///             file within the cap, that file is still selected).
     ///
     /// Only the file is stored: each editor tab already restores its own caret and scroll position.
     /// Everything is best-effort and logged to monaco-spike.log under "[active-doc]"; nothing here may
@@ -79,6 +84,8 @@ namespace ClarionAssistant
         private static string _target;           // saved active file for _solutionKey, read BEFORE any recording
         private static int _restoreStartTick, _lastViewTick, _viewsSeen;
         private static bool _selected;           // SelectWindow issued for this restore
+        private static bool _posted;             // selection queued behind the reopen loop for this restore
+        private static bool _held;               // restore gave up: record only the developer's next tab change
         private static int _selectedTick;
         private static int _cancelChecks;        // consecutive "solution still open" checks after a freeze
         private static string _lastWritten;      // "solution\tfile" last written, to skip identical rewrites
@@ -173,7 +180,7 @@ namespace ClarionAssistant
                 string path = ActivePath();
                 bool dirty;
                 if (path != null && MonacoClarionEditor.TryGetLiveTabState(path, out dirty)) return;
-                RecordActive(path);
+                Record(path);
             }
             catch { }
         }
@@ -181,22 +188,28 @@ namespace ClarionAssistant
         /// <summary>Called by a CA Editor when its tab becomes visible (it is the front tab of its pane).</summary>
         internal static void NotifyTabShown(string path)
         {
-            try
-            {
-                if (_restoring || _frozen || string.IsNullOrEmpty(path)) return;
-                string key = Services.EditorService.GetOpenSolutionPath();
-                if (!string.IsNullOrEmpty(key)) WriteSaved(key, path);
-            }
+            try { Record(path); }
             catch { }
         }
 
         private static void OnViewOpened(object sender, EventArgs e)
         {
-            if (!_restoring) return;
             _lastViewTick = Environment.TickCount;
+            if (_held && !_frozen && _lastViewTick - _restoreStartTick <= HardCapMs && IsOpen(_target))
+            {
+                // The reopen loop arrived after the restore gave up, and it has opened the saved file: restore after all.
+                MonacoSpikeLog.Write("[active-doc] saved file opened after the restore gave up -> restoring");
+                _held = false;
+                _restoring = true;
+                _selected = _posted = false;
+                StartTimer();
+            }
+            if (!_restoring) return;
             _viewsSeen++;
             if (_selected) { _selectedTick = _lastViewTick; return; }   // still opening after we selected: verify later
-            if (_viewsSeen == 1) PostAfterReopenLoop();
+            // Post only once the saved file itself is open. A view that opens before the reopen loop (the .app tab
+            // from Recent Applications, a start page) would otherwise post before the loop has even started.
+            if (!_posted && IsOpen(_target)) { _posted = true; PostAfterReopenLoop(); }
         }
 
         /// <summary>Queue the selection behind the IDE's synchronous reopen loop: it runs as soon as the loop
@@ -209,7 +222,7 @@ namespace ClarionAssistant
                 if (form == null || !form.IsHandleCreated) return;   // the quiet-window fallback covers it
                 form.BeginInvoke((MethodInvoker)(() =>
                 {
-                    try { if (_restoring && !_selected) TrySelect("reopen loop finished"); }
+                    try { if (_restoring && !_selected) TrySelect("reopen loop finished", false); }
                     catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] post-reopen select failed: " + ex.Message); }
                 }));
             }
@@ -227,6 +240,7 @@ namespace ClarionAssistant
             }
             _frozen = true;
             _restoring = false;
+            _held = false;
             StopTimer();
             if (_cancelTimer == null && why == "preferences saving") StartCancelTimer();
         }
@@ -275,7 +289,7 @@ namespace ClarionAssistant
             _restoring = false;
             _target = ReadSaved(_solutionKey);
             _viewsSeen = 0;
-            _selected = false;
+            _selected = _posted = _held = false;
             _restoreStartTick = _lastViewTick = Environment.TickCount;
             MonacoSpikeLog.Write("[active-doc] BeginRestore solution=" + Short(_solutionKey) + " saved=" + Short(_target));
             if (string.IsNullOrEmpty(_solutionKey) || string.IsNullOrEmpty(_target)) return;   // nothing to restore: just record
@@ -297,11 +311,15 @@ namespace ClarionAssistant
             _timer = null;
         }
 
-        private static void Finish(string why)
+        /// <summary>Ends the restore. A give-up holds recording until the developer's own next tab change: views may
+        /// still be opening (the reopen loop can arrive after the quiet window), and they must not be recorded.</summary>
+        private static void Finish(string why, bool giveUp)
         {
             _restoring = false;
+            _held = giveUp;
             StopTimer();
-            MonacoSpikeLog.Write("[active-doc] restore finished: " + why + " (active now: " + Short(ActivePath()) + ")");
+            MonacoSpikeLog.Write("[active-doc] restore finished: " + why + " (active now: " + Short(ActivePath()) + ")"
+                + (giveUp ? " -> recording held until the next tab change" : ""));
         }
 
         private static void OnTick(object sender, EventArgs e)
@@ -311,7 +329,7 @@ namespace ClarionAssistant
                 if (!_restoring) { StopTimer(); return; }
                 int now = Environment.TickCount;
                 int sinceStart = now - _restoreStartTick;
-                if (sinceStart > HardCapMs) { Finish("hard cap"); return; }
+                if (sinceStart > HardCapMs) { Finish("hard cap", true); return; }
 
                 // Phase 2: we already selected the file — after a beat, verify and re-select once.
                 if (_selected)
@@ -322,25 +340,32 @@ namespace ClarionAssistant
                         MonacoSpikeLog.Write("[active-doc] another tab was selected after us (" + Short(ActivePath()) + ") -> selecting again");
                         SelectTarget();
                     }
-                    Finish("verified");
+                    Finish("verified", false);
                     return;
                 }
 
                 // Phase 1: wait for the restore burst to end.
                 if (_viewsSeen == 0)
                 {
-                    if (sinceStart > NoViewsGiveUpMs) Finish("no views were opened");
+                    if (sinceStart > NoViewsGiveUpMs) Finish("no views were opened", true);
                     return;
                 }
                 if (now - _lastViewTick < QuietMs) return;
-                TrySelect("no view opened for " + QuietMs + " ms");
+                TrySelect("no view opened for " + QuietMs + " ms", true);
             }
-            catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] OnTick failed: " + ex.Message); Finish("error"); }
+            catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] OnTick failed: " + ex.Message); Finish("error", true); }
         }
 
-        private static void TrySelect(string why)
+        /// <summary>Selects the saved file. Only the quiet-window check may give up (mayGiveUp) when it is not open:
+        /// the posted path can run before the reopen loop has opened it, and then just waits for the next post.</summary>
+        private static void TrySelect(string why, bool mayGiveUp)
         {
-            if (!IsOpen(_target)) { Finish("saved file is not open any more: " + Short(_target)); return; }
+            if (!IsOpen(_target))
+            {
+                if (mayGiveUp) Finish("saved file is not open: " + Short(_target), true);
+                else { _posted = false; MonacoSpikeLog.Write("[active-doc] " + why + " but " + Short(_target) + " is not open yet -> waiting"); }
+                return;
+            }
             _selected = true;          // set BEFORE selecting: SelectWindow can pump messages and re-enter
             _selectedTick = Environment.TickCount;
             if (SamePath(ActivePath(), _target)) { MonacoSpikeLog.Write("[active-doc] saved file already active"); return; }
@@ -366,11 +391,35 @@ namespace ClarionAssistant
 
         // ── active document path (reflection: view-content shape differs across IDE builds) ─────────
 
-        private static void RecordActive(string path)
+        /// <summary>Records the displayed tab, unless a close froze recording or a restore is running. While a
+        /// give-up holds recording, only a tab change that is not part of a reopen burst counts: it is judged after
+        /// the current synchronous work (a reopen loop shows each tab just before or after its ViewOpened), and
+        /// only when no view has opened within the quiet window by then.</summary>
+        private static void Record(string path)
         {
+            if (_restoring || _frozen || string.IsNullOrEmpty(path)) return;
             string key = Services.EditorService.GetOpenSolutionPath();
-            if (string.IsNullOrEmpty(key) || string.IsNullOrEmpty(path)) return;
-            WriteSaved(key, path);
+            if (string.IsNullOrEmpty(key)) return;
+            if (!_held) { WriteSaved(key, path); return; }
+            try
+            {
+                var form = WorkbenchSingleton.Workbench as Form;
+                if (form == null || !form.IsHandleCreated) return;   // stay held: the next tab change tries again
+                form.BeginInvoke((MethodInvoker)(() =>
+                {
+                    try
+                    {
+                        if (!_held || _restoring || _frozen) return;
+                        if (Environment.TickCount - _lastViewTick < QuietMs) return;
+                        if (!SamePath(Services.EditorService.GetOpenSolutionPath(), key)) return;
+                        _held = false;
+                        MonacoSpikeLog.Write("[active-doc] tab changed after the restore gave up -> recording resumed");
+                        WriteSaved(key, path);
+                    }
+                    catch { }
+                }));
+            }
+            catch { }
         }
 
         private static string ActivePath()
@@ -451,6 +500,7 @@ namespace ClarionAssistant
         {
             string entry = solution + "\t" + active;
             if (string.Equals(entry, _lastWritten, StringComparison.OrdinalIgnoreCase)) return;   // tab switch back and forth: no rewrite
+            string tmp = null;
             try
             {
                 MonacoSpikeLog.EnsureDir();
@@ -471,7 +521,8 @@ namespace ClarionAssistant
                 if (!replaced) lines.Add(entry);
 
                 // Write beside the store, then swap it in, so a failed write never loses the other solutions' lines.
-                string tmp = StorePath + ".tmp";
+                // The temp name is per process (two IDE instances share the store); a failed swap still removes it.
+                tmp = StorePath + "." + System.Diagnostics.Process.GetCurrentProcess().Id + ".tmp";
                 File.WriteAllLines(tmp, lines.ToArray());
                 if (File.Exists(StorePath)) File.Replace(tmp, StorePath, null);
                 else File.Move(tmp, StorePath);
@@ -479,6 +530,7 @@ namespace ClarionAssistant
                 MonacoSpikeLog.Write("[active-doc] recorded active: " + Short(active));
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[active-doc] write failed: " + ex.Message); }
+            finally { try { if (tmp != null && File.Exists(tmp)) File.Delete(tmp); } catch { } }
         }
     }
 }
