@@ -258,12 +258,7 @@ namespace ClarionAssistant.McpServer
                                 // sits at <ClarionRoot>\accessory\addins\ClarionAssistant\.
                                 string ownRoot = DeriveClarionRootFromLocation();
                                 if (ownRoot != null && info.Versions != null)
-                                {
-                                    _versionConfig = info.Versions.Find(v =>
-                                        v != null && !string.IsNullOrEmpty(v.RootPath) &&
-                                        string.Equals(v.RootPath.TrimEnd('\\'), ownRoot.TrimEnd('\\'),
-                                                      StringComparison.OrdinalIgnoreCase));
-                                }
+                                    _versionConfig = info.ResolveByRoot(ownRoot);
                                 if (_versionConfig != null)
                                 {
                                     _versionNote = fileNote + "Clarion version " + _versionConfig.Name

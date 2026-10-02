@@ -100,21 +100,30 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The IDE's selection, and which tier decided it: the named entry (<see cref="ClarionVersionTier.IdeSelection"/>),
         /// the running Clarion.exe when the name is "Current"/empty/unknown (<see cref="ClarionVersionTier.RunningExe"/>),
-        /// else the first listed entry (<see cref="ClarionVersionTier.FirstListed"/>).
+        /// else the first listed Win32 entry (<see cref="ClarionVersionTier.FirstListed"/>).
         /// </summary>
         public ClarionVersionConfig ResolveIdeChoice(out ClarionVersionTier tier)
         {
             tier = ClarionVersionTier.None;
             if (!ClarionVersionSelector.IsCurrentChoice(CurrentVersionName))
             {
+                // GH #247: a named Clarion.NET entry is not taken while a Win32 one exists — CA serves the Win32
+                // IDE, and the .NET entry's .red (ClarionNet40.red) resolves none of a Win32 project's files.
                 var named = Versions.Find(v => v.Name == CurrentVersionName);
-                if (named != null) { tier = ClarionVersionTier.IdeSelection; return named; }
+                if (named != null && (named.IsWindowsVersion != false || !HasWin32Entry()))
+                { tier = ClarionVersionTier.IdeSelection; return named; }
             }
 
             var byExe = ResolveByExePath();
             if (byExe != null) { tier = ClarionVersionTier.RunningExe; return byExe; }
 
-            if (Versions.Count > 0) { tier = ClarionVersionTier.FirstListed; return Versions[0]; }
+            // GH #247: the first Win32 entry, not the first entry. Every install registers its .NET compiler beside
+            // the IDE, and Clarion may write it first.
+            if (Versions.Count > 0)
+            {
+                tier = ClarionVersionTier.FirstListed;
+                return Versions.Find(v => v.IsWindowsVersion != false) ?? Versions[0];
+            }
             return null;
         }
 
@@ -172,6 +181,29 @@ namespace ClarionAssistant.Services
             }
 
             return candidates[0];
+        }
+
+        /// <summary>
+        /// The version entry installed at <paramref name="root"/> (its &lt;root&gt; macro, or the parent of its
+        /// bin), or null. The standalone MCP server's "the Clarion tree this server is installed under" tier.
+        ///
+        /// GH #247: a root holds the Win32 entry AND the Clarion.NET compiler entry Clarion registers beside it,
+        /// and first-match returned whichever the XML listed first. Proven .NET entries are dropped (only when
+        /// that leaves one). Nothing is narrowed by the running exe: here it is the server, not Clarion.exe.
+        /// </summary>
+        public ClarionVersionConfig ResolveByRoot(string root)
+        {
+            if (string.IsNullOrEmpty(root)) return null;
+            string want = root.TrimEnd('\\');
+            var candidates = Versions.FindAll(v => v != null && !string.IsNullOrEmpty(v.RootPath) &&
+                string.Equals(v.RootPath.TrimEnd('\\'), want, StringComparison.OrdinalIgnoreCase));
+            if (candidates.Count == 0) return null;
+            return Narrow(candidates, v => v.IsWindowsVersion != false)[0];
+        }
+
+        private bool HasWin32Entry()
+        {
+            return Versions.Exists(v => v != null && v.IsWindowsVersion != false);
         }
 
         private static List<ClarionVersionConfig> Narrow(List<ClarionVersionConfig> list, Predicate<ClarionVersionConfig> keep)
@@ -492,7 +524,7 @@ namespace ClarionAssistant.Services
         IdeSelection,
         /// <summary>The IDE is on "Current" (or names nothing configured): the running Clarion.exe's own entry.</summary>
         RunningExe,
-        /// <summary>Nothing matched: the first entry in ClarionProperties.xml.</summary>
+        /// <summary>Nothing matched: the first Win32 entry in ClarionProperties.xml (the first entry if none is Win32).</summary>
         FirstListed
     }
 
@@ -540,7 +572,7 @@ namespace ClarionAssistant.Services
                     src = "the running Clarion.exe (the IDE's Build > Set Clarion Version is '" + IdeChoice + "')";
                     break;
                 case ClarionVersionTier.FirstListed:
-                    src = "the first entry in ClarionProperties.xml (nothing else matched)";
+                    src = "the first Win32 entry in ClarionProperties.xml (nothing else matched)";
                     break;
                 default:
                     src = "no Clarion version detected";
