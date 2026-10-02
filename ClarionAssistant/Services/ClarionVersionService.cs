@@ -217,19 +217,26 @@ namespace ClarionAssistant.Services
     {
         public static ClarionVersionInfo Detect()
         {
-            try
-            {
-                string exe = Process.GetCurrentProcess().MainModule.FileName;
-                // GH #247: a host that is not Clarion.exe (the standalone MCP server) detects for the Clarion tree
-                // it is installed under — every caller there, EffectiveClarionVersion included, not just one.
-                if (!string.Equals(Path.GetFileName(exe), "Clarion.exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    string root = InstalledClarionRoot();
-                    if (root != null) return DetectForInstall(root, exe, DefaultSettingsRoot());
-                }
-                return Detect(exe, DefaultSettingsRoot());
-            }
+            try { return DetectForHost(Process.GetCurrentProcess().MainModule.FileName, InstalledClarionRoot(), DefaultSettingsRoot()); }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Detect for the running host. Inside the IDE that is Clarion.exe, whose version names its settings folder.
+        /// GH #247: a host that is not Clarion.exe (the standalone MCP server) detects for the Clarion tree it is
+        /// installed under (<paramref name="installRoot"/>) — every caller there, EffectiveClarionVersion included.
+        /// internal (not private) so tests\ClarionVersionService.InstallDetectTest.cs can pass its own paths.
+        ///
+        /// A host that is not Clarion.exe and is NOT inside a Clarion tree (a development build, a copy put elsewhere)
+        /// has no Clarion to go by: its own version (5.9) names no settings folder, and the only thing left was the
+        /// "newest folder" guess that read another Clarion's ClarionProperties.xml in #247. It now detects nothing;
+        /// a caller with a NAMED version (--clarion-version, clarion-assistant.json) uses FindVersionByName instead.
+        /// </summary>
+        internal static ClarionVersionInfo DetectForHost(string hostExePath, string installRoot, string settingsRoot)
+        {
+            if (string.Equals(Path.GetFileName(hostExePath), "Clarion.exe", StringComparison.OrdinalIgnoreCase))
+                return Detect(hostExePath, settingsRoot);
+            return installRoot != null ? DetectForInstall(installRoot, hostExePath, settingsRoot) : null;
         }
 
         /// <summary>
@@ -281,8 +288,73 @@ namespace ClarionAssistant.Services
             // GH #247: detect as that tree's Clarion.exe. From the host's own exe (5.9.0.x) there is no 5.9 settings
             // folder, so the newest one was read: another Clarion's ClarionProperties.xml. Clarion.exe's version names
             // the folder its IDE uses, and its path lets the bin-folder match work here too.
+            // No Clarion.exe there: nothing names the folder, so detect nothing rather than guess (see DetectForHost).
             string clarionExe = string.IsNullOrEmpty(clarionRoot) ? null : Path.Combine(clarionRoot, "bin", "Clarion.exe");
-            return Detect(clarionExe != null && File.Exists(clarionExe) ? clarionExe : hostExePath, settingsRoot);
+            return clarionExe != null && File.Exists(clarionExe) ? Detect(clarionExe, settingsRoot) : null;
+        }
+
+        /// <summary>
+        /// A version NAMED outright (--clarion-version, clarion-assistant.json), looked up across every Clarion settings
+        /// folder: the only safe answer for a host with no Clarion of its own to pick the folder. Exact name first,
+        /// then case-insensitive. The same name can sit in several folders — one Clarion's file can carry a copy of
+        /// another's entry — so the copy in the folder that entry's OWN Clarion.exe writes is preferred; failing that
+        /// (its Clarion.exe is not on this machine), the newest folder listing it. Null when no folder has it.
+        /// </summary>
+        public static ClarionVersionConfig FindVersionByName(string name, out string xmlPath)
+        {
+            return FindVersionByName(name, DefaultSettingsRoot(), out xmlPath);
+        }
+
+        internal static ClarionVersionConfig FindVersionByName(string name, string settingsRoot, out string xmlPath)
+        {
+            xmlPath = null;
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(settingsRoot) || !Directory.Exists(settingsRoot)) return null;
+            var folders = new List<KeyValuePair<Version, string>>();
+            try
+            {
+                foreach (string dir in Directory.GetDirectories(settingsRoot))
+                {
+                    Version v;
+                    if (Version.TryParse(Path.GetFileName(dir), out v) && File.Exists(Path.Combine(dir, "ClarionProperties.xml")))
+                        folders.Add(new KeyValuePair<Version, string>(v, dir));
+                }
+            }
+            catch { return null; }
+            folders.Sort((a, b) => b.Key.CompareTo(a.Key));   // newest first
+
+            ClarionVersionConfig fallback = null;
+            string fallbackPath = null;
+            foreach (var f in folders)
+            {
+                string xml = Path.Combine(f.Value, "ClarionProperties.xml");
+                var info = ParsePropertiesXml(xml);
+                if (info == null) continue;
+                var cfg = info.Versions.Find(v => v.Name == name)
+                          ?? info.Versions.Find(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (cfg == null) continue;
+                if (string.Equals(SettingsFolderOf(cfg), Path.GetFileName(f.Value), StringComparison.OrdinalIgnoreCase))
+                {
+                    xmlPath = xml;
+                    return cfg;
+                }
+                if (fallback == null) { fallback = cfg; fallbackPath = xml; }
+            }
+            xmlPath = fallbackPath;
+            return fallback;
+        }
+
+        /// <summary>The settings folder name ("11.0") the entry's own Clarion.exe writes to, or null.</summary>
+        private static string SettingsFolderOf(ClarionVersionConfig cfg)
+        {
+            try
+            {
+                if (cfg == null || string.IsNullOrEmpty(cfg.BinPath)) return null;
+                string exe = Path.Combine(cfg.BinPath, "Clarion.exe");
+                if (!File.Exists(exe)) return null;
+                var fv = FileVersionInfo.GetVersionInfo(exe);
+                return fv.FileMajorPart > 0 ? fv.FileMajorPart + "." + fv.FileMinorPart : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>%APPDATA%\SoftVelocity\Clarion: the parent of each Clarion version's settings folder.</summary>

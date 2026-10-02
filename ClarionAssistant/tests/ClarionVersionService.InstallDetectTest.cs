@@ -40,6 +40,21 @@ static class ClarionVersionServiceInstallDetectTest
         if (r.Errors.HasErrors) throw new Exception("stub compile failed: " + r.Errors[0].ErrorText);
     }
 
+    // A minimal ClarionProperties.xml with the elements ParsePropertiesXml reads.
+    static void WriteXml(string path, params string[] entries)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllText(path, "<ClarionProperties><Properties name=\"Clarion.Versions\">" + string.Concat(entries) +
+            "</Properties><Clarion.Version value=\"\" /></ClarionProperties>");
+    }
+
+    static string Entry(string name, string bin, string red)
+    {
+        return "<Properties name=\"" + name + "\"><path value=\"" + bin + "\" /><IsWindowsVersion value=\"True\" />" +
+               "<Properties name=\"RedirectionFile\"><Name value=\"" + red + "\" /><Properties name=\"Macros\">" +
+               "<root value=\"" + Path.GetDirectoryName(bin) + "\" /></Properties></Properties></Properties>";
+    }
+
     static int Main(string[] args)
     {
         string current = args.Length > 0 ? args[0] : null, older = args.Length > 1 ? args[1] : null;
@@ -89,16 +104,53 @@ static class ClarionVersionServiceInstallDetectTest
                    cfg != null && cfg.RedFileName == "Clarion110.red", cfg != null ? cfg.Name + " / " + cfg.RedFileName : "(null)");
             }
 
-            // No Clarion.exe under the root (a copy outside a real tree): nothing better to go on, behaviour as before.
+            // ---- Routing by host (what Detect() does with the running process) ----
+            var viaHost = ClarionVersionService.DetectForHost(serverExe, root, settings);
+            Ok("DetectForHost: a server inside a Clarion tree detects for that tree",
+               viaHost != null && string.Equals(viaHost.PropertiesXmlPath, xml11, StringComparison.OrdinalIgnoreCase),
+               viaHost != null ? viaHost.PropertiesXmlPath : "(null)");
+            var viaIde = ClarionVersionService.DetectForHost(clarionExe, null, settings);
+            Ok("DetectForHost: Clarion.exe itself detects from its own version",
+               viaIde != null && string.Equals(viaIde.PropertiesXmlPath, xml11, StringComparison.OrdinalIgnoreCase),
+               viaIde != null ? viaIde.PropertiesXmlPath : "(null)");
+
+            // ---- A host that cannot say which Clarion it belongs to: never guess ----
+            // The 5.9 -> "newest folder" fallback is the guess that read another Clarion's file in #247. A server with
+            // no Clarion.exe to go by (a development build, a copy outside a Clarion tree) now detects NOTHING, so the
+            // caller says "no Clarion version" instead of quietly serving whichever Clarion was installed last.
             string bare = Path.Combine(tmp, "bare");
             string bareServer = Path.Combine(bare, "accessory", "addins", "ClarionAssistant", "clarion-mcp-server.exe");
             StubExe(bareServer, "5.9.0.1241");
-            var fallback = ClarionVersionService.DetectForInstall(bare, bareServer, settings);
             Ok("a tree with no bin folder is not a Clarion root",
                ClarionVersionService.InstalledClarionRoot(Path.GetDirectoryName(bareServer)) == null);
-            Ok("no Clarion.exe under the root: falls back to the host exe (newest folder, as before)",
-               fallback != null && string.Equals(fallback.PropertiesXmlPath, xml12, StringComparison.OrdinalIgnoreCase),
-               fallback != null ? fallback.PropertiesXmlPath : "(null)");
+            var outside = ClarionVersionService.DetectForHost(bareServer, null, settings);
+            Ok("a server outside any Clarion tree detects nothing, instead of reading the newest folder",
+               outside == null, outside != null ? outside.PropertiesXmlPath : "(null)");
+            var noExe = ClarionVersionService.DetectForInstall(bare, bareServer, settings);
+            Ok("a root with no Clarion.exe detects nothing either",
+               noExe == null, noExe != null ? noExe.PropertiesXmlPath : "(null)");
+
+            // ---- A version NAMED outright (--clarion-version / clarion-assistant.json) is found in any folder ----
+            // With no host Clarion to pick the settings folder, a name is the only safe answer, so it is looked up
+            // across every folder. The same name can sit in several: Kevin's 12.0 file carries a copy of his Clarion 11
+            // entry. The copy in the folder its OWN Clarion.exe writes (11.0 for an 11.0 exe) is the live one.
+            string s2 = Path.Combine(tmp, "settings2");
+            string s2x11 = Path.Combine(s2, "11.0", "ClarionProperties.xml");
+            string s2x12 = Path.Combine(s2, "12.0", "ClarionProperties.xml");
+            string bin11 = Path.Combine(root, "bin");
+            WriteXml(s2x11, Entry("Clarion 11.0.13372", bin11, "Clarion110.red"));
+            WriteXml(s2x12, Entry("Clarion 11.0.13372", bin11, "STALE.red"), Entry("Clarion 12.0.14373", @"C:\NoSuch\C12\bin", "Clarion120.red"));
+            string at;
+            var named = ClarionVersionService.FindVersionByName("Clarion 11.0.13372", s2, out at);
+            Ok("a named version is found", named != null);
+            Ok("... from the folder its own Clarion.exe writes, not a stale copy in a newer folder",
+               named != null && named.RedFileName == "Clarion110.red" && string.Equals(at, s2x11, StringComparison.OrdinalIgnoreCase),
+               named != null ? named.RedFileName + " @ " + at : "(null)");
+            Ok("... case-insensitively", ClarionVersionService.FindVersionByName("clarion 11.0.13372", s2, out at) != null);
+            var c12 = ClarionVersionService.FindVersionByName("Clarion 12.0.14373", s2, out at);
+            Ok("an entry whose Clarion.exe is not on this machine is still found, in the newest folder listing it",
+               c12 != null && c12.RedFileName == "Clarion120.red" && string.Equals(at, s2x12, StringComparison.OrdinalIgnoreCase));
+            Ok("an unknown name finds nothing", ClarionVersionService.FindVersionByName("Clarion 99", s2, out at) == null && at == null);
         }
         catch (Exception ex)
         {

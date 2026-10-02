@@ -42,9 +42,22 @@ namespace ClarionAssistant.Services
             return ClarionVersionSelector.Select(info);
         }
 
+        /// <summary>
+        /// A host that decides the version itself (the standalone MCP server: --clarion-version, clarion-assistant.json,
+        /// the Clarion tree it is installed under) sets this, so CurrentConfig() — the ClarionGraph library root and
+        /// key among others — follows that decision instead of re-detecting. Same pattern as
+        /// LspService.VersionConfigProvider. The addin leaves it null: there the IDE's choice is authoritative.
+        /// </summary>
+        public static Func<ClarionVersionConfig> HostConfigProvider;
+
         /// <summary>The effective version's config, or null.</summary>
         public static ClarionVersionConfig CurrentConfig()
         {
+            var host = HostConfigProvider;
+            if (host != null)
+            {
+                try { return host(); } catch { return null; }
+            }
             return Resolve().Config;
         }
     }

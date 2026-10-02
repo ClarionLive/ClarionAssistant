@@ -203,7 +203,10 @@ if (Test-Path $fixture) {
         # The regression guard: these fields vanish if GetHostOpenSolutionPath() goes back to null.
         Assert-That ($null -ne $info.databasePath -and $info.databasePath -ne '(none)') `
             "get_solution_info returned no databasePath - the stale-selection branch is back"
-        Assert-That ($null -ne $info.versionName) "get_solution_info returned no versionName"
+        # GH #247: a server outside a Clarion tree (this test runs the repo build) no longer GUESSES a Clarion
+        # from the newest settings folder; with nothing named it reports none, and versionNote says why.
+        Assert-That ($null -ne $info.versionName -or "$($info.versionNote)" -match 'not installed in a Clarion folder') `
+            "get_solution_info returned no versionName and no versionNote saying why"
     }
 
     # --- index, then query what was indexed ---
@@ -230,6 +233,39 @@ if (Test-Path $fixture) {
 else {
     Write-Host "  ..  solution fixture absent ($fixture) - resolution assertions skipped" -ForegroundColor DarkGray
 }
+
+# --- GH #247: no guessed Clarion, and the reason is in get_solution_info ---
+# The repo build is not inside <Clarion>\accessory\addins\ClarionAssistant, so it has no Clarion of its own. It used
+# to fall back to the NEWEST %APPDATA%\SoftVelocity\Clarion folder — another Clarion's settings, which is how #247's
+# server handed a Clarion 11 project ClarionNet40.red. Now it reports no version unless one is named, and says why.
+$blockStart3 = $failures.Count
+$vDir = Join-Path ([System.IO.Path]::GetTempPath()) 'clarion-mcp-version-test'
+New-Item -ItemType Directory -Force $vDir | Out-Null
+$vSln = Join-Path $vDir 'Demo.sln'
+Set-Content -Path $vSln -Value 'Microsoft Visual Studio Solution File, Format Version 12.00'
+function Get-SolutionInfo($extraArgs) {
+    $r = Invoke-Server @(
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_solution_info","arguments":{}}}'
+    ) (@('--stdio', '--solution', "`"$vSln`"") + $extraArgs)
+    $f = @($r.Stdout -split "`n" | Where-Object { $_.Trim().Length -gt 0 })
+    if ($f.Count -lt 1) { return $null }
+    return ($f[0] | ConvertFrom-Json).result.content[0].text | ConvertFrom-Json
+}
+$none = Get-SolutionInfo @()
+Assert-That ($null -ne $none) "get_solution_info returned nothing"
+if ($null -ne $none) {
+    Assert-That ($null -eq $none.versionName) "a server outside a Clarion tree reported '$($none.versionName)' with nothing named - a guess"
+    Assert-That ("$($none.versionNote)" -match 'not installed in a Clarion folder' -and "$($none.versionNote)" -match 'will not guess') `
+        "versionNote does not say why there is no version: '$($none.versionNote)'"
+}
+$bogus = Get-SolutionInfo @('--clarion-version', '"No Such Clarion 0.0"')
+if ($null -ne $bogus) {
+    Assert-That ($null -eq $bogus.versionName) "an unknown --clarion-version resolved to '$($bogus.versionName)'"
+    Assert-That ("$($bogus.versionNote)" -match 'matches nothing installed') `
+        "versionNote does not say the named version was not found: '$($bogus.versionNote)'"
+}
+Remove-Item $vDir -Recurse -Force -ErrorAction SilentlyContinue
+Report-Block $blockStart3 "no guessed Clarion outside a Clarion tree, and get_solution_info says why"
 
 # --- an absent solution must not read as success, fixture or no fixture ---
 $blockStart2 = $failures.Count
