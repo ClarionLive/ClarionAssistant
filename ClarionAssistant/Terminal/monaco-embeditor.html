@@ -2699,12 +2699,16 @@
     // the list is already open while the identifier is typed (the instant local lane keeps it open) Monaco
     // continues that session as the same word and re-filters it - nothing matches "glo:" - instead of
     // asking the provider again. No request was even sent (ticket 38158e98). Next tick: after Monaco has
-    // closed the stale list. The provider keeps its own column-1 and string/comment guards.
+    // closed the stale list. The provider's column-1 guard (col1TypingSuppressed) cannot see a run ending
+    // in ':', so a label typed at column 1 (LOC:Name in a data section - never completes, 8933fa05) is
+    // excluded here.
     function isColonQualifierTyped(line, caretCol0) {
         if (line.charAt(caretCol0 - 1) !== ':') return false;
         if (!/[A-Za-z0-9_]/.test(line.charAt(caretCol0 - 2))) return false;           // "x:" - not ": " or "::"
         var before = line.substring(0, caretCol0 - 1);
-        if (!/[A-Za-z_][A-Za-z0-9_:]*$/.test(before)) return false;                    // an identifier run, not "12:"
+        var run = /[A-Za-z_][A-Za-z0-9_:]*$/.exec(before);
+        if (!run) return false;                                                        // an identifier run, not "12:"
+        if (run.index === 0) return false;                                             // a label at column 1
         if (typeof isInClarionString === 'function' && isInClarionString(line, caretCol0 - 1)) return false;
         if (typeof isInClarionComment === 'function' && isInClarionComment(line, caretCol0 - 1)) return false;
         return true;

@@ -54,6 +54,10 @@ ok('inside a string -> no trigger', !typed("  S = 'glo:"));
 ok('inside a comment -> no trigger', !typed('  ! see glo:'));
 ok('after a closed string -> trigger', typed("  S = 'x' & glo:"));
 ok('previous char not ":" -> no trigger', !api.isColonQualifierTyped('  glo:x', 7));
+// Code review (run 1): the provider's column-1 guard can't see a run ending in ':'.
+ok('a label typed at column 1 (LOC: in a data section) -> no trigger', !typed('LOC:'));
+ok('  ... nor a nested label at column 1', !typed('TGLO:GLO:'));
+ok('  ... but one space in -> trigger', typed(' LOC:'));
 
 console.log('installColonSuggest');
 function fakeEditor(line, column) {
