@@ -10,7 +10,8 @@
 //   * level 0 ("All") collapses nothing -- the historical behaviour
 //   * the level is applied ONCE per open: a later refresh keeps the user's own twisty toggles, and a
 //     filtered render (force-expanded) does not consume the pending level
-//   * every open starts from a clean slate (nothing is remembered between opens)
+//   * with a level chosen, every open starts from a clean slate (nothing is remembered between opens);
+//     at level 0 ("All") the collapse state survives close/reopen, as it always has
 //   * "sort that level" sorts ONLY the siblings at depth n-1, within each parent; other levels keep
 //     source order
 //   * the settings round-trip: the panel controls exist, are listened to, read back into the payload
@@ -171,6 +172,20 @@ section('applied once per open');
     // reopening starts clean
     o.api.openOutline();
     check('reopen resets to the configured level', o.get().pending === true && Object.keys(o.get().collapsed).length === 0);
+}
+{
+    // Level 0 ("All", the default) must keep the historical behaviour: a twisty the user collapsed is
+    // still collapsed after closing and reopening the pane (only "Expand all" clears it).
+    const o = loadOutline();
+    o.set('level', 0);
+    o.api.openOutline();
+    o.set('symbols', tree());
+    o.api.renderOutlineCurrent();
+    o.get().collapsed['ZClass'] = true;   // any key: the point is that reopen does not wipe the map
+    o.api.openOutline();
+    check('level 0 (All): reopen keeps the user\'s collapse state', o.get().collapsed['ZClass'] === true && o.get().pending === false);
+    o.api.renderOutlineCurrent();
+    check('level 0 (All): the kept collapse survives the post-reopen render', o.get().collapsed['ZClass'] === true);
 }
 
 // ---------- settings round trip ----------

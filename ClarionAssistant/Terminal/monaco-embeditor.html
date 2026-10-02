@@ -5682,8 +5682,14 @@
         // formatterOptions() (Ctrl+I can't fire pre-init anyway, but the next one will then honor it). (deac3d16 adversary LOW)
         lastSettings = s;
         if (s.splitOrientation === 'v' || s.splitOrientation === 'h') splitOrientation = s.splitOrientation;
+        var prevOutlineLevel = outlineLevelPref, prevOutlineSortLevel = outlineSortLevelPref;
         if (typeof s.outlineLevel === 'number') outlineLevelPref = Math.max(0, Math.min(4, s.outlineLevel | 0));
         if (typeof s.outlineSortLevel === 'boolean') outlineSortLevelPref = s.outlineSortLevel;
+        // An open pane picks up a changed sort (or the depth it sorts at) now, not on its next refresh.
+        if (outlineSortLevelPref !== prevOutlineSortLevel || (outlineSortLevelPref && outlineLevelPref !== prevOutlineLevel)) {
+            var olp = document.getElementById('outlinePanel');
+            if (olp && !olp.classList.contains('hidden')) renderOutlineCurrent();
+        }
         // Capture + resolve follow-mode BEFORE building opts — the font and the swept options below all
         // need it, not just the indentation pair at the end.
         captureIdeOptions(s);
@@ -7479,8 +7485,9 @@
         var op = document.getElementById('outlinePanel');
         if (!op) return;
         op.classList.remove('hidden');
-        // Each open starts from the configured depth (nothing is remembered between opens).
-        outlineCollapsed = {};
+        // With a level chosen, each open starts from that depth (nothing is remembered between opens).
+        // At "All" the collapse state survives close/reopen as before; only "Expand all" clears it.
+        if (outlineLevelPref > 0) outlineCollapsed = {};
         outlinePendingInit = outlineLevelPref > 0;
         positionOutline();
         refreshOutline();
