@@ -1407,6 +1407,7 @@
                 addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
                 addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
+                installColonSuggest(editor);    // "glo:" / "PROP:" opens completion (ticket 38158e98)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
@@ -2693,6 +2694,33 @@
             if (' \t(),'.indexOf(text) >= 0 && liveKeywordCaseOn) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
         });
     }
+    // Typing ':' straight after an identifier (glo:, PROP:, EVENT:, Cus:) opens completion, as Ctrl+Space does.
+    // ':' is a triggerCharacter on the provider, but the Clarion wordPattern keeps ':' inside a word, so once
+    // the list is already open while the identifier is typed (the instant local lane keeps it open) Monaco
+    // continues that session as the same word and re-filters it - nothing matches "glo:" - instead of
+    // asking the provider again. No request was even sent (ticket 38158e98). Next tick: after Monaco has
+    // closed the stale list. The provider keeps its own column-1 and string/comment guards.
+    function isColonQualifierTyped(line, caretCol0) {
+        if (line.charAt(caretCol0 - 1) !== ':') return false;
+        if (!/[A-Za-z0-9_]/.test(line.charAt(caretCol0 - 2))) return false;           // "x:" - not ": " or "::"
+        var before = line.substring(0, caretCol0 - 1);
+        if (!/[A-Za-z_][A-Za-z0-9_:]*$/.test(before)) return false;                    // an identifier run, not "12:"
+        if (typeof isInClarionString === 'function' && isInClarionString(line, caretCol0 - 1)) return false;
+        if (typeof isInClarionComment === 'function' && isInClarionComment(line, caretCol0 - 1)) return false;
+        return true;
+    }
+    function installColonSuggest(ed) {
+        if (!ed || typeof ed.onDidType !== 'function') return;
+        ed.onDidType(function (text) {
+            if (text !== ':') return;
+            var model = ed.getModel(), pos = ed.getPosition();
+            if (!model || !pos) return;
+            if (!isColonQualifierTyped(model.getLineContent(pos.lineNumber), pos.column - 1)) return;
+            setTimeout(function () {
+                try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', {}); } catch (e) { }
+            }, 0);
+        });
+    }
     // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
     // Leaves comparisons/compound operators (== <= >= != += -= …) alone. Pairs with '=' as a completion
     // commit character: "tes=" accepts "TestVar" then becomes "TestVar = ".
@@ -3573,6 +3601,7 @@
         addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
         addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
+        installColonSuggest(editor2);   // and "glo:" completion (ticket 38158e98)
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
