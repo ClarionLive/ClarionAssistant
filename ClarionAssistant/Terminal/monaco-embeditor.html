@@ -801,11 +801,12 @@
         <div class="kb-actions"><button id="fmtResetDefaults">Reset formatter defaults</button></div>
 
         <h4>Keyboard</h4>
+        <label>Keymap profile <select id="kbProfile"></select></label>
         <table id="keybindTable">
-            <thead><tr><th>Command</th><th>Default</th><th>Key</th><th></th></tr></thead>
+            <thead><tr><th>Command</th><th id="kbDefHead">Default</th><th>Key</th><th></th></tr></thead>
             <tbody id="keybindRows"></tbody>
         </table>
-        <p class="kb-hint">Click a key cell, then press the shortcut. Esc cancels.</p>
+        <p class="kb-hint">Click a key cell, then press the shortcut. Esc cancels. Your keys sit on top of the profile; reset returns a key to the profile's chord.</p>
         <div class="kb-actions"><button id="kbResetAll">Reset all keys</button></div>
         </div><!-- /gearPaneEditor -->
         <div class="gear-pane hidden" id="gearPaneSnippets">
@@ -2332,11 +2333,94 @@
         { id: 'prevEmbed',         label: 'Previous Embed (any)',  def: '',             run: function () { navEmbed(-1, false); } }
     ];
 
-    function defOf(id) {
-        for (var i = 0; i < EDITOR_COMMANDS.length; i++) if (EDITOR_COMMANDS[i].id === id) return EDITOR_COMMANDS[i].def;
+    // ----- Keymap profiles (GH #206) -----
+    // A profile is a SPARSE set of chords layered between the table default and the developer's override:
+    //   override -> active profile's chord -> Clarion default (cmd.def).
+    // It names only the commands that have a genuine analogue in that editor, so Clarion-only commands (embed
+    // navigation, Structure Designer, Invert Case...) keep their Clarion chords in every profile unless a
+    // profile has to move one out of the way. Single-key chords only: Visual Studio's two-key sequences
+    // (Ctrl+K, Ctrl+C and friends) keep their Clarion chords until the dispatcher grows a chord-prefix state.
+    // Every profile must be collision-free on its own and stay off the keys the page claims before this
+    // dispatcher runs (IDE_SHORTCUTS, the Find interceptor, Alt+<letter>) — Terminal\test\keymap-profiles.test.js
+    // pins both, plus the mappings below.
+    var KEY_PROFILES = [
+        { id: 'clarion', label: 'Clarion (default)', map: {} },
+        { id: 'vscode', label: 'VS Code', map: {
+            duplicateLineAbove: 'Shift+Alt+Up',
+            removeLine: 'Ctrl+Shift+K',
+            // VS Code has no bookmarks of its own; these are the Bookmarks extension's defaults.
+            toggleBookmark: 'Ctrl+Alt+K', nextBookmark: 'Ctrl+Alt+L', prevBookmark: 'Ctrl+Alt+J',
+            navigateBack: 'Ctrl+Alt+-', navigateForward: 'Ctrl+Shift+-'
+            // insertSnippet stays Ctrl+Shift+J: Ctrl+Space is completion in this editor, as it is in VS Code.
+        } },
+        { id: 'vs', label: 'Visual Studio', map: {
+            duplicateLineAbove: 'Ctrl+D', structureDesigner: 'Ctrl+Shift+D',   // Ctrl+D is duplicate line here
+            removeLine: 'Ctrl+Shift+L', lowerCase: 'Ctrl+U',                    // Ctrl+Shift+L is delete line here
+            navigateBack: 'Ctrl+-', navigateForward: 'Ctrl+Shift+-'
+        } },
+        { id: 'npp', label: 'Notepad++', map: {
+            duplicateLineAbove: 'Ctrl+D', structureDesigner: 'Ctrl+Shift+D',
+            commentLine: 'Ctrl+Q', uncommentLine: 'Ctrl+Shift+Q',
+            // Ctrl+Q is comment in Notepad++, so Save and Exit moves to its Close All chord — the nearest
+            // "leave the editor" key it has — rather than silently losing its key to the comment.
+            saveAndExit: 'Ctrl+Shift+W',
+            removeLine: 'Ctrl+L', lowerCase: 'Ctrl+U'
+        } }
+    ];
+    var activeKeyProfile = 'clarion';   // a KEY_PROFILES id (from settings); global per developer, not per solution
+
+    function normalizeKeyProfile(id) {
+        for (var i = 0; i < KEY_PROFILES.length; i++) if (KEY_PROFILES[i].id === id) return id;
+        return 'clarion';
+    }
+    function keyProfileById(id) {
+        for (var i = 0; i < KEY_PROFILES.length; i++) if (KEY_PROFILES[i].id === id) return KEY_PROFILES[i];
+        return KEY_PROFILES[0];
+    }
+
+    // The chord a command has before any override: the active profile's, else the table default.
+    function baseChord(cmd) {
+        var map = keyProfileById(activeKeyProfile).map;
+        return map.hasOwnProperty(cmd.id) ? map[cmd.id] : cmd.def;
+    }
+    function baseOf(id) {
+        for (var i = 0; i < EDITOR_COMMANDS.length; i++) if (EDITOR_COMMANDS[i].id === id) return baseChord(EDITOR_COMMANDS[i]);
         return '';
     }
-    function effectiveChord(cmd) { return keyBindings[cmd.id] || cmd.def; }
+    function effectiveChord(cmd) { return keyBindings[cmd.id] || baseChord(cmd); }
+
+    // Drop overrides from `map` until no two commands share a chord. Base chords are collision-free by
+    // construction, so every clash involves an override: that override goes and its command falls back to its
+    // base chord — which can clash with another override in turn, hence the loop. A command is never left
+    // unbound. Returns the ids whose override was dropped, so the caller can say so rather than shadow one.
+    function resolveOverrideConflicts(map) {
+        var dropped = [];
+        for (;;) {
+            var owner = {}, loser = null, clash = false;
+            for (var i = 0; i < EDITOR_COMMANDS.length && !clash; i++) {
+                var c = EDITOR_COMMANDS[i];
+                if (c.deferred) continue;
+                var ch = map[c.id] || baseChord(c);
+                if (!ch) continue;
+                var prev = owner[ch];
+                if (prev === undefined) { owner[ch] = c; continue; }
+                clash = true;
+                loser = map[c.id] ? c : (map[prev.id] ? prev : null);   // the override; the later one if both
+            }
+            if (!loser) return dropped;   // no clash left (or two BASE chords clash: a profile bug, not ours to drop)
+            delete map[loser.id];
+            dropped.push(loser.id);
+        }
+    }
+
+    // Switch the active profile, reset any override that now clashes with it, and re-dispatch. Returns the
+    // command ids whose override was reset.
+    function setKeyProfile(id) {
+        activeKeyProfile = normalizeKeyProfile(id);
+        var dropped = resolveOverrideConflicts(keyBindings);
+        rebuildChordMap();
+        return dropped;
+    }
 
     // The chord a command is CURRENTLY on, for help text to render. Help that hardcodes a chord goes stale the
     // moment the developer rebinds it (and went stale wholesale when snippets moved off Ctrl+J for GH #185), so
@@ -5751,11 +5835,20 @@
         // Caret-behind-EOL has no Monaco option — it arms the page's own pad/trim engine instead. When this
         // resolves false NOTHING in that engine engages, which is the regression floor for the whole feature.
         setCaretBehindEol(!!effIde(followIde, 'cursorBehindEOL', !!s.cursorBehindEOL));
+        // Keymap profile (GH #206) FIRST: the overrides below are sanitized against the profile they sit on.
+        var keyProfileMoved = false;
+        if (typeof s.keyProfile === 'string') {
+            var kp = normalizeKeyProfile(s.keyProfile);
+            if (kp !== activeKeyProfile) { activeKeyProfile = kp; keyProfileMoved = true; }
+        }
         // Key-binding overrides (command id -> chord). Replace the live map and re-dispatch from it.
         if (s.keyBindings && typeof s.keyBindings === 'object') {
             keyBindings = sanitizeLoadedKeyBindings(s.keyBindings);
             rebuildChordMap();
             buildKeybindTable();   // reflect into the gear panel (no-op if it isn't built yet)
+        } else if (keyProfileMoved) {
+            setKeyProfile(activeKeyProfile);
+            buildKeybindTable();
         }
         // lastSettings was captured at the top (before the editor-ready guard).
     }
@@ -5781,7 +5874,10 @@
     // conflicts, but a manually-edited or version-skewed settings.txt can carry unknown command ids or
     // two commands bound to the same chord — which would silently shadow a command (last-wins in the
     // dispatch map). Drop unknown ids; drop an override whose chord collides with another command's
-    // EFFECTIVE chord, so the loser reverts to its (unique) default instead of vanishing. (Adversary finding.)
+    // EFFECTIVE chord, so the loser reverts to its (unique) profile/default chord instead of vanishing.
+    // (Adversary finding.) GH #206: resolved against the ACTIVE profile, so set activeKeyProfile first. The
+    // shared resolver also drops an override that takes a LATER command's default, which the old one-pass
+    // check missed — that command used to win last-wins in the dispatch map and the override's command lost.
     function sanitizeLoadedKeyBindings(raw) {
         var byId = {};
         for (var i = 0; i < EDITOR_COMMANDS.length; i++) byId[EDITOR_COMMANDS[i].id] = EDITOR_COMMANDS[i];
@@ -5791,20 +5887,7 @@
             if (!byId[k]) continue;                 // unknown command id (stale settings) — drop
             clean[k] = String(raw[k]);
         }
-        // Resolve chord collisions across the resulting effective set (override or default per command),
-        // dropping the offending OVERRIDE so that command falls back to its default.
-        var seen = {};
-        for (var j = 0; j < EDITOR_COMMANDS.length; j++) {
-            var c = EDITOR_COMMANDS[j];
-            if (c.deferred) continue;
-            var chord = clean[c.id] || c.def;
-            if (!chord) continue;
-            if (seen[chord]) {
-                if (clean[c.id]) { delete clean[c.id]; }   // this command's override collided — revert it
-            } else {
-                seen[chord] = c.id;
-            }
-        }
+        resolveOverrideConflicts(clean);
         return clean;
     }
 
@@ -5973,6 +6056,7 @@
         var s = readSettingsPanel();
         s.keyBindings = {};
         for (var id in keyBindings) if (keyBindings.hasOwnProperty(id)) s.keyBindings[id] = keyBindings[id];
+        s.keyProfile = activeKeyProfile;         // GH #206 — not read by readSettingsPanel; the picker sets it directly
         s.splitOrientation = splitOrientation;   // not a gear-panel control — set via the Split button's right-click menu
         return s;
     }
@@ -6239,16 +6323,32 @@
     function buildKeybindTable() {
         var tb = document.getElementById('keybindRows');
         if (!tb) return;
+        // GH #206: the profile picker, and a "Default" column that shows the ACTIVE profile's chord (what a
+        // reset returns to), headed with the profile's name when it isn't Clarion.
+        var sel = document.getElementById('kbProfile');
+        if (sel) {
+            sel.innerHTML = '';
+            for (var p = 0; p < KEY_PROFILES.length; p++) {
+                var opt = document.createElement('option');
+                opt.value = KEY_PROFILES[p].id;
+                opt.textContent = KEY_PROFILES[p].label;
+                sel.appendChild(opt);
+            }
+            sel.value = activeKeyProfile;
+        }
+        var head = document.getElementById('kbDefHead');
+        if (head) head.textContent = activeKeyProfile === 'clarion' ? 'Default' : keyProfileById(activeKeyProfile).label;
         tb.innerHTML = '';
         for (var i = 0; i < EDITOR_COMMANDS.length; i++) {
             var c = EDITOR_COMMANDS[i];
             var override = keyBindings[c.id];
-            var eff = override || c.def;
+            var base = baseChord(c);
+            var eff = override || base;
             var tr = document.createElement('tr');
             if (c.deferred) tr.className = 'kb-deferred';
             tr.innerHTML =
                 '<td>' + escHtml(c.label) + '</td>' +
-                '<td class="kb-def">' + escHtml(c.def || '—') + '</td>' +
+                '<td class="kb-def">' + escHtml(base || '—') + '</td>' +
                 '<td><input class="kb-input" data-cmd="' + escHtml(c.id) + '" readonly' +
                     (c.deferred ? ' disabled' : '') + (override ? ' data-custom="1"' : '') +
                     ' value="' + escHtml(eff || '') + '"></td>' +
@@ -6256,6 +6356,17 @@
             tb.appendChild(tr);
         }
         wireKeybindRows();
+    }
+
+    // GH #206: the gear panel's profile picker. Switching profile is a bulk rebind, so overrides that now clash
+    // with it are reset — and the toast says how many, rather than one command silently shadowing another.
+    function onKeyProfileChosen(id) {
+        var dropped = setKeyProfile(id);
+        buildKeybindTable();
+        persistSettings();
+        var label = keyProfileById(activeKeyProfile).label;
+        showToast('Keyboard: ' + label + (dropped.length
+            ? ' — ' + dropped.length + ' of your keys reset (they clashed with ' + label + ')' : ''), dropped.length === 0);
     }
 
     function wireKeybindRows() {
@@ -6313,7 +6424,7 @@
                 return;                     // stay armed so the dev can pick another
             }
         }
-        if (chord === defOf(id)) delete keyBindings[id]; else keyBindings[id] = chord;
+        if (chord === baseOf(id)) delete keyBindings[id]; else keyBindings[id] = chord;
         // Tear down capture WITHOUT rebuilding yet (cancel would clobber state), then commit.
         if (captureInput) captureInput.classList.remove('capturing');
         capturingKey = false;
@@ -6558,11 +6669,13 @@
         if (vscBtn) vscBtn.addEventListener('click', function () { vscRequest(false); });
         var resetAll = document.getElementById('kbResetAll');
         if (resetAll) resetAll.addEventListener('click', function () {
-            keyBindings = {};
+            keyBindings = {};   // back to the ACTIVE profile's chords (GH #206), not necessarily Clarion's
             rebuildChordMap();
             buildKeybindTable();
             persistSettings();
         });
+        var kbProfile = document.getElementById('kbProfile');
+        if (kbProfile) kbProfile.addEventListener('change', function () { onKeyProfileChosen(this.value); });
         buildKeybindTable();
         // Close the panel on Escape for a tidy keyboard flow (but not while capturing a key — Esc there
         // cancels the capture, handled by the dispatcher, so don't also close the panel).

@@ -1722,6 +1722,38 @@
     </li>
   </ul>
 
+  <h3 id="ca-keymap-profiles">Keymap profiles</h3>
+
+  <p>
+    The gear panel's Keyboard section has a <strong>Keymap profile</strong> picker, so you can bring your
+    keys from another editor instead of rebinding them one at a time. <strong>Clarion (default)</strong> is
+    the Clarion editor's layout; <strong>VS Code</strong>, <strong>Visual Studio</strong> and
+    <strong>Notepad++</strong> move the commands that have an equivalent in that editor. For example,
+    Visual Studio and Notepad++ put Duplicate Line on <kbd>Ctrl</kbd>+<kbd>D</kbd>, and VS Code puts Remove Line on
+    <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>K</kbd>.
+  </p>
+
+  <ul>
+    <li>
+      <strong>Clarion-only commands keep their keys</strong> &mdash; embed navigation, Invert Case, Mark Word
+      and the Smart Formatter stay where they are in every profile. Where a profile needs a Clarion key, that
+      command moves rather than disappearing: Structure Designer goes to <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd>
+      in Visual Studio and Notepad++, and in Notepad++, where <kbd>Ctrl</kbd>+<kbd>Q</kbd> comments a line, Save and
+      Exit goes to <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd>.
+    </li>
+    <li>
+      <strong>Your own keys sit on top</strong> &mdash; a key you set yourself wins over the profile. The
+      <em>Default</em> column shows the profile's key, which is what the reset arrow and <strong>Reset all
+      keys</strong> return to. If switching profile makes one of your keys clash with the profile's, your key is
+      reset and a message says how many were.
+    </li>
+    <li>
+      <strong>Single keys only, for now</strong> &mdash; Visual Studio's two-step shortcuts such as
+      <kbd>Ctrl</kbd>+<kbd>K</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd> aren't supported, so those commands keep their
+      Clarion keys in the Visual Studio profile.
+    </li>
+  </ul>
+
   <h3 id="ca-snippets">Code Snippets (Ctrl+Shift+J)</h3>
 
   <p>
