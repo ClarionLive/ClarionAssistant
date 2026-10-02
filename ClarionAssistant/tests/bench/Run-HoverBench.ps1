@@ -24,6 +24,7 @@ param(
     [int]$MarginMs = 20,
     [string]$History = (Join-Path $env:LOCALAPPDATA 'ClarionAssistant\hover-bench-history.jsonl'),
     [string]$Dump,
+    [string[]]$File,                  # specific source files (default: the largest modules the solution compiles)
     [switch]$IndexMissing
 )
 
@@ -96,6 +97,7 @@ foreach ($sln in $Solution) {
     $a = @('--sln', $sln, '--version', $Version, '--per-file', $PerFile, '--max-files', $MaxFiles, '--edited', $Edited,
            '--margin-ms', $MarginMs, '--history', $History, '--ca-commit', $commit)
     if ($LibraryDb) { $a += @('--library-db', $LibraryDb) }
+    foreach ($f in $File) { $a += @('--file', $f) }
     if ($Dump) { $a += @('--dump', $Dump) }   # every sample with both raw cards, as JSON lines
     foreach ($s in $servers) { $a += @('--server', $s) }
     & $exe @a

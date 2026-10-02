@@ -385,17 +385,32 @@ static class HoverBench
     // An edit that changes the text but none of the sampled positions: a comment line appended at the end.
     static string Edit(string text, int i) { return text + "\r\n! hover-bench edit " + i; }
 
-    // The largest modules the project actually compiles (<Compile Include> in the .cwproj files next to the .sln);
-    // every .clw in the folder only when there is no project to say. A stray "X - Copy.clw" is not a module.
+    // The largest modules the solution's projects actually compile: the .cwproj files the .sln names, their
+    // <Compile Include> entries, each found beside the project or anywhere under the solution folder (generated
+    // modules usually sit in a subfolder the .red points at, e.g. genfiles\source). Every .clw in the folder only
+    // when no project says. A stray "X - Copy.clw" is not a module, and neither is another solution's.
     static List<string> DefaultFiles(string sln, int max)
     {
         string dir = Path.GetDirectoryName(sln);
+        var projects = Regex.Matches(File.ReadAllText(sln), @"""([^""]+\.cwproj)""", RegexOptions.IgnoreCase)
+            .Cast<Match>().Select(m => Path.GetFullPath(Path.Combine(dir, m.Groups[1].Value))).Where(File.Exists).Distinct().ToList();
+        Dictionary<string, string> byName = null;   // built on first need: every .clw under the solution folder
         var compiled = new List<string>();
-        foreach (var proj in Directory.GetFiles(dir, "*.cwproj"))
+        foreach (var proj in projects)
             foreach (Match m in Regex.Matches(File.ReadAllText(proj), @"<Compile\s+Include=""([^""]+\.clw)""", RegexOptions.IgnoreCase))
             {
-                string p = Path.Combine(dir, m.Groups[1].Value);
-                if (File.Exists(p) && !compiled.Contains(p, StringComparer.OrdinalIgnoreCase)) compiled.Add(p);
+                string p = Path.Combine(Path.GetDirectoryName(proj), m.Groups[1].Value);
+                if (!File.Exists(p))
+                {
+                    if (byName == null)
+                    {
+                        byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var f in Directory.GetFiles(dir, "*.clw", SearchOption.AllDirectories))
+                            if (!byName.ContainsKey(Path.GetFileName(f))) byName[Path.GetFileName(f)] = f;
+                    }
+                    byName.TryGetValue(Path.GetFileName(p), out p);
+                }
+                if (p != null && File.Exists(p) && !compiled.Contains(p, StringComparer.OrdinalIgnoreCase)) compiled.Add(p);
             }
         var pool = compiled.Count > 0 ? compiled : Directory.GetFiles(dir, "*.clw").ToList();
         return pool.OrderByDescending(f => new FileInfo(f).Length).Take(max).ToList();
