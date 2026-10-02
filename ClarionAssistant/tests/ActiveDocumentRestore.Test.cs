@@ -226,6 +226,26 @@ static class ActiveDocumentRestoreTest
         }
         catch (Exception ex) { fail++; Console.WriteLine("  [FAIL] threw: " + ex); Dump(); }
 
+        // 4b. Another process holds the store for a moment (a virus scanner, a search indexer) without sharing
+        //     delete, so the first swap fails. The write retries instead of dropping the developer's choice.
+        Console.WriteLine("4b. store held for a moment by another process");
+        try
+        {
+            MonacoSpikeLog.Lines.Clear();
+            string sol = Load("held");
+            ReopenLoop(false, A, B, C);
+            Pump(3500);
+            var holder = new FileStream(Store, FileMode.Open, FileAccess.Read, FileShare.Read);
+            ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(40); holder.Dispose(); });
+            Click(A);
+            Pump(300);
+            holder.Dispose();
+            Ok("a click while the store is briefly held is still recorded", Name(Saved(sol)) == "a.clw",
+               "saved " + Name(Saved(sol)) + " | " + string.Join(" | ", MonacoSpikeLog.Lines));
+            Close();
+        }
+        catch (Exception ex) { fail++; Console.WriteLine("  [FAIL] threw: " + ex); Dump(); }
+
         // 5. The store write goes through a temp file named per process (two IDE instances share the store),
         //    and a swap that fails still removes it. A directory squatting on the store's name fails the swap.
         Console.WriteLine("5. failed store swap");

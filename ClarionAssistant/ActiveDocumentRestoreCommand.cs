@@ -524,8 +524,20 @@ namespace ClarionAssistant
                 // The temp name is per process (two IDE instances share the store); a failed swap still removes it.
                 tmp = StorePath + "." + System.Diagnostics.Process.GetCurrentProcess().Id + ".tmp";
                 File.WriteAllLines(tmp, lines.ToArray());
-                if (File.Exists(StorePath)) File.Replace(tmp, StorePath, null);
-                else File.Move(tmp, StorePath);
+                // Another process (a virus scanner, a search indexer, the other IDE instance reading it) can hold the
+                // store for a moment, and the swap then fails with "Unable to remove the file to be replaced". Retry
+                // briefly rather than drop the developer's choice; the last attempt's error still reaches the log.
+                for (int attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        if (File.Exists(StorePath)) File.Replace(tmp, StorePath, null);
+                        else File.Move(tmp, StorePath);
+                        break;
+                    }
+                    catch (IOException) when (attempt < 4) { System.Threading.Thread.Sleep(25 * attempt); }
+                    catch (UnauthorizedAccessException) when (attempt < 4) { System.Threading.Thread.Sleep(25 * attempt); }
+                }
                 _lastWritten = entry;
                 MonacoSpikeLog.Write("[active-doc] recorded active: " + Short(active));
             }
