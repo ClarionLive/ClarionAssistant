@@ -5002,14 +5002,27 @@
     // and the user, seeing none, types nothing: the 226 items sat in the cache until Ctrl+Space
     // (ticket 38158e98, John's live test). So once that answer lands WITH items, and the caret and text
     // are where they were, re-open suggest: the provider is then served from the cache at once.
-    function refreshWhenLspLands(model, position, lsp) {
-        var version = model.getVersionId(), line = position.lineNumber, column = position.column;
+    // Pipeline run 2: only for an answer that lands within LATE_REFRESH_MAX_MS - on a huge module the LSP can
+    // take 9-44 s, and a list popping up that long after the user stopped (or pressed Escape) reads as a
+    // ghost; "glo:" lands in about 1 s. Armed once per request (the colon trigger and Monaco's own ':' can
+    // both ask), only for the focused editor, and only when an item survives the typed prefix.
+    var LATE_REFRESH_MAX_MS = 3000;
+    function refreshWhenLspLands(model, position, lsp, prefix) {
+        if (lsp.refreshArmed) return;
+        lsp.refreshArmed = true;
+        var version = model.getVersionId(), line = position.lineNumber, column = position.column, armedAt = rtNow();
         lsp.promise.then(function (resp) {
             try {
                 if (!resp || !resp.items || !resp.items.length) return;
+                if (rtNow() - armedAt > LATE_REFRESH_MAX_MS) return;
+                if (prefix && prefix.length > (lsp.prefix || '').length) {
+                    var P = prefix.toUpperCase();
+                    if (!resp.items.some(function (it) { return completionMatchesPrefix(it, P); })) return;
+                }
                 var eds = [typeof activeEd === 'function' ? activeEd() : null, editor, editor2];
                 var ed = eds.filter(function (e) { return e && e.getModel && e.getModel() === model; })[0];
                 if (!ed || !ed.getPosition || model.getVersionId() !== version) return;
+                if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) return;
                 var p = ed.getPosition();
                 if (!p || p.lineNumber !== line || p.column !== column) return;
                 ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', {});
@@ -5254,7 +5267,7 @@
                         var kws = clarionKeywordSuggestions(before, range, seen);
                         if (kws.length) sugg = sugg.concat(kws);
                         // Empty now, LSP still on its way: re-open once it lands (ticket 38158e98).
-                        if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp);
+                        if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp, prefix);
                         return { suggestions: sugg, incomplete: true };
                     })
                     .catch(function () { return { suggestions: [], incomplete: true }; });

@@ -352,6 +352,29 @@ async function main() {
         d.reply('localCompletion', { items: [item('Glo:Local', 'local')] }); d.fire(BUDGET); await flush();
         d.clock += 1000; d.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
         check('5.21 no re-open when a list was showing (never re-trigger a showing list)', d.triggers.length === 0);
+
+        // Pipeline run 2: a ghost list long after the user stopped, a hidden editor, and two askers.
+        const g = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(g, 2, 9);
+        ask(g, 2, 9, {});
+        g.reply('localCompletion', { items: [] }); g.fire(BUDGET); await flush();
+        g.clock += 4000; g.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open for an answer that lands after 3 s (huge module: no ghost list)', g.triggers.length === 0);
+
+        const h = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(h, 2, 9); h.editor.hasTextFocus = () => false;
+        ask(h, 2, 9, {});
+        h.reply('localCompletion', { items: [] }); h.fire(BUDGET); await flush();
+        h.clock += 1000; h.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when the editor lost focus', h.triggers.length === 0);
+
+        const k = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(k, 2, 9);
+        ask(k, 2, 9, { triggerCharacter: ':' });          // Monaco's own trigger ...
+        ask(k, 2, 9, {});                                  // ... and the colon handler's explicit one
+        k.reply('localCompletion', { items: [] }); k.reply('localCompletion', { items: [] }); k.fire(BUDGET); await flush();
+        k.clock += 1000; k.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 two askers on one request re-open only once', k.triggers.length === 1, JSON.stringify(k.triggers));
     }
 
     finish();
