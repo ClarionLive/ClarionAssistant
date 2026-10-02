@@ -114,6 +114,8 @@ MyClass.Kill    PROCEDURE
 
 **Rules:** `MEMBER` must be first. Then optional `MAP/END` block. Then `INCLUDE` statements. Then procedure implementations.
 
+The bare `MEMBER` shown above is correct for a class-implementation file (`CLASS,MODULE(...),LINK(...)`). In a module that implements procedures prototyped in the parent program's global MAP, write `MEMBER('Parent.clw')` — bare `MEMBER` there fails with `No matching prototype available`.
+
 ### .inc File Structure (Declarations)
 ```clarion
 MyClass    CLASS,TYPE,MODULE('MyClass.clw'),LINK('MyClass.clw')
@@ -223,6 +225,8 @@ COMPILE('_EndCompile_',_MySymbol_)   ! Compile block if symbol defined
 ! ... code to conditionally compile ...
 _EndCompile_
 ```
+
+**OMIT terminator rule (verified):** an `OMIT('some text')` block is closed by the first occurrence of that exact text anywhere in the source, including inside a comment (`!` and `!!` are both ordinary comments). An `OMIT` whose text never reappears fails with `OMIT not terminated`.
 
 ## Best Practices
 

@@ -20,6 +20,7 @@ namespace ClarionAssistant.Services
 
     public class ClarionVersionConfig
     {
+        public string Name { get; set; }
         public string BinPath { get; set; }
         public string RootPath { get; set; }
         public string RedFileName { get; set; }

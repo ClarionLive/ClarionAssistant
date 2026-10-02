@@ -1377,19 +1377,16 @@ namespace ClarionAssistant.Services
                 string ext = Path.GetExtension(filePath).ToLower();
                 string languageId = ext == ".inc" || ext == ".clw" || ext == ".equ" ? "clarion" : "plaintext";
 
-                var parms = new Dictionary<string, object>
+                var doc = new Dictionary<string, object>
                 {
-                    { "textDocument", new Dictionary<string, object>
-                        {
-                            { "uri", uri },
-                            { "languageId", languageId },
-                            { "version", 1 },
-                            { "text", content }
-                        }
-                    }
+                    { "uri", uri },
+                    { "languageId", languageId },
+                    { "version", 1 },
+                    { "text", content }
                 };
+                var parms = new Dictionary<string, object> { { "textDocument", doc } };
 
-                SendNotification("textDocument/didOpen", parms);
+                SendNotificationWithText("textDocument/didOpen", parms, doc, "text", content);   // 1d8d1c49: streamed when large
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
             }
         }
@@ -1420,33 +1417,28 @@ namespace ClarionAssistant.Services
                         return;
 
                     int nextVersion = currentVersion + 1;
-                    var changes = new System.Collections.ArrayList
-                    {
-                        new Dictionary<string, object> { { "text", text } }
-                    };
+                    var change = new Dictionary<string, object> { { "text", text } };
+                    var changes = new System.Collections.ArrayList { change };
                     var changeParms = new Dictionary<string, object>
                     {
                         { "textDocument", new Dictionary<string, object> { { "uri", uri }, { "version", nextVersion } } },
                         { "contentChanges", changes }
                     };
-                    SendNotification("textDocument/didChange", changeParms);
+                    SendNotificationWithText("textDocument/didChange", changeParms, change, "text", text);   // 1d8d1c49
                     _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
                     _lastSyncedHash[filePath] = hash;
                     return;
                 }
 
-                var openParms = new Dictionary<string, object>
+                var openDoc = new Dictionary<string, object>
                 {
-                    { "textDocument", new Dictionary<string, object>
-                        {
-                            { "uri", uri },
-                            { "languageId", "clarion" },
-                            { "version", 1 },
-                            { "text", text }
-                        }
-                    }
+                    { "uri", uri },
+                    { "languageId", "clarion" },
+                    { "version", 1 },
+                    { "text", text }
                 };
-                SendNotification("textDocument/didOpen", openParms);
+                var openParms = new Dictionary<string, object> { { "textDocument", openDoc } };
+                SendNotificationWithText("textDocument/didOpen", openParms, openDoc, "text", text);   // 1d8d1c49
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
                 _lastSyncedHash[filePath] = hash;
             }
@@ -1584,7 +1576,73 @@ namespace ClarionAssistant.Services
             WriteMessage(_serializer.Serialize(notification));
         }
 
+        // 1d8d1c49: a whole embeditor buffer in didOpen/didChange cost 31 MB of large-object heap per push
+        // through Serialize + UTF8.GetBytes (5.1x a 3.2M-char text), on every open and every idle sync. Above
+        // this size the text is streamed instead (JsonTextStream); below it nothing changes.
+        internal const int StreamTextAboveChars = 65536;
+        private const string LargeTextSentinel = "\u0001CA_LARGE_TEXT_1d8d1c49\u0001";
+
+        /// <summary>
+        /// SendNotification for a message carrying one large string: <paramref name="holder"/>[<paramref name="key"/>]
+        /// is where the text goes inside <paramref name="parms"/>. Small texts take the normal path. Large ones are
+        /// serialized with a sentinel in their place, so every other field is written by the same serializer as
+        /// before, and the text itself is streamed between the two halves.
+        /// </summary>
+        private void SendNotificationWithText(string method, Dictionary<string, object> parms,
+            Dictionary<string, object> holder, string key, string text)
+        {
+            if (text == null || text.Length < StreamTextAboveChars)
+            {
+                holder[key] = text;
+                SendNotification(method, parms);
+                return;
+            }
+            if (!_running || _process == null || _process.HasExited) return;
+
+            holder[key] = LargeTextSentinel;
+            var notification = new Dictionary<string, object> { { "jsonrpc", "2.0" }, { "method", method }, { "params", parms } };
+            string json = _serializer.Serialize(notification);
+            string marker = _serializer.Serialize(LargeTextSentinel);     // the sentinel as the serializer writes it, quotes included
+            string prefix, suffix;
+            if (!JsonTextStream.SplitAroundMarker(json, marker, out prefix, out suffix))
+            {
+                LspTrace.Write("[LSP] large-text sentinel not found once in " + method + " - falling back to Serialize");
+                holder[key] = text;
+                SendNotification(method, parms);
+                return;
+            }
+            lock (_writeLock)
+            {
+                try
+                {
+                    var stream = _process.StandardInput.BaseStream;
+                    byte[] header = JsonTextStream.WriteLspMessage(stream, prefix, text, suffix);
+                    LogFirstWrite(header);
+                    stream.Flush();
+                }
+                catch (Exception ex)
+                {
+                    LspTrace.Write("[LSP] WriteMessage (streamed) failed: " + ex.Message);
+                }
+            }
+        }
+
         private bool _loggedFirstWrite;
+
+        private void LogFirstWrite(byte[] headerBytes)
+        {
+            if (_loggedFirstWrite) return;
+            _loggedFirstWrite = true;
+            var hex = new StringBuilder();
+            for (int i = 0; i < Math.Min(headerBytes.Length, 24); i++)
+                hex.Append(headerBytes[i].ToString("X2")).Append(' ');
+            string header = Encoding.ASCII.GetString(headerBytes);
+            LspTrace.Write("[LSP] first header bytes: " + hex
+                + " | as text: " + header.Replace("\r", "\\r").Replace("\n", "\\n"));
+            LspTrace.Write("[LSP] stdin encoding: "
+                + _process.StandardInput.Encoding.WebName
+                + ", preamble length: " + _process.StandardInput.Encoding.GetPreamble().Length);
+        }
 
         private void WriteMessage(string json)
         {
@@ -1600,18 +1658,7 @@ namespace ClarionAssistant.Services
                     // ("Header must provide a Content-Length property") looks identical whether we
                     // sent the wrong header, sent it in the wrong encoding, or had something
                     // prepended to the stream ahead of it — and only the bytes tell those apart.
-                    if (!_loggedFirstWrite)
-                    {
-                        _loggedFirstWrite = true;
-                        var hex = new StringBuilder();
-                        for (int i = 0; i < Math.Min(headerBytes.Length, 24); i++)
-                            hex.Append(headerBytes[i].ToString("X2")).Append(' ');
-                        LspTrace.Write("[LSP] first header bytes: " + hex
-                            + " | as text: " + header.Replace("\r", "\\r").Replace("\n", "\\n"));
-                        LspTrace.Write("[LSP] stdin encoding: "
-                            + _process.StandardInput.Encoding.WebName
-                            + ", preamble length: " + _process.StandardInput.Encoding.GetPreamble().Length);
-                    }
+                    LogFirstWrite(headerBytes);
 
                     _process.StandardInput.BaseStream.Write(headerBytes, 0, headerBytes.Length);
                     _process.StandardInput.BaseStream.Write(content, 0, content.Length);

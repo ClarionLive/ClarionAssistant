@@ -366,11 +366,14 @@ namespace ClarionAssistant.Services
             if (!m.Success || m.Length < 2) return result;
             if (m.Index > 0 && (upTo[m.Index - 1] == '.' || upTo[m.Index - 1] == ':')) return result;
             string prefix = m.Value;
-            foreach (string db in new[] { ProjectDb(options), LibraryDb() })
+            string projectDb = ProjectDb(options), libraryDb = LibraryDb();
+            // File-level equates only from .inc files this file includes (null = no filtering).
+            var includedFiles = SymbolIndex.IncludeClosure(options == null ? null : options.FileName, new[] { projectDb, libraryDb }, fastOnly: true);
+            foreach (string db in new[] { projectDb, libraryDb })
             {
                 var idx = SymbolIndex.For(db);
                 if (idx == null) continue;
-                foreach (var s in idx.ByPrefix(prefix, DbLimit, fastOnly: true))
+                foreach (var s in idx.ByPrefix(prefix, DbLimit, fastOnly: true, equateFiles: includedFiles))
                     if (s != null && !string.IsNullOrEmpty(s.Name) && seen.Add(s.Name)) result.Add(SymbolIndex.ToCompletionItem(s));
             }
             AddAll(result, seen, ClarionKeywordIndex.Complete(prefix));
@@ -491,13 +494,25 @@ namespace ClarionAssistant.Services
         /// the local layer found no project DB at all: no hover for GlobalRequest or InventoryFastAddForm on
         /// build 1247. The walk-up is SharedLspBridge.ResolveCodeGraphDb's fallback, cached per directory.
         /// </summary>
+        /// <summary>
+        /// f64ba833: the folder of the solution open in the IDE, or null. Set once by the host at startup. The
+        /// walk-up needs a folder to start from, and the CA Embeditor has none whenever EmbedLspContext.TryCapture
+        /// failed (it then passes a bare "InventoryTable.clw"): no project DB meant GlobalRequest waited on the
+        /// LSP ("Loading...") and PASSWORD( fell through to the ENTRY attribute's keyword card, while the CA
+        /// Editor, which always has a real path, answered both instantly.
+        /// </summary>
+        public static Func<string> SolutionDirPath;
+
         private static string ProjectDb(LocalLayerOptions o)
         {
             string p = Cached(ProjectDbPath, ref _projPath, ref _projAt);
             if (p != null) return p;
             string dir = null;
             try { if (o != null && !string.IsNullOrEmpty(o.FileName)) dir = System.IO.Path.GetDirectoryName(o.FileName); } catch { }
-            return string.IsNullOrEmpty(dir) ? null : NearestDb(dir);
+            if (!string.IsNullOrEmpty(dir)) return NearestDb(dir);
+            string sln = null;
+            try { var f = SolutionDirPath; if (f != null) sln = f(); } catch { }
+            return string.IsNullOrEmpty(sln) ? null : NearestDb(sln);
         }
 
         private static string LibraryDb() { return Cached(LibraryDbPath, ref _libPath, ref _libAt); }

@@ -382,6 +382,7 @@ namespace ClarionAssistant
                 // persisted localStorage pref; this only sets the pre-paint backdrop so there's no flash of the
                 // WRONG color on load, in either theme).
                 _editor = new MonacoEditorControl(this, Services.CaEditorSettings.MonacoThemeDark, "monaco-embeditor.html", "clarion-embeditor-data");
+                _editor.InitFailed += OnEditorInitFailed;
                 host.Controls.Add(_editor);
                 _editor.BringToFront();
                 // Remember the displayed tab per solution (ActiveDocumentRestoreCommand). The IDE's own
@@ -2500,6 +2501,25 @@ namespace ClarionAssistant
             return null;
         }
 
+        /// <summary>7116020b: the WebView2 never started. The native text editor is underneath and fully working,
+        /// so take the overlay off (deferred: never dispose the control on its own failing call stack) and say
+        /// why, instead of leaving a blank surface once the cover's safety timer fires. The page never loaded,
+        /// so there are no Monaco-side edits to lose.</summary>
+        private void OnEditorInitFailed(MonacoEditorControl editor, string reason)
+        {
+            MonacoSpikeLog.Write("[webview-init] source editor gave up, showing native: file=" + System.IO.Path.GetFileName(_filePath ?? "?") + " reason=" + reason);
+            try
+            {
+                var host = editor.Parent;
+                if (host != null && host.IsHandleCreated) host.BeginInvoke((Action)(() => { if (ReferenceEquals(_editor, editor)) DisposeOverlay(); }));
+                else if (ReferenceEquals(_editor, editor)) DisposeOverlay();
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[webview-init] source editor fallback failed: " + ex.Message); }
+            Terminal.CaNotice.Post("editor-init-failed", "CA Editor could not start",
+                "It could not open " + System.IO.Path.GetFileName(_filePath ?? "this file") + " because " + reason
+                + ". You are in Clarion's own editor for this file instead. If this keeps happening, save your work and restart Clarion.");
+        }
+
         private void DisposeOverlay()
         {
             try
@@ -2529,6 +2549,10 @@ namespace ClarionAssistant
                 try { if (_navBar != null && !_navBar.IsDisposed) _navBar.Visible = true; } catch { }
                 _navBar = null;
                 RemoveCover();
+                // 7116020b: a big file's buffer copies sit in the large-object heap; compact once after close.
+                long fileChars = 0;
+                try { if (!string.IsNullOrEmpty(_filePath) && System.IO.File.Exists(_filePath)) fileChars = new System.IO.FileInfo(_filePath).Length; } catch { }
+                Services.MemoryHeadroom.CompactAfterClose("source editor " + System.IO.Path.GetFileName(_filePath ?? "?"), fileChars);
             }
             catch { }
         }
@@ -2862,16 +2886,57 @@ namespace ClarionAssistant
             try { if (!Directory.Exists(DataDir)) Directory.CreateDirectory(DataDir); } catch { }
         }
 
+        private static readonly object _writeLock = new object();   // pool-thread writers exist (WriteWithMemAsync)
+
         public static void Write(string message)
         {
             try
             {
-                EnsureDir();
-                File.AppendAllText(
-                    Path.Combine(DataDir, "monaco-spike.log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                lock (_writeLock)
+                {
+                    EnsureDir();
+                    File.AppendAllText(
+                        Path.Combine(DataDir, "monaco-spike.log"),
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 7116020b: one-line memory snapshot for the log — `mem virt= priv= ws= gc= free= largestFree=` (MB).
+        /// Clarion.exe is 32-bit and not LargeAddressAware, so what kills it is the LARGEST FREE BLOCK of its
+        /// 2 GB address space, not the working set (the OOM on 2026-09-30 hit at 975 MB working set). Walking
+        /// the region list with VirtualQuery is a few thousand calls — cheap enough per attach/init event, not
+        /// per keystroke. Never throws.
+        /// </summary>
+        /// <summary>Write <paramref name="prefix"/> + " " + MemSummary() from a pool thread. For the embed-open hot
+        /// path: a snapshot is ~15-70 ms in Clarion, and the UI thread is what keeps the cover up (7116020b).
+        /// The line's timestamp is the moment it is written, a few ms after the event.</summary>
+        public static void WriteWithMemAsync(string prefix)
+        {
+            try { System.Threading.ThreadPool.QueueUserWorkItem(_ => Write(prefix + " " + MemSummary())); }
+            catch { Write(prefix + " mem=unavailable"); }
+        }
+
+        public static string MemSummary()
+        {
+            var sb = new StringBuilder("mem");
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    sb.Append(" virt=").Append(p.VirtualMemorySize64 >> 20)
+                      .Append(" priv=").Append(p.PrivateMemorySize64 >> 20)
+                      .Append(" ws=").Append(p.WorkingSet64 >> 20);
+                }
+            }
+            catch (Exception ex) { sb.Append(" proc=err(").Append(ex.GetType().Name).Append(')'); }
+            try { sb.Append(" gc=").Append(GC.GetTotalMemory(false) >> 20); } catch { }
+            var a = Services.MemoryHeadroom.Measure();
+            if (a.Ok) sb.Append(" free=").Append(a.FreeMB).Append(" largestFree=").Append(a.LargestFreeMB).Append(" space=").Append(a.UserSpaceMB);
+            else sb.Append(" vq=err");
+            return sb.Append(" (MB)").ToString();
         }
     }
 

@@ -235,49 +235,29 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Register this process as a terminal with the MultiTerminal broker.
-        /// Pass channelPort so the broker can push incoming messages via HTTP POST.
+        /// Register a terminal with the MultiTerminal broker, by name.
         /// Returns the broker-assigned terminalId (8-char hex) needed for GetMessages.
+        ///
+        /// ownerPid must be the claude.exe process id - NOT the pwsh that hosts it in a CA tab,
+        /// which outlives claude after /exit: once it dies the broker's liveness reaper removes
+        /// the row and clears its messaging credentials, which is how a session MultiTerminal did
+        /// not launch leaves the roster. No docId and no nonce - those identify panes MultiTerminal
+        /// launched itself. No channelPort - channels are retired (ticket b24bcaf4).
         /// </summary>
-        public ApiResult<RegisterTerminalResponse> RegisterTerminal(string name, string docId, int? channelPort)
+        public ApiResult<RegisterTerminalResponse> RegisterTerminal(string name, int? ownerPid)
         {
             var body = new Dictionary<string, object>
             {
                 { "name", name }
             };
-            if (!string.IsNullOrEmpty(docId)) body["docId"] = docId;
-            if (channelPort.HasValue) body["channelPort"] = channelPort.Value;
+            if (ownerPid.HasValue) body["ownerPid"] = ownerPid.Value;
             return Post<RegisterTerminalResponse>("/api/messaging/register", body);
-        }
-
-        /// <summary>
-        /// Remove a terminal from the broker's roster (ticket 9a0ce0de). The counterpart to
-        /// RegisterTerminal, which had none — registration was one-way by construction, so a
-        /// CA terminal stayed listed as available long after its process was gone.
-        ///
-        /// By NAME, not docId: the broker's endpoint is DisconnectTerminalByName, and CA names
-        /// are the CA-&lt;slug&gt; values from CaAgentIdentity.
-        ///
-        /// Callers are shutdown paths, so this is deliberately best-effort — it returns an
-        /// unsuccessful ApiResult rather than throwing when MultiTerminal is not running, which
-        /// is a perfectly ordinary state. Use a short-timeout client for it: on IDE shutdown a
-        /// default 10s timeout per tab would hold Clarion open while it waits for a service
-        /// that may not exist.
-        /// </summary>
-        public ApiResult<object> DisconnectTerminal(string name)
-        {
-            if (string.IsNullOrEmpty(name))
-                return new ApiResult<object> { Success = false, Error = "name is required" };
-            return Post<object>("/api/messaging/disconnect", new Dictionary<string, object>
-            {
-                { "name", name }
-            });
         }
 
         /// <summary>
         /// Drain the broker-side queue for this terminal.
         /// NOTE: destructive read — calling this removes messages from the queue.
-        /// Use as a safety-net poll in case deliveries fell through channel push.
+        /// Use as a safety-net poll in case native delivery did not reach the session.
         /// </summary>
         public ApiResult<List<QueuedMessage>> GetMessages(string terminalId)
         {
@@ -414,9 +394,10 @@ namespace ClarionAssistant.Services
             req.Timeout = _timeoutMs;
             // Never route a loopback call through a proxy (ticket 9a0ce0de). WebRequest's default
             // proxy performs WPAD auto-discovery on first use in a process, and that cost lands
-            // INSIDE Timeout. The long-running callers hide it behind a 10s default; the roster
-            // disconnect deliberately runs on 1.5s and cannot. Measured in a live IDE test: the
-            // first disconnect POST failed with "The operation has timed out" at exactly the
+            // INSIDE Timeout. The long-running callers hide it behind a 10s default; a 1.5s
+            // caller cannot - today the launch-time roster check (b24bcaf4), originally the
+            // since-removed roster disconnect. Measured in a live IDE test: the first disconnect
+            // POST failed with "The operation has timed out" at exactly the
             // 1500ms mark while MultiTerminal was up and answering other clients instantly.
             // Guarded on IsLoopback so a remote MultiTerminal, if ever pointed at one, still
             // honours the machine's proxy configuration.
@@ -428,13 +409,13 @@ namespace ClarionAssistant.Services
 
         private ApiResult<T> Execute<T>(string path, string method, object body)
         {
-            // Phase timings (ticket 9a0ce0de). The roster disconnect kept failing with
+            // Phase timings (ticket 9a0ce0de). The roster disconnect (removed in b24bcaf4) kept failing with
             // "The operation has timed out" landing EXACTLY on its 1.5s budget, which says the
             // stall is before the response — but not which call owns it. Two plausible causes
             // were fixed on reasoning alone and neither helped, so this measures instead:
             //   reqStream still 0  -> GetRequestStream never returned: connection acquisition.
             //   resp still 0       -> GetResponse never returned: nothing came back.
-            // Logged for EVERY call, not just the disconnect, because the other question this
+            // Logged for EVERY call, not just one caller, because the other question this
             // settles is whether CA can reach MultiTerminal at all — AgentPanelControl polls
             // ListTerminals every 8s on this same client, so its timings appear here too.
             var sw = System.Diagnostics.Stopwatch.StartNew();

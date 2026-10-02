@@ -158,6 +158,9 @@
     <Compile Include="Services\FileSchemaScopeReader.cs" />
     <Compile Include="Services\ClarionDeclarationParser.cs" />
     <Compile Include="Services\EmbedEditorMonitorService.cs" />
+    <Compile Include="Services\MemoryHeadroom.cs" />
+    <Compile Include="Services\TextLines.cs" />
+    <Compile Include="Services\JsonTextStream.cs" />
     <Compile Include="Services\ShutdownLog.cs" />
     <Compile Include="Services\ShutdownService.cs" />
     <Compile Include="Services\WebView2ProcessReaper.cs" />
@@ -165,6 +168,7 @@
     <Compile Include="Services\ClarionConfigDirectory.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\EffectiveClarionVersion.cs" />
+    <Compile Include="Services\IdeVersionFollower.cs" />
     <Compile Include="Services\LspStartGate.cs" />
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\LspTrace.cs" />
@@ -173,6 +177,7 @@
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
+    <Compile Include="Services\ColonQualifierScope.cs" />
     <Compile Include="Services\LocalScopeIndex.cs" />
     <Compile Include="Services\SymbolIndex.cs" />
     <Compile Include="Services\LiveDictionaryIndex.cs" />
@@ -236,6 +241,7 @@
     <Compile Include="Terminal\NativeDiffViewContent.cs" />
     <Compile Include="Terminal\ModernEmbeditorViewContent.cs" />
     <Compile Include="Terminal\MonacoEditorControl.cs" />
+    <Compile Include="Terminal\CaNotice.cs" />
     <Compile Include="Terminal\MonacoBufferSync.cs" />
     <Compile Include="Services\DiffService.cs" />
     <Compile Include="Services\UnifiedDiffGenerator.cs" />

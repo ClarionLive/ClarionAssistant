@@ -77,10 +77,15 @@ static class CompletionMergeDuplicates
             "Issue187Proc PROCEDURE",
             "",
             "obj                  Issue187Class",
+            "Settings             GROUP",
+            "Address                STRING(40)",
+            "Port                   LONG",
+            "                     END",
             "",
             "  CODE",
             "  obj.",
             "  Issue187",
+            "  Settings.",           // line 13: fake-lsp.js answers it from completion-items-by-line.json
             "  RETURN",
         };
         string buffer = string.Join("\r\n", lines) + "\r\n";
@@ -159,6 +164,20 @@ static class CompletionMergeDuplicates
             Func<string, bool> has = l => bareItems.Any(it => string.Equals(it.Label, l, StringComparison.OrdinalIgnoreCase));
             Check(has("Issue187Global"), "bare prefix: the global row Issue187Global was not offered - the DB merge did not run");
             Check(!has("Issue187Param"), "bare prefix: Issue187Param (scope 'parameter' of another procedure) leaked in as a global");
+
+            // 7. A GROUP's fields after "Settings.": the server labels each field with its type
+            // ("Address STRING(40)") and inserts the bare name. The qualified-field merge deduped on the
+            // label alone, so it added every field a second time under its bare name.
+            int groupLine = Array.IndexOf(lines, "  Settings.");
+            Check(groupLine == 13, "fixture drift: '  Settings.' must stay on line 13 (completion-items-by-line.json keys on it)");
+            var groupItems = SharedLspBridge.GetCompletion(file, groupLine, lines[groupLine].Length, 5000, buffer) ?? new List<LspClient.CompletionItemInfo>();
+            foreach (var it in groupItems)
+                Console.WriteLine("  group item: " + it.Label + "  | kind=" + it.Kind + " insert=" + it.InsertText + " detail=" + it.Detail);
+            foreach (var field in new[] { "Address", "Port" })
+            {
+                int n = groupItems.Count(it => string.Equals(it.InsertText, field, StringComparison.OrdinalIgnoreCase));
+                Check(n == 1, "Settings." + field + " listed " + n + " times, expected once");
+            }
         }
         finally
         {

@@ -32,15 +32,28 @@ namespace ClarionAssistant.Terminal
         public string SolutionPath { get; set; }
 
         /// <summary>
-        /// The CA-&lt;slug&gt; identity this tab's assistant registered with the MultiTerminal
-        /// broker, captured at launch (ticket 9a0ce0de). Null until an assistant is launched.
+        /// The CA1/CA2/... identity this tab's assistant is known by in MultiTerminal (its
+        /// MULTITERMINAL_NAME and -n), captured at launch. Null until an assistant is launched.
         ///
-        /// It has to be STORED rather than recomputed: NormalizeAgentName is fed an
-        /// incrementing tab counter, so asking for the name again later yields a DIFFERENT
-        /// one — and disconnecting the wrong name would leave the real entry stranded while
-        /// looking like it worked.
+        /// Read by AssistantChatControl.ResolveUniqueAgentName: other tabs' launches treat it as
+        /// taken. It has to be STORED rather than recomputed: the number depends on what else
+        /// was open at launch, so asking again later could give a different one.
         /// </summary>
         public string AgentName { get; set; }
+
+        /// <summary>
+        /// The tab's name before any launch decorated it ("Terminal 2", or the solution/project/
+        /// class it was opened on), captured on the first launch. Every relabel is built from
+        /// this, so a relaunch never stacks "CA2 · CA2 · ..." or a second backend suffix.
+        /// </summary>
+        public string BaseName { get; set; }
+
+        /// <summary>
+        /// Tail of the previous terminal output chunk, kept so the assistant-exited marker is
+        /// still recognised when a read splits it (CaAgentIdentity.SeesExitSignal). Touched only
+        /// by the terminal's output handler.
+        /// </summary>
+        public string ExitSignalCarry { get; set; }
 
         /// <summary>Override working directory for this tab (e.g. solution folder).</summary>
         public string WorkingDirectory { get; set; }
@@ -70,21 +83,6 @@ namespace ClarionAssistant.Terminal
 
         /// <summary>Skill command to auto-run after Claude starts (e.g. "/ClarionCOM").</summary>
         public string StartupCommand { get; set; }
-
-        /// <summary>
-        /// Accumulated, raw terminal output used to detect Claude Code's
-        /// <c>--dangerously-load-development-channels</c> warning prompt. CC 2.1.168 renders that
-        /// warning as a colored, box-wrapped TUI whose text is interleaved with ANSI escapes and
-        /// straddles ConPTY flush batches, so we must accumulate across chunks and normalize before
-        /// matching. Capped/trimmed in the handler to avoid unbounded growth.
-        /// </summary>
-        public readonly System.Text.StringBuilder DevChannelBuffer = new System.Text.StringBuilder();
-
-        /// <summary>True once the dev-channel warning has been auto-dismissed for this tab (fires once).</summary>
-        public bool DevChannelWarningHandled;
-
-        /// <summary>Guards the one-time raw/normalized ground-truth dump used to re-anchor on future CC wording drift.</summary>
-        public bool DevChannelRawDumped;
 
         private bool _disposed;
 

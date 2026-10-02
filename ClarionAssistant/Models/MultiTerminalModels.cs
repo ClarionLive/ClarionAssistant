@@ -83,7 +83,6 @@ namespace ClarionAssistant.Models
         public string Color { get; set; }
         public string DocId { get; set; }
         public bool IsReady { get; set; }
-        public int? ChannelPort { get; set; }
     }
 
     public class RegisterTerminalResponse
@@ -91,7 +90,6 @@ namespace ClarionAssistant.Models
         public string TerminalId { get; set; }
         public string Name { get; set; }
         public string DocId { get; set; }
-        public int? ChannelPort { get; set; }
     }
 
     public class QueuedMessage

@@ -21,6 +21,9 @@
     "Aliases are ORed. Give each scope every spelling the notes plausibly use for it."
   ],
   "scopeAliases": {
+    "mt": [
+      "MultiTerminal"
+    ],
     "compare": [
       "CA Compare",
       "compare"
@@ -181,6 +184,7 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
+    "dfc6ed0": "Case (b): it ADDS the Unreleased entry 'Opening a large procedure in the CA Embeditor uses far less memory' for 1d8d1c49 and removes one diagnostic marker. Its 'docs+diag:' prefix is not a scope the tool parses.",
     "8e93239": "Release plumbing for 5.9.0 itself (the marketplace clarion-assistant plugin bumped to 2.1.0 to ship with it), committed just after the v5.9.0 tag. Nothing user-facing for the next release to document. The 5.9 entries (cb16c62, 27c4080) were cleared here per the note above: a version was cut."
   }
 }

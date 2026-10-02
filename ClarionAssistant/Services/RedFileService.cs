@@ -69,8 +69,20 @@ namespace ClarionAssistant.Services
         private readonly Dictionary<string, string> _macros;
         private string _redFilePath;
 
-        /// <summary>The most-recently-loaded instance, so static helpers can resolve generated files.</summary>
+        /// <summary>
+        /// The .red in force, so static helpers can resolve generated files: the most recent successful
+        /// load. NULL when the last <see cref="LoadForProject"/> failed while the file in force belonged to a
+        /// DIFFERENT Clarion version (fails closed, f3b47441; see <see cref="ClearActiveUnlessFor"/>), so a
+        /// reader must treat null as "no redirection". The Load(...) overloads only ever set it.
+        /// </summary>
         public static RedFileService Active { get; private set; }
+
+        /// <summary>The Clarion version name this instance was loaded for (from its config), or null.</summary>
+        public string LoadedForVersion { get; private set; }
+
+        /// <summary>Test seam (f3b47441): runs at the start of every LoadForProject, so the harness can make
+        /// the load throw. Never set outside tests.</summary>
+        internal static Action BeforeLoadForTest;
 
         public string RedFilePath => _redFilePath;
 
@@ -154,6 +166,7 @@ namespace ClarionAssistant.Services
                 macros["BIN"] = config.BinPath;
 
             VersionRedFileName = config.RedFileName;
+            LoadedForVersion = config.Name;
             return Load(config.RedFilePath, macros);
         }
 
@@ -161,10 +174,48 @@ namespace ClarionAssistant.Services
         /// Load the effective .red file for a project directory.
         /// If a .red file exists in the project directory, it completely
         /// supersedes the version-level .red file.
+        ///
+        /// FAILS CLOSED (f3b47441): when nothing can be loaded — no config, no RedFilePath, a missing or
+        /// unreadable file, or an exception — a <see cref="Active"/> left over from a DIFFERENT Clarion version
+        /// is cleared rather than kept; it resolved generated modules and Files-tab lookups through the wrong
+        /// version's paths while looking healthy. An Active already loaded for THIS version is kept: three
+        /// callers load with their own inputs (the chat panel with its own solution; the embeditor launcher and
+        /// the Data pad with the IDE's), and one's failure must not undo another's current-version load
+        /// (pipeline run 1). Never throws.
         /// </summary>
         public bool LoadForProject(string projectDirectory, ClarionVersionConfig config)
         {
+            bool ok;
+            try
+            {
+                var hook = BeforeLoadForTest;
+                if (hook != null) hook();
+                ok = LoadForProjectCore(projectDirectory, config);
+            }
+            catch { ok = false; }
+            if (!ok) ClearActiveUnlessFor(config != null ? config.Name : null);
+            return ok;
+        }
+
+        /// <summary>
+        /// Clear <see cref="Active"/> unless it was loaded for <paramref name="versionName"/> (case-insensitive).
+        /// A null name — no version resolved — clears any Active. The fail-closed rule of
+        /// <see cref="LoadForProject"/>, for callers that fail before they can call it.
+        /// </summary>
+        public static void ClearActiveUnlessFor(string versionName)
+        {
+            var active = Active;
+            if (active == null) return;
+            if (!string.IsNullOrEmpty(versionName)
+                && string.Equals(active.LoadedForVersion, versionName, StringComparison.OrdinalIgnoreCase))
+                return;
+            Active = null;
+        }
+
+        private bool LoadForProjectCore(string projectDirectory, ClarionVersionConfig config)
+        {
             if (config == null) return false;
+            LoadedForVersion = config.Name;
 
             var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             if (config.Macros != null)

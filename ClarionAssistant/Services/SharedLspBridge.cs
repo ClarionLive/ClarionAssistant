@@ -542,6 +542,26 @@ namespace ClarionAssistant.Services
             // reached Monaco as identical rows. Collapse them first; the merges are unchanged.
             RemoveDuplicateServerItems(primary);
 
+            // Colon-qualified context ("Glob:S", "Cus:Na", "PROP:Be"): the server labels its qualifier
+            // items with the bare name ("Svc", detail "Glob:Svc"), while every host merge below labels the
+            // same kind of item "Glob:Svc" and dedupes by label. Give the server's items that full-label
+            // shape FIRST, so each merge skips a name the server already supplied, and the qualifier
+            // scoping at the end keeps them instead of dropping every one once CodeGraph has a match.
+            string qualifier = null;
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null;
+            try
+            {
+                qualifier = ColonQualifierAt(filePath, line, character, bufferText);
+                if (qualifier != null)
+                {
+                    ColonQualifierScope.NormalizeServerItems(primary, qualifier);
+                    // What the server supplied, so the dictionary and IDENT:* merges below skip those names
+                    // (and lend the server row their type) instead of adding a second row (PR #241 review).
+                    serverQualified = ColonQualifierScope.ServerQualifiedItems(primary);
+                }
+            }
+            catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier normalize failed: " + ex.Message); }
+
             // CodeGraph prefix-completion augmentation (task a47a6cac Phase 1). Mark's pure upstream
             // server does MEMBER-ACCESS-ONLY completion; for a BARE PREFIX (line not ending in '.') it
             // returns nothing. We merge in global symbols (procedures/functions/classes/vars) from the
@@ -564,7 +584,7 @@ namespace ClarionAssistant.Services
             // prefix, so this deliberately does NOT dedupe against what MergeQualifiedFieldCompletions already
             // added; both are shown, distinguished by Detail ("... field, dictionary" vs "... (field)").
             // Never throws, never overrides.
-            try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText); }
+            try { MergeDictionaryFieldCompletions(primary, filePath, line, character, bufferText, serverQualified); }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] dictionary field completion merge failed: " + ex.Message); }
 
             // Class member-access (ticket 6e8f2439, item 5b): "oInstance." → that instance's ABC/library
@@ -603,32 +623,19 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] member-access scoping failed: " + ex.Message); }
 
-            // Colon-qualifier scoping. When the cursor sits right after an "IDENT:" qualifier (PROP:/EVENT:/
-            // PROPLIST:/group-PRE like Cus:...), the Monaco replace-range breaks on the ':' and is EMPTY, so
-            // the client does NO prefix filtering — Mark's LSP also returns its global built-in/keyword set
-            // (ACOS, ABS, ...) which then shows alongside the relevant IDENT:* items. Scope the list to labels
-            // starting with the qualifier (those carry the prefix: "PROP:Bevel", "Cus:Field"). Defensive:
-            // only apply when matches remain, so it can never blank out an otherwise-working list. Member
-            // access ('.') has no colon → unaffected.
-            // Colon-qualified completion (PROP:/EVENT:/PROPLIST:/group-PRE Cus:...). In this context the LSP
-            // returns a broad in-scope symbol dump (locals, globals, builtins like ACOS) — NOT IDENT:* members
-            // — and because the Monaco replace-range breaks on ':' (empty range) the client shows them
-            // unfiltered. Fix in two moves: (1) supply the IDENT:* members from ClarionGraph/CodeGraph (e.g.
-            // every PROP:* property equate from property.clw), then (2) scope the list to labels starting with
-            // the qualifier, which drops the LSP noise. Guard: only scope when matches remain.
+            // Colon-qualified completion (PROP:/EVENT:/PROPLIST:/group-PRE Cus:...). The Monaco replace-range
+            // breaks on ':', so the client does no prefix filtering of its own here. Two moves: (1) supply the
+            // IDENT:* members from ClarionGraph/CodeGraph (e.g. every PROP:* property equate from
+            // property.clw), then (2) scope the list to labels starting with the qualifier, which drops
+            // anything else that reached it. The server's own qualifier items already carry the qualified
+            // label (normalized at the top), so the scoping keeps them. Guard: only scope when matches remain.
+            // Member access ('.') has no colon, so it is unaffected.
             try
             {
-                string qualifier = ColonQualifierAt(filePath, line, character, bufferText);
                 if (qualifier != null)
                 {
-                    MergeColonQualifierCompletions(primary, qualifier, filePath);
-                    if (primary.Count > 0)
-                    {
-                        var scoped = primary.FindAll(it =>
-                            it != null && !string.IsNullOrEmpty(it.Label) &&
-                            it.Label.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase));
-                        if (scoped.Count > 0) primary = scoped;
-                    }
+                    MergeColonQualifierCompletions(primary, qualifier, filePath, serverQualified);
+                    primary = ColonQualifierScope.Scope(primary, qualifier);
                 }
             }
             catch (Exception ex) { LspTrace.Write("[SharedLspBridge] colon-qualifier completion failed: " + ex.Message); }
@@ -684,13 +691,16 @@ namespace ClarionAssistant.Services
         /// itself returns only a broad scope dump here, so this is what actually populates PROP:/EVENT:
         /// completion. Never throws.</summary>
         private static void MergeColonQualifierCompletions(
-            List<LspClient.CompletionItemInfo> primary, string qualifier, string filePath)
+            List<LspClient.CompletionItemInfo> primary, string qualifier, string filePath,
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
                 if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
 
             string[] dbs = { ResolveCodeGraphDb(filePath), ClarionGraphService.ResolveDbPath() };
+            // A colon-named .inc equate (EVENT:Foo) follows the same include-closure rule as a bare prefix.
+            var includedFiles = SymbolIndex.IncludeClosure(filePath, dbs);
             foreach (string db in dbs)
             {
                 try
@@ -700,9 +710,12 @@ namespace ClarionAssistant.Services
                     // "LOC:x") no longer leak in: in-scope colon labels come from LocalScopeIndex.
                     var idx = SymbolIndex.For(db);
                     if (idx == null) continue;
-                    foreach (var s in idx.ByPrefix(qualifier, 2000))
+                    foreach (var s in idx.ByPrefix(qualifier, 2000, equateFiles: includedFiles))
                     {
-                        if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
+                        if (s == null || string.IsNullOrEmpty(s.Name)) continue;
+                        // A name the server supplied keeps the server's row, which takes CodeGraph's detail.
+                        if (ColonQualifierScope.ServerHas(serverQualified, s.Name, SymbolIndex.CompletionDetail(s))) continue;
+                        if (!seen.Add(s.Name)) continue;
                         int ci = s.Name.IndexOf(':');
                         string insert = (ci >= 0 && ci < s.Name.Length - 1) ? s.Name.Substring(ci + 1) : s.Name;
                         primary.Add(new LspClient.CompletionItemInfo
@@ -2163,13 +2176,17 @@ namespace ClarionAssistant.Services
             }
 
             // (4) CodeGraph global symbols (procedures/functions/classes/vars) — project .codegraph.db.
-            MergeDbBarePrefix(primary, seen, prefix, ResolveCodeGraphDb(filePath));
+            // File-level equates are offered only from .inc files the current file includes (see
+            // SymbolIndex.IncludeClosure); null (no filtering) when the closure can't be built.
+            string projectDb = ResolveCodeGraphDb(filePath), libraryDb = ClarionGraphService.ResolveDbPath();
+            var includedFiles = SymbolIndex.IncludeClosure(filePath, new[] { projectDb, libraryDb });
+            MergeDbBarePrefix(primary, seen, prefix, projectDb, includedFiles);
 
             // (5) ClarionGraph static LIBRARY symbols (ABC + library classes, equates) — version-keyed
             // cache (ticket 6e8f2439). Bare-prefix offers class/interface NAMES + equates; ClassName.Method
             // entries are skipped here (they belong to member-access completion). No-op until the version
             // DB is built. Additive + defensive: only ADDS, never overrides an LSP item.
-            MergeDbBarePrefix(primary, seen, prefix, ClarionGraphService.ResolveDbPath());
+            MergeDbBarePrefix(primary, seen, prefix, libraryDb, includedFiles);
 
             // (6) Dictionary TABLE names (e.g. "Cus" → "Customers") from the ingested .schemagraph.db.
             // Deliberately does NOT gate on `seen` — a table name colliding with a code symbol is a rare,
@@ -2197,13 +2214,14 @@ namespace ClarionAssistant.Services
         /// missing or busy. Never throws.
         /// </summary>
         private static void MergeDbBarePrefix(
-            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db)
+            List<LspClient.CompletionItemInfo> primary, HashSet<string> seen, string prefix, string db,
+            ISet<string> includedFiles)
         {
             try
             {
                 var idx = SymbolIndex.For(db);
                 if (idx == null) return;
-                foreach (var s in idx.ByPrefix(prefix, 100))
+                foreach (var s in idx.ByPrefix(prefix, 100, equateFiles: includedFiles))
                 {
                     if (s == null || string.IsNullOrEmpty(s.Name) || !seen.Add(s.Name)) continue;
                     primary.Add(SymbolIndex.ToCompletionItem(s));
@@ -2276,9 +2294,18 @@ namespace ClarionAssistant.Services
             var scope = text == null ? null : LocalScopeIndex.GetScope(text, line);
             if (scope == null || scope.Structures.Count == 0) return;
 
+            // The server labels a dotted field with its type ("Address STRING(40)") and inserts the bare
+            // name, so a Label-only guard never matches the bare label AddQualifiedFields adds and every
+            // field is listed twice - the same Label-vs-bare-identifier mismatch as the member-access
+            // dedupe. Only the '.' form keys on InsertText too: for "Pre:partial" the server may insert
+            // just the untyped remainder.
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var it in primary)
-                if (it != null && !string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+            {
+                if (it == null) continue;
+                if (!string.IsNullOrEmpty(it.Label)) seen.Add(it.Label);
+                if (sep == '.' && !string.IsNullOrEmpty(it.InsertText)) seen.Add(it.InsertText);
+            }
             scope.AddQualifiedFields(qualifier, sep, partial, seen, primary);
         }
 
@@ -2288,10 +2315,13 @@ namespace ClarionAssistant.Services
         /// class/instance member-access, owned by MergeMemberAccessCompletions). Deliberately does NOT
         /// dedupe against items MergeQualifiedFieldCompletions already added for a same-named in-buffer
         /// GROUP/QUEUE — a hand-coded structure and a dictionary table can legitimately share a PRE, and
-        /// per design both should surface (Detail distinguishes "(field)" vs "(field, dictionary)"). Never
+        /// per design both should surface (Detail distinguishes "(field)" vs "(field, dictionary)"). It DOES
+        /// skip a name the language server itself supplied (<paramref name="serverQualified"/>), lending that
+        /// row the dictionary's detail - otherwise every field both know shows twice (PR #241). Never
         /// throws.</summary>
         private static void MergeDictionaryFieldCompletions(
-            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText)
+            List<LspClient.CompletionItemInfo> primary, string filePath, int line, int character, string bufferText,
+            Dictionary<string, LspClient.CompletionItemInfo> serverQualified = null)
         {
             string lineText = CgLineAt(bufferText, filePath, line);
             if (lineText == null) return;
@@ -2313,7 +2343,9 @@ namespace ClarionAssistant.Services
                 string db = ResolveSchemaGraphDb(filePath);
                 return string.IsNullOrEmpty(db) ? null : new SchemaGraphService(db).GetQualifierCompletions(qualifier, partial);
             });
-            if (items != null) primary.AddRange(items);
+            if (items == null) return;
+            foreach (var it in items)
+                if (it != null && !ColonQualifierScope.ServerHas(serverQualified, it.Label, it.Detail)) primary.Add(it);
         }
 
         // === Class member-access completion (ticket 6e8f2439, item 5b) ===

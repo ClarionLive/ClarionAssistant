@@ -65,10 +65,6 @@ namespace ClarionAssistant
         private string _redFileCss = "warning";
         private DiffService _diffService;
 
-        // Counter used when a tab's display name is empty, to give the
-        // multiterminal-channel plugin a unique agent name.
-        private int _caTabCounter;
-
         // LSP UI state: bottom status bar + stay-on-top diagnostics form
         private System.Windows.Forms.Timer _lspUiTimer;
         private Terminal.LspStatusBar _lspStatusBar;
@@ -162,12 +158,6 @@ namespace ClarionAssistant
             // === Tab manager ===
             _tabManager = new TabManager(_tabStrip, _contentArea);
             _tabManager.ActiveTabChanged += OnActiveTabChanged;
-            // TabRemoved fires from CloseTab with the tab still intact and its AgentName still set,
-            // BEFORE tab.Dispose() (ticket 9a0ce0de). That ordering is the point: CloseTab drops the
-            // tab from _tabs first, so by the time anything downstream sweeps the tab list this tab
-            // is already unreachable and its roster entry would be stranded for good.
-            _tabManager.TabRemoved += OnTabRemoved;
-
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
@@ -666,6 +656,7 @@ namespace ClarionAssistant
                 string live;
                 if (ClarionVersionService.TryGetLiveIdeVersionName(out live))
                     _lastIdeVersionChoice = ClarionVersionSelector.NormalizeIdeChoice(live);
+                _versionGenerationSeen = EffectiveClarionVersion.Generation;
                 _header.SetVersion("(not detected)", "No Clarion version found in ClarionProperties.xml");
                 return;
             }
@@ -684,9 +675,18 @@ namespace ClarionAssistant
                 // Data pad's environment watcher keys on (its Explorer header shows VERSION too).
                 LspTrace.Write("[AssistantChatControl] " + describe);
                 System.Diagnostics.Debug.WriteLine("[AssistantChatControl] " + describe);
-                ClarionGraphService.InvalidateVersionCache();
-                EffectiveClarionVersion.NotifyChanged();
+                // f3b47441: LspAutostartCommand's version follower announces every Build > Set Clarion Version
+                // switch, and its handler runs before this panel's. Announce only a change nobody has since this
+                // panel last resolved (e.g. the source tier moving at startup), so the Data pad reacts once.
+                // ASSUMES the follower is the only other NotifyChanged caller: a new one that bumps for some
+                // other reason would also suppress this panel's announcement.
+                if (EffectiveClarionVersion.Generation == _versionGenerationSeen)
+                {
+                    ClarionGraphService.InvalidateVersionCache();
+                    EffectiveClarionVersion.NotifyChanged();
+                }
             }
+            _versionGenerationSeen = EffectiveClarionVersion.Generation;
 
             // Say which source chose it — never resolve a version silently.
             string label = _currentVersionConfig == null ? "(not detected)"
@@ -699,6 +699,9 @@ namespace ClarionAssistant
 
         /// <summary>The last version selection, with the tier that decided it (for the index log).</summary>
         private ClarionVersionSelection _versionSelection;
+
+        /// <summary>EffectiveClarionVersion.Generation as of this panel's last LoadVersions (f3b47441).</summary>
+        private int _versionGenerationSeen;
 
         private bool _ideVersionHooked;
 
@@ -746,8 +749,9 @@ namespace ClarionAssistant
 
         /// <summary>
         /// Re-resolve when the IDE's Build &gt; Set Clarion Version moved since the last resolution: reload the
-        /// VERSION list and the .red, and restart the language server on the new version's paths. Cheap when
-        /// nothing changed (one PropertyService read). UI thread.
+        /// VERSION list and the .red for this panel's header. Cheap when nothing changed (one PropertyService
+        /// read). UI thread. The language server restart is LspAutostartCommand's (905928c7), which follows
+        /// the version with or without this panel.
         /// </summary>
         private void SyncVersionWithIde()
         {
@@ -763,7 +767,6 @@ namespace ClarionAssistant
                     + (_lastIdeVersionChoice ?? "(unknown)") + " -> " + now);
                 LoadVersions();
                 LoadRedFile();
-                LspService.RestartIfVersionChanged(_currentVersionConfig != null ? _currentVersionConfig.Name : null);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SyncVersionWithIde: " + ex.Message); }
         }
@@ -773,6 +776,8 @@ namespace ClarionAssistant
             _redFileService = new RedFileService();
             if (_currentVersionConfig == null)
             {
+                // No version: nothing may stay in force from the previous one (f3b47441, fails closed).
+                RedFileService.ClearActiveUnlessFor(null);
                 ShowRedFileInHeader("(no Clarion version resolved)", "warning");
                 return;
             }
@@ -3269,8 +3274,13 @@ namespace ClarionAssistant
 
             // Annotate the tab with the backend abbreviation so the tab strip
             // makes it obvious at a glance which assistant is driving each tab.
-            // Idempotent: strips any prior suffix before appending.
-            _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.Name, backend));
+            // Built from the undecorated name, so a relaunch never stacks labels. A Claude
+            // tab is relabelled again with its MultiTerminal name once that is resolved, and
+            // drops the CC suffix then (every registered tab is Claude, so it says nothing).
+            // Captured as is, not stripped: nothing has decorated the name before the first
+            // launch, so stripping could only eat real text (a solution named "Billing CO").
+            if (tab.BaseName == null) tab.BaseName = tab.Name;
+            _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, backend));
 
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase))
                 LaunchCopilotForTab(tab);
@@ -3296,17 +3306,17 @@ namespace ClarionAssistant
             string suffix = BackendSuffix(backend);
             if (string.IsNullOrEmpty(suffix) || string.IsNullOrEmpty(currentName))
                 return currentName;
+            return StripBackendSuffix(currentName) + " " + suffix;
+        }
 
-            string stripped = currentName;
+        /// <summary>The tab name without a trailing backend suffix (" CC", " CP", " CO").</summary>
+        private static string StripBackendSuffix(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
             foreach (string prior in new[] { " CC", " CP", " CO" })
-            {
-                if (stripped.EndsWith(prior, StringComparison.Ordinal))
-                {
-                    stripped = stripped.Substring(0, stripped.Length - prior.Length);
-                    break;
-                }
-            }
-            return stripped + " " + suffix;
+                if (name.EndsWith(prior, StringComparison.Ordinal))
+                    return name.Substring(0, name.Length - prior.Length);
+            return name;
         }
 
         private void LaunchClaudeForTab(TerminalTab tab)
@@ -3540,6 +3550,10 @@ namespace ClarionAssistant
         /// the prepare or builder phases.</summary>
         private void AbortLaunch(TerminalTab tab)
         {
+            // An aborted launch holds no MultiTerminal name (other tabs' uniqueness checks read
+            // it), and its tab drops the CA<n> label. Before AssistantBackend is cleared: the
+            // restored label is built from it.
+            ReleaseAgentName(tab);
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
             try { if (tab.Terminal != null) tab.Terminal.Dispose(); } catch { }
@@ -3603,9 +3617,25 @@ namespace ClarionAssistant
                 catch { }
             }
 
+            // The numbered agent name for this tab (CA1, CA2, ...): its MultiTerminal identity.
+            // Exported as MULTITERMINAL_NAME for the MultiTerminal plugin's hooks, and passed as -n
+            // so the same string is the session's native messaging address - one name, not two
+            // that can drift. Resolved HERE, before the system-prompt file is written, because that
+            // file also tells the model the name (ticket c175492a).
+            string agentName = ResolveUniqueAgentName(tab);
+            // Remembered on the tab: it is what other tabs' uniqueness checks read.
+            tab.AgentName = agentName;
+            // The tab shows the same name the prompt box (-n) and MultiTerminal do, so what the
+            // developer sees is what they type to message it (ticket 7792e3e0).
+            _tabManager.RenameTab(tab, Services.CaAgentIdentity.TabLabel(agentName, tab.BaseName));
+
             string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
             systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
                 claudeMdDelivered, claudeMdDelivered ? null : ReadClarionAssistantPrompt(), systemPromptExtra);
+            // Only when the multiterminal MCP is really in this tab's config: the section is about
+            // its tools, and that server is what registers the name with MultiTerminal.
+            if (_mcpServer != null && _mcpServer.MultiTerminalConfigured)
+                systemPromptExtra = Services.CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName);
             string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
 
@@ -3636,10 +3666,6 @@ namespace ClarionAssistant
                 tempFiles.Add(initialPromptFile);
             }
 
-            // Resolved once, up here, because THREE things downstream must agree on it: the second
-            // --plugin-dir, the channels flag's plugin name, and the channel tools' allowlist prefix.
-            // Deriving all three from one value is what stops them drifting apart - a mismatch
-            // between any two of them fails silently rather than loudly (ticket 7913ead6).
             string mtPluginDir = Services.McpServer.GetMultiTerminalPluginPath();
 
             string allowedTools = "mcp__clarion-assistant__*,Read,Edit,Write,Bash,Glob,Grep";
@@ -3652,21 +3678,6 @@ namespace ClarionAssistant
                 allowedTools += ",mcp__clarion-tools__*";
             if (_mcpServer != null && _mcpServer.IncludeMultiTerminal)
                 allowedTools += ",mcp__multiterminal__*";
-            // The channel's own tools (send / reply). THE PREFIX CHANGED WITH THE MOVE TO THE PLUGIN
-            // FORM (ticket 7913ead6): a plugin-provided MCP server is namespaced
-            // mcp__plugin_<pluginName>_<serverName>__<tool>, not mcp__<serverName>__<tool>. The old
-            // "mcp__multiterminal-channel__*" spelling now matches nothing, so leaving it would mean
-            // every send/reply prompted for permission - the tab would receive channel pushes and
-            // then be unable to answer them.
-            //
-            // NOT A GUESS AT THE SPELLING: taken from a live session on this machine with the same
-            // plugin loaded, where the tools appear as
-            //     mcp__plugin_multiterminal_multiterminal-channel__send
-            //     mcp__plugin_multiterminal_multiterminal-channel__reply
-            // Still worth re-reading off a real tab after deploy - if the prefix differs, the symptom
-            // is a permission prompt on reply, not a dead channel.
-            if (mtPluginDir != null)
-                allowedTools += ",mcp__plugin_multiterminal_multiterminal-channel__*";
             // Auto-approve user-supplied MCP servers merged in from mcp-extra.json
             if (_mcpServer != null && _mcpServer.ExtraMcpServerNames != null)
             {
@@ -3685,10 +3696,8 @@ namespace ClarionAssistant
                 pluginArg = $" --plugin-dir '{safePluginDir}'";
             }
 
-            // A SECOND --plugin-dir, for MultiTerminal, because the channel server ships INSIDE that
-            // plugin (server\multiterminal-channel.mjs). Without it the channels flag below names a
-            // plugin this session never loaded, and the channel fails for a different reason than
-            // the one ticket 7913ead6 fixed.
+            // A SECOND --plugin-dir, for MultiTerminal: its hooks are what register this tab with the
+            // broker and hand over the session's native messaging credentials (ticket b24bcaf4).
             //
             // --plugin-dir IS REPEATABLE BUT NOT VARIADIC. From `claude --help` on 2.1.265:
             //     --plugin-dir <path>  ... (repeatable: --plugin-dir A --plugin-dir B.zip)
@@ -3740,54 +3749,14 @@ namespace ClarionAssistant
             // Set CA tab ID so the statusline script can write per-tab status
             string tabEnv = $"$env:CLARIONASSISTANT_TAB='{tab.Id}'";
 
-            // Compute the CA-prefixed agent name + stable docId for this tab and export
-            // them so the multiterminal-channel MCP server (loaded via mcp-config) registers
-            // with the MultiTerminal broker under the right identity.
-            _caTabCounter++;
-            string agentName = Services.CaAgentIdentity.NormalizeAgentName(tab.Name, _caTabCounter);
-            // Remember it: this is the name the broker will know this tab by, and the only way
-            // to disconnect it when the process exits (ticket 9a0ce0de). Recomputing later would
-            // give a different name, because the counter above has moved on.
-            tab.AgentName = agentName;
-            string docId = Services.CaAgentIdentity.ComputeStableDocId(agentName);
             string safeAgentName = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(agentName);
-            string safeDocId = Services.CaAgentIdentity.EscapeForPowerShellSingleQuote(docId);
-            string channelEnv = $"$env:MULTITERMINAL_NAME='{safeAgentName}'; $env:MULTITERMINAL_DOC_ID='{safeDocId}'";
-            System.Diagnostics.Debug.WriteLine(
-                "[LaunchClaude] Channel identity: name=" + agentName + ", docId=" + docId);
+            // NO MULTITERMINAL_DOC_ID (ticket b24bcaf4). A docId (and a launch nonce) identify a pane
+            // MultiTerminal itself launched; a CA-hosted session registers by name alone, with the
+            // claude.exe pid as its owner so the broker's reaper can retire the row when it dies.
+            string mtEnv = $"$env:MULTITERMINAL_NAME='{safeAgentName}'";
+            string nameFlag = $" -n '{safeAgentName}'";
+            System.Diagnostics.Debug.WriteLine("[LaunchClaude] MultiTerminal identity: name=" + agentName);
 
-            // Authorize the MultiTerminal channel for inbound notifications. Without this flag,
-            // mcp.notification('notifications/claude/channel') is silently ignored.
-            //
-            // PLUGIN FORM, NOT server: FORM (ticket 7913ead6). Claude Code 2.1.265 resolves a
-            // "server:<name>" entry against five PERSISTED config scopes only - enterprise, managed,
-            // user, project, local - and a server supplied via --mcp-config is in none of them, so
-            // the old spelling could never resolve and printed
-            //     server:multiterminal-channel - no MCP server configured with that name
-            // The plugin branch of that same validator reads the loaded-plugin list instead and
-            // never consults the MCP scopes, which is why --strict-mcp-config stays safe here and we
-            // keep the isolation it was added for.
-            //
-            // "@inline" IS A SENTINEL - DO NOT "CORRECT" IT TO THE MARKETPLACE NAME. Claude Code
-            // assigns @inline to any plugin loaded via --plugin-dir; it names no marketplace and
-            // resolves to nothing on disk. Changing it to @multiterminal-marketplace to match the
-            // installed registry is the obvious-looking tidy-up and it SILENTLY KILLS CHANNELS:
-            // registration matches on the marketplace BEFORE the dev-channels check runs, so the
-            // flag cannot rescue a mismatch, and no test pins the string. Established by Alice on
-            // the MultiTerminal side (ticket c9285d2a).
-            //
-            // The name before the '@' is the plugin DIRECTORY BASENAME, derived from the path above
-            // so the two cannot drift apart.
-            //
-            // EXPECT A FALSE-POSITIVE WARNING AND DO NOT READ IT AS FAILURE: the launch prints
-            //     plugin:multiterminal@inline - plugin not installed
-            // because that validator branch checks the INSTALLED plugin registry, where a
-            // --plugin-dir plugin legitimately never appears - it is session-loaded, not installed.
-            // Every MultiTerminal terminal prints this today and their channels work.
-            string channelFlag = (mtPluginDir != null)
-                ? " --dangerously-load-development-channels plugin:"
-                    + Path.GetFileName(mtPluginDir.TrimEnd(Path.DirectorySeparatorChar)) + "@inline"
-                : "";
             // Auto-update Claude Code before launching if enabled in settings
             string updatePrefix = "";
             if ((_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase))
@@ -3800,13 +3769,18 @@ namespace ClarionAssistant
                 updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
             }
 
-            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {channelEnv}; {colorfgbg}; {updatePrefix}{claudeBase}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config{channelFlag} --allowedTools '{allowedTools}'{extraFlags}";
+            string claudeInvocation = $"{claudeBase}{nameFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
             if (initialPromptFile != null)
             {
                 string safeFile = initialPromptFile.Replace("'", "''");
-                claudeCmd += $" (Get-Content -Raw '{safeFile}')";
+                claudeInvocation += $" (Get-Content -Raw '{safeFile}')";
             }
+
+            // The shell outlives Claude (-NoExit), so Claude's end is signalled from the command
+            // itself rather than by the process exiting (ticket 7792e3e0).
+            string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {mtEnv}; {colorfgbg}; {updatePrefix}"
+                + Services.CaAgentIdentity.WrapWithExitSignal(claudeInvocation, tab.Id);
 
             return new BuiltBackendCommand { Cmd = claudeCmd, TempFiles = tempFiles };
         }
@@ -4111,34 +4085,51 @@ namespace ClarionAssistant
                 tab.Terminal.Write(data);
         }
 
-        // Matches ANSI/VT escape sequences (CSI, OSC, charset selects, etc.) so they can be stripped
-        // before substring-matching a TUI prompt whose text is interleaved with color/box-drawing codes.
-        private static readonly System.Text.RegularExpressions.Regex AnsiEscapeRegex =
-            new System.Text.RegularExpressions.Regex(
-                @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))",
-                System.Text.RegularExpressions.RegexOptions.Compiled);
-
         /// <summary>
-        /// Normalize terminal output for robust substring matching: strip ANSI escapes, fold every
-        /// non-alphanumeric char to a single space, lowercase, and collapse runs of spaces. This makes
-        /// a plain Contains() survive box-drawing characters, embedded color codes, and odd spacing in
-        /// CC's TUI warning prompt.
+        /// The lowest free CA1, CA2, ... (ticket 7792e3e0; uniqueness from b24bcaf4): the name is
+        /// the session's native messaging address, so two sessions sharing one could receive each
+        /// other's messages. "Taken" means held by another tab in ANY chat pad of this IDE, or by
+        /// a row on MultiTerminal's live roster (another IDE, or an MT-hosted terminal).
+        ///
+        /// A RELAUNCH IS CHECKED LIKE ANY LAUNCH - no "keep my old name" exemption. Once the
+        /// broker's reaper retires this tab's dead row, another IDE may take the name; reusing it
+        /// then would put two live sessions on one address (Codex security, pipeline run 2). The
+        /// roster exposes no owner pid, so CA cannot prove a row is its own predecessor. Cost: a
+        /// tab restarted inside the reaper's ~30s sweep comes back with a new number. Cosmetic,
+        /// and safe.
+        ///
+        /// MultiTerminal being unreachable is ordinary (it may not be installed) and leaves only
+        /// the local check. Short timeout because this runs on the launch path; 127.0.0.1 refuses
+        /// instantly when nothing is listening. Two IDEs launching the same name in the same
+        /// instant can still both pass - the broker rejecting a duplicate name is the backstop
+        /// (MT ticket 9a731cda).
         /// </summary>
-        private static string NormalizeForMatch(string s)
+        private string ResolveUniqueAgentName(TerminalTab tab)
         {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            string noAnsi = AnsiEscapeRegex.Replace(s, string.Empty);
-            var sb = new StringBuilder(noAnsi.Length);
-            foreach (char c in noAnsi)
-                sb.Append(char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : ' ');
-            return System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ");
-        }
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<AssistantChatControl> pads;
+            lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
+            foreach (var pad in pads)
+            {
+                if (pad._tabManager == null) continue;
+                foreach (var t in pad._tabManager.Tabs)
+                    if (!ReferenceEquals(t, tab) && !string.IsNullOrEmpty(t.AgentName))
+                        taken.Add(t.AgentName);
+            }
 
-        /// <summary>Escape control chars so a raw terminal buffer is readable in a single Debug trace line.</summary>
-        private static string EscapeForLog(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return string.Empty;
-            return s.Replace("\x1b", "\\x1b").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+            try
+            {
+                var roster = new Services.MultiTerminalApiClient(timeoutMs: 1500).ListTerminals();
+                if (roster != null && roster.Success && roster.Data != null)
+                    foreach (var row in roster.Data)
+                        if (!string.IsNullOrEmpty(row.Name)) taken.Add(row.Name);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
+            }
+
+            return Services.CaAgentIdentity.NextFreeName(taken.Contains);
         }
 
         private static int _dataRecvCount;
@@ -4151,56 +4142,21 @@ namespace ClarionAssistant
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
 
-            // ── Auto-dismiss Claude Code's --dangerously-load-development-channels warning ──
-            // CC 2.1.168 renders this warning as a colored, box-wrapped TUI. The text is interleaved
-            // with ANSI escapes and arrives split across ~16ms ConPTY flush batches, so a literal
-            // Contains() on a single chunk never matches. We therefore: accumulate every chunk into a
-            // capped per-tab buffer, strip ANSI + normalize, substring-match the prompt anchors, then
-            // inject the digit '1' (option "I am using this for local development") with NO newline —
-            // a bare Enter gets dropped before CC's raw-mode prompt is ready. Fires at most once per tab.
-            // Only relevant to Claude (Copilot/Codex never emit this), so skip those backends.
-            if (!tab.DevChannelWarningHandled
-                && tab.AssistantBackend != "Copilot" && tab.AssistantBackend != "Codex"
-                && tab.Terminal != null && tab.Terminal.IsRunning)
+            // Claude ended but the -NoExit shell lives on: the command's finally block retitles
+            // the console with this tab's exit marker (CaAgentIdentity.WrapWithExitSignal).
+            // ASCII decode: the marker is ASCII, and a multibyte character split across reads
+            // must not throw or shift it.
+            if (tab.AgentName != null)
             {
-                try
+                string carry = tab.ExitSignalCarry;
+                bool exited = Services.CaAgentIdentity.SeesExitSignal(tab.Id, Encoding.ASCII.GetString(data), ref carry);
+                tab.ExitSignalCarry = carry;
+                if (exited)
                 {
-                    tab.DevChannelBuffer.Append(Encoding.UTF8.GetString(data));
-                    if (tab.DevChannelBuffer.Length > 2000)
-                        tab.DevChannelBuffer.Remove(0, tab.DevChannelBuffer.Length - 1000);
-
-                    string normalized = NormalizeForMatch(tab.DevChannelBuffer.ToString());
-
-                    // One-time ground-truth dump: if CC changes the wording on a future version, this
-                    // trace gives the exact bytes to re-anchor against instead of guessing.
-                    if (!tab.DevChannelRawDumped && normalized.Contains("development"))
-                    {
-                        tab.DevChannelRawDumped = true;
-                        System.Diagnostics.Debug.WriteLine("[DevChannel] RAW: " + EscapeForLog(tab.DevChannelBuffer.ToString()));
-                        System.Diagnostics.Debug.WriteLine("[DevChannel] NORM: " + normalized);
-                    }
-
-                    if (normalized.Contains("for local development")
-                        || normalized.Contains("loading development channels")
-                        || normalized.Contains("development channels")
-                        || normalized.Contains("enter to confirm"))
-                    {
-                        tab.DevChannelWarningHandled = true;
-                        var devTab = tab;
-                        // ~400ms settle so the box is fully rendered + raw mode is ready, then send '1'
-                        // with no CR/LF — Write() does not append a line ending.
-                        System.Threading.Tasks.Task.Delay(400).ContinueWith(_ =>
-                        {
-                            try
-                            {
-                                if (devTab.Terminal != null && devTab.Terminal.IsRunning)
-                                    devTab.Terminal.Write("1");
-                            }
-                            catch { }
-                        });
-                    }
+                    tab.ExitSignalCarry = null;
+                    Action release = () => { ReleaseAgentName(tab); UpdateStatus("Claude Code exited"); };
+                    if (InvokeRequired) BeginInvoke(release); else release();
                 }
-                catch { }
             }
 
             // Auto-send startup command once Claude is ready for human input.
@@ -4246,101 +4202,9 @@ namespace ClarionAssistant
                 tab.Terminal.Resize(e.Columns, e.Rows);
         }
 
-        /// <summary>
-        /// Drop a tab's assistant from the MultiTerminal roster (ticket 9a0ce0de).
-        ///
-        /// MT removes its own terminals host-side from OnTerminalExited; CA never did, and the
-        /// SessionEnd hook that would have covered for it only runs when Claude Code exits
-        /// CLEANLY — CA kills the process, so it never fires. The result was terminals listed
-        /// as available with no process behind them.
-        ///
-        /// TIMEOUT IS LOAD-BEARING, not tidiness. The default client waits 10s, and these are
-        /// shutdown paths: on IDE close that would hold Clarion open for 10s PER TAB waiting on
-        /// a MultiTerminal that may not even be running. 1.5s is long enough for a localhost
-        /// call and short enough to be invisible.
-        ///
-        /// <paramref name="background"/> false runs it inline, for Dispose — a background thread
-        /// would not survive the process exiting, so the request must complete before we return.
-        /// True runs it off the UI thread, for a single tab closing while the IDE lives on.
-        /// </summary>
-        private void DisconnectTabFromMultiTerminal(TerminalTab tab, bool background, string origin)
-        {
-            if (tab == null) { Services.ShutdownLog.Log("MT disconnect skipped (" + origin + "): tab is null"); return; }
-            if (string.IsNullOrEmpty(tab.AgentName))
-            {
-                // Ordinary for the Home tab, and for a tab already disconnected by an earlier path.
-                Services.ShutdownLog.Log("MT disconnect skipped (" + origin + "): no AgentName on tab '" + tab.Name + "'");
-                return;
-            }
-            string agentName = tab.AgentName;
-            // Cleared first: whatever happens to the call, this tab's identity is spent, and a
-            // retry against a name the broker may have reassigned is worse than not retrying.
-            tab.AgentName = null;
-
-            Action disconnect = () =>
-            {
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                try
-                {
-                    var api = new Services.MultiTerminalApiClient(timeoutMs: 1500);
-                    var res = api.DisconnectTerminal(agentName);
-                    // Logged, not swallowed. The whole path used to be a bare catch{} with no
-                    // trace at all, which is exactly why two failed live tests could not be told
-                    // apart from outside the process — "never attempted" looked identical to
-                    // "attempted and failed". MultiTerminal being absent is still an ordinary
-                    // state, so a failure here is recorded, never surfaced to the developer.
-                    // Elapsed is logged too: a timeout that lands exactly on the budget is the
-                    // signature of a stall BEFORE the request goes out (proxy resolution), not of
-                    // a slow MultiTerminal — that distinction cost a whole test cycle to make.
-                    Services.ShutdownLog.Log("MT disconnect '" + agentName + "' (" + origin + ", "
-                        + (background ? "background" : "inline") + ") -> "
-                        + (res != null && res.Success ? "ok" : "FAILED: " + (res == null ? "null result" : res.Error))
-                        + " [" + sw.ElapsedMilliseconds + "ms]");
-                }
-                catch (Exception ex)
-                {
-                    Services.ShutdownLog.Log("MT disconnect '" + agentName + "' (" + origin + ") THREW after "
-                        + sw.ElapsedMilliseconds + "ms: " + ex.Message);
-                }
-            };
-
-            if (background)
-            {
-                try { System.Threading.ThreadPool.QueueUserWorkItem(_ => disconnect()); }
-                catch { disconnect(); }
-            }
-            else
-            {
-                disconnect();
-            }
-        }
-
-        /// <summary>
-        /// A tab was closed by the developer. Drop its assistant from the MultiTerminal roster
-        /// (ticket 9a0ce0de) while we still can — see the wiring comment for why this hook and
-        /// not the tab list.
-        ///
-        /// Background is safe here: only a single tab is going away, the IDE lives on, so the
-        /// request completes on its own thread and the developer never waits on it.
-        /// </summary>
-        private void OnTabRemoved(object sender, TerminalTab tab)
-        {
-            DisconnectTabFromMultiTerminal(tab, background: true, origin: "tab-removed");
-        }
-
         private void OnTabTerminalProcessExited(TerminalTab tab)
         {
             tab.AssistantLaunched = false;
-
-            // The assistant process is gone, so its broker entry should go too (ticket
-            // 9a0ce0de). Off the UI thread: the IDE is still running, so the request will
-            // complete, and a closing tab should not wait on an HTTP round-trip.
-            //
-            // Usually a no-op now: on a tab close OnTabRemoved has already disconnected this tab
-            // and nulled its AgentName. This still earns its place for the case it was written
-            // for — the assistant dying on its OWN (typed exit, or a crash) with the tab left
-            // open, which no other path sees.
-            DisconnectTabFromMultiTerminal(tab, background: true, origin: "process-exited");
 
             if (_knowledgeService != null && tab.SessionId > 0)
             {
@@ -4356,9 +4220,27 @@ namespace ClarionAssistant
             else
                 label = "Claude Code exited";
             if (InvokeRequired)
-                BeginInvoke((Action)(() => UpdateStatus(label)));
+                BeginInvoke((Action)(() => { ReleaseAgentName(tab); UpdateStatus(label); }));
             else
+            {
+                ReleaseAgentName(tab);
                 UpdateStatus(label);
+            }
+        }
+
+        /// <summary>
+        /// Give up the tab's CA&lt;n&gt; name and its label once no session holds it - an aborted
+        /// launch, or the assistant exiting (ticket 7792e3e0). Without this a dead tab keeps
+        /// showing CA2, so the developer is sent to message an address nobody answers; once the
+        /// broker reaps the row another IDE can take CA2, and two tabs show one name. UI thread
+        /// only: it renames the tab strip, and ResolveUniqueAgentName reads AgentName there.
+        /// </summary>
+        private void ReleaseAgentName(TerminalTab tab)
+        {
+            if (tab.AgentName == null) return;
+            if (tab.BaseName != null)
+                _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend));
+            tab.AgentName = null;
         }
 
         private void OnWorkWithSolution()
@@ -4710,51 +4592,6 @@ namespace ClarionAssistant
         /// <summary>Dispose every live AssistantChatControl on the UI thread before native IDE teardown.
         /// Called from ShutdownService.Terminate(). Disposing the control tears down its WebView2s
         /// (_header/HUD, _homeView) and tab content. Idempotent + exception-swallowing per instance.</summary>
-        /// <summary>
-        /// Drop every registered tab from the MultiTerminal roster, inline, at the very start of
-        /// IDE shutdown (ticket 9a0ce0de).
-        ///
-        /// BACKSTOP ONLY — MEASURED, NOT ASSUMED. On the ordinary File &gt; Exit path this finds
-        /// nothing: the pad's own Dispose runs during WinForms teardown about two seconds BEFORE
-        /// ApplicationExit fires Terminate(), so by the time this is called _instances is already
-        /// empty and it logs "sweep: 0 chat pad instance(s)". That is the expected reading, not a
-        /// failure. It is kept because Terminate() has two entry points (ApplicationExit and
-        /// /Workspace/Terminate) whose relative ordering against control teardown is not ours to
-        /// guarantee, and because a sweep that costs a few milliseconds and says plainly what it
-        /// saw is worth more than an assumption about that ordering — the first version of this
-        /// ticket's fix was built on exactly such an assumption, and it was backwards.
-        ///
-        /// INLINE, not queued: the process is on its way out and a ThreadPool item would be killed
-        /// before the request left the machine. The client's own 1.5s timeout bounds each call, and
-        /// the caller wraps the whole sweep in RunBounded as a second bound.
-        ///
-        /// Counts are logged even when zero — "swept 0 tabs" is the diagnostic that distinguishes
-        /// "nothing to do" from "never ran", which is precisely the distinction the silent version
-        /// could not report.
-        /// </summary>
-        public static void DisconnectAllForShutdown()
-        {
-            List<AssistantChatControl> snapshot;
-            lock (_instances) { snapshot = new List<AssistantChatControl>(_instances); }
-            Services.ShutdownLog.Log("MT disconnect sweep: " + snapshot.Count + " chat pad instance(s)");
-
-            foreach (var inst in snapshot)
-            {
-                try
-                {
-                    var tm = inst._tabManager;
-                    if (tm == null) { Services.ShutdownLog.Log("MT disconnect sweep: instance has no tab manager"); continue; }
-
-                    var tabs = new List<TerminalTab>(tm.Tabs);
-                    Services.ShutdownLog.Log("MT disconnect sweep: " + tabs.Count + " tab(s) on this instance");
-                    foreach (var t in tabs)
-                        inst.DisconnectTabFromMultiTerminal(t, background: false, origin: "shutdown-sweep");
-                }
-                catch (Exception ex) { Services.ShutdownLog.Log("MT disconnect sweep failed: " + ex.Message); }
-            }
-            Services.ShutdownLog.Log("MT disconnect sweep done");
-        }
-
         public static void DisposeAllForShutdown()
         {
             List<AssistantChatControl> snapshot;
@@ -4770,27 +4607,13 @@ namespace ClarionAssistant
             lock (_instances) { _instances.Remove(this); }
             if (disposing)
             {
-                // THIS is the path that actually does the work on a clean File > Exit (ticket
-                // 9a0ce0de) — verified in a live IDE run, where it disconnected the last open
-                // tab roughly two seconds before ApplicationExit fired. ShutdownService's own
-                // sweep is the backstop for the reverse ordering, not the primary.
-                //
-                // Idempotent against the other paths: DisconnectTabFromMultiTerminal nulls
-                // AgentName, so whichever runs second finds nothing to do and logs the skip.
-                //
-                // Still does NOT cover a kill — deploy, crash, Task Manager — which is the common
-                // way CA terminals die and needs a liveness check on the broker side; see the ticket.
-                Services.ShutdownLog.Close("pad dispose: begin (MT disconnect)");
-                try
-                {
-                    if (_tabManager != null)
-                    {
-                        foreach (var t in _tabManager.Tabs)
-                            DisconnectTabFromMultiTerminal(t, background: false, origin: "pad-dispose");
-                    }
-                }
-                catch (Exception ex) { Services.ShutdownLog.Log("MT disconnect on pad dispose failed: " + ex.Message); }
-
+                // NO MultiTerminal disconnect here, or on tab close or process exit (ticket b24bcaf4,
+                // retiring 9a0ce0de's). The broker's disconnect is keyed by NAME and takes the first
+                // row with that name, so with two IDEs holding the same CA-<slug> one tab's exit tore
+                // down the other's registration and wiped its messaging credentials. Release now
+                // belongs to MultiTerminal: the plugin's SessionEnd on a clean exit, and the ownerPid
+                // liveness reaper for a kill - the ordinary way a CA tab dies - which targets the
+                // exact row and re-checks its owner.
                 // Close timing (4d63b995): one line before each step, so the gaps show where the time goes.
                 Services.ShutdownLog.Close("pad dispose: tabs");
                 if (_tabManager != null) _tabManager.Dispose();

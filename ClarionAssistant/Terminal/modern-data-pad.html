@@ -1206,9 +1206,9 @@
     }
 
     // ===================== Environment header (16d140e9) =====================
-    // The APP / VERSION / ROOT lines under the title (RED is filled by the setRedIndex handler). Source of
+    // The APP / VERSION / ROOT / RED lines under the title (RED also by the setRedIndex handler). Source of
     // truth = the host: setVersionInfo and the setExplorerData payload both carry appLabel / appPath /
-    // versionName / rootPath, so the header self-corrects once the solution or an app finishes loading.
+    // versionName / rootPath / redPath, so the header self-corrects once the solution or an app finishes loading.
     // A missing value renders as a dash and is not clickable. A clickable line posts only WHICH line it is
     // ('app' / 'root'); the host opens the path it last sent, so no path from the page reaches explorer.exe.
     var HDR_DASH = '—';
@@ -1232,6 +1232,28 @@
         hdrField('hdrApp', h.appPath, true, 'app', 'click to show it in Windows Explorer');
         hdrField('hdrVersion', h.versionName, false, null, null);
         hdrField('hdrRoot', h.rootPath, true, 'root', 'click to open it in Windows Explorer');
+        // f3b47441: RED comes with VERSION/ROOT too, so a version switch updates it on every tab, not only
+        // when the Files tab rebuilds its index. Absent (an older host) leaves the line as it is.
+        if (typeof h.redPath === 'string') renderRedBanner(h.redPath);
+    }
+
+    // Name the .red actually in play. Note "no solution" does NOT imply "no redirection": the host falls back
+    // to the Clarion install's own clarion.red, and that changes what every search returns — so it is worth
+    // stating rather than leaving to be inferred. '' = no .red in force.
+    function renderRedBanner(redPath) {
+        var rbp = document.getElementById('redBannerPath');
+        if (!rbp) return;
+        if (redPath) {
+            rbp.textContent = HDR_LRM + redPath + HDR_LRM; // keeps a path's edge punctuation in place under direction:rtl
+            rbp.title = redPath + '\n(click to open)';
+            rbp.className = 'env-val path link';
+            rbp.setAttribute('data-redpath', redPath);
+        } else {
+            rbp.textContent = 'None';
+            rbp.title = 'No active redirection file — open a Clarion solution.';
+            rbp.className = 'env-val path none';
+            rbp.removeAttribute('data-redpath');
+        }
     }
 
     // The host refused a click because the path is no longer there (moved, deleted, share offline). The line
@@ -2778,23 +2800,7 @@
                     else { rh.style.display = 'none'; }
                 }
 
-                // Name the .red actually in play. Note "no solution" does NOT imply "no redirection": the
-                // host falls back to the Clarion install's own clarion.red, and that changes what every
-                // search returns — so it is worth stating rather than leaving to be inferred.
-                var rbp = document.getElementById('redBannerPath');
-                if (rbp) {
-                    if (redAvailable && msg.redPath) {
-                        rbp.textContent = '‎' + msg.redPath + '‎'; // LRM: keeps a path's edge punctuation in place under direction:rtl
-                        rbp.title = msg.redPath + '\n(click to open)';
-                        rbp.className = 'env-val path link';
-                        rbp.setAttribute('data-redpath', msg.redPath);
-                    } else {
-                        rbp.textContent = 'None';
-                        rbp.title = 'No active redirection file — open a Clarion solution.';
-                        rbp.className = 'env-val path none';
-                        rbp.removeAttribute('data-redpath');
-                    }
-                }
+                renderRedBanner(redAvailable && msg.redPath ? msg.redPath : '');
 
                 redFilter(); // re-apply whatever is already typed (re-renders and rebuilds omniHits)
                 if (prevPath) { // restore the highlight if that file survived the re-filter

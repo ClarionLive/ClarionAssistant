@@ -60,6 +60,11 @@ namespace ClarionAssistant.Services
             HeaderLine = headerLine;
         }
 
+        /// <summary>f64ba833: why the last TryCapture returned null ("captured ..." when it succeeded). Kept here, not
+        /// logged, so this file stays free of the addin's logger for the harnesses that compile it standalone; the
+        /// launcher writes it to monaco-spike.log. Before this, a failed capture was invisible (Debug.WriteLine).</summary>
+        public static string LastCaptureResult { get; private set; }
+
         /// <summary>
         /// Build the context from the currently-open native embeditor's PweeEditorDetails, or null when
         /// it can't be built (no embed open, details lack AppName/Module, or the generated module isn't
@@ -71,23 +76,25 @@ namespace ClarionAssistant.Services
             try
             {
                 var pwee = (appTree ?? new AppTreeService()).GetOpenPweeDetails();
-                if (pwee == null) return null;
+                if (pwee == null) { LastCaptureResult = "no open pwee details"; return null; }
                 string appName = GetProp(pwee, "AppName") as string;
                 string module = GetProp(pwee, "Module") as string;
-                if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(module)) return null;
+                if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(module)) { LastCaptureResult = "pwee details lack AppName/Module (app='" + appName + "' module='" + module + "')"; return null; }
 
                 string candidate = ResolveModulePath(appName, module, RedFileService.Active);
-                if (candidate == null) return null;
+                if (candidate == null) { LastCaptureResult = "module '" + module + "' not found beside '" + appName + "' or via the .red"; return null; }
 
                 string header = ReadMemberLine(candidate)
                     ?? "  MEMBER('" + Path.GetFileNameWithoutExtension(appName) + ".clw')";
                 System.Diagnostics.Debug.WriteLine(
                     "[EmbedLspContext] captured: realPath='" + candidate + "', header='" + header.Trim() + "'");
+                LastCaptureResult = "captured " + candidate;
                 return new EmbedLspContext(candidate, header);
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[EmbedLspContext] TryCapture: " + ex.Message);
+                LastCaptureResult = "exception " + ex.GetType().Name + ": " + ex.Message;
                 return null;
             }
         }

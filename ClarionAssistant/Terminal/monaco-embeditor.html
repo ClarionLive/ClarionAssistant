@@ -1407,6 +1407,7 @@
                 addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
                 addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
+                installColonSuggest(editor);    // "glo:" / "PROP:" opens completion (ticket 38158e98)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 document.getElementById('saveBtn').addEventListener('click', doSave);
@@ -2693,6 +2694,41 @@
             if (' \t(),'.indexOf(text) >= 0 && liveKeywordCaseOn) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
         });
     }
+    // Typing ':' straight after an identifier (glo:, PROP:, EVENT:, Cus:) opens completion, as Ctrl+Space does.
+    // ':' is a triggerCharacter on the provider, but the Clarion wordPattern keeps ':' inside a word, so once
+    // the list is already open while the identifier is typed (the instant local lane keeps it open) Monaco
+    // continues that session as the same word and re-filters it - nothing matches "glo:" - instead of
+    // asking the provider again. No request was even sent (ticket 38158e98). Next tick: after Monaco has
+    // closed the stale list. The provider's column-1 guard (col1TypingSuppressed) cannot see a run ending
+    // in ':', so a label typed at column 1 (LOC:Name in a data section - never completes, 8933fa05) is
+    // excluded here.
+    function isColonQualifierTyped(line, caretCol0) {
+        if (line.charAt(caretCol0 - 1) !== ':') return false;
+        if (!/[A-Za-z0-9_]/.test(line.charAt(caretCol0 - 2))) return false;           // "x:" - not ": " or "::"
+        var before = line.substring(0, caretCol0 - 1);
+        var run = /[A-Za-z_][A-Za-z0-9_:]*$/.exec(before);
+        if (!run) return false;                                                        // an identifier run, not "12:"
+        if (run.index === 0) return false;                                             // a label at column 1
+        if (typeof isInClarionString === 'function' && isInClarionString(line, caretCol0 - 1)) return false;
+        if (typeof isInClarionComment === 'function' && isInClarionComment(line, caretCol0 - 1)) return false;
+        return true;
+    }
+    function installColonSuggest(ed) {
+        if (!ed || typeof ed.onDidType !== 'function') return;
+        ed.onDidType(function (text) {
+            if (text !== ':') return;
+            var model = ed.getModel(), pos = ed.getPosition();
+            if (!model || !pos) return;
+            if (!isColonQualifierTyped(model.getLineContent(pos.lineNumber), pos.column - 1)) return;
+            setTimeout(function () {
+                // auto:true - like typing, not Ctrl+Space. An EXPLICIT invoke that comes back empty (the local
+                // layer has nothing for "g:" yet) shows Monaco's "No suggestions" box, and while that box is up
+                // Monaco calls no provider at this caret again - not the late refresh, not Ctrl+Space (1328 log).
+                // An auto one that comes back empty just closes quietly.
+                try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', { auto: true }); } catch (e) { }
+            }, 0);
+        });
+    }
     // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
     // Leaves comparisons/compound operators (== <= >= != += -= …) alone. Pairs with '=' as a completion
     // commit character: "tes=" accepts "TestVar" then becomes "TestVar = ".
@@ -3573,6 +3609,7 @@
         addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
         addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
+        installColonSuggest(editor2);   // and "glo:" completion (ticket 38158e98)
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
@@ -4683,7 +4720,9 @@
     // Completion (R1/R2):
     //   * The LSP gets a LSP_RACE_BUDGET_MS head start. It misses -> the local items are returned with
     //     incomplete:true, and the LSP answer is merged on the NEXT re-query (the next keystroke) from the
-    //     cache below. Nothing re-triggers the suggest widget.
+    //     cache below. A showing list is never re-triggered. The one exception: when what was shown was
+    //     EMPTY, the late answer re-opens suggest once if the caret and text have not moved
+    //     (refreshWhenLspLands, ticket 38158e98) - otherwise "glo:" never shows its globals.
     //   * The cache is keyed on (model.id, line, wordStart) - NOT versionId, which every keystroke bumps - and
     //     serves any query whose typed prefix EXTENDS the cached one, filtered client-side. One entry per model.
     //   * LSP_MISSES_TO_SKIP consecutive race misses on a model = the LSP is slow on it: stop waiting for it and
@@ -4961,6 +5000,62 @@
         lspComplCache[id] = c;
         return c;
     }
+    // A late LSP answer is normally merged on the next keystroke (the provider re-queries every keystroke
+    // and the cache serves it). That fails when the list just shown was EMPTY - the local layer has nothing
+    // for "glo:" / "PROP:" (no CodeGraph lookup) and the LSP missed the race - because Monaco shows no list
+    // and the user, seeing none, types nothing: the 226 items sat in the cache until Ctrl+Space
+    // (ticket 38158e98, John's live test). So once that answer lands WITH items, and the caret and text
+    // are where they were, re-open suggest: the provider is then served from the cache at once.
+    // Pipeline run 2: only for an answer that lands within LATE_REFRESH_MAX_MS - on a huge module the LSP can
+    // take 9-44 s, and a list popping up that long after the user stopped (or pressed Escape) reads as a
+    // ghost; "glo:" lands in about 1 s. Armed once per request (the colon trigger and Monaco's own ':' can
+    // both ask), only for the focused editor, and only when an item survives the typed prefix.
+    var LATE_REFRESH_MAX_MS = 3000;
+    function refreshWhenLspLands(model, position, lsp, prefix) {
+        if (lsp.refreshArmed) { complLog('[compl-refresh] skip=already-armed'); return; }
+        lsp.refreshArmed = true;
+        var version = model.getVersionId(), line = position.lineNumber, column = position.column, armedAt = rtNow();
+        lsp.promise.then(function (resp) {
+            var why = 'fired';
+            try {
+                if (!resp || !resp.items || !resp.items.length) { why = 'skip=empty-answer'; return; }
+                if (rtNow() - armedAt > LATE_REFRESH_MAX_MS) { why = 'skip=too-late'; return; }
+                if (prefix && prefix.length > (lsp.prefix || '').length) {
+                    var P = prefix.toUpperCase();
+                    if (!resp.items.some(function (it) { return completionMatchesPrefix(it, P); })) { why = 'skip=prefix-filters-all'; return; }
+                }
+                var eds = [typeof activeEd === 'function' ? activeEd() : null, editor, editor2];
+                var ed = eds.filter(function (e) { return e && e.getModel && e.getModel() === model; })[0];
+                if (!ed || !ed.getPosition) { why = 'skip=no-editor'; return; }
+                if (model.getVersionId() !== version) { why = 'skip=text-changed'; return; }
+                if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) { why = 'skip=no-focus'; return; }
+                var p = ed.getPosition();
+                if (!p || p.lineNumber !== line || p.column !== column) { why = 'skip=caret-moved'; return; }
+                ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', { auto: true });   // see installColonSuggest
+            } catch (e) { why = 'error=' + (e && e.message); }
+            finally {
+                complLog('[compl-refresh] ' + why + ' items=' + (resp && resp.items ? resp.items.length : 0) +
+                    ' afterMs=' + Math.round(rtNow() - armedAt));
+            }
+        });
+    }
+    // Diagnostic (ticket 38158e98): late-refresh decisions and provider exceptions, into monaco-spike.log via
+    // the host - the only log that survives a deployed build. Rare lines only: the per-keystroke query lines
+    // that found the g: bug were removed once it was fixed. Never throws.
+    function complLog(line) { try { postToHost({ action: 'log', line: line }); } catch (e) { } }
+    // Log any SYNCHRONOUS throw from the completion provider: Monaco swallows a provider's exception and shows
+    // "No suggestions" with nothing in our log, which is how the g: bug hid until it was instrumented.
+    function wrapProviderForLog(provider) {
+        var inner = provider.provideCompletionItems;
+        provider.provideCompletionItems = function (model, position, context) {
+            try { return inner.apply(this, arguments); }
+            catch (e) {
+                complLog('[compl] SYNC-ERROR ' + (e && (e.stack || e.message) || e));
+                return { suggestions: [], incomplete: true };
+            }
+        };
+        return provider;
+    }
     // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
     // is a miss for model `id`. No race (resolved at once) when `c` already answered, is still deferred to the
     // idle sync (typing: not a miss), or `id` is in skip mode.
@@ -5086,7 +5181,7 @@
             }
             return out;
         }
-        monaco.languages.registerCompletionItemProvider('clarion', {
+        monaco.languages.registerCompletionItemProvider('clarion', wrapProviderForLog({
             triggerCharacters: ['.', ':', '?'],
             provideCompletionItems: function (model, position, context) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
@@ -5139,11 +5234,21 @@
                         if (lsp.done && !localItems.length && !lspItems.length) maybeReportLsp(lsp.resp && lsp.resp.lsp);
                         // Case-insensitive label dedupe; the local item wins (it knows the caret's scope). Only
                         // LSP items are dropped, so its overloads (Open(LONG) / Open(STRING)) all survive.
-                        var localLabels = {};
-                        localItems.forEach(function (it) { var k = completionLabelKey(it); if (k != null) localLabels[k] = true; });
+                        // After a '.', the server labels a field with its type ("Address STRING(40)") while
+                        // the local item is bare ("Address"), so the labels never match: a non-method LSP item
+                        // whose insertText names a local item is that same field. Methods keep label-only
+                        // matching - their overloads share an insertText.
+                        var localLabels = {}, localNames = {};
+                        var dotted = before.charAt(startCol - 2) === '.';
+                        localItems.forEach(function (it) {
+                            var k = completionLabelKey(it); if (k != null) localLabels[k] = true;
+                            if (dotted && it && it.insertText) localNames[String(it.insertText).toLowerCase()] = true;
+                        });
                         var items = localItems.concat(lspItems.filter(function (it) {
                             var k = completionLabelKey(it);
-                            return k == null || !localLabels[k];
+                            if (k != null && localLabels[k]) return false;
+                            var overloadable = it.kind === 2 || it.kind === 3 || it.kind === 4;   // Method/Function/Constructor
+                            return overloadable || !it.insertText || !localNames[String(it.insertText).toLowerCase()];
                         }));
                         // incomplete:true → Monaco re-queries the provider on every keystroke instead of
                         // caching the first response and fuzzy-filtering client-side. Required so the
@@ -5188,11 +5293,16 @@
                         }
                         var kws = clarionKeywordSuggestions(before, range, seen);
                         if (kws.length) sugg = sugg.concat(kws);
+                        // Empty now, LSP still on its way: re-open once it lands (ticket 38158e98).
+                        if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp, prefix);
                         return { suggestions: sugg, incomplete: true };
                     })
-                    .catch(function () { return { suggestions: [], incomplete: true }; });
+                    .catch(function (e) {
+                        complLog('[compl] ERROR ' + (e && (e.stack || e.message) || e));
+                        return { suggestions: [], incomplete: true };
+                    });
             }
-        });
+        }));
         // Code Snippets appear IN the completion list (classic Clarion Ctrl+J parity): typing a trigger
         // prefix shows the snippet with a snippet icon + an expansion preview; Enter/Tab (or space on an
         // exact full-trigger match) expands it via OUR engine — Monaco's native snippet insert is undone

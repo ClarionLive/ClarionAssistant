@@ -1293,6 +1293,27 @@ namespace ClarionCodeGraph.Parsing
                     continue;
                 }
 
+                // File-level EQUATE outside any CLASS/INTERFACE body (e.g. option flags declared above
+                // the CLASS they belong to). Only CLASS-body equates were captured before, so these never
+                // became symbols and never reached bare-prefix completion. EquateDeclRegex is anchored at
+                // column 0, so commented-out ("!NAME EQUATE(...)") and indented lines don't match.
+                var incEqMatch = EquateDeclRegex.Match(line);
+                if (incEqMatch.Success)
+                {
+                    result.Symbols.Add(new ClarionSymbol
+                    {
+                        Name = incEqMatch.Groups[1].Value,
+                        Type = "variable",
+                        FilePath = filePath,
+                        LineNumber = lineNum,
+                        ProjectId = projectId,
+                        Params = "EQUATE",
+                        Scope = "global",
+                        SourcePreview = Preview(line)
+                    });
+                    continue;
+                }
+
                 var includeMatch = IncludeRegex.Match(line);
                 if (includeMatch.Success)
                 {

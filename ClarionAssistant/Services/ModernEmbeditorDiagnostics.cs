@@ -301,8 +301,8 @@ namespace ClarionAssistant.Services
                 string u = trimmed.ToUpperInvariant();
 
                 // Set when THIS line opens a structure (pushed, or self-terminated on the same
-                // line). Consumed by the trailing-'.' close below: such a line spends the first
-                // '.' of its run terminating ITSELF, so only the remaining dots close outer ones.
+                // line). The trailing-'.' close below skips such a line: its '.' terminates the
+                // structure it opened, so it closes nothing outer (a ".." run is not counted).
                 bool lineOpensStructure = false;
 
                 // Close: a line beginning with END..., or a lone '.'

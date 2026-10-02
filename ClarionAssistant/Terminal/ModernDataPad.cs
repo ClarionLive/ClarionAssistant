@@ -699,7 +699,7 @@ namespace ClarionAssistant
             Task.Run(() =>
             {
                 Dictionary<string, object> data;
-                try { data = ctx.GetPadData(); }
+                try { using (Services.MemoryHeadroom.Phase("M8 padData")) data = ctx.GetPadData(); }   // 1d8d1c49
                 catch { data = null; }
                 if (data == null)
                     data = new Dictionary<string, object> { { "locals", new List<object>() }, { "tables", new List<object>() } };
@@ -1157,7 +1157,7 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// 16d140e9: the header's APP / VERSION / ROOT values. APP is the open .app's full path, else the
+        /// 16d140e9: the header's APP / VERSION / ROOT (and, since f3b47441, RED) values. APP is the open .app's full path, else the
         /// solution's (labelled SOLUTION); VERSION and ROOT are CA's effective version entry (EffectiveClarionVersion:
         /// the IDE's Build > Set Clarion Version; CA has no version picker of its own, 286f2e57) - the one it builds
         /// with, which may not be the install the IDE runs from. VERSION names the source that chose it, e.g.
@@ -1187,6 +1187,18 @@ namespace ClarionAssistant
             data["appPath"] = m.AppPath;
             data["versionName"] = m.VersionName;
             data["rootPath"] = m.RootPath;
+
+            // f3b47441: RED rides with VERSION and ROOT. It used to come only from setRedIndex, which the
+            // environment watcher sends only while the Files tab is showing, so after Build > Set Clarion Version
+            // the other tabs kept the previous version's .red under the new VERSION until Files was opened.
+            string redPath = "";
+            try
+            {
+                var red = Services.RedFileService.Active ?? EnsureOwnRedFile();
+                if (red != null) redPath = red.RedFilePath ?? "";
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] AddHeaderFields red: " + ex.Message); }
+            data["redPath"] = redPath;
         }
 
         /// <summary>
@@ -1250,6 +1262,9 @@ namespace ClarionAssistant
         // cleared on an environment change so a solution/version switch re-resolves it.
         private Services.RedFileService _ownRed;
 
+        // The environment key (_lastEnvKey) under which EnsureOwnRedFile last found no .red; null after a success.
+        private string _ownRedFailedEnvKey;
+
         // Canonical section search order used by the resolver (ClarionAppDataReader): C12 names first, then the
         // legacy names, then the universal Common fallback. EnumerateFiles/ResolveTrace walk this in priority order.
         private static readonly string[] RedSectionOrder = Services.RedFileService.BuildSectionOrder;
@@ -1259,11 +1274,21 @@ namespace ClarionAssistant
         /// uses (detect the current Clarion version, then LoadForProject against the open solution's dir). Used as a
         /// fallback when RedFileService.Active is null (chat pad hasn't loaded it yet / isn't up), so the Files-tab
         /// type-ahead doesn't depend on the chat pad's timing. Cached in _ownRed; LoadForProject also sets the
-        /// global Active, so once this succeeds later requests read Active directly. UI thread.
+        /// global Active (and, since f3b47441, clears a stale one on failure), so once this succeeds later
+        /// requests read Active directly. UI thread.
         /// </summary>
         private Services.RedFileService EnsureOwnRedFile()
         {
-            if (_ownRed != null) return _ownRed;
+            // The cache is good only while it is still the .red in force: once Active was cleared or replaced
+            // (a failed load for a new version), returning it would resolve through the old version's paths
+            // until the environment watcher dropped it (f3b47441 pipeline run 1).
+            if (_ownRed != null && ReferenceEquals(Services.RedFileService.Active, _ownRed)) return _ownRed;
+            _ownRed = null;
+            // A failed resolution is remembered until the environment changes: the header now asks on every
+            // PostExplorerData (pin, open, ...), and re-reading a .red that isn't there each time is UI-thread I/O.
+            string envNow = _lastEnvKey ?? "";
+            if (_ownRedFailedEnvKey != null && string.Equals(_ownRedFailedEnvKey, envNow, StringComparison.OrdinalIgnoreCase))
+                return null;
             try
             {
                 var cfg = Services.EffectiveClarionVersion.CurrentConfig();
@@ -1276,11 +1301,13 @@ namespace ClarionAssistant
                 var r = new Services.RedFileService();
                 if (r.LoadForProject(projDir, cfg) && !string.IsNullOrEmpty(r.RedFilePath))
                 {
-                    _ownRed = r;   // LoadForProject set RedFileService.Active too
+                    _ownRed = r;   // LoadForProject set RedFileService.Active too (a failure clears a stale one)
+                    _ownRedFailedEnvKey = null;
                     return r;
                 }
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernDataPad] EnsureOwnRedFile: " + ex.Message); }
+            _ownRedFailedEnvKey = envNow;
             return null;
         }
 
@@ -1677,6 +1704,10 @@ namespace ClarionAssistant
             {
                 _lastEnvKey = envKey;
                 _ownRed = null; // env changed — drop our self-loaded .red so RequestRedIndex re-resolves
+                // f3b47441: an index started for the previous environment must not post now. Off the Files tab
+                // nothing below supersedes it, and its late setRedIndex would put the old .red back on the RED line
+                // that PostVersionInfo is about to set. A cancelled run drops its result; Files activation re-indexes.
+                try { if (_redIndexCts != null) _redIndexCts.Cancel(); } catch { }
                 PostVersionInfo();
                 if (_filesTabActive)
                 {

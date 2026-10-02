@@ -251,7 +251,9 @@ async function main() {
         ask(s, 2, 3);                  // column-1 typing
         ask(s, 3, 12);                 // inside a string
         ask(s, 4, 15);                 // inside a comment
-        check('5.17 col-1 typing, strings and comments post nothing', s.posted.length === 0, JSON.stringify(s.posted.map(m => m.action)));
+        // ('log' = the [compl] diagnostic line, 38158e98 - not a request.)
+        const sent = s.posted.filter(m => m.action !== 'log');
+        check('5.17 col-1 typing, strings and comments post nothing', sent.length === 0, JSON.stringify(sent.map(m => m.action)));
 
         const lc = e.requests('localCompletion')[0];
         check('5.18 localCompletion\'s timeoutMs is at most 500', lc && lc.timeoutMs <= 500, lc && String(lc.timeoutMs));
@@ -272,10 +274,109 @@ async function main() {
         allTriggers.push(...e.triggers, ...c.triggers);
     }
 
-    section('5.10: nothing re-triggers the suggest widget');
+    section('5.20: after a dot, a typed LSP field label and the bare local field are one row');
     {
-        check('5.10 editor.trigger was never called in any scenario', allTriggers.length === 0, JSON.stringify(allTriggers));
-        check('5.10 the local-first code and the providers never call triggerSuggest', !/triggerSuggest/.test(PROVIDERS_SRC));
+        // The server labels a GROUP field "Address STRING(40)" and inserts "Address"; the local layer
+        // lists the same field bare. A label-only dedupe showed both.
+        const e = load();
+        const q = typeAndAsk(e, 2, '    Settings.', { triggerCharacter: '.' });
+        e.reply('localCompletion', { items: [item('Address', 'STRING(40)  (field)', { kind: 5 }), item('Port', 'LONG  (field)', { kind: 5 }),
+            item('Send', 'PROCEDURE', { kind: 2 })] });
+        e.reply('completion', { items: [item('Address STRING(40)', 'STRING(40)', { kind: 5, insertText: 'Address' }),
+            item('Port LONG', 'LONG', { kind: 5, insertText: 'Port' }), item('Timeout LONG', 'LONG', { kind: 5, insertText: 'Timeout' }),
+            item('Send(STRING pText)', '', { kind: 2, insertText: 'Send' }), item('Send(LONG pCode)', '', { kind: 2, insertText: 'Send' })] });
+        await flush();
+        const L = labels(q.value);
+        check('5.20 each field the local layer knows is listed once, as the local item',
+            L.filter(l => /^address\b/i.test(l)).join() === 'Address' && L.filter(l => /^port\b/i.test(l)).join() === 'Port', JSON.stringify(L));
+        check('5.20 a field only the LSP knows still appears', L.includes('Timeout LONG'), JSON.stringify(L));
+        check('5.20 method overloads sharing an insertText with a local method all survive',
+            L.includes('Send(STRING pText)') && L.includes('Send(LONG pCode)'), JSON.stringify(L));
+
+        // Not after a dot: the insertText match stays off (a PRE-qualified item may insert only the remainder).
+        const p = load();
+        const qp = typeAndAsk(p, 2, '    Cus:');
+        p.reply('localCompletion', { items: [item('Cus:Name', 'STRING(20)  (field)', { kind: 5, insertText: 'Name' })] });
+        p.reply('completion', { items: [item('Name STRING(20)', 'STRING(20)', { kind: 5, insertText: 'Name' })] });
+        await flush();
+        check('5.20 without a dot, only a matching label dedupes', labels(qp.value).includes('Name STRING(20)'), JSON.stringify(labels(qp.value)));
+        allTriggers.push(...e.triggers, ...p.triggers);
+    }
+
+    section('5.10: a showing list is never re-triggered');
+    {
+        check('5.10 editor.trigger was never called in any scenario above', allTriggers.length === 0, JSON.stringify(allTriggers));
+        // 38158e98: the only triggerSuggest in the local-first code is refreshWhenLspLands (5.21).
+        const calls = PROVIDERS_SRC.match(/triggerSuggest/g) || [];
+        const fn = /function refreshWhenLspLands\([\s\S]*?\n    \}/.exec(PROVIDERS_SRC);
+        check('5.10 triggerSuggest appears once, inside refreshWhenLspLands',
+            calls.length === 1 && !!fn && /triggerSuggest/.test(fn[0]), 'calls=' + calls.length);
+    }
+
+    section('5.21: an EMPTY list is re-opened once when the late LSP lands at the same caret (38158e98)');
+    {
+        // "glo:" - the local layer has nothing, the LSP misses the race, Monaco shows no list, and the user,
+        // seeing none, types nothing: the late answer must re-open suggest (served from the cache).
+        const atCaret = (e, line, column) => { e.editor.getPosition = () => ({ lineNumber: line, column }); };
+
+        const a = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(a, 2, 9);
+        const qa = ask(a, 2, 9, { triggerCharacter: ':' });
+        a.reply('localCompletion', { items: [] }); a.fire(BUDGET); await flush();
+        check('5.21 the empty local answer is shown at once', qa.done && labels(qa.value).length === 0, JSON.stringify(qa.value && labels(qa.value)));
+        check('5.21 ...and nothing is triggered yet', a.triggers.length === 0);
+        a.clock += 1000; a.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 the late LSP answer with items re-opens suggest once', a.triggers.length === 1 && a.triggers[0] === 'editor.action.triggerSuggest',
+            JSON.stringify(a.triggers));
+        const qa2 = ask(a, 2, 9, {});
+        a.reply('localCompletion', { items: [] }); await flush();
+        check('5.21 ...and the re-query is served the cached items', qa2.done && labels(qa2.value).includes('Glo:Svc'), JSON.stringify(qa2.value && labels(qa2.value)));
+        check('5.21 ...without triggering again', a.triggers.length === 1);
+
+        const b = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(b, 2, 9);
+        ask(b, 2, 9, {});
+        b.reply('localCompletion', { items: [] }); b.fire(BUDGET); await flush();
+        b.model.setLine(2, '    glo:x'); atCaret(b, 2, 10);          // the user typed on meanwhile
+        b.clock += 1000; b.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when the user has typed on (the next keystroke merges it anyway)', b.triggers.length === 0);
+
+        const c = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(c, 2, 9);
+        ask(c, 2, 9, {});
+        c.reply('localCompletion', { items: [] }); c.fire(BUDGET); await flush();
+        c.clock += 1000; c.reply('completion', { items: [] }); await flush();
+        check('5.21 no re-open when the late answer is empty too', c.triggers.length === 0);
+
+        const d = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(d, 2, 9);
+        ask(d, 2, 9, {});
+        d.reply('localCompletion', { items: [item('Glo:Local', 'local')] }); d.fire(BUDGET); await flush();
+        d.clock += 1000; d.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when a list was showing (never re-trigger a showing list)', d.triggers.length === 0);
+
+        // Pipeline run 2: a ghost list long after the user stopped, a hidden editor, and two askers.
+        const g = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(g, 2, 9);
+        ask(g, 2, 9, {});
+        g.reply('localCompletion', { items: [] }); g.fire(BUDGET); await flush();
+        g.clock += 4000; g.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open for an answer that lands after 3 s (huge module: no ghost list)', g.triggers.length === 0);
+
+        const h = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(h, 2, 9); h.editor.hasTextFocus = () => false;
+        ask(h, 2, 9, {});
+        h.reply('localCompletion', { items: [] }); h.fire(BUDGET); await flush();
+        h.clock += 1000; h.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when the editor lost focus', h.triggers.length === 0);
+
+        const k = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(k, 2, 9);
+        ask(k, 2, 9, { triggerCharacter: ':' });          // Monaco's own trigger ...
+        ask(k, 2, 9, {});                                  // ... and the colon handler's explicit one
+        k.reply('localCompletion', { items: [] }); k.reply('localCompletion', { items: [] }); k.fire(BUDGET); await flush();
+        k.clock += 1000; k.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 two askers on one request re-open only once', k.triggers.length === 1, JSON.stringify(k.triggers));
     }
 
     finish();

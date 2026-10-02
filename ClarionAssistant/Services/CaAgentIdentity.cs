@@ -1,82 +1,152 @@
 using System;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace ClarionAssistant.Services
 {
     /// <summary>
     /// Identity helpers for CA-spawned Claude Code terminals that register
-    /// with the MultiTerminal broker via the multiterminal-channel plugin.
-    ///
-    /// Each terminal tab gets:
-    ///  - A CA-prefixed agent name derived from its display name
-    ///  - A stable docId hashed from install path + agent name so reconnects
-    ///    hit the by-docId match path in MessageBroker instead of orphaning
+    /// with the MultiTerminal broker. Each tab is known by a short numbered agent name
+    /// (CA1, CA2, ...) - by name alone, with no docId: a docId identifies a pane
+    /// MultiTerminal itself launched (ticket b24bcaf4).
     /// </summary>
     public static class CaAgentIdentity
     {
+        private const string NamePrefix = "CA";
+
         /// <summary>
-        /// Normalize a tab name into a CA-prefixed agent name safe for the messaging system.
-        /// - Already starts with "CA-"? Use as-is after sanitize.
-        /// - Otherwise prefix with "CA-".
-        /// - Sanitize: runs of non-[A-Za-z0-9] collapse to single dash, trim, cap length.
+        /// The lowest-numbered CA1, CA2, CA3, ... that <paramref name="isTaken"/> does not
+        /// reject (case-insensitively, as the caller decides).
+        ///
+        /// WHY NUMBERED (ticket 7792e3e0): the name used to be derived from the tab's display
+        /// name, which gave CA-Terminal-2-CC - too long for the tab and the prompt-box label, and
+        /// too much to type when asking for a message to be sent to it. "Terminal" was filler,
+        /// "CC" named a backend that every registered tab shares, and a per-IDE tab counter made
+        /// a second IDE collide into CA-Terminal-1-CC-2. Numbering from the names actually in use
+        /// - every tab in this IDE plus MultiTerminal's live roster - gives each IDE its own
+        /// number without a suffix.
+        ///
+        /// WHY UNIQUE (ticket b24bcaf4): the agent name is the session's native messaging
+        /// ADDRESS (-n) and its only MultiTerminal identity, so two sessions sharing one could
+        /// receive each other's messages. Two IDEs launching in the same instant can still pick
+        /// the same number; the broker rejecting a duplicate registration is the backstop.
         /// </summary>
-        public static string NormalizeAgentName(string tabName, int fallbackIndex)
+        public static string NextFreeName(Func<string, bool> isTaken)
         {
-            string baseName = (tabName ?? "").Trim();
-            if (string.IsNullOrEmpty(baseName))
-                baseName = "Tab" + fallbackIndex;
-
-            bool hasPrefix = baseName.StartsWith("CA-", StringComparison.OrdinalIgnoreCase);
-            string rest = hasPrefix ? baseName.Substring(3) : baseName;
-
-            var sb = new StringBuilder();
-            bool lastWasDash = false;
-            foreach (char c in rest)
+            for (int n = 1; n < 1000; n++)
             {
-                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
-                {
-                    sb.Append(c);
-                    lastWasDash = false;
-                }
-                else
-                {
-                    if (!lastWasDash && sb.Length > 0)
-                    {
-                        sb.Append('-');
-                        lastWasDash = true;
-                    }
-                }
+                string candidate = NamePrefix + n;
+                if (isTaken == null || !isTaken(candidate)) return candidate;
             }
-            string cleaned = sb.ToString().TrimEnd('-');
-            if (cleaned.Length == 0) cleaned = "Tab" + fallbackIndex;
-            if (cleaned.Length > 40) cleaned = cleaned.Substring(0, 40);
-            return "CA-" + cleaned;
+            return NamePrefix + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         /// <summary>
-        /// Compute a stable docId from the addin install path + agent name.
-        /// Same install + same name = same docId across addin reloads, so
-        /// MessageBroker.RegisterTerminal hits the by-docId match path.
+        /// The tab-strip label for a tab whose assistant is known as <paramref name="agentName"/>:
+        /// the name alone for a plain "Terminal N" tab, or "CA2 · MySolution" when the tab was
+        /// opened on something (a solution, project or class) worth keeping in view. The name
+        /// leads so the label shows exactly what to type to message the tab.
         /// </summary>
-        public static string ComputeStableDocId(string agentName)
+        public static string TabLabel(string agentName, string baseName)
         {
-            try
-            {
-                string seed = (AppDomain.CurrentDomain.BaseDirectory ?? "ClarionAssistant") + "|" + (agentName ?? "");
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(seed));
-                    var sb = new StringBuilder();
-                    for (int i = 0; i < 4 && i < hash.Length; i++)
-                        sb.Append(hash[i].ToString("x2"));
-                    return "ca-" + sb.ToString();
-                }
-            }
-            catch
-            {
-                return "ca-fallback-" + Math.Abs((agentName ?? "").GetHashCode()).ToString("x");
-            }
+            if (string.IsNullOrWhiteSpace(agentName)) return baseName;
+            string context = (baseName ?? "").Trim();
+            if (context.Length == 0 || IsDefaultTabName(context)) return agentName;
+            return agentName + " · " + context;
+        }
+
+        private const string ExitTitlePrefix = "ca-assistant-exited:";
+
+        /// <summary>
+        /// Wrap the backend invocation so the tab learns when the assistant has ended.
+        ///
+        /// WHY (ticket 7792e3e0, live test): the tab runs pwsh -NoExit, so when Claude exits the
+        /// shell stays and the ConPTY process never ends - ProcessExited does not fire and the tab
+        /// would keep showing CA4 long after the broker reaped the row. The finally block runs
+        /// however Claude ends (/exit, crash, Ctrl+C). It drops MULTITERMINAL_NAME, so a claude
+        /// typed by hand in the leftover shell cannot come back as a released name, and sets the
+        /// console title to a per-tab marker. ConPTY forwards title changes to the terminal as an
+        /// OSC sequence, which <see cref="SeesExitSignal"/> spots in the output stream.
+        /// Single quotes only: the whole command sits inside pwsh -Command "...". The marker is
+        /// concatenated at run time so the command line never contains it verbatim - Claude
+        /// listing processes would otherwise print it while still running (pipeline run 3).
+        /// </summary>
+        public static string WrapWithExitSignal(string invocation, string tabId)
+        {
+            int split = ExitTitlePrefix.Length / 2;
+            return "try { " + invocation + " } finally { "
+                + "Remove-Item Env:MULTITERMINAL_NAME -ErrorAction SilentlyContinue; "
+                + "$Host.UI.RawUI.WindowTitle = '" + ExitTitlePrefix.Substring(0, split) + "' + '"
+                + ExitTitlePrefix.Substring(split) + EscapeForPowerShellSingleQuote(tabId) + "' }";
+        }
+
+        /// <summary>
+        /// True once the exit marker for <paramref name="tabId"/> arrives as a console-title
+        /// change (OSC 0 or OSC 2), the only way the wrapper emits it. Plain text containing the
+        /// marker - a printed command line, a log - is not the signal. <paramref name="carry"/>
+        /// holds the tail of the previous chunk, so a sequence split across two reads is still
+        /// seen; pass the same variable for every chunk of one tab.
+        /// </summary>
+        public static bool SeesExitSignal(string tabId, string chunk, ref string carry)
+        {
+            string marker = ExitTitlePrefix + tabId;
+            string text = (carry ?? "") + (chunk ?? "");
+            bool seen = text.IndexOf("\x1b]0;" + marker, StringComparison.Ordinal) >= 0
+                     || text.IndexOf("\x1b]2;" + marker, StringComparison.Ordinal) >= 0;
+            int keep = Math.Min(text.Length, marker.Length + 3);   // framed length ("ESC ] n ;" + marker) - 1
+            carry = text.Substring(text.Length - keep);
+            return seen;
+        }
+
+        /// <summary>True for the "Terminal N" name TabManager.CreateTerminalTab gives a tab nobody
+        /// named - keep the two in step, or plain tabs start showing "CA2 · Terminal 2".</summary>
+        public static bool IsDefaultTabName(string name)
+        {
+            const string word = "Terminal ";
+            if (name == null || !name.StartsWith(word, StringComparison.Ordinal) || name.Length == word.Length)
+                return false;
+            for (int i = word.Length; i < name.Length; i++)
+                if (name[i] < '0' || name[i] > '9') return false;
+            return true;
+        }
+
+        /// <summary>
+        /// The system-prompt section that tells the MODEL its own MultiTerminal name, or null when
+        /// there is no name to state.
+        ///
+        /// WHY (ticket c175492a): MULTITERMINAL_NAME and -n identify the session to MultiTerminal,
+        /// but the model sees neither. The plugin's SessionStart identity block is suppressed for
+        /// embedded tabs, a delivered message names only its sender, and send_message wants the
+        /// caller's own name as fromTerminalId. With two IDEs open, both models saw CA-Terminal-1-CC
+        /// and CA-Terminal-1-CC-2 on the roster and could not tell which was theirs. Stating it in
+        /// the --append-system-prompt-file content survives /clear, unlike anything said in chat.
+        /// </summary>
+        public static string BuildIdentityPrompt(string agentName)
+        {
+            if (string.IsNullOrWhiteSpace(agentName)) return null;
+            string n = agentName.Trim();
+            var sb = new StringBuilder();
+            sb.AppendLine("## Your MultiTerminal identity");
+            sb.AppendLine();
+            sb.AppendLine("Your MultiTerminal name is `" + n + "`. It is the address other agents use to message this terminal, and it is fixed for this session (it does not change on /clear).");
+            sb.AppendLine();
+            sb.AppendLine("- Whenever a MultiTerminal tool asks for YOUR name or terminal id (`fromTerminalId` in `send_message`, `agentName`, `updatedBy`, `createdBy`, and the like), pass exactly `" + n + "`.");
+            sb.AppendLine("- Other Clarion Assistant terminals, including ones in other Clarion IDEs, have names that differ from yours only by their number (`CA1`, `CA2`, ...). Never work out your own name from `list_terminals`; it is the one stated here.");
+            sb.AppendLine("- Messages delivered to you are addressed to `" + n + "`; reply as `" + n + "`.");
+            sb.AppendLine("- If a MultiTerminal tool reports that `" + n + "` is held by another terminal, or that this session is not registered, do not send messages as `" + n + "`: tell the developer instead. Never use another terminal's name.");
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// <paramref name="extra"/> (the knowledge/recap text bound for --append-system-prompt-file)
+        /// with the identity section for <paramref name="agentName"/> appended. Either may be empty;
+        /// with no name the extra comes back unchanged, so a launch without a name loses nothing.
+        /// </summary>
+        public static string AppendIdentityPrompt(string extra, string agentName)
+        {
+            string identity = BuildIdentityPrompt(agentName);
+            if (identity == null) return extra;
+            if (string.IsNullOrEmpty(extra)) return identity;
+            return extra.TrimEnd() + Environment.NewLine + Environment.NewLine + identity;
         }
 
         /// <summary>
