@@ -293,6 +293,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86"
                Args = @($RepoDir) }
+            # PR #237: the active tab re-selected on solution reopen - a view opening before the reopen loop
+            # (the .app tab from Recent Applications) neither gives up the restore nor lets the loop record
+            # over the saved choice; the store's temp file is per process and never left behind. IDE stubbed.
+            @{ Name = "ActiveDocumentRestore.Test"
+               Sources = @("tests\ActiveDocumentRestore.Test.cs", "tests\ActiveDocumentRestore.Stubs.cs", "ActiveDocumentRestoreCommand.cs")
+               Refs = @("System.dll", "System.Windows.Forms.dll") }
             # File-level EQUATEs in a .inc (outside any CLASS body) must become CodeGraph symbols.
             @{ Name = "ClarionParser.IncEquates.Test"
                Sources = @("tests\ClarionParser.IncEquates.Test.cs", "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs",

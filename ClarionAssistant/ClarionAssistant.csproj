@@ -191,6 +191,7 @@
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
+    <Compile Include="ActiveDocumentRestoreCommand.cs" />
     <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />
     <Compile Include="ShutdownTerminateCommand.cs" />
     <Compile Include="OpenModernEmbeditorPickerCommand.cs" />
