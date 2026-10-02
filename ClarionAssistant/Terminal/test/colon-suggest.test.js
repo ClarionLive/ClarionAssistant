@@ -66,7 +66,7 @@ function fakeEditor(line, column) {
         onDidType: function (h) { ed.handlers.push(h); },
         getModel: function () { return { getLineContent: function () { return line; } }; },
         getPosition: function () { return { lineNumber: 1, column: column }; },
-        trigger: function (src, id, args) { ed.triggered.push(id); },
+        trigger: function (src, id, args) { ed.triggered.push(id); ed.lastArgs = args; },
         type: function (t) { ed.handlers.forEach(function (h) { h(t); }); }
     };
     api.installColonSuggest(ed);
@@ -81,6 +81,11 @@ function tick() { return new Promise(function (r) { setTimeout(r, 5); }); }
     await tick();
     ok('":" after glo triggers editor.action.triggerSuggest on the next tick',
         a.triggered.length === 1 && a.triggered[0] === 'editor.action.triggerSuggest', JSON.stringify(a.triggered));
+
+    // 1328 live log: an EXPLICIT invoke that comes back empty leaves Monaco's "No suggestions" box up, and
+    // Monaco then calls no provider at that caret again. The trigger must be auto, like typing.
+    ok('the colon trigger is auto (no "No suggestions" box when empty)', a.lastArgs && a.lastArgs.auto === true, JSON.stringify(a.lastArgs));
+    ok('the late refresh is auto too', /'clarion-late-lsp', 'editor\.action\.triggerSuggest', \{ auto: true \}/.test(html));
 
     const b = fakeEditor('    glo', 8);
     b.type('o');

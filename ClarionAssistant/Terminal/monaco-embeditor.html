@@ -2721,7 +2721,11 @@
             if (!model || !pos) return;
             if (!isColonQualifierTyped(model.getLineContent(pos.lineNumber), pos.column - 1)) return;
             setTimeout(function () {
-                try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', {}); } catch (e) { }
+                // auto:true - like typing, not Ctrl+Space. An EXPLICIT invoke that comes back empty (the local
+                // layer has nothing for "g:" yet) shows Monaco's "No suggestions" box, and while that box is up
+                // Monaco calls no provider at this caret again - not the late refresh, not Ctrl+Space (1328 log).
+                // An auto one that comes back empty just closes quietly.
+                try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', { auto: true }); } catch (e) { }
             }, 0);
         });
     }
@@ -5027,7 +5031,7 @@
                 if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) { why = 'skip=no-focus'; return; }
                 var p = ed.getPosition();
                 if (!p || p.lineNumber !== line || p.column !== column) { why = 'skip=caret-moved'; return; }
-                ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', {});
+                ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', { auto: true });   // see installColonSuggest
             } catch (e) { why = 'error=' + (e && e.message); }
             finally {
                 complLog('[compl-refresh] ' + why + ' items=' + (resp && resp.items ? resp.items.length : 0) +
