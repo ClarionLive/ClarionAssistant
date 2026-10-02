@@ -13,8 +13,8 @@ using Microsoft.CSharp;
 // 5.9 folder exists, so it fell back to the NEWEST folder and read another Clarion's ClarionProperties.xml. The
 // reporter's IDE used 11.0, the server read a file listing Clarion.NET first, and the index got ClarionNet40.red.
 //
-// Fixtures: gh247 = the reporter's current 11.0 file (Win32 entries first); gh209 = his older copy (.NET first),
-// standing in for the newer folder the server wrongly read.
+// Fixtures: gh247\ClarionProperties.xml = the reporter's 11.0 file (his Clarion 11 IDE's; Win32 entries first);
+// gh247\ClarionProperties-12.0.xml = his 12.0 file, the NEWEST folder, which the server read instead (.NET first).
 //
 // Run:  tests\Run-Tests.ps1   (passes both fixture paths)
 //
@@ -57,10 +57,10 @@ static class ClarionVersionServiceInstallDetectTest
 
     static int Main(string[] args)
     {
-        string current = args.Length > 0 ? args[0] : null, older = args.Length > 1 ? args[1] : null;
-        if (current == null || !File.Exists(current) || older == null || !File.Exists(older))
+        string current = args.Length > 0 ? args[0] : null, newest = args.Length > 1 ? args[1] : null;
+        if (current == null || !File.Exists(current) || newest == null || !File.Exists(newest))
         {
-            Console.WriteLine("COULD NOT RUN: fixtures not found: " + (current ?? "(none)") + ", " + (older ?? "(none)"));
+            Console.WriteLine("COULD NOT RUN: fixtures not found: " + (current ?? "(none)") + ", " + (newest ?? "(none)"));
             return 2;
         }
 
@@ -73,7 +73,7 @@ static class ClarionVersionServiceInstallDetectTest
             Directory.CreateDirectory(Path.GetDirectoryName(xml11));
             Directory.CreateDirectory(Path.GetDirectoryName(xml12));
             File.Copy(current, xml11);
-            File.Copy(older, xml12);
+            File.Copy(newest, xml12);
 
             string root = Path.Combine(tmp, "v11");
             string clarionExe = Path.Combine(root, "bin", "Clarion.exe");
@@ -102,6 +102,24 @@ static class ClarionVersionServiceInstallDetectTest
                 var cfg = info.ResolveByRoot(@"C:\Clarion\v11");
                 Ok("... and the root lookup gives Clarion110.red",
                    cfg != null && cfg.RedFileName == "Clarion110.red", cfg != null ? cfg.Name + " / " + cfg.RedFileName : "(null)");
+            }
+
+            // ---- #247 exactly: the reporter's own 12.0 file, the one the server read ----
+            var kevin12 = ClarionVersionService.ParsePropertiesXml(xml12);
+            Ok("his 12.0 file parses", kevin12 != null && kevin12.Versions.Count > 10, kevin12 == null ? "null" : kevin12.Versions.Count.ToString());
+            if (kevin12 != null)
+            {
+                // The OLD lookup by root was the first entry whose root matched. Pin the premise, so the assertion below
+                // stays meaningful: on this file that first match IS the Clarion.NET entry and its .red.
+                var firstMatch = kevin12.Versions.Find(v => !string.IsNullOrEmpty(v.RootPath) &&
+                    string.Equals(v.RootPath.TrimEnd('\\'), @"C:\Clarion\v11", StringComparison.OrdinalIgnoreCase));
+                Ok("premise: first-match on his 12.0 file gives Clarion.NET 4.0.13372 / ClarionNet40.red (the #247 log)",
+                   firstMatch != null && firstMatch.Name == "Clarion.NET 4.0.13372" && firstMatch.RedFileName == "ClarionNet40.red",
+                   firstMatch != null ? firstMatch.Name + " / " + firstMatch.RedFileName : "(null)");
+                var byRoot = kevin12.ResolveByRoot(@"C:\Clarion\v11");
+                Ok("even reading that file, the root lookup now gives Clarion v11 (Base) / Clarion110.red",
+                   byRoot != null && byRoot.Name == "Clarion v11 (Base)" && byRoot.RedFileName == "Clarion110.red",
+                   byRoot != null ? byRoot.Name + " / " + byRoot.RedFileName : "(null)");
             }
 
             // ---- Routing by host (what Detect() does with the running process) ----

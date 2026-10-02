@@ -133,11 +133,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
             # GH #247: the standalone server read the NEWEST settings folder's ClarionProperties.xml (its own
-            # exe is 5.9, not Clarion's 11.0). Fixtures = the reporter's current file and his older copy.
+            # exe is 5.9, not Clarion's 11.0). Fixtures = the reporter's 11.0 file and the 12.0 one the server read.
             @{ Name = "ClarionVersionService.InstallDetectTest"
                Sources = @("tests\ClarionVersionService.InstallDetectTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
                Refs = @("System.dll", "System.Xml.dll")
-               Args = @((Join-Path $TestDir "fixtures\gh247\ClarionProperties.xml"), (Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
+               Args = @((Join-Path $TestDir "fixtures\gh247\ClarionProperties.xml"), (Join-Path $TestDir "fixtures\gh247\ClarionProperties-12.0.xml")) }
             # 16d140e9 / 286f2e57: CA's version is the IDE's Build > Set Clarion Version only (no CA
             # override, VERSION is read-only), and every selection names the tier that decided it.
             # Gets the project dir for its source scans.
