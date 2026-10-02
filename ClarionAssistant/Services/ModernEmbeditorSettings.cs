@@ -42,6 +42,10 @@ namespace ClarionAssistant.Services
         public string HorizontalScrollbar = "auto";
         // Split-editor pane orientation: "v" (side by side) | "h" (top / bottom). Default v.
         public string SplitOrientation = "v";
+        // Document-structure fly-out: how many tree levels are visible when it opens (1..4; 0 = all expanded,
+        // the historical behaviour) and whether the siblings at that deepest visible level are sorted A-Z.
+        public int OutlineLevel = 0;
+        public bool OutlineSortLevel = false;
 
         // Clarion's "Can move caret behind EOL": right-arrow at EOL keeps going right on the same line
         // instead of wrapping, and a click past EOL lands where you clicked. Monaco has NO virtual space
@@ -109,6 +113,8 @@ namespace ClarionAssistant.Services
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
                 s.SplitOrientation = NormalizeSplitOrientation(sv.Get(Prefix + "SplitOrientation"));
                 s.CursorBehindEOL = GetBool(sv, "CursorBehindEOL", s.CursorBehindEOL);
+                s.OutlineLevel = GetInt(sv, "OutlineLevel", s.OutlineLevel, 0, 4);
+                s.OutlineSortLevel = GetBool(sv, "OutlineSortLevel", s.OutlineSortLevel);
                 s.KeyBindings = ParseKeyBindings(sv.Get(Prefix + "KeyBindings"));
                 s.Formatter = ParseFormatter(sv.Get(Prefix + "Formatter"));
             }
@@ -133,6 +139,8 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
             sv.Set(Prefix + "SplitOrientation", NormalizeSplitOrientation(SplitOrientation));
             sv.Set(Prefix + "CursorBehindEOL", CursorBehindEOL ? "true" : "false");
+            sv.Set(Prefix + "OutlineLevel", Clamp(OutlineLevel, 0, 4).ToString());
+            sv.Set(Prefix + "OutlineSortLevel", OutlineSortLevel ? "true" : "false");
             // Compact JSON, single line — SettingsService rejects CR/LF in values, and the serializer
             // never emits them. Empty map persists as "{}" (clears any prior overrides).
             sv.Set(Prefix + "KeyBindings", new JavaScriptSerializer().Serialize(SanitizeBindings(KeyBindings)));
@@ -165,6 +173,8 @@ namespace ClarionAssistant.Services
             if (d.TryGetValue("splitOrientation", out so) && so != null)
                 s.SplitOrientation = NormalizeSplitOrientation(so.ToString());
             s.CursorBehindEOL = ToBool(d, "cursorBehindEOL", s.CursorBehindEOL);
+            s.OutlineLevel = Clamp(ToInt(d, "outlineLevel", s.OutlineLevel), 0, 4);
+            s.OutlineSortLevel = ToBool(d, "outlineSortLevel", s.OutlineSortLevel);
             object kb;
             if (d.TryGetValue("keyBindings", out kb) && kb is IDictionary<string, object>)
             {
@@ -202,6 +212,8 @@ namespace ClarionAssistant.Services
                 { "horizontalScrollbar", HorizontalScrollbar },
                 { "splitOrientation", SplitOrientation },
                 { "cursorBehindEOL", CursorBehindEOL },
+                { "outlineLevel", OutlineLevel },
+                { "outlineSortLevel", OutlineSortLevel },
                 { "keyBindings", SanitizeBindings(KeyBindings) }
             };
             // Merge the formatter pass-through bag so the bridge payload (load + cross-tab broadcast) carries
