@@ -42,10 +42,46 @@ namespace ClarionAssistant.Services
             return ClarionVersionSelector.Select(info);
         }
 
+        /// <summary>
+        /// A host that decides the version itself (the standalone MCP server: --clarion-version, clarion-assistant.json,
+        /// the Clarion tree it is installed under) sets this, so CurrentConfig() — the ClarionGraph library root and
+        /// key among others — follows that decision instead of re-detecting. Same pattern as
+        /// LspService.VersionConfigProvider. The addin leaves it null: there the IDE's choice is authoritative.
+        /// </summary>
+        public static Func<ClarionVersionConfig> HostConfigProvider;
+
         /// <summary>The effective version's config, or null.</summary>
         public static ClarionVersionConfig CurrentConfig()
         {
+            var host = HostConfigProvider;
+            if (host != null)
+            {
+                try { return host(); } catch { return null; }
+            }
             return Resolve().Config;
+        }
+
+        /// <summary>
+        /// Set beside <see cref="HostConfigProvider"/>: the host's one-line account of the version it chose and why
+        /// (the standalone server's VersionNote). Without it, <see cref="DescribeCurrent"/> would describe an
+        /// independent Detect(), which can name a different version from the one CurrentConfig() returned, or none.
+        /// </summary>
+        public static Func<string> HostDescribeProvider;
+
+        /// <summary>One line for logs: the version <see cref="CurrentConfig"/> returns and what chose it.</summary>
+        public static string DescribeCurrent()
+        {
+            if (HostConfigProvider != null)
+            {
+                var describe = HostDescribeProvider;
+                string note = null;
+                if (describe != null)
+                {
+                    try { note = describe(); } catch { }
+                }
+                return !string.IsNullOrEmpty(note) ? note : "Clarion version chosen by the host (no description given)";
+            }
+            return Resolve().Describe();
         }
     }
 }

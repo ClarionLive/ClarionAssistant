@@ -189,6 +189,29 @@ if (Test-Path $fixture) {
     Copy-Item "$fixture\*" $wsDir -Force
     $sln = Join-Path $wsDir 'FillVirtualListBox.sln'
 
+    # GH #247: this repo build is not inside a Clarion tree, so it uses no Clarion unless one is NAMED. Name the
+    # fixture's own Clarion the way versionNote tells users to: clarion-assistant.json next to the solution. Without
+    # it the .red never resolves and the index below finds a few dozen symbols, which its assertion rightly fails.
+    $fixtureRoot = Split-Path (Split-Path (Split-Path $fixture))          # C:\Clarion12
+    $fixtureExe = Join-Path $fixtureRoot 'bin\Clarion.exe'
+    $fixtureVersion = $null
+    if (Test-Path $fixtureExe) {
+        $fv = (Get-Item $fixtureExe).VersionInfo
+        $settingsXml = Join-Path $env:APPDATA ("SoftVelocity\Clarion\{0}.{1}\ClarionProperties.xml" -f $fv.FileMajorPart, $fv.FileMinorPart)
+        if (Test-Path $settingsXml) {
+            [xml]$props = Get-Content $settingsXml
+            $entries = @(($props.ClarionProperties.Properties | Where-Object { $_.name -eq 'Clarion.Versions' }).Properties |
+                Where-Object { $_.IsWindowsVersion.value -ne 'False' -and
+                               "$($_.path.value)".TrimEnd('\') -eq (Join-Path $fixtureRoot 'bin') })
+            # Several Win32 entries can share the bin (custom profiles): the one naming this exe's build is the stock one.
+            $stock = @($entries | Where-Object { $_.name -match "(?<![0-9])$($fv.FilePrivatePart)(?![0-9])" })
+            $pick = if ($stock.Count -gt 0) { $stock[0] } elseif ($entries.Count -gt 0) { $entries[0] } else { $null }
+            if ($pick) { $fixtureVersion = $pick.name }
+        }
+    }
+    Assert-That ($null -ne $fixtureVersion) "no Win32 version entry for $fixtureRoot in its ClarionProperties.xml - cannot name the fixture's Clarion"
+    [System.IO.File]::WriteAllText((Join-Path $wsDir 'clarion-assistant.json'),
+        ('{ "clarionVersion": "' + $fixtureVersion + '" }'), [System.Text.UTF8Encoding]::new($false))
     # --- an explicitly named solution is reported in full ---
     $rw = Invoke-Server @(
         '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_solution_info","arguments":{}}}'
@@ -203,7 +226,12 @@ if (Test-Path $fixture) {
         # The regression guard: these fields vanish if GetHostOpenSolutionPath() goes back to null.
         Assert-That ($null -ne $info.databasePath -and $info.databasePath -ne '(none)') `
             "get_solution_info returned no databasePath - the stale-selection branch is back"
-        Assert-That ($null -ne $info.versionName) "get_solution_info returned no versionName"
+        # GH #247: a server outside a Clarion tree (this test runs the repo build) no longer GUESSES a Clarion;
+        # the solution's clarion-assistant.json names it, so that is the version reported, and the note says so.
+        Assert-That ($info.versionName -eq $fixtureVersion) `
+            "get_solution_info reported version '$($info.versionName)', not '$fixtureVersion' from clarion-assistant.json (note: $($info.versionNote))"
+        Assert-That ("$($info.versionNote)" -match 'chosen by: clarion-assistant\.json') `
+            "versionNote does not say clarion-assistant.json chose the version: '$($info.versionNote)'"
     }
 
     # --- index, then query what was indexed ---
@@ -230,6 +258,57 @@ if (Test-Path $fixture) {
 else {
     Write-Host "  ..  solution fixture absent ($fixture) - resolution assertions skipped" -ForegroundColor DarkGray
 }
+
+# --- GH #247: no guessed Clarion, and the reason is in get_solution_info ---
+# The repo build is not inside <Clarion>\accessory\addins\ClarionAssistant, so it has no Clarion of its own. It used
+# to fall back to the NEWEST %APPDATA%\SoftVelocity\Clarion folder — another Clarion's settings, which is how #247's
+# server handed a Clarion 11 project ClarionNet40.red. Now it reports no version unless one is named, and says why.
+$blockStart3 = $failures.Count
+$vDir = Join-Path ([System.IO.Path]::GetTempPath()) 'clarion-mcp-version-test'
+New-Item -ItemType Directory -Force $vDir | Out-Null
+$vSln = Join-Path $vDir 'Demo.sln'
+Set-Content -Path $vSln -Value 'Microsoft Visual Studio Solution File, Format Version 12.00'
+function Get-SolutionInfo($extraArgs) {
+    $r = Invoke-Server @(
+        '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_solution_info","arguments":{}}}'
+    ) (@('--stdio', '--solution', "`"$vSln`"") + $extraArgs)
+    $f = @($r.Stdout -split "`n" | Where-Object { $_.Trim().Length -gt 0 })
+    if ($f.Count -lt 1) { return $null }
+    return ($f[0] | ConvertFrom-Json).result.content[0].text | ConvertFrom-Json
+}
+$none = Get-SolutionInfo @()
+Assert-That ($null -ne $none) "get_solution_info returned nothing"
+if ($null -ne $none) {
+    Assert-That ($null -eq $none.versionName) "a server outside a Clarion tree reported '$($none.versionName)' with nothing named - a guess"
+    Assert-That ("$($none.versionNote)" -match 'not installed in a Clarion folder' -and "$($none.versionNote)" -match 'will not guess') `
+        "versionNote does not say why there is no version: '$($none.versionNote)'"
+}
+$bogus = Get-SolutionInfo @('--clarion-version', '"No Such Clarion 0.0"')
+if ($null -ne $bogus) {
+    Assert-That ($null -eq $bogus.versionName) "an unknown --clarion-version resolved to '$($bogus.versionName)'"
+    Assert-That ("$($bogus.versionNote)" -match 'matches nothing installed') `
+        "versionNote does not say the named version was not found: '$($bogus.versionNote)'"
+}
+
+# Installed in a Clarion folder that has a bin but no bin\Clarion.exe: still no guess, and the note names the missing
+# exe rather than blaming ClarionProperties.xml (which was never looked for, since nothing names its folder).
+$fakeRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'clarion-mcp-noexe-test'
+Remove-Item $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
+$fakeAddin = Join-Path $fakeRoot 'accessory\addins\ClarionAssistant'
+New-Item -ItemType Directory -Force $fakeAddin, (Join-Path $fakeRoot 'bin') | Out-Null
+Copy-Item (Join-Path (Split-Path $exe) '*') $fakeAddin -Recurse -Force
+$realExe = $exe
+$exe = Join-Path $fakeAddin 'clarion-mcp-server.exe'
+try { $noExe = Get-SolutionInfo @() } finally { $exe = $realExe }
+Assert-That ($null -ne $noExe) "get_solution_info returned nothing from a server installed under a Clarion folder with no Clarion.exe"
+if ($null -ne $noExe) {
+    Assert-That ($null -eq $noExe.versionName) "a Clarion folder with no Clarion.exe reported '$($noExe.versionName)' - a guess"
+    Assert-That ("$($noExe.versionNote)" -match 'Clarion\.exe is missing') `
+        "versionNote does not say the folder's Clarion.exe is missing: '$($noExe.versionNote)'"
+}
+Remove-Item $fakeRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item $vDir -Recurse -Force -ErrorAction SilentlyContinue
+Report-Block $blockStart3 "no guessed Clarion outside a Clarion tree, and get_solution_info says why"
 
 # --- an absent solution must not read as success, fixture or no fixture ---
 $blockStart2 = $failures.Count

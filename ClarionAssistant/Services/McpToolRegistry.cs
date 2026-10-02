@@ -2155,6 +2155,13 @@ COMMON QUERIES:
                         { "lastIndexed", hasDb ? File.GetLastWriteTime(dbPath).ToString("yyyy-MM-dd HH:mm:ss") : "(never)" }
                     };
 
+                    // Which tier chose the version, or why there is none (GH #247) — read after CurrentVersionConfig,
+                    // which is what fills it in.
+                    var noteSource = _workspace as IVersionNoteSource;
+                    string versionNote = noteSource != null ? noteSource.VersionNote : null;
+                    if (!string.IsNullOrEmpty(versionNote))
+                        result["versionNote"] = versionNote;
+
                     if (vConfig != null)
                     {
                         result["versionName"] = vConfig.Name ?? "";
