@@ -165,6 +165,19 @@ static class ClarionVersionServiceExeMatchTest
            inServer.Tier == ClarionVersionTier.RunningExe && inServer.Describe().Contains("the install tree's Clarion.exe")
            && !inServer.Describe().Contains("running Clarion.exe"), inServer.Describe());
 
+        // ClarionGraph's log line follows the HOST's choice when the host decides the version (the standalone server):
+        // an independent Detect() there can name another version than the one the library was built for, or none.
+        EffectiveClarionVersion.HostConfigProvider = () => custom.Versions[2];
+        EffectiveClarionVersion.HostDescribeProvider = () => "Clarion version Clarion 12.0.14373 [chosen by: --clarion-version]";
+        Expect("DescribeCurrent with a host choice: the host's own line, not a fresh Detect()",
+               "Clarion version Clarion 12.0.14373 [chosen by: --clarion-version]", EffectiveClarionVersion.DescribeCurrent());
+        EffectiveClarionVersion.HostDescribeProvider = null;
+        Ok("DescribeCurrent with a host choice and no description: says the host chose, claims no tier",
+           EffectiveClarionVersion.DescribeCurrent().Contains("chosen by the host"), EffectiveClarionVersion.DescribeCurrent());
+        EffectiveClarionVersion.HostConfigProvider = null;
+        Expect("DescribeCurrent with no host: the selection's own Describe()",
+               EffectiveClarionVersion.Resolve().Describe(), EffectiveClarionVersion.DescribeCurrent());
+
         // Degrade, never to none: with only .NET entries there is nothing better, so the old answer stands.
         var netOnly = new ClarionVersionInfo { ClarionExePath = @"D:\Elsewhere\bin\Clarion.exe" };
         netOnly.Versions.Add(new ClarionVersionConfig { Name = "Clarion.NET 4.0.14373", BinPath = @"C:\Clarion\C12\bin",

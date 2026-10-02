@@ -170,6 +170,24 @@ static class ClarionVersionServiceInstallDetectTest
             Ok("an entry whose Clarion.exe is not on this machine is still found, in the newest folder listing it",
                c12 != null && c12.RedFileName == "Clarion120.red" && string.Equals(at, s2x12, StringComparison.OrdinalIgnoreCase));
             Ok("an unknown name finds nothing", ClarionVersionService.FindVersionByName("Clarion 99", s2, out at) == null && at == null);
+
+            // ---- GH #244: a NAMED version on a server installed under ANOTHER Clarion ----
+            // A C12 server (its own file = the 12.0 one, holding a stale copy of the Clarion 11 entry) with
+            // clarion-assistant.json naming Clarion 11: the copy in 11.0, which the 11.0 IDE and MSBuild read, must win.
+            var host12 = ClarionVersionService.ParsePropertiesXml(s2x12);
+            var named11 = ClarionVersionService.FindNamedVersion(host12, "Clarion 11.0.13372", s2);
+            Ok("named on another Clarion's server: the entry's own folder beats the host's stale copy",
+               named11 != null && named11.RedFileName == "Clarion110.red", named11 != null ? named11.RedFileName : "(null)");
+            // Its own folder unknown (no Clarion.exe on this machine): the host's own copy beats the newest folder's.
+            var host11 = new ClarionVersionInfo();
+            host11.Versions.Add(new ClarionVersionConfig { Name = "Clarion 12.0.14373", BinPath = @"C:\NoSuch\C12\bin", RedFileName = "HOST.red" });
+            var named12 = ClarionVersionService.FindNamedVersion(host11, "Clarion 12.0.14373", s2);
+            Ok("named, own folder unknown: the host's copy, not the newest folder's",
+               named12 != null && named12.RedFileName == "HOST.red", named12 != null ? named12.RedFileName : "(null)");
+            var namedNoHost = ClarionVersionService.FindNamedVersion(null, "Clarion 12.0.14373", s2);
+            Ok("named, no host Clarion: the newest folder listing it",
+               namedNoHost != null && namedNoHost.RedFileName == "Clarion120.red", namedNoHost != null ? namedNoHost.RedFileName : "(null)");
+            Ok("named, unknown anywhere: nothing", ClarionVersionService.FindNamedVersion(host12, "Clarion 99", s2) == null);
         }
         catch (Exception ex)
         {

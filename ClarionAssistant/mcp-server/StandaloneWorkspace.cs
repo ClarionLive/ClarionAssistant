@@ -249,6 +249,12 @@ namespace ClarionAssistant.McpServer
                                       + "(<Clarion>\\accessory\\addins\\ClarionAssistant), so nothing says which Clarion's "
                                       + "settings to use, and it will not guess. Pass --clarion-version <name>, or put "
                                       + SolutionClarionVersion.FileName + " next to the solution."
+                                    : !File.Exists(Path.Combine(ownRoot, "bin", "Clarion.exe"))                                    // Installed, but the tree has no Clarion.exe, whose version names the settings
+                                    // folder; DetectForInstall then detects nothing rather than guess one.
+                                    ? "no Clarion version: this server is installed under " + ownRoot + ", but "
+                                      + Path.Combine(ownRoot, "bin", "Clarion.exe") + " is missing, so nothing says "
+                                      + "which Clarion's settings to use, and it will not guess. Pass --clarion-version "
+                                      + "<name>, or put " + SolutionClarionVersion.FileName + " next to the solution."
                                     : "no Clarion version: the ClarionProperties.xml for the Clarion at " + ownRoot
                                       + " could not be found or parsed, so redirection, library paths and the "
                                       + "build root are unavailable.");
@@ -302,16 +308,15 @@ namespace ClarionAssistant.McpServer
         }
 
         /// <summary>
-        /// Exact-then-case-insensitive match on the version NAME as ClarionProperties.xml records
-        /// it. Nothing fuzzier: "Clarion11" and "Clarion11.1" are different installs, and a
-        /// helpful prefix match between them would pick the wrong compiler with no way to tell.
+        /// A version NAMED by tier 1 or 2, matched on the NAME as ClarionProperties.xml records it (see
+        /// <see cref="ClarionVersionService.FindNamedVersion(ClarionVersionInfo, string)"/>).
         /// </summary>
         private static ClarionVersionConfig FindNamed(ClarionVersionInfo info, string name)
         {
-            // This Clarion's own settings first; then every settings folder, since a NAMED version needs no host
-            // Clarion to pick the folder — which is what keeps tiers 1-2 working when Detect() has none (#247).
-            string ignored;
-            return FindByName(info, name) ?? ClarionVersionService.FindVersionByName(name, out ignored);
+            // Every settings folder is searched, since a NAMED version needs no host Clarion to pick the folder, which
+            // keeps tiers 1-2 working when Detect() has none (#247). The copy in that entry's OWN folder beats this
+            // Clarion's copy, which goes stale whenever the other IDE saves (#244).
+            return ClarionVersionService.FindNamedVersion(info, name);
         }
 
         /// <summary>What to tell the user when a named version was not found.</summary>
@@ -320,14 +325,6 @@ namespace ClarionAssistant.McpServer
             return info != null ? InstalledList(info)
                 : "It is not listed in any Clarion settings folder on this machine (%APPDATA%\\SoftVelocity\\Clarion). "
                   + "The name must match what Clarion records under Build > Set Clarion Version, exactly.";
-        }
-
-        private static ClarionVersionConfig FindByName(ClarionVersionInfo info, string name)
-        {
-            if (info == null || info.Versions == null || string.IsNullOrEmpty(name)) return null;
-            return info.Versions.Find(v => v != null && v.Name == name)
-                ?? info.Versions.Find(v => v != null &&
-                       string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

@@ -449,6 +449,13 @@ namespace ClarionAssistant.McpServer
                 // Detect(), which outside a Clarion tree read the newest settings folder.
                 ClarionAssistant.Services.EffectiveClarionVersion.HostConfigProvider =
                     () => workspace.CurrentVersionConfig;
+                // ...and the line that says which version that is and why, so ClarionGraph's log names the version it
+                // built for rather than what an independent Detect() would have picked.
+                ClarionAssistant.Services.EffectiveClarionVersion.HostDescribeProvider = () =>
+                {
+                    var unused = workspace.CurrentVersionConfig;   // resolves the version, which writes the note
+                    return workspace.VersionNote;
+                };
             }
 
             var dispatcher = new ClarionAssistant.Services.McpDispatcher(

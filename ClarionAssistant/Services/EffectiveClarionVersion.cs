@@ -60,5 +60,28 @@ namespace ClarionAssistant.Services
             }
             return Resolve().Config;
         }
+
+        /// <summary>
+        /// Set beside <see cref="HostConfigProvider"/>: the host's one-line account of the version it chose and why
+        /// (the standalone server's VersionNote). Without it, <see cref="DescribeCurrent"/> would describe an
+        /// independent Detect(), which can name a different version from the one CurrentConfig() returned, or none.
+        /// </summary>
+        public static Func<string> HostDescribeProvider;
+
+        /// <summary>One line for logs: the version <see cref="CurrentConfig"/> returns and what chose it.</summary>
+        public static string DescribeCurrent()
+        {
+            if (HostConfigProvider != null)
+            {
+                var describe = HostDescribeProvider;
+                string note = null;
+                if (describe != null)
+                {
+                    try { note = describe(); } catch { }
+                }
+                return !string.IsNullOrEmpty(note) ? note : "Clarion version chosen by the host (no description given)";
+            }
+            return Resolve().Describe();
+        }
     }
 }

@@ -129,7 +129,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
             # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
             @{ Name = "ClarionVersionService.ExeMatchTest"
-               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs", "Services\EffectiveClarionVersion.cs")
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
             # GH #247: the standalone server read the NEWEST settings folder's ClarionProperties.xml (its own

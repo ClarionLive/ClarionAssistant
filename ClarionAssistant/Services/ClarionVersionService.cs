@@ -326,7 +326,48 @@ namespace ClarionAssistant.Services
 
         internal static ClarionVersionConfig FindVersionByName(string name, string settingsRoot, out string xmlPath)
         {
+            bool ownFolder;
+            return FindVersionByName(name, settingsRoot, out xmlPath, out ownFolder);
+        }
+
+        /// <summary>
+        /// A NAMED version for a host that may have detected its own Clarion (<paramref name="host"/>, null when it has
+        /// none). GH #244: every Clarion's ClarionProperties.xml carries a copy of every registered version's entry, and
+        /// a copy is only refreshed when ITS IDE saves. So the host's file is not trusted over the entry's own: the copy
+        /// in the folder that entry's Clarion.exe writes wins (what that IDE and MSBuild read). Only when that folder
+        /// is not known (its Clarion.exe is not on this machine) does the host's copy beat the newest folder's.
+        /// </summary>
+        public static ClarionVersionConfig FindNamedVersion(ClarionVersionInfo host, string name)
+        {
+            return FindNamedVersion(host, name, DefaultSettingsRoot());
+        }
+
+        internal static ClarionVersionConfig FindNamedVersion(ClarionVersionInfo host, string name, string settingsRoot)
+        {
+            string ignored;
+            bool ownFolder;
+            var anywhere = FindVersionByName(name, settingsRoot, out ignored, out ownFolder);
+            if (anywhere != null && ownFolder) return anywhere;
+            var mine = host != null ? FindIn(host.Versions, name) : null;
+            return mine ?? anywhere;
+        }
+
+        /// <summary>
+        /// Exact-then-case-insensitive match on the version NAME as ClarionProperties.xml records
+        /// it. Nothing fuzzier: "Clarion11" and "Clarion11.1" are different installs, and a
+        /// helpful prefix match between them would pick the wrong compiler with no way to tell.
+        /// </summary>
+        private static ClarionVersionConfig FindIn(List<ClarionVersionConfig> versions, string name)
+        {
+            if (versions == null || string.IsNullOrEmpty(name)) return null;
+            return versions.Find(v => v != null && v.Name == name)
+                ?? versions.Find(v => v != null && string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static ClarionVersionConfig FindVersionByName(string name, string settingsRoot, out string xmlPath, out bool ownFolder)
+        {
             xmlPath = null;
+            ownFolder = false;
             if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(settingsRoot) || !Directory.Exists(settingsRoot)) return null;
             var folders = new List<KeyValuePair<Version, string>>();
             try
@@ -348,12 +389,12 @@ namespace ClarionAssistant.Services
                 string xml = Path.Combine(f.Value, "ClarionProperties.xml");
                 var info = ParsePropertiesXml(xml);
                 if (info == null) continue;
-                var cfg = info.Versions.Find(v => v.Name == name)
-                          ?? info.Versions.Find(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+                var cfg = FindIn(info.Versions, name);
                 if (cfg == null) continue;
                 if (string.Equals(SettingsFolderOf(cfg), Path.GetFileName(f.Value), StringComparison.OrdinalIgnoreCase))
                 {
                     xmlPath = xml;
+                    ownFolder = true;
                     return cfg;
                 }
                 if (fallback == null) { fallback = cfg; fallbackPath = xml; }
