@@ -301,10 +301,57 @@ async function main() {
         allTriggers.push(...e.triggers, ...p.triggers);
     }
 
-    section('5.10: nothing re-triggers the suggest widget');
+    section('5.10: a showing list is never re-triggered');
     {
-        check('5.10 editor.trigger was never called in any scenario', allTriggers.length === 0, JSON.stringify(allTriggers));
-        check('5.10 the local-first code and the providers never call triggerSuggest', !/triggerSuggest/.test(PROVIDERS_SRC));
+        check('5.10 editor.trigger was never called in any scenario above', allTriggers.length === 0, JSON.stringify(allTriggers));
+        // 38158e98: the only triggerSuggest in the local-first code is refreshWhenLspLands (5.21).
+        const calls = PROVIDERS_SRC.match(/triggerSuggest/g) || [];
+        const fn = /function refreshWhenLspLands\([\s\S]*?\n    \}/.exec(PROVIDERS_SRC);
+        check('5.10 triggerSuggest appears once, inside refreshWhenLspLands',
+            calls.length === 1 && !!fn && /triggerSuggest/.test(fn[0]), 'calls=' + calls.length);
+    }
+
+    section('5.21: an EMPTY list is re-opened once when the late LSP lands at the same caret (38158e98)');
+    {
+        // "glo:" - the local layer has nothing, the LSP misses the race, Monaco shows no list, and the user,
+        // seeing none, types nothing: the late answer must re-open suggest (served from the cache).
+        const atCaret = (e, line, column) => { e.editor.getPosition = () => ({ lineNumber: line, column }); };
+
+        const a = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(a, 2, 9);
+        const qa = ask(a, 2, 9, { triggerCharacter: ':' });
+        a.reply('localCompletion', { items: [] }); a.fire(BUDGET); await flush();
+        check('5.21 the empty local answer is shown at once', qa.done && labels(qa.value).length === 0, JSON.stringify(qa.value && labels(qa.value)));
+        check('5.21 ...and nothing is triggered yet', a.triggers.length === 0);
+        a.clock += 1000; a.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 the late LSP answer with items re-opens suggest once', a.triggers.length === 1 && a.triggers[0] === 'editor.action.triggerSuggest',
+            JSON.stringify(a.triggers));
+        const qa2 = ask(a, 2, 9, {});
+        a.reply('localCompletion', { items: [] }); await flush();
+        check('5.21 ...and the re-query is served the cached items', qa2.done && labels(qa2.value).includes('Glo:Svc'), JSON.stringify(qa2.value && labels(qa2.value)));
+        check('5.21 ...without triggering again', a.triggers.length === 1);
+
+        const b = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(b, 2, 9);
+        ask(b, 2, 9, {});
+        b.reply('localCompletion', { items: [] }); b.fire(BUDGET); await flush();
+        b.model.setLine(2, '    glo:x'); atCaret(b, 2, 10);          // the user typed on meanwhile
+        b.clock += 1000; b.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when the user has typed on (the next keystroke merges it anyway)', b.triggers.length === 0);
+
+        const c = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(c, 2, 9);
+        ask(c, 2, 9, {});
+        c.reply('localCompletion', { items: [] }); c.fire(BUDGET); await flush();
+        c.clock += 1000; c.reply('completion', { items: [] }); await flush();
+        check('5.21 no re-open when the late answer is empty too', c.triggers.length === 0);
+
+        const d = load({ lines: ['  CODE', '    glo:'] });
+        atCaret(d, 2, 9);
+        ask(d, 2, 9, {});
+        d.reply('localCompletion', { items: [item('Glo:Local', 'local')] }); d.fire(BUDGET); await flush();
+        d.clock += 1000; d.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+        check('5.21 no re-open when a list was showing (never re-trigger a showing list)', d.triggers.length === 0);
     }
 
     finish();
