@@ -5008,27 +5008,36 @@
     // both ask), only for the focused editor, and only when an item survives the typed prefix.
     var LATE_REFRESH_MAX_MS = 3000;
     function refreshWhenLspLands(model, position, lsp, prefix) {
-        if (lsp.refreshArmed) return;
+        if (lsp.refreshArmed) { complLog('[compl-refresh] skip=already-armed'); return; }
         lsp.refreshArmed = true;
         var version = model.getVersionId(), line = position.lineNumber, column = position.column, armedAt = rtNow();
         lsp.promise.then(function (resp) {
+            var why = 'fired';
             try {
-                if (!resp || !resp.items || !resp.items.length) return;
-                if (rtNow() - armedAt > LATE_REFRESH_MAX_MS) return;
+                if (!resp || !resp.items || !resp.items.length) { why = 'skip=empty-answer'; return; }
+                if (rtNow() - armedAt > LATE_REFRESH_MAX_MS) { why = 'skip=too-late'; return; }
                 if (prefix && prefix.length > (lsp.prefix || '').length) {
                     var P = prefix.toUpperCase();
-                    if (!resp.items.some(function (it) { return completionMatchesPrefix(it, P); })) return;
+                    if (!resp.items.some(function (it) { return completionMatchesPrefix(it, P); })) { why = 'skip=prefix-filters-all'; return; }
                 }
                 var eds = [typeof activeEd === 'function' ? activeEd() : null, editor, editor2];
                 var ed = eds.filter(function (e) { return e && e.getModel && e.getModel() === model; })[0];
-                if (!ed || !ed.getPosition || model.getVersionId() !== version) return;
-                if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) return;
+                if (!ed || !ed.getPosition) { why = 'skip=no-editor'; return; }
+                if (model.getVersionId() !== version) { why = 'skip=text-changed'; return; }
+                if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) { why = 'skip=no-focus'; return; }
                 var p = ed.getPosition();
-                if (!p || p.lineNumber !== line || p.column !== column) return;
+                if (!p || p.lineNumber !== line || p.column !== column) { why = 'skip=caret-moved'; return; }
                 ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', {});
-            } catch (e) { }
+            } catch (e) { why = 'error=' + (e && e.message); }
+            finally {
+                complLog('[compl-refresh] ' + why + ' items=' + (resp && resp.items ? resp.items.length : 0) +
+                    ' afterMs=' + Math.round(rtNow() - armedAt));
+            }
         });
     }
+    // Diagnostic (ticket 38158e98): one line per completion query and per late-refresh decision, into
+    // monaco-spike.log via the host - the only log that survives a deployed build. Never throws.
+    function complLog(line) { try { postToHost({ action: 'log', line: line }); } catch (e) { } }
     // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
     // is a miss for model `id`. No race (resolved at once) when `c` already answered, is still deferred to the
     // idle sync (typing: not a miss), or `id` is in skip mode.
@@ -5268,9 +5277,19 @@
                         if (kws.length) sugg = sugg.concat(kws);
                         // Empty now, LSP still on its way: re-open once it lands (ticket 38158e98).
                         if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp, prefix);
+                        complLog('[compl] run=' + JSON.stringify(colonRun) + ' prefix=' + JSON.stringify(prefix) +
+                            ' trig=' + (context && context.triggerKind) + ' local=' + localItems.length +
+                            ' lsp=' + (lsp.done ? (lspItems.length + (lsp.resp ? '' : ' (null)')) : 'pending') +
+                            ' skip=' + ((lspComplMisses[modelKey(model)] || 0) >= LSP_MISSES_TO_SKIP ? 1 : 0) +
+                            ' shown=' + sugg.length +
+                            (sugg.length ? ' first=' + JSON.stringify(String(sugg[0].label)) +
+                                ' range=' + sugg[0].range.startColumn + '-' + sugg[0].range.endColumn : ''));
                         return { suggestions: sugg, incomplete: true };
                     })
-                    .catch(function () { return { suggestions: [], incomplete: true }; });
+                    .catch(function (e) {
+                        complLog('[compl] ERROR ' + (e && (e.stack || e.message) || e));
+                        return { suggestions: [], incomplete: true };
+                    });
             }
         });
         // Code Snippets appear IN the completion list (classic Clarion Ctrl+J parity): typing a trigger
