@@ -16,6 +16,8 @@
 //   * with no action toast up, a plain toast uses #toast exactly as before and #toastAux stays hidden
 //   * only the newest plain toast is visible: one in #toast hides a leftover in #toastAux
 //   * the host's toast route reaches the same showToast, so a Break on Entry miss behaves the same way
+//   * dismissing the notice (an action, its dismiss button, Escape) drops a still-showing #toastAux back to
+//     #toast's place instead of leaving it raised over nothing (fb5766d1 #4)
 
 const fs = require('fs');
 const path = require('path');
@@ -138,6 +140,33 @@ section('an action toast is up, then a plain toast arrives');
     check('...and shows the host\'s text in #toastAux', env.aux.textContent === 'Break on entry: nothing was set.' && shown(env.aux));
     env.key('Escape');
     check('Escape still dismisses the notice', !shown(env.toast));
+}
+
+// ---------- dismissing the notice lowers #toastAux ----------
+section('the notice is dismissed while a plain toast shows in #toastAux');
+[
+    ['a resolving action (Reload)', env => button(env.toast, 'Reload').click()],
+    ['the dismiss button', env => button(env.toast, '✕').click()],
+    ['Escape', env => env.key('Escape')]
+].forEach(([how, dismiss]) => {
+    const env = makeEnv();
+    raiseNotice(env, []);
+    env.toast.offsetHeight = 40;
+    env.showToast('Saving…', true, true);
+    check('(setup) #toastAux is raised above the notice', env.aux.style.bottom === '62px', env.aux.style.bottom);
+    dismiss(env);
+    check('dismissed by ' + how + ': the notice is gone', !shown(env.toast), env.toast.className);
+    check('...#toastAux is still showing', shown(env.aux), env.aux.className);
+    check("...and back at #toast's place (inline bottom cleared, so the CSS 14px applies)", env.aux.style.bottom === '', env.aux.style.bottom);
+});
+{
+    const env = makeEnv();
+    raiseNotice(env, []);
+    env.toast.offsetHeight = 40;
+    env.showToast('Saving…', true, true);
+    button(env.toast, 'Show diff').click();
+    check('a peek (Show diff, dismiss:false) keeps the notice and leaves #toastAux raised',
+        shown(env.toast) && env.aux.style.bottom === '62px', env.toast.className + ' / ' + env.aux.style.bottom);
 }
 
 // ---------- no notice: unchanged ----------
