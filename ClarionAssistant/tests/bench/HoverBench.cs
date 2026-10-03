@@ -94,7 +94,7 @@ static class HoverBench
         foreach (var server in o.Servers)
         {
             Console.WriteLine();
-            Console.WriteLine("=== server: " + server.Key + "  " + server.Value);
+            Console.WriteLine("=== server: " + server.Key + "  " + server.Value + "  (build " + BuildSha(server.Value) + ")");
             var lsp = RunServer(o, cfg, server.Value, samples, texts, out List<double> lspEdited, out string startNote);
             if (lsp == null) { Console.WriteLine("  COULD NOT START: " + startNote); continue; }
             history.Add(Report(o, server, samples, local, localEdited, lsp, lspEdited));
@@ -219,7 +219,10 @@ static class HoverBench
         var sMs = lsp.Select(x => x.Ms).ToList();
         Func<int, string> pct = c => (100.0 * c / n).ToString("0") + "%";
 
-        Console.WriteLine(string.Format("  samples: {0}", n));
+        // Lead with what is stable between runs of the same build: timeouts and the worst hover after an edit.
+        // The p50 swings with machine load (anything else busy at the time), so compare it across interleaved runs only.
+        Console.WriteLine(string.Format("  samples: {0}   server timeouts (>1.5 s): {1}   worst server hover after an edit: {2:0} ms",
+            n, lsp.Count(x => x.TimedOut), lspEdited.Count > 0 ? lspEdited.Max() : 0));
         Console.WriteLine("  latency (ms)            p50      p95      max");
         Row("local   steady", lMs); Row("server  steady", sMs);
         Row("local   edited", localEdited); Row("server  edited", lspEdited);
@@ -253,13 +256,14 @@ static class HoverBench
                 dump.AppendLine(ser.Serialize(new Dictionary<string, object> {
                     { "server", server.Key }, { "file", Path.GetFileName(samples[i].File) }, { "line", samples[i].Line0 + 1 }, { "word", samples[i].Word },
                     { "localKind", local[i].Kind }, { "localAuth", local[i].Auth }, { "localSymbol", local[i].Symbol }, { "localCard", local[i].Card },
+                    { "localMs", Math.Round(local[i].Ms, 2) }, { "serverMs", Math.Round(lsp[i].Ms, 2) }, { "serverTimedOut", lsp[i].TimedOut },
                     { "serverSymbol", lsp[i].Symbol }, { "serverCard", lsp[i].Card } }));
             File.AppendAllText(o.DumpPath, dump.ToString());
         }
         return ser.Serialize(new Dictionary<string, object>
         {
             { "when", DateTime.Now.ToString("s") }, { "caCommit", o.CaCommit }, { "server", server.Key },
-            { "serverJs", server.Value }, { "serverSha256", Sha(server.Value) }, { "solution", o.Sln },
+            { "serverJs", server.Value }, { "serverSha256", Sha(server.Value) }, { "serverBuild", BuildSha(server.Value) }, { "serverEditedMax", Math.Round(lspEdited.Count > 0 ? lspEdited.Max() : 0, 1) }, { "solution", o.Sln },
             { "files", o.Files.Select(Path.GetFileName).ToArray() }, { "samples", n },
             { "localP50", Math.Round(P(lMs, 50), 1) }, { "localP95", Math.Round(P(lMs, 95), 1) },
             { "serverP50", Math.Round(P(sMs, 50), 1) }, { "serverP95", Math.Round(P(sMs, 95), 1) },
@@ -432,6 +436,41 @@ static class HoverBench
             if (v != null) return v;
         }
         return null;
+    }
+
+    // A fingerprint of the whole server BUILD, not just its entry file: server.js barely changes between builds
+    // while the code it loads does. Every file under out\server and out\common (the server loads both, and its
+    // data\*.json, by relative path), by relative path and content. "" when server.js is not under an out\ folder.
+    static string BuildSha(string serverJs)
+    {
+        try
+        {
+            var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(serverJs)));
+            while (dir != null && !string.Equals(dir.Name, "out", StringComparison.OrdinalIgnoreCase)) dir = dir.Parent;
+            if (dir == null) return "";
+            var files = new List<string>();
+            foreach (var sub in new[] { "server", "common" })
+            {
+                string p = Path.Combine(dir.FullName, sub);
+                if (Directory.Exists(p)) files.AddRange(Directory.GetFiles(p, "*", SearchOption.AllDirectories));
+            }
+            files.Sort(StringComparer.OrdinalIgnoreCase);
+            using (var all = SHA256.Create())
+            using (var one = SHA256.Create())
+            {
+                foreach (var f in files)
+                {
+                    byte[] name = Encoding.UTF8.GetBytes(f.Substring(dir.FullName.Length).ToLowerInvariant() + "\0");
+                    byte[] body;
+                    using (var s = File.OpenRead(f)) body = one.ComputeHash(s);
+                    all.TransformBlock(name, 0, name.Length, null, 0);
+                    all.TransformBlock(body, 0, body.Length, null, 0);
+                }
+                all.TransformFinalBlock(new byte[0], 0, 0);
+                return BitConverter.ToString(all.Hash).Replace("-", "").Substring(0, 12).ToLowerInvariant() + "/" + files.Count;
+            }
+        }
+        catch { return ""; }
     }
 
     static string Sha(string path)

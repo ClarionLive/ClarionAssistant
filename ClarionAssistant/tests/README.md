@@ -126,9 +126,14 @@ side answers, the server answers an authoritative local card hides, and the card
         -Server 'shipped', 'dev=F:\github\Clarion-Extension\Clarion-Extension\out\server\src\server.js' -IndexMissing
 
 `shipped` is the pinned build `deploy.ps1` ships. Each run appends one JSON line per solution and server to
-`%LOCALAPPDATA%\ClarionAssistant\hover-bench-history.jsonl`; `-Dump <file>` writes every sample with both raw
-cards, for checking any number by hand. Server latency varies run to run on large files, so compare trends
-rather than single runs. `Terminal\test\tools\monaco-keymap-probe.js` is the other run-by-hand tool here.
+`%LOCALAPPDATA%\ClarionAssistant\hover-bench-history.jsonl`, keyed by a fingerprint of the whole server build
+(every file under `out\server` and `out\common`, since `server.js` alone barely changes between builds); `-Dump <file>`
+writes every sample with both raw cards and both timings, for checking any number by hand.
+
+Compare runs by server timeouts and the worst hover after an edit, which each summary leads with: those hold
+steady between runs of the same build, while the p50 moves with whatever else the machine is doing. To compare
+builds, put them in one `-Server` list so they run back to back, and bench a copy of a build you are still working
+on (copy `out\` and junction `node_modules`) rather than the live working copy. `Terminal\test\tools\monaco-keymap-probe.js` is the other run-by-hand tool here.
 
 ## Adding to them
 
