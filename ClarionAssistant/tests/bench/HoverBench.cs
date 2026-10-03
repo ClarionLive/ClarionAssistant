@@ -36,13 +36,20 @@ static class HoverBench
         public List<KeyValuePair<string, string>> Servers = new List<KeyValuePair<string, string>>();
         public List<string> Files = new List<string>();
         public int MaxFiles = 4, PerFile = 60, Edited = 30, MarginMs = 20;
-        public bool PrintRed;
+        public bool PrintRed, PrintGraphHash;
     }
 
     sealed class Sample { public string File; public int Line0, Col0; public string Word; }
 
     sealed class LocalAnswer { public bool Any, Auth; public string Kind, Symbol, Card; public double Ms; }
     sealed class LspAnswer { public bool Any, TimedOut; public string Symbol, Card; public double Ms; }
+
+    // LspClient.GetHover gives the server 1500 ms (SendRequest's deadline) and returns null when it passes. A null
+    // after at least 1400 ms counts as that timeout: the deadline is checked against DateTime.UtcNow, whose ~15 ms
+    // tick can end the wait a little before the Stopwatch reaches 1500.
+    const double HoverTimeoutFloorMs = 1400;
+
+    static bool IsTimeout(Dictionary<string, object> r, double ms) { return r == null && ms >= HoverTimeoutFloorMs; }
 
     static int Main(string[] args)
     {
@@ -53,6 +60,14 @@ static class HoverBench
         var cfg = FindVersion(o);
         if (cfg == null) { Console.Error.WriteLine("COULD NOT RUN: Clarion version '" + o.Version + "' not found in any ClarionProperties.xml"); return 2; }
         if (o.PrintRed) { Console.WriteLine(cfg.RedFilePath ?? ""); return 0; }   // for the runner's indexer call
+        if (o.PrintGraphHash)
+        {
+            // The root fingerprint the IDE puts in this version's library DB name (ClarionGraph_<build>_<hash>.db),
+            // so the runner can pick that DB rather than whichever cache was built last.
+            string key = cfg.LibraryGraphKey(null);
+            Console.WriteLine(key.Substring(key.LastIndexOf('_') + 1));
+            return 0;
+        }
         if (o.Files.Count == 0) o.Files = DefaultFiles(o.Sln, o.MaxFiles);
         if (o.ProjectDb == null) o.ProjectDb = Path.Combine(Path.GetDirectoryName(o.Sln), Path.GetFileNameWithoutExtension(o.Sln) + ".codegraph.db");
         LocalLayerHandlers.ProjectDbPath = () => File.Exists(o.ProjectDb) ? o.ProjectDb : null;
@@ -85,8 +100,9 @@ static class HoverBench
             var sm = samples[i];
             string edited = Edit(texts[sm.File], i);
             var sw = Stopwatch.StartNew();
-            var src = LocalSource.OfBuffer(edited);
-            LocalLayerHandlers.HoverAt(src, sm.Line0, sm.Col0, new LocalLayerOptions { FileName = Path.GetFileName(sm.File) });
+            // As LocalHover: a throw is a miss (the page would show no local card), not the end of the run.
+            try { LocalLayerHandlers.HoverAt(LocalSource.OfBuffer(edited), sm.Line0, sm.Col0, new LocalLayerOptions { FileName = Path.GetFileName(sm.File) }); }
+            catch { }
             localEdited.Add(sw.Elapsed.TotalMilliseconds);
         }
 
@@ -95,9 +111,9 @@ static class HoverBench
         {
             Console.WriteLine();
             Console.WriteLine("=== server: " + server.Key + "  " + server.Value + "  (build " + BuildSha(server.Value) + ")");
-            var lsp = RunServer(o, cfg, server.Value, samples, texts, out List<double> lspEdited, out string startNote);
+            var lsp = RunServer(o, cfg, server.Value, samples, texts, out List<double> lspEdited, out int lspEditedTimeouts, out string startNote);
             if (lsp == null) { Console.WriteLine("  COULD NOT START: " + startNote); continue; }
-            history.Add(Report(o, server, samples, local, localEdited, lsp, lspEdited));
+            history.Add(Report(o, server, samples, local, localEdited, lsp, lspEdited, lspEditedTimeouts));
         }
 
         if (!string.IsNullOrEmpty(o.HistoryPath) && history.Count > 0)
@@ -107,14 +123,17 @@ static class HoverBench
             Console.WriteLine();
             Console.WriteLine("History: appended " + history.Count + " line(s) to " + o.HistoryPath);
         }
+        // Nothing measured is "could not run" (the runner's exit-code contract), not a pass.
+        if (history.Count == 0) { Console.Error.WriteLine("COULD NOT RUN: no server started"); return 2; }
         return 0;
     }
 
     // ------------------------------------------------------------------ the language server
     static LspAnswer[] RunServer(Opt o, ClarionVersionConfig cfg, string serverJs, List<Sample> samples,
-        Dictionary<string, string> texts, out List<double> edited, out string note)
+        Dictionary<string, string> texts, out List<double> edited, out int editedTimeouts, out string note)
     {
         edited = new List<double>();
+        editedTimeouts = 0;
         note = null;
         if (!File.Exists(serverJs)) { note = "no such file"; return null; }
         string nodeLine = null;
@@ -163,15 +182,17 @@ static class HoverBench
                 double ms = sw.Elapsed.TotalMilliseconds;
                 string sym = Symbol(r);
                 string card = CardText(r);
-                res[i] = new LspAnswer { Any = sym != null, Symbol = sym, Card = card, Ms = ms, TimedOut = r == null && ms >= 1400 };
+                res[i] = new LspAnswer { Any = sym != null, Symbol = sym, Card = card, Ms = ms, TimedOut = IsTimeout(r, ms) };
             }
             for (int i = 0; i < Math.Min(o.Edited, samples.Count); i++)
             {
                 var sm = samples[i];
                 string text = Edit(texts[sm.File], i);
                 var sw = Stopwatch.StartNew();
-                client.GetHover(sm.File, sm.Line0, sm.Col0, text);   // full-text didChange, then the hover
-                edited.Add(sw.Elapsed.TotalMilliseconds);
+                var r = client.GetHover(sm.File, sm.Line0, sm.Col0, text);   // full-text didChange, then the hover
+                double ms = sw.Elapsed.TotalMilliseconds;
+                edited.Add(ms);
+                if (IsTimeout(r, ms)) editedTimeouts++;
             }
             client.GetHover(samples[0].File, samples[0].Line0, samples[0].Col0, texts[samples[0].File]);   // leave it as found
             return res;
@@ -181,7 +202,7 @@ static class HoverBench
 
     // ------------------------------------------------------------------ report
     static string Report(Opt o, KeyValuePair<string, string> server, List<Sample> samples, LocalAnswer[] local,
-        List<double> localEdited, LspAnswer[] lsp, List<double> lspEdited)
+        List<double> localEdited, LspAnswer[] lsp, List<double> lspEdited, int lspEditedTimeouts)
     {
         int n = samples.Count;
         int localAny = 0, localAuth = 0, lspAny = 0, both = 0, localOnly = 0, lspOnly = 0, neither = 0, timeouts = 0;
@@ -221,8 +242,8 @@ static class HoverBench
 
         // Lead with what is stable between runs of the same build: timeouts and the worst hover after an edit.
         // The p50 swings with machine load (anything else busy at the time), so compare it across interleaved runs only.
-        Console.WriteLine(string.Format("  samples: {0}   server timeouts (>1.5 s): {1}   worst server hover after an edit: {2:0} ms",
-            n, lsp.Count(x => x.TimedOut), lspEdited.Count > 0 ? lspEdited.Max() : 0));
+        Console.WriteLine(string.Format("  samples: {0}   server timeouts (no answer in 1.5 s): {1} steady, {2} after an edit   worst server hover after an edit: {3:0} ms",
+            n, timeouts, lspEditedTimeouts, lspEdited.Count > 0 ? lspEdited.Max() : 0));
         Console.WriteLine("  latency (ms)            p50      p95      max");
         Row("local   steady", lMs); Row("server  steady", sMs);
         Row("local   edited", localEdited); Row("server  edited", lspEdited);
@@ -250,7 +271,8 @@ static class HoverBench
         var ser = new JavaScriptSerializer();
         if (!string.IsNullOrEmpty(o.DumpPath))
         {
-            // Every sample with both raw cards, for checking any number above by hand.
+            // Every sample with both raw cards, for checking any number above by hand. Appended: one run covers
+            // several servers (and the runner calls this once per solution); Run-HoverBench.ps1 starts the file fresh.
             var dump = new StringBuilder();
             for (int i = 0; i < n; i++)
                 dump.AppendLine(ser.Serialize(new Dictionary<string, object> {
@@ -270,7 +292,7 @@ static class HoverBench
             { "localEditedP95", Math.Round(P(localEdited, 95), 1) }, { "serverEditedP95", Math.Round(P(lspEdited, 95), 1) },
             { "localAnswers", localAny }, { "localAuthoritative", localAuth }, { "serverAnswers", lspAny },
             { "serverOnly", lspOnly }, { "localOnly", localOnly }, { "hidden", hidden }, { "hiddenDisagree", hiddenDisagree },
-            { "serverTimeouts", timeouts }, { "localCardChars", P(localLen, 50) }, { "serverCardChars", P(serverLen, 50) }, { "flagFastEnough", fastEnough }, { "flagCoversMore", coversMore }
+            { "serverTimeouts", timeouts }, { "serverEditedTimeouts", lspEditedTimeouts },{ "localCardChars", P(localLen, 50) }, { "serverCardChars", P(serverLen, 50) }, { "flagFastEnough", fastEnough }, { "flagCoversMore", coversMore }
         });
     }
 
@@ -507,12 +529,13 @@ static class HoverBench
                 case "--ca-commit": o.CaCommit = next(); break;
                 case "--dump": o.DumpPath = next(); break;
                 case "--print-red": o.PrintRed = true; break;
+                case "--print-graph-hash": o.PrintGraphHash = true; break;
                 default: throw new ArgumentException("unknown option " + k);
             }
         }
         if (o.Sln == null || !File.Exists(o.Sln)) throw new ArgumentException("--sln <solution.sln> is required");
         if (o.Version == null) throw new ArgumentException("--version <Clarion version name> is required");
-        if (o.Servers.Count == 0 && !o.PrintRed) throw new ArgumentException("at least one --server name=<server.js> is required");
+        if (o.Servers.Count == 0 && !o.PrintRed && !o.PrintGraphHash) throw new ArgumentException("at least one --server name=<server.js> is required");
         return o;
     }
 }

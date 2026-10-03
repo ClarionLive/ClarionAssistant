@@ -1,4 +1,4 @@
-# Run-HoverBench.ps1 — the CA Editor's local-first hover layer vs the Clarion language server, on real solutions.
+# Run-HoverBench.ps1 - the CA Editor's local-first hover layer vs the Clarion language server, on real solutions.
 #
 # Compiles tests\bench\HoverBench.cs with the REAL sources it measures (LocalLayerHandlers and the local indexes,
 # LspClient, ClarionVersionService) and runs it once per solution. See HoverBench.cs for what is measured and why.
@@ -44,13 +44,6 @@ foreach ($s in $Server) {
     } else { $servers += $s }
 }
 
-# ---- library DB: newest ClarionGraph cache unless given ----
-if (-not $LibraryDb) {
-    $lib = Get-ChildItem (Join-Path $env:APPDATA 'ClarionAssistant\clariongraph') -Filter 'ClarionGraph_*.db' -ErrorAction SilentlyContinue |
-           Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if ($lib) { $LibraryDb = $lib.FullName }
-}
-
 # ---- compile ----
 $out = Join-Path $env:TEMP 'ca-hoverbench'
 New-Item -ItemType Directory -Force $out | Out-Null
@@ -76,8 +69,39 @@ $exe = Join-Path $out 'HoverBench.exe'
     -r:System.Web.Extensions.dll -r:(Join-Path $out 'System.Data.SQLite.dll') @sources
 if ($LASTEXITCODE -ne 0) { Write-Host 'COULD NOT RUN: HoverBench did not compile.' -ForegroundColor Red; exit 2 }
 
+# ---- library DB: the ClarionGraph cache the IDE builds for -Version, unless given ----
+# The IDE names it ClarionGraph_<Clarion.exe build>_<root hash>.db (ClarionGraphService.ResolveDbPath), e.g.
+# ClarionGraph_12.0.0.14373_3e40e629.db for 'Clarion 12.0.14373'; older caches lack the hash suffix.
+# First choice: the root hash matches (exactly this version's install). Then: the build in the name matches the
+# build in -Version. Otherwise the newest cache, with a warning - it may hold another version's library.
+if (-not $LibraryDb) {
+    $libs = @(Get-ChildItem (Join-Path $env:APPDATA 'ClarionAssistant\clariongraph') -Filter 'ClarionGraph_*.db' -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending)
+    if ($libs.Count -gt 0) {
+        $hash = ''
+        try { $hash = (& $exe --sln (Resolve-Path $Solution[0]).Path --version $Version --print-graph-hash 2>$null | Select-Object -Last 1) } catch { }
+        $lib = $null
+        if ($hash -match '^[0-9a-f]{8}$') { $lib = $libs | Where-Object { $_.Name -like "*_$hash.db" } | Select-Object -First 1 }
+        if (-not $lib -and $Version -match '(\d+)\.(\d+)\.(\d+)\s*$') {
+            $vMaj = $Matches[1]; $vMin = $Matches[2]; $vBuild = $Matches[3]
+            $lib = $libs | Where-Object {
+                $_.Name -match '^ClarionGraph_(\d+)\.(\d+)\.\d+\.(\d+)(_[0-9a-f]{8})?\.db$' -and
+                $Matches[1] -eq $vMaj -and $Matches[2] -eq $vMin -and $Matches[3] -eq $vBuild
+            } | Select-Object -First 1
+        }
+        if (-not $lib) {
+            $lib = $libs[0]
+            Write-Host "WARNING: no ClarionGraph library DB matches '$Version'; using the newest, $($lib.Name), which may be another version's library. Pass -LibraryDb to choose." -ForegroundColor Yellow
+        }
+        $LibraryDb = $lib.FullName
+    }
+}
+
 $commit = ''
 try { $commit = (git -C $repo rev-parse --short HEAD 2>$null) } catch { }
+
+# One -Dump file per run: HoverBench appends (a run spans servers and solutions), so start it empty here.
+if ($Dump -and (Test-Path $Dump)) { Remove-Item $Dump -Force }
 
 $worst = 0
 foreach ($sln in $Solution) {
@@ -95,7 +119,10 @@ foreach ($sln in $Solution) {
         } else { Write-Host "  (no indexer at $indexer - build indexer\ClarionIndexer.csproj, or open the solution in the IDE once)" -ForegroundColor Yellow }
     }
     $a = @('--sln', $sln, '--version', $Version, '--per-file', $PerFile, '--max-files', $MaxFiles, '--edited', $Edited,
-           '--margin-ms', $MarginMs, '--history', $History, '--ca-commit', $commit)
+           '--margin-ms', $MarginMs, '--history', $History)
+    # Only when known: Windows PowerShell 5.1 drops an empty string passed to a native exe, so '--ca-commit' ''
+    # would take the next flag as its value.
+    if ($commit) { $a += @('--ca-commit', $commit) }
     if ($LibraryDb) { $a += @('--library-db', $LibraryDb) }
     foreach ($f in $File) { $a += @('--file', $f) }
     if ($Dump) { $a += @('--dump', $Dump) }   # every sample with both raw cards, as JSON lines
