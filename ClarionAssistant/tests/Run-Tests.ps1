@@ -219,8 +219,21 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # 1c685f2e item 8: the bundled LspClient stops claiming to run when node crashes (exit line with
             # code + stderr tail) or its reader loop ends with the process still alive. The harness plays
             # the language server itself (copied to <temp>\node.exe), so it needs no node.
+            # LSP incremental sync: the ranged change LspClient sends instead of the whole buffer must reproduce
+            # the new text exactly under the LSP's line/UTF-16 rules, and never split a CRLF or surrogate pair.
+            @{ Name = "LspTextDiff.Test"
+               Sources = @("tests\LspTextDiff.Test.cs", "Services\LspTextDiff.cs")
+               Refs = @("System.dll", "System.Core.dll") }
+            # ... and LspClient wired to it, against a stand-in server that applies changes by the LSP's rules:
+            # ranges only when the server advertises incremental sync, its copy exact after many edits, a disk
+            # resync re-based, and Stop forgetting every document. Needs node.exe where LspClient looks for it.
+            @{ Name = "LspClient.IncrementalSync.Test"
+               Sources = @("tests\LspClient.IncrementalSync.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs",
+                           "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @((Join-Path $TestDir "fixtures\incremental-sync\fake-lsp.js")) }
             @{ Name = "LspClient.Robustness.Test"
-               Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # 1c685f2e item 4: LocalLayerHandlers, the one class both hosts route the local layer to, over the
             # REAL local indexes (LocalScopeIndex, LiveDictionaryIndex, SymbolIndex on synthetic x86 SQLite DBs).
@@ -236,7 +249,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
                            "CodeGraph\Parsing\ClarionBuiltins.cs",
-                           "Services\LspClient.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+                           "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll", "System.Web.Extensions.dll")
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
@@ -254,14 +267,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # 1c685f2e: instant buffer-local completion/hover - scope, parameters, the local-class owner
             # rule, encodings, and R3 (never Split the whole 3.2 MB buffer; allocation + scaling budgets).
             @{ Name = "LocalScopeIndex.Test"
-               Sources = @("tests\LocalScopeIndex.Test.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\JsonTextStream.cs",
+               Sources = @("tests\LocalScopeIndex.Test.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs",
                            "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\local-scope"), (Join-Path $RepoDir "Services\LocalScopeIndex.cs")) }
             # 1c685f2e R11: the slice overloads (header + owner DATA + caret span, from the span map)
             # answer exactly what the full-buffer overloads answer, at every caret of the fixture.
             @{ Name = "LocalScopeIndex.SliceParity"
-               Sources = @("tests\LocalScopeIndex.SliceParity.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\JsonTextStream.cs",
+               Sources = @("tests\LocalScopeIndex.SliceParity.cs", "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs",
                            "Services\LspTrace.cs", "Services\EncodingHelper.cs", "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\local-scope")) }
@@ -269,14 +282,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # (SchemaGraph only as the no-snapshot fallback), plus keyword/built-in names + categories.
             @{ Name = "LiveDictionaryIndex.Test"
                Sources = @("tests\LiveDictionaryIndex.Test.cs", "Services\LiveDictionaryIndex.cs", "Services\ClarionAppDataReader.Model.cs",
-                           "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs",
+                           "Services\LocalScopeIndex.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs",
                            "CodeGraph\Parsing\ClarionBuiltins.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\keyword-data")) }
             # Colon-qualified completion ("Glob:S"): the server's bare-labelled qualifier items survive the
             # host's qualifier scoping once CodeGraph has supplied a match of its own.
             @{ Name = "ColonQualifierScope.Test"
-               Sources = @("tests\ColonQualifierScope.Test.cs", "Services\ColonQualifierScope.cs", "Services\LspClient.cs",
+               Sources = @("tests\ColonQualifierScope.Test.cs", "Services\ColonQualifierScope.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs",
                            "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # 1c685f2e: held-open NOCASE symbol lookups - range queries and their plans, the parameter
@@ -287,7 +300,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
-                           "Services\LspClient.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+                           "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Data.dll", "System.Web.Extensions.dll")
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
