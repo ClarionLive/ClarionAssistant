@@ -80,6 +80,45 @@ $sln    = Join-Path $work 'ctrl.sln'
 $second = Join-Path $work 'second.clw'   # two undeclared names + four cross-file globals
 $clean  = Join-Path $work 'ctrl.clw'     # the clean control
 
+# ---------------------------------------------------------------- the Clarion version, NAMED
+# Without a Clarion version the server sends the language server no clarion/updatePaths, so it is never
+# told the solution: no solutionReady, no index build, and the async semantic pass second.clw needs stays
+# `deferred` (the server reschedules its no-solution drain for up to 60s while a solution looks to be on
+# its way). The budget then expires and the answer is - correctly - pending:true. That is not the defect
+# this harness guards; it is the harness not supplying what the product needs.
+#
+# This used to work by accident. The fixture named 'Clarion 12.0.14000' in clarion-assistant.json, which
+# exists on almost no machine, and the server silently fell back to the newest settings folder's current
+# version. GH #247 (PR #248, 3edcc85) removed that guess on purpose - a server outside a Clarion tree now
+# reports NO version unless one is named - and from that merge on this test failed on every machine
+# without that exact build. So the harness NAMES one with --clarion-version (tier 1, outranks everything),
+# picked from what this machine actually has registered: a stock Win32 'Clarion N.N.NNNNN' entry, newest
+# first. Clarion.NET entries are excluded (#247: never hand a Win32 project the .NET .red).
+$clarionVersion = $null
+try {
+    $settingsRoot = Join-Path $env:APPDATA 'SoftVelocity\Clarion'
+    $names = @()
+    if (Test-Path $settingsRoot) {
+        foreach ($f in Get-ChildItem $settingsRoot -Directory | ForEach-Object { Join-Path $_.FullName 'ClarionProperties.xml' } | Where-Object { Test-Path $_ }) {
+            try {
+                $x = [xml](Get-Content $f -Raw)
+                $names += @($x.SelectNodes("//Properties[@name='Clarion.Versions']/Properties") | ForEach-Object { $_.GetAttribute('name') })
+            } catch { }
+        }
+    }
+    $clarionVersion = $names | Select-Object -Unique |
+        Where-Object { $_ -match '^Clarion (\d+\.\d+\.\d+)$' } |
+        Sort-Object { [version]($_ -replace '^Clarion ', '') } -Descending |
+        Select-Object -First 1
+}
+catch { }
+if (-not $clarionVersion) {
+    Write-Host "COULD NOT RUN: no Win32 Clarion version is registered under %APPDATA%\SoftVelocity\Clarion." -ForegroundColor Red
+    Write-Host "  The language server needs one (clarion/updatePaths) to load the solution and finish the semantic pass." -ForegroundColor Red
+    exit 2
+}
+Write-Host "  clarion: $clarionVersion (named with --clarion-version)"
+
 # ---------------------------------------------------------------- the server to test against
 # GH #216. The PINNED bundled server (lsp-server-sync\lsp-snapshot.json currentPin) is what the addin
 # ships and resolves first in production. A dev tree has no lsp-server beside the exe, so without this
@@ -138,7 +177,7 @@ try {
     $psi.FileName  = $exe
     # --debug routes the LSP trace to stderr, which is how the preflight below can tell
     # "the server said the file is clean" apart from "the language server never started".
-    $psi.Arguments = '--stdio --debug --solution "' + $sln + '"'
+    $psi.Arguments = '--stdio --debug --solution "' + $sln + '" --clarion-version "' + $clarionVersion + '"'
     $psi.UseShellExecute        = $false
     $psi.RedirectStandardInput  = $true
     $psi.RedirectStandardOutput = $true
@@ -174,6 +213,13 @@ try {
         Write-Host "  Needs node on PATH and msarson's Clarion extension installed." -ForegroundColor Yellow
         Write-Host "  --- server stderr ---" -ForegroundColor DarkGray
         ($stderr -split "`n" | Select-Object -Last 25) | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+        exit 2
+    }
+    # Likewise if the named version did not resolve: no updatePaths means no solution, so the semantic pass
+    # stays deferred and second.clw reads pending:true - which would otherwise be misreported as b7505691.
+    if ($stderr -notmatch 'Sending clarion/updatePaths') {
+        Write-Host "COULD NOT RUN: the language server was never sent clarion/updatePaths ('$clarionVersion' did not resolve)." -ForegroundColor Yellow
+        ($stderr -split "`n" | Where-Object { $_ -match 'Clarion version|version from host' }) | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
         exit 2
     }
 
