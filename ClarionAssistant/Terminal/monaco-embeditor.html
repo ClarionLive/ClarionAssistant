@@ -13,12 +13,16 @@
         --toolbar-bg: #181825; --toolbar-border: #313244;
         --title-color: #a6adc8; --title-accent: #cdd6f4;
         --loading-color: #6c7086;
+        /* Secondary text and warnings that must stay readable on the gear panel (--toolbar-bg), hovered rows
+           included: each is >= 4.5:1 (WCAG AA) there. --loading-color is not (3.6:1 dark, 2.4:1 light). */
+        --muted-fg: #9399b2; --warn-fg: #fab387;
     }
     body.light {
         --bg: #eff1f5; --fg: #4c4f69;
         --toolbar-bg: #dce0e8; --toolbar-border: #bcc0cc;
         --title-color: #6c6f85; --title-accent: #4c4f69;
         --loading-color: #8c8fa1;
+        --muted-fg: #54576e; --warn-fg: #8a4200;
     }
 
     html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg); color: var(--fg); }
@@ -250,30 +254,32 @@
     #snippetPicker .sp-btn:hover { border-color: var(--title-accent); }
     #snippetPicker .sp-btn.primary { background: var(--title-accent); border-color: var(--title-accent); color: var(--toolbar-bg); }
     /* Keyboard rebinding table (Clarion-style Label / Default / New) */
-    #keybindTable { width: 100%; border-collapse: collapse; font-size: 11px; }
-    #keybindTable th { text-align: left; font-weight: 600; color: var(--title-accent); padding: 2px 6px; border-bottom: 1px solid var(--toolbar-border); }
-    #keybindTable td { padding: 2px 6px; vertical-align: middle; }
+    /* Body text is the gear panel's 12px; secondary text 11px. Every colour is a theme token that is >= 4.5:1 on
+       the panel and on a hovered row, in both themes (--fg, --title-accent, --muted-fg, --warn-fg). */
+    #keybindTable { width: 100%; border-collapse: collapse; font-size: 12px; }
+    #keybindTable th { text-align: left; font-weight: 600; color: var(--title-accent); padding: 3px 6px; border-bottom: 1px solid var(--toolbar-border); }
+    #keybindTable td { padding: 3px 6px; vertical-align: middle; }
     #keybindTable tr:hover td { background: rgba(127,127,127,0.12); }
-    #keybindTable .kb-def { color: var(--loading-color); white-space: nowrap; }
-    #keybindTable .kb-input { width: 118px; font-size: 11px; font-family: inherit; background: var(--bg); color: var(--fg);
+    #keybindTable .kb-def { color: var(--muted-fg); white-space: nowrap; }
+    #keybindTable .kb-input { width: 132px; font-size: 12px; font-family: inherit; background: var(--bg); color: var(--fg);
         border: 1px solid var(--toolbar-border); border-radius: 4px; padding: 2px 5px; cursor: pointer; }
     #keybindTable .kb-input[data-custom="1"] { border-color: var(--title-accent); font-weight: 600; }
     #keybindTable .kb-input.capturing { background: #fff7cc; color: #1e1e2e; border-color: #e0b400; font-style: italic; }
-    #keybindTable .kb-clear { cursor: pointer; opacity: 0.55; font-size: 13px; user-select: none; }
-    #keybindTable .kb-clear:hover { opacity: 1; }
+    #keybindTable .kb-clear { cursor: pointer; color: var(--muted-fg); font-size: 14px; user-select: none; }
+    #keybindTable .kb-clear:hover { color: var(--fg); }
     #keybindTable .kb-deferred td { opacity: 0.5; }
-    #keybindTable .kb-def { max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
-    #keybindTable .kb-src { font-size: 9px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--toolbar-border); color: var(--loading-color); }
-    #keybindTable .kb-note { font-size: 10px; color: #c08000; margin-top: 1px; }
+    #keybindTable .kb-def { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+    #keybindTable .kb-src { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--toolbar-border); color: var(--muted-fg); }
+    #keybindTable .kb-note { font-size: 11px; color: var(--warn-fg); margin-top: 1px; }
     .kb-tools { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
-    .kb-tools input[type="search"] { flex: 1 1 140px; min-width: 0; font-size: 11px; font-family: inherit; background: var(--bg); color: var(--fg);
+    .kb-tools input[type="search"] { flex: 1 1 140px; min-width: 0; font-size: 12px; font-family: inherit; background: var(--bg); color: var(--fg);
         border: 1px solid var(--toolbar-border); border-radius: 3px; padding: 2px 4px; }
-    .kb-chip { font-size: 10px; padding: 1px 6px; border-radius: 9px; border: 1px solid var(--toolbar-border); background: transparent; color: var(--fg); cursor: pointer; }
+    .kb-chip { font-size: 11px; padding: 1px 7px; border-radius: 9px; border: 1px solid var(--toolbar-border); background: transparent; color: var(--fg); cursor: pointer; }
     .kb-chip.on { background: var(--title-accent); border-color: var(--title-accent); color: var(--bg); }
-    .kb-empty { color: var(--loading-color); font-size: 11px; margin: 4px 0; }
+    .kb-empty { color: var(--muted-fg); font-size: 12px; margin: 4px 0; }
     .kb-empty.hidden { display: none; }
     .kb-actions { margin-top: 8px; text-align: right; }
-    .kb-hint { color: var(--loading-color); font-size: 10px; margin: 4px 0 0; }
+    .kb-hint { color: var(--muted-fg); font-size: 11px; margin: 4px 0 0; line-height: 1.45; }
     /* "Import from VS Code…" (gear panel > Editor) — read-only preview, applied via onSettingChanged() */
     .vsc-import { margin: 12px 0 2px; }
     .vsc-import .vsc-btn { background: transparent; border: 1px solid var(--toolbar-border); color: var(--fg);
@@ -836,7 +842,7 @@
             <tbody id="keybindRows"></tbody>
         </table>
         <p class="kb-empty hidden" id="kbEmpty"></p>
-        <p class="kb-hint">Click a key cell, then press the shortcut. Esc cancels. Your keys sit on top of the profile; reset returns a key to the profile's chord. A Clarion command on an editor key takes it; the row says which.</p>
+        <p class="kb-hint">Click a key cell, then press the shortcut — one key combination; two-key chords such as Ctrl+K Ctrl+C come from the profile. Esc cancels. Your keys sit on top of the profile; reset returns a key to the profile's chord. A Clarion command on an editor key takes it; the row says which.</p>
         <div class="kb-actions"><button id="kbResetAll">Reset all keys</button></div>
         </div><!-- /gearPaneEditor -->
         <div class="gear-pane hidden" id="gearPaneSnippets">
@@ -2373,7 +2379,8 @@
     // It names only what has a genuine analogue in that editor, so Clarion-only commands (embed navigation,
     // Invert Case...) keep their Clarion chords in every profile unless a profile has to move one out of the way.
     // A map may name Monaco action ids too (editor.action.*): those move through Monaco's own keybindings.
-    // Clarion commands are single-key chords; Monaco actions may use Monaco's two-key chords ("Ctrl+K Ctrl+C").
+    // A profile chord may be a two-key chord ("Ctrl+K Ctrl+C") for a Clarion command as well as a Monaco action —
+    // the dispatcher follows the first key (commandForKey). Keys the developer sets in the table stay single keys.
     // Terminal\test\keymap-profiles.test.js pins every profile against Monaco's real keys
     // (test\fixtures\monaco-keybindings.json): collision-free, off the page's own keys, and — for VS Code —
     // blocking no Monaco key except where a Clarion command deliberately does the same job.
@@ -2394,8 +2401,12 @@
         { id: 'vs', label: 'Visual Studio', map: {
             duplicateLineAbove: 'Ctrl+D', structureDesigner: 'Ctrl+Shift+D',   // Ctrl+D is duplicate line here
             removeLine: 'Ctrl+Shift+L', lowerCase: 'Ctrl+U',                    // Ctrl+Shift+L is delete line here
-            navigateBack: 'Ctrl+-', navigateForward: 'Ctrl+Shift+-'
-            // Ctrl+K Ctrl+C / Ctrl+K Ctrl+U (comment / uncomment) and Ctrl+G already are Monaco's own keys.
+            navigateBack: 'Ctrl+-', navigateForward: 'Ctrl+Shift+-',
+            // Visual Studio's comment / uncomment chords run the Clarion commands ("!" comments, slot-guarded),
+            // taking them from Monaco's Add / Remove Line Comment. Ctrl+/ goes back to Monaco's Toggle Line Comment.
+            // Lowercase stays on Ctrl+U alone: only a Ctrl+U straight after Ctrl+K is Uncomment.
+            commentLine: 'Ctrl+K Ctrl+C', uncommentLine: 'Ctrl+K Ctrl+U'
+            // Ctrl+G already is Monaco's own Go to Line.
         } },
         { id: 'npp', label: 'Notepad++', map: {
             duplicateLineAbove: 'Ctrl+D', structureDesigner: 'Ctrl+Shift+D',
@@ -2615,6 +2626,22 @@
     // Shape of a Monaco action id, for overrides persisted before the actions are known.
     function looksLikeActionId(id) { return /^[A-Za-z][\w.\-]{0,120}$/.test(id); }
 
+    // Two-key chords ("Ctrl+K Ctrl+C"). Two chords CLASH when they are equal or one is the other's first key: a
+    // Clarion command on Ctrl+K alone would run before Ctrl+K Ctrl+C could ever be finished.
+    function firstKeyOf(chord) { return String(chord).split(' ')[0]; }
+    function chordsClash(a, b) {
+        if (!a || !b) return false;
+        if (a === b) return true;
+        var pa = String(a).split(' '), pb = String(b).split(' ');
+        return pa.length !== pb.length && pa[0] === pb[0];
+    }
+    // Every part of a chord the page claims first (Find, Save...) — a Clarion chord can't finish on one either.
+    function chordOnPageKey(chord) {
+        var parts = String(chord).split(' ');
+        for (var i = 0; i < parts.length; i++) if (pageKeyLabel(parts[i])) return pageKeyLabel(parts[i]);
+        return null;
+    }
+
     // The chord something has before any override: the active profile's, else its default.
     function baseChord(cmd) {
         var map = keyProfileById(activeKeyProfile).map;
@@ -2655,33 +2682,39 @@
             //    the actions are loaded; until then its override is inert (no rules are applied), and
             //    loadEditorActions runs this again.
             var refuse = isClarionId(id)
-                ? !!pageKeyLabel(map[id]) || coreKeyRefused(id, map[id])
+                ? !!chordOnPageKey(map[id]) || coreKeyRefused(id, map[id])
                 : editorActionsLoaded && coreKeyRefused(id, map[id]);
             if (refuse) { delete map[id]; dropped.push(id); }
         }
         for (;;) {
-            var owner = {}, loser = null, clash = false;
+            var seen = [], loser = null, clash = false;   // chordsClash also catches Ctrl+K vs Ctrl+K Ctrl+C
             for (var i = 0; i < EDITOR_COMMANDS.length && !clash; i++) {
                 var c = EDITOR_COMMANDS[i];
                 if (c.deferred) continue;
                 var ch = map[c.id] || baseChord(c);
                 if (!ch) continue;
-                var prev = owner[ch];
-                if (prev === undefined) { owner[ch] = c; continue; }
-                clash = true;
-                loser = map[c.id] ? c : (map[prev.id] ? prev : null);   // the override; the later one if both
+                for (var s = 0; s < seen.length && !clash; s++) {
+                    if (!chordsClash(seen[s].ch, ch)) continue;
+                    var prev = seen[s].c;
+                    clash = true;
+                    loser = map[c.id] ? c : (map[prev.id] ? prev : null);   // the override; the later one if both
+                }
+                seen.push({ c: c, ch: ch });
             }
             if (!loser) break;   // no clash left (or two BASE chords clash: a profile bug, not ours to drop)
             delete map[loser.id];
             dropped.push(loser.id);
         }
         if (editorActionsLoaded) {
-            var taken = {};
+            // taken: every key in use. clarionKeys: the Clarion commands' keys, which an action may not share
+            // or overlap (a Clarion first key swallows the action's chord; a Clarion chord starts with the
+            // action's key).
+            var taken = {}, clarionKeys = [];
             for (var j = 0; j < EDITOR_COMMANDS.length; j++) {
                 var cc = EDITOR_COMMANDS[j];
                 if (cc.deferred) continue;
                 var cch = map[cc.id] || baseChord(cc);
-                if (cch) taken[cch] = true;
+                if (cch) { taken[cch] = true; clarionKeys.push(cch); }
             }
             for (var k = 0; k < EDITOR_ACTIONS.length; k++) {
                 if (map[EDITOR_ACTIONS[k].id]) continue;
@@ -2691,7 +2724,9 @@
             for (var n = 0; n < EDITOR_ACTIONS.length; n++) {
                 var a = EDITOR_ACTIONS[n], want = map[a.id];
                 if (!want) continue;
-                if (taken[want] || pageKeyLabel(want)) { delete map[a.id]; dropped.push(a.id); }
+                var onClarion = false;
+                for (var w = 0; w < clarionKeys.length && !onClarion; w++) onClarion = chordsClash(clarionKeys[w], want);
+                if (onClarion || taken[want] || pageKeyLabel(want)) { delete map[a.id]; dropped.push(a.id); }
                 else taken[want] = true;
             }
         }
@@ -2717,11 +2752,24 @@
     // add its new one. M is the monaco namespace.
     // NOTE: the added rule carries no `when` clause, so a moved action fires in ANY context, even where Monaco's
     // own default key was scoped (e.g. only while the suggest widget or find widget is open). Known and accepted.
+    // A Monaco key that a Clarion TWO-key chord takes is removed from Monaco as well: the dispatcher lets the second
+    // key of a shared prefix through to Monaco (so Monaco leaves its own chord mode — see commandForKey), and
+    // Monaco must then find nothing there, or both would run (Ctrl+K Ctrl+C commenting the line twice).
     function computeEditorKeyRules(M) {
-        var rules = [];
+        var rules = [], clarionChords = {};
+        for (var c = 0; c < EDITOR_COMMANDS.length; c++) {
+            var ch = EDITOR_COMMANDS[c].deferred ? '' : effectiveChord(EDITOR_COMMANDS[c]);
+            if (ch && ch.indexOf(' ') > 0) clarionChords[ch] = true;
+        }
         for (var i = 0; i < EDITOR_ACTIONS.length; i++) {
             var a = EDITOR_ACTIONS[i];
-            if (!editorActionMoved(a)) continue;
+            if (!editorActionMoved(a)) {
+                for (var t = 0; t < a.defs.length; t++) {
+                    var gone = clarionChords[a.defs[t]] ? monacoKeybinding(a.defs[t], M) : 0;
+                    if (gone) rules.push({ keybinding: gone, command: '-' + a.id });
+                }
+                continue;
+            }
             for (var d = 0; d < a.defs.length; d++) {
                 var off = monacoKeybinding(a.defs[d], M);
                 if (off) rules.push({ keybinding: off, command: '-' + a.id });
@@ -2747,18 +2795,23 @@
     // runs first), so both sides are told: "takes Ctrl+D from Add Selection To Next Find Match" on the Clarion row,
     // "Ctrl+D is taken by Structure Designer" on the Monaco one. A Monaco key the page itself handles says so too.
     function keyConflicts() {
-        var notes = {}, clarionByChord = {};
+        var notes = {}, clarionByChord = {}, clarionByFirstKey = {};
         function add(id, text) { (notes[id] || (notes[id] = [])).push(text); }
         for (var i = 0; i < EDITOR_COMMANDS.length; i++) {
             var c = EDITOR_COMMANDS[i];
             if (c.deferred) continue;
             var ch = effectiveChord(c);
-            if (ch) clarionByChord[ch] = c;
+            if (!ch) continue;
+            clarionByChord[ch] = c;
+            if (ch.indexOf(' ') > 0) clarionByFirstKey[firstKeyOf(ch)] = c;
         }
         for (var j = 0; j < EDITOR_ACTIONS.length; j++) {
             var a = EDITOR_ACTIONS[j], keys = editorActionKeys(a);
             for (var k = 0; k < keys.length; k++) {
-                var key = keys[k], owner = clarionByChord[key] || clarionByChord[key.split(' ')[0]];
+                // The same key; a Clarion single key the action's chord starts with; or (for a single key) the first
+                // key of a Clarion chord — which the dispatcher follows, so the action's key never arrives.
+                var key = keys[k], owner = clarionByChord[key] || clarionByChord[firstKeyOf(key)]
+                    || (key.indexOf(' ') < 0 ? clarionByFirstKey[key] : null);
                 if (owner) {
                     add(a.id, key + ' is taken by ' + owner.label);
                     add(owner.id, 'takes ' + key + ' from ' + a.label);
@@ -2771,11 +2824,12 @@
         return notes;
     }
 
-    // Whoever holds `chord`, other than `exceptId`: { id, label, kind } or null.
+    // Whoever holds `chord`, other than `exceptId`: { id, label, kind } or null. A Clarion command holds its key and,
+    // for a two-key chord, its first key too (Ctrl+K is taken while Comment Line is on Ctrl+K Ctrl+C).
     function chordOwner(chord, exceptId) {
         for (var i = 0; i < EDITOR_COMMANDS.length; i++) {
             var c = EDITOR_COMMANDS[i];
-            if (c.id !== exceptId && !c.deferred && effectiveChord(c) === chord) return { id: c.id, label: c.label, kind: 'clarion' };
+            if (c.id !== exceptId && !c.deferred && chordsClash(effectiveChord(c), chord)) return { id: c.id, label: c.label, kind: 'clarion' };
         }
         for (var j = 0; j < EDITOR_ACTIONS.length; j++) {
             var a = EDITOR_ACTIONS[j];
@@ -2840,30 +2894,66 @@
         applyEditorKeyRules();
     }
 
-    // Monaco's two-key chords ("Ctrl+K Ctrl+U"). After the first key of one that is still Monaco's (no Clarion
-    // command took it), the NEXT key belongs to Monaco even when a Clarion command sits on it: the Visual Studio
-    // profile puts Lowercase on Ctrl+U, and dispatching it would leave Ctrl+K Ctrl+U (Uncomment) dead.
+    // Two-key chords ("Ctrl+K Ctrl+U"), Monaco's and the Clarion commands'. After a first key, the NEXT key is the
+    // chord's second key, never a key of its own:
+    //   * it finishes a Clarion chord  -> that command runs (Visual Studio's Ctrl+K Ctrl+U = Uncomment Line);
+    //   * else, if Monaco has chords on that first key -> the key is Monaco's, even when a Clarion command sits on it
+    //     alone (Visual Studio's Lowercase is Ctrl+U: run here, it would leave Ctrl+K Ctrl+D and co. dead);
+    //   * else (only Clarion chords start there) -> it is dropped, as Monaco drops an unknown chord.
+    // A first key Monaco also uses is NOT swallowed: Monaco enters its own chord mode, so every Monaco Ctrl+K chord
+    // still works. The second key that finishes a Clarion chord is then let through to Monaco too (default prevented,
+    // propagation not stopped): Monaco looks it up, finds nothing — computeEditorKeyRules removed its own binding for
+    // that chord — and leaves chord mode. Stopping it instead would strand Monaco in chord mode, and the next key typed
+    // would be eaten as "Ctrl+K <key>" (measured on Monaco 0.52.2 in headless Edge). A first key only Clarion chords
+    // use is swallowed, and so is the key after it. A pending first key expires after 5 seconds, as Monaco's does.
     var monacoChordStarts = {};     // first key of a Monaco two-key chord -> true
-    var monacoChordPending = false; // the previous key started one of them
+    var clarionChordStarts = {};    // first key of a Clarion two-key chord -> true
+    var chordPending = null;        // { first, monaco: Monaco started its chord too, at } after a first key
+    var keyToMonacoToo = false;     // set by commandForKey: the command's key must still reach Monaco
+    var CHORD_TIMEOUT_MS = 5000;
+    // The no-op "command" for a key that is swallowed (a Clarion-only first key, or an unknown key after one).
+    var SWALLOW_KEY = { id: '', label: '', run: function () { } };
     function rebuildMonacoChordStarts() {
         monacoChordStarts = {};
-        monacoChordPending = false;
+        clarionChordStarts = {};
+        chordPending = null;
+        var clarionChords = {};
+        for (var ch in chordToCmd) {
+            if (!chordToCmd.hasOwnProperty(ch) || ch.indexOf(' ') < 0) continue;
+            clarionChords[ch] = true;
+            clarionChordStarts[firstKeyOf(ch)] = true;
+        }
         for (var i = 0; i < EDITOR_ACTIONS.length; i++) {
             var keys = editorActionKeys(EDITOR_ACTIONS[i]);
             for (var k = 0; k < keys.length; k++) {
                 var parts = String(keys[k]).split(' ');
-                if (parts.length > 1 && !chordToCmd[parts[0]]) monacoChordStarts[parts[0]] = true;
+                // A chord a Clarion command took is gone from Monaco (computeEditorKeyRules), so it starts nothing.
+                if (parts.length > 1 && !chordToCmd[parts[0]] && !clarionChords[keys[k]]) monacoChordStarts[parts[0]] = true;
             }
         }
     }
-    // The Clarion command a key runs, or null to leave the key to Monaco; null chord = a key with no canonical
-    // name (Escape, a numpad op), which ends any pending chord just as it does in Monaco.
+    // The Clarion command a key runs (SWALLOW_KEY to just eat the key), or null to leave the key to Monaco; null
+    // chord = a key with no canonical name (Escape, a numpad op), which ends any pending chord just as it does in
+    // Monaco. keyToMonacoToo says whether the dispatcher must still let the key reach Monaco.
     function commandForKey(chord) {
-        if (monacoChordPending) { monacoChordPending = false; return null; }
+        keyToMonacoToo = false;
+        var pend = chordPending;
+        chordPending = null;
+        if (pend && Date.now() - pend.at > CHORD_TIMEOUT_MS) pend = null;
         if (!chord) return null;
+        if (pend) {
+            var done = chordToCmd[pend.first + ' ' + chord];
+            if (done) { keyToMonacoToo = pend.monaco; return done; }
+            return pend.monaco ? null : SWALLOW_KEY;
+        }
         var cmd = chordToCmd[chord] || null;
-        if (!cmd && monacoChordStarts[chord]) monacoChordPending = true;
-        return cmd;
+        if (cmd) return cmd;
+        if (clarionChordStarts[chord]) {
+            chordPending = { first: chord, monaco: !!monacoChordStarts[chord], at: Date.now() };
+            return chordPending.monaco ? null : SWALLOW_KEY;
+        }
+        if (monacoChordStarts[chord]) chordPending = { first: chord, monaco: true, at: Date.now() };
+        return null;
     }
 
     // Map a keydown to a canonical chord ("Ctrl+Shift+Y"). Physical keys come from ev.code so layout
@@ -2921,10 +3011,11 @@
             var cmd = commandForKey(chordFromEvent(ev));
             if (!cmd) return;
             ev.preventDefault();
-            ev.stopImmediatePropagation();
+            // The second key of a chord Monaco started too goes on to Monaco, so it leaves its chord mode.
+            if (!keyToMonacoToo) ev.stopImmediatePropagation();
             try { cmd.run(); } catch (e) { /* never let a command break the editor */ }
         }, true);   // capture phase — runs after the Find interceptor (installed first), ahead of Monaco
-        window.addEventListener('blur', function () { monacoChordPending = false; });
+        window.addEventListener('blur', function () { chordPending = null; });
     }
 
     // Command palette: Monaco's standalone quick-command picker (editor.action.quickCommand). Bound per
@@ -6883,7 +6974,7 @@
         var resetTitle = activeKeyProfile === 'clarion' ? 'Reset to default'
             : 'Reset to the ' + keyProfileById(activeKeyProfile).label + ' key';
         var needle = (kbSearchText || '').trim().toLowerCase();
-        var entries = EDITOR_COMMANDS.concat(EDITOR_ACTIONS);
+        var entries = keybindTableOrder();
         var shown = 0;
         tb.innerHTML = '';
         for (var i = 0; i < entries.length; i++) {
@@ -6918,6 +7009,18 @@
             empty.classList.toggle('hidden', shown > 0);
         }
         wireKeybindRows();
+    }
+
+    // Row order: the Clarion commands A-Z by label, then the editor's own actions A-Z (EDITOR_ACTIONS is sorted when
+    // it is read). Grouped rather than one merged list so "All" is the Clarion view with the editor's actions after
+    // it — the Clarion rows don't scatter among Monaco's hundred-odd. Display only: EDITOR_COMMANDS keeps its
+    // definition order, which conflict resolution reads ("the later override loses").
+    function byLabel(x, y) {
+        var a = x.label.toLowerCase(), b = y.label.toLowerCase();
+        return a < b ? -1 : (a > b ? 1 : 0);
+    }
+    function keybindTableOrder() {
+        return EDITOR_COMMANDS.slice().sort(byLabel).concat(EDITOR_ACTIONS);
     }
 
     // The Keyboard table's view: which rows the chips and the search box let through.

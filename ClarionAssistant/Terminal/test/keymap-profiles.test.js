@@ -17,6 +17,10 @@
 //   * Nothing moves onto a core editing key (undo, clipboard, typing, caret movement); F-keys and other modified
 //     combinations stay free, and a row may stay on its own default (Cut / Clear Line on Ctrl+X).
 //   * The right-click Format Selection entry names the key Format Selection is currently on.
+//   * Two-key chords for Clarion commands (Visual Studio's Ctrl+K Ctrl+C / Ctrl+K Ctrl+U): the dispatcher runs them,
+//     leaves every other Monaco Ctrl+K chord to Monaco, keeps Ctrl+U alone on Lowercase, removes Monaco's own binding
+//     for a chord it took, and conflict resolution treats a chord's first key as taken.
+//     (tools\monaco-keymap-probe.js types the same chords into the real page on real Monaco.)
 
 const fs = require('fs');
 const path = require('path');
@@ -64,12 +68,14 @@ try {
     const exported = ['EDITOR_COMMANDS', 'KEY_PROFILES', 'effectiveChord', 'chordForId', 'rebuildChordMap', 'baseChord',
         'setKeyProfile', 'normalizeKeyProfile', 'sanitizeLoadedKeyBindings', 'pageKeyLabel', 'chordFromMonacoLabel',
         'monacoKeybinding', 'loadEditorActions', 'computeEditorKeyRules', 'keyConflicts', 'editorActionKeys',
-        'chordOwner', 'resolveOverrideConflicts', 'coreKeyLabel', 'coreKeyRefused', 'addFormatAction', 'commandForKey'];
+        'chordOwner', 'resolveOverrideConflicts', 'coreKeyLabel', 'coreKeyRefused', 'addFormatAction', 'commandForKey',
+        'SWALLOW_KEY', 'chordsClash'];
     const exportsSrc = '\nreturn {' + exported.map(n => ' ' + n + ': typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined,').join('') +
         ' getProfile: function () { return typeof activeKeyProfile !== "undefined" ? activeKeyProfile : undefined; },' +
         ' getActions: function () { return typeof EDITOR_ACTIONS !== "undefined" ? EDITOR_ACTIONS : undefined; },' +
         ' setBindings: function (b) { keyBindings = b; }, getBindings: function () { return keyBindings; },' +
-        ' chordMap: function () { return chordToCmd; } };';
+        ' chordMap: function () { return chordToCmd; },' +
+        ' keyToMonaco: function () { return typeof keyToMonacoToo !== "undefined" ? keyToMonacoToo : undefined; } };';
     api = new Function(...names, 'document', commandsSrc + '\n' + sanitizeSrc + '\n' + formatSrc + exportsSrc)(
         ...names.map(() => function stub() { }), document);
 } catch (e) { loadError = e.message; }
@@ -92,12 +98,20 @@ function effectiveSet() {
     CMDS.forEach(c => { out[c.id] = api.effectiveChord(c); });
     return out;
 }
+// Two chords clash when equal, or when one is the other's first key (Ctrl+K vs Ctrl+K Ctrl+C) — written out here
+// rather than borrowed from the page, so a page that forgets the prefix case is caught.
+function clashes(a, b) {
+    if (a === b) return true;
+    const pa = a.split(' '), pb = b.split(' ');
+    return pa.length !== pb.length && pa[0] === pb[0];
+}
 function duplicates(eff) {
-    const seen = {}, dups = [];
+    const seen = [], dups = [];
     Object.keys(eff).forEach(id => {
         const ch = eff[id];
         if (!ch || byId[id].deferred) return;
-        if (seen[ch]) dups.push(ch + ' (' + seen[ch] + ', ' + id + ')'); else seen[ch] = id;
+        const other = seen.find(x => clashes(x.ch, ch));
+        if (other) dups.push(ch + ' (' + other.id + ' on ' + other.ch + ', ' + id + ')'); else seen.push({ id, ch });
     });
     return dups;
 }
@@ -152,10 +166,12 @@ api.KEY_PROFILES.forEach(p => {
     const ids = Object.keys(map);
     check(p.id + ': maps only real commands or Monaco actions', ids.every(id => !!byId[id] || !!monacoById[id]),
         ids.filter(id => !byId[id] && !monacoById[id]).join(', '));
-    check(p.id + ': every chord is canonical (two-key chords only for Monaco actions)',
-        ids.every(id => !map[id] || CANONICAL.test(map[id]) || (!!monacoById[id] && TWO_KEY.test(map[id])
-            && map[id].split(' ').every(x => CANONICAL.test(x)))),
-        ids.filter(id => map[id] && !CANONICAL.test(map[id])).map(id => id + '=' + map[id]).join(', '));
+    const canonical = ch => !ch || CANONICAL.test(ch) || (TWO_KEY.test(ch) && ch.split(' ').every(x => CANONICAL.test(x)));
+    check(p.id + ': every chord is canonical (one key, or a two-key chord of canonical keys)',
+        ids.every(id => canonical(map[id])), ids.filter(id => !canonical(map[id])).map(id => id + '=' + map[id]).join(', '));
+    check(p.id + ': no key of a two-key chord is one the page claims first (it would never reach the dispatcher)',
+        ids.every(id => !map[id] || map[id].split(' ').every(x => !pageKey(x))),
+        ids.filter(id => map[id] && map[id].split(' ').some(x => pageKey(x))).map(id => id + '=' + map[id]).join(', '));
     check(p.id + ': no chord is one the page claims first, or a clipboard / undo / completion staple',
         ids.every(id => !pageKey(map[id]) && !STAPLES.has(map[id])),
         ids.filter(id => pageKey(map[id]) || STAPLES.has(map[id])).map(id => id + '=' + map[id]).join(', '));
@@ -191,6 +207,9 @@ expectChord('vs', 'removeLine', 'Ctrl+Shift+L');
 expectChord('vs', 'lowerCase', 'Ctrl+U');                    // swapped out of removeLine's way
 expectChord('vs', 'upperCase', 'Ctrl+Shift+U');
 expectChord('vs', 'navigateBack', 'Ctrl+-');
+expectChord('vs', 'commentLine', 'Ctrl+K Ctrl+C');            // Visual Studio's own comment chord
+expectChord('vs', 'uncommentLine', 'Ctrl+K Ctrl+U');
+expectChord('vscode', 'commentLine', 'Ctrl+/');               // VS Code's own comment key stays
 expectChord('vs', 'navigateForward', 'Ctrl+Shift+-');
 
 expectChord('npp', 'duplicateLineAbove', 'Ctrl+D');
@@ -499,12 +518,96 @@ section('Monaco two-key chords vs Clarion keys');
 use('vs');
 check('Visual Studio puts Lowercase on Ctrl+U', api.chordMap()['Ctrl+U'] && api.chordMap()['Ctrl+U'].id === 'lowerCase');
 check('Ctrl+K is left to Monaco (starts a chord)', api.commandForKey('Ctrl+K') === null);
-check('... and the Ctrl+U after it goes to Monaco (Uncomment), not Lowercase', api.commandForKey('Ctrl+U') === null);
+check('... and a Ctrl+D after it goes to Monaco (Ctrl+K Ctrl+D), not to Duplicate Line on Ctrl+D', api.commandForKey('Ctrl+D') === null);
 const solo = api.commandForKey('Ctrl+U');
 check('a Ctrl+U on its own still runs Lowercase', !!solo && solo.id === 'lowerCase');
 api.commandForKey('Ctrl+K');
 check('a key with no name (Escape) ends the pending chord', api.commandForKey(null) === null && !!api.commandForKey('Ctrl+U'));
 use('clarion');
 check('the Clarion profile runs its own commands as before (twice running)', !!api.commandForKey('Ctrl+D') && !!api.commandForKey('Ctrl+D'));
+
+// ---------- Clarion commands on two-key chords (the Owner's Visual Studio report) ----------
+// Visual Studio comments with Ctrl+K Ctrl+C and uncomments with Ctrl+K Ctrl+U. Those must run the Clarion commands
+// ("!" comments, slot-guarded), while every OTHER Ctrl+K chord stays Monaco's and Lowercase stays on Ctrl+U alone.
+section('Clarion two-key chords');
+const run = (...keys) => { let c = null; keys.forEach(k => { c = api.commandForKey(k); }); return c; };
+use('vs');
+check('the dispatch map holds the Clarion chords', api.chordMap()['Ctrl+K Ctrl+C'] === byId.commentLine
+    && api.chordMap()['Ctrl+K Ctrl+U'] === byId.uncommentLine);
+check('Ctrl+K alone runs nothing and is NOT swallowed (Monaco starts its own chord too)', api.commandForKey('Ctrl+K') === null);
+let got = api.commandForKey('Ctrl+C');
+check('... then Ctrl+C runs Comment Line', !!got && got.id === 'commentLine', got && got.id);
+check('... and that key still goes on to Monaco, which then leaves its own chord mode', api.keyToMonaco() === true);
+got = run('Ctrl+K', 'Ctrl+U');
+check('Ctrl+K Ctrl+U runs Uncomment Line', !!got && got.id === 'uncommentLine', got && got.id);
+got = api.commandForKey('Ctrl+U');
+check('Ctrl+U on its own, straight after, runs Lowercase', !!got && got.id === 'lowerCase', got && got.id);
+check('... and is not passed on to Monaco', api.keyToMonaco() === false);
+check('Ctrl+C on its own runs nothing (it is copy)', api.commandForKey('Ctrl+C') === null);
+check('Ctrl+/ on its own runs nothing here (Monaco\'s Toggle Line Comment has it back)', api.commandForKey('Ctrl+/') === null);
+const monacoK = [...new Set([].concat(...FIXTURE.actions.map(a => a.keys)).filter(k => /^Ctrl\+K /.test(k)))];
+const stillMonaco = monacoK.filter(k => k !== 'Ctrl+K Ctrl+C' && k !== 'Ctrl+K Ctrl+U');
+const stolen = stillMonaco.filter(k => run('Ctrl+K', k.split(' ')[1]) !== null);
+check('every other Monaco Ctrl+K chord (' + stillMonaco.length + ') still reaches Monaco — fold, unfold, Ctrl+K Ctrl+D...',
+    stillMonaco.length > 20 && stolen.length === 0, stolen.join(', '));
+api.commandForKey(null);
+check('Monaco\'s own Add / Remove Line Comment chords are removed from Monaco (or both would run)',
+    (() => { const r = api.computeEditorKeyRules(M);
+        return r.some(x => x.command === '-editor.action.addCommentLine' && x.keybinding === kb('Ctrl+K Ctrl+C'))
+            && r.some(x => x.command === '-editor.action.removeCommentLine' && x.keybinding === kb('Ctrl+K Ctrl+U'))
+            && !r.some(x => x.command === '-editor.action.commentLine'); })(), JSON.stringify(api.computeEditorKeyRules(M)));
+notes = api.keyConflicts();
+check('the table says Comment Line takes Ctrl+K Ctrl+C from Add Line Comment',
+    (notes.commentLine || []).some(n => n === 'takes Ctrl+K Ctrl+C from Add Line Comment'), JSON.stringify(notes.commentLine));
+check('... and Add Line Comment says who took it', (notes['editor.action.addCommentLine'] || []).some(n => /taken by Comment Line/.test(n)));
+check('... while Toggle Line Comment keeps Ctrl+/ without a clash', !(notes['editor.action.commentLine'] || []).length,
+    JSON.stringify(notes['editor.action.commentLine']));
+const realNow = Date.now;
+try {
+    api.commandForKey('Ctrl+K');
+    Date.now = () => realNow() + 6000;
+    got = api.commandForKey('Ctrl+U');
+    check('a first key older than 5 seconds has expired: Ctrl+U is Lowercase again', !!got && got.id === 'lowerCase', got && got.id);
+} finally { Date.now = realNow; }
+
+section('Two-key chords in conflict resolution');
+d = use('vs', { markWord: 'Ctrl+K' });
+check('a Clarion key on the first key of a Clarion chord is reset (Ctrl+K Ctrl+C could never finish)',
+    d.indexOf('markWord') >= 0 && api.effectiveChord(byId.markWord) === 'Ctrl+W', JSON.stringify(d));
+d = use('vs', { 'editor.action.gotoLine': 'Ctrl+K' });
+check('a Monaco action on that first key is reset too', d.indexOf('editor.action.gotoLine') >= 0, JSON.stringify(d));
+d = use('vs', { 'editor.action.gotoLine': 'Ctrl+K Ctrl+C' });
+check('a Monaco action on the Clarion chord itself is reset', d.indexOf('editor.action.gotoLine') >= 0, JSON.stringify(d));
+d = use('vs', { 'editor.action.gotoLine': 'Ctrl+D Ctrl+1' });
+check('a Monaco chord starting on a Clarion key (Ctrl+D) is reset', d.indexOf('editor.action.gotoLine') >= 0, JSON.stringify(d));
+d = use('vs', { removeLine: 'Ctrl+K Ctrl+C' });
+check('a Clarion override on another command\'s chord is reset', d.indexOf('removeLine') >= 0, JSON.stringify(d));
+use('vs');
+let o = api.chordOwner('Ctrl+K', 'markWord');
+check('chordOwner: Ctrl+K belongs to Comment Line\'s chord', !!o && o.kind === 'clarion' && /comment/i.test(o.id), JSON.stringify(o));
+o = api.chordOwner('Ctrl+K Ctrl+U', 'markWord');
+check('chordOwner: the chord itself belongs to Uncomment Line', !!o && o.id === 'uncommentLine', JSON.stringify(o));
+clean = api.sanitizeLoadedKeyBindings({ removeLine: 'Ctrl+K', upperCase: 'Ctrl+K Ctrl+U', invertCase: 'Ctrl+Alt+9' });
+check('loaded overrides: on the first key or on the chord are dropped, a free one kept',
+    clean.removeLine === undefined && clean.upperCase === undefined && clean.invertCase === 'Ctrl+Alt+9', JSON.stringify(clean));
+check('a two-key chord on a page key is refused (Ctrl+K Ctrl+S, Ctrl+F Ctrl+1)',
+    use('vs', { removeLine: 'Ctrl+K Ctrl+S' }).indexOf('removeLine') >= 0 && use('vs', { removeLine: 'Ctrl+F Ctrl+1' }).indexOf('removeLine') >= 0);
+check('a two-key chord on a core key is refused (Ctrl+Z Ctrl+1)', use('vs', { removeLine: 'Ctrl+Z Ctrl+1' }).indexOf('removeLine') >= 0);
+
+section('A first key only Clarion chords use');
+check('nothing in Monaco starts with Ctrl+Alt+M (the probe key below)',
+    !FIXTURE.actions.some(a => a.keys.some(k => /^Ctrl\+Alt\+M( |$)/.test(k))));
+api.KEY_PROFILES.push({ id: 'probe2', label: 'Probe', map: { markWord: 'Ctrl+Alt+M Ctrl+W' } });
+use('probe2');
+got = api.commandForKey('Ctrl+Alt+M');
+check('the first key is swallowed (Monaco has no chord to start there)', got === api.SWALLOW_KEY && api.keyToMonaco() === false);
+got = api.commandForKey('Ctrl+W');
+check('... and the second runs the command, not passed on', !!got && got.id === 'markWord' && api.keyToMonaco() === false, got && got.id);
+got = run('Ctrl+Alt+M', 'Ctrl+D');
+check('an unknown second key is dropped, as Monaco drops an unknown chord (Structure Designer does not run)', got === api.SWALLOW_KEY);
+got = api.commandForKey('Ctrl+D');
+check('... and the key after that is a key of its own again', !!got && got.id === 'structureDesigner', got && got.id);
+api.KEY_PROFILES.pop();
+use('clarion');
 
 finish();

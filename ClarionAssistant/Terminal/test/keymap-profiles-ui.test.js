@@ -16,6 +16,8 @@
 //     NAMING the keys reset — and choosing the old profile again restores them
 //   * the reset button's tooltip names the profile's key it returns to
 //   * capture refuses a core editing key (Ctrl+Z, a bare letter, Shift+Up...) and stays armed; F-keys are fine
+//   * Visual Studio's two-key comment chords show in both columns, and capture refuses their first key (Ctrl+K)
+//   * rows are A-Z by label; in All, the Clarion commands first, then the editor's actions
 
 const fs = require('fs');
 let JSDOM;
@@ -259,6 +261,48 @@ if (env) {
     press('KeyX', { ctrlKey: true });
     check('Cut / Clear Line may go back to its own default, Ctrl+X', page.getBindings().cutClarion === undefined
         && !spy.toasts.slice(toastsBefore).some(x => /core editing key/.test(x.msg)), JSON.stringify(page.getBindings()));
+    // ---------- Visual Studio's two-key comment chords in the table (the Owner's report) ----------
+    section('Two-key chords in the table');
+    page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });
+    page.setBindings({});
+    page.onKeyProfileChosen('vs');
+    click(chip('clarion'));
+    check('Visual Studio: Comment Line shows Ctrl+K Ctrl+C, in both columns',
+        row(doc, 'commentLine').key === 'Ctrl+K Ctrl+C' && row(doc, 'commentLine').def === 'Ctrl+K Ctrl+C', JSON.stringify(row(doc, 'commentLine')));
+    check('Visual Studio: Uncomment Line shows Ctrl+K Ctrl+U', row(doc, 'uncommentLine').key === 'Ctrl+K Ctrl+U', JSON.stringify(row(doc, 'uncommentLine')));
+    check('... and Lowercase still shows Ctrl+U', row(doc, 'lowerCase').key === 'Ctrl+U');
+    check('the row notes which Monaco chord it takes', /takes Ctrl\+K Ctrl\+C from Add Line Comment/.test(noteOf('commentLine')), noteOf('commentLine'));
+    click(chip('all'));
+    check('Toggle Line Comment has Ctrl+/ back', row(doc, 'editor.action.commentLine').key === 'Ctrl+/', JSON.stringify(row(doc, 'editor.action.commentLine')));
+    capture('removeLine');
+    press('KeyK', { ctrlKey: true });
+    t = lastToast();
+    check('capture refuses Ctrl+K while a Clarion chord starts with it, naming the command',
+        page.getBindings().removeLine === undefined && t.ok === false && /already bound to (Comment|Uncomment) Line/.test(t.msg), JSON.stringify(t));
+    page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });
+    page.onKeyProfileChosen('clarion');
+    click(chip('clarion'));
+    check('Clarion: Comment Line is back on Ctrl+/', row(doc, 'commentLine').key === 'Ctrl+/');
+
+    // ---------- row order ----------
+    section('Row order');
+    const rowLabels = () => Array.from(doc.querySelectorAll('#keybindRows tr')).map(tr => ({
+        id: tr.querySelector('.kb-input').getAttribute('data-cmd'),
+        label: tr.querySelector('td').firstChild.textContent.trim(),
+        clarion: !!tr.querySelector('.kb-src') }));
+    const sortedBy = list => list.every((r, i) => i === 0 || list[i - 1].label.toLowerCase() <= r.label.toLowerCase());
+    let rows = rowLabels();
+    check('Clarion view: the commands are A-Z by label', rows.length > 10 && sortedBy(rows), rows.map(r => r.label).join(' | '));
+    check('... starting at Code Snippets, not at the first command defined (Cut / Clear Line)', rows[0].label === 'Code Snippets', rows[0].label);
+    click(chip('all'));
+    rows = rowLabels();
+    const firstEditor = rows.findIndex(r => !r.clarion);
+    check('All view: every Clarion command first, then the editor\'s actions',
+        firstEditor > 0 && rows.slice(0, firstEditor).every(r => r.clarion) && rows.slice(firstEditor).every(r => !r.clarion), String(firstEditor));
+    check('... each group A-Z', sortedBy(rows.slice(0, firstEditor)) && sortedBy(rows.slice(firstEditor)));
+    click(chip('editor'));
+    check('Editor view: A-Z', sortedBy(rowLabels()));
+    click(chip('clarion'));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

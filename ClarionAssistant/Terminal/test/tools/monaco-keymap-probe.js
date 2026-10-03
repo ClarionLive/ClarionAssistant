@@ -173,6 +173,39 @@ try {
       r.profiles = document.getElementById('kbProfile').options.length;
       r.pageActions = EDITOR_ACTIONS.filter(function (a) { return /^clarion|ca\\./i.test(a.id); }).map(function (a) { return a.id; });
     } catch (e) { r.error = String(e && e.stack || e); }
+    // Visual Studio's two-key comment chords, typed into the live editor: keydowns dispatched at the editor's
+    // textarea run through the page's own dispatcher AND Monaco's keybinding service, as real keys do.
+    try {
+      fileMode = true;                      // the whole buffer is editable, as in a plain source file
+      setKeyProfile('vs');
+      var ta = editor.getDomNode().querySelector('textarea');
+      var key = function (code, kc, mods) {
+        var e = new KeyboardEvent('keydown', { code: code, key: code.replace(/^(Key|Digit)/, '').toLowerCase(),
+          ctrlKey: !mods || mods.ctrl !== false, shiftKey: !!(mods && mods.shift), bubbles: true, cancelable: true });
+        Object.defineProperty(e, 'keyCode', { get: function () { return kc; } });
+        Object.defineProperty(e, 'which', { get: function () { return kc; } });
+        ta.dispatchEvent(e);
+      };
+      var NL = String.fromCharCode(10);
+      var reset = function (text, ln) { editor.setValue(text); editor.setPosition({ lineNumber: ln, column: 1 }); editor.focus(); };
+      reset(['one', 'two', 'three'].join(NL), 2);
+      key('KeyK', 75); key('KeyC', 67);
+      r.vsComment = editor.getValue().split(NL)[1];
+      key('KeyA', 65);                      // Monaco must have left its chord mode: Ctrl+A selects all
+      var s = editor.getSelection();
+      r.selectAllAfter = [s.startLineNumber, s.startColumn, s.endLineNumber, s.endColumn].join(',');
+      editor.setPosition({ lineNumber: 2, column: 1 });
+      key('KeyK', 75); key('KeyU', 85);
+      r.vsUncomment = editor.getValue().split(NL)[1];
+      reset(['one', 'TWO', 'three'].join(NL), 2);
+      editor.setSelection(new monaco.Selection(2, 1, 2, 4));
+      key('KeyU', 85);                      // Ctrl+U alone: Lowercase
+      r.vsLower = editor.getValue().split(NL)[1];
+      reset(['one', 'two   ', 'three'].join(NL), 2);
+      key('KeyK', 75); key('KeyX', 88);     // Ctrl+K Ctrl+X is Monaco's Trim Trailing Whitespace, not Clarion's Ctrl+X
+      r.trimAfterK = JSON.stringify(editor.getValue().split(NL)[1]);
+      setKeyProfile('clarion');
+    } catch (e) { r.chordError = String(e && e.stack || e); }
     var pre = document.createElement('pre'); pre.id = 'probeOut'; pre.textContent = 'JSON:' + JSON.stringify(r) + ':END';
     document.body.appendChild(pre);
   })();
@@ -195,6 +228,14 @@ if (real) {
     check('Select All Occurrences shows that Lowercase takes its key', /Lowercase/.test(real.selectHighlightsNote || ''), real.selectHighlightsNote);
     check('the profile picker lists the profiles', real.profiles === 4, real.profiles);
     console.log('  (page actions found: ' + JSON.stringify(real.pageActions) + ')');
+    console.log('\nVisual Studio two-key chords, typed into the real page');
+    check('the chord run raised no error', !real.chordError, real.chordError);
+    check('Ctrl+K Ctrl+C comments the line ONCE with the Clarion command (Monaco\'s own Add Line Comment removed)',
+        real.vsComment === '!two', real.vsComment);
+    check('... and Monaco left its chord mode: the next key (Ctrl+A) still selects all', real.selectAllAfter === '1,1,3,6', real.selectAllAfter);
+    check('Ctrl+K Ctrl+U uncomments it', real.vsUncomment === 'two', real.vsUncomment);
+    check('Ctrl+U alone is still Lowercase', real.vsLower === 'two', real.vsLower);
+    check('Ctrl+K Ctrl+X reaches Monaco (Trim Trailing Whitespace), not Clarion\'s Ctrl+X', real.trimAfterK === '"two"', real.trimAfterK);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
