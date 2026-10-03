@@ -312,7 +312,9 @@ namespace ClarionAssistant.Services
                     return false;
                 }
 
-                LspTrace.Write("[LSP] Initialize succeeded");
+                _serverSyncKind = ReadSyncKind(initResult);
+                LspTrace.Write("[LSP] Initialize succeeded (textDocumentSync=" + _serverSyncKind
+                    + (UsesIncrementalSync ? ", incremental changes" : ", full-text changes") + ")");
 
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
@@ -537,6 +539,17 @@ namespace ClarionAssistant.Services
             // happens onto a server that does not send the status, a stale true here would turn every
             // lsp_diagnostics call into a full-budget pending:true. Start resets it too.
             _serverSendsDiagnosticsStatus = false;
+
+            // The same guard for document sync: a reused instance must not believe a fresh server already holds its
+            // documents. With incremental sync it matters more than it did: a ranged change against a text the new
+            // server never received does not fail, it corrupts the server's copy.
+            lock (_docSyncLock)
+            {
+                _openDocuments.Clear();
+                _lastSyncedHash.Clear();
+                _lastSyncedText.Clear();
+            }
+            _serverSyncKind = 1;
         }
 
         #region LSP Requests
@@ -1388,6 +1401,7 @@ namespace ClarionAssistant.Services
 
                 SendNotificationWithText("textDocument/didOpen", parms, doc, "text", content);   // 1d8d1c49: streamed when large
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
+                _lastSyncedText[filePath] = content;   // the server's copy, for the next ranged change
             }
         }
 
@@ -1401,6 +1415,87 @@ namespace ClarionAssistant.Services
         // unchanged buffer skip the didChange (and the server-side re-tokenization it triggers).
         private readonly Dictionary<string, int> _lastSyncedHash =
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // ---- Incremental sync ----
+        // The text the SERVER holds per file, as of the last didOpen/didChange we sent (a reference to the caller's
+        // string, not a copy). With it, a change is sent as the one small range LspTextDiff finds instead of the whole
+        // buffer: on a 2.5 MB generated module the full-text didChange was most of the post-edit hover cost (HoverBench).
+        // Only when the server advertises TextDocumentSyncKind.Incremental (2), and only while IncrementalSyncEnabled.
+        // Every path that changes the server's copy must record it here, or the next range lands on the wrong text.
+        private readonly Dictionary<string, string> _lastSyncedText =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Process-wide switch for ranged (incremental) didChange. On by default; a host can turn it off
+        /// (kill switch) and HoverBench turns it off to measure full-text sync on the same server.</summary>
+        public static bool IncrementalSyncEnabled = true;
+
+        // TextDocumentSyncKind the server advertised in its initialize reply: 0 none, 1 full, 2 incremental.
+        private int _serverSyncKind = 1;
+
+        /// <summary>True when changes go to the server as ranges (the server supports it and it is enabled).</summary>
+        public bool UsesIncrementalSync { get { return _serverSyncKind == 2 && IncrementalSyncEnabled; } }
+
+        /// <summary>didChange counts by kind since start (diagnostics, and HoverBench's sanity line).</summary>
+        public int IncrementalChangesSent { get; private set; }
+        public int FullChangesSent { get; private set; }
+
+        private static int ReadSyncKind(Dictionary<string, object> initResponse)
+        {
+            try
+            {
+                object result, caps, sync;
+                var res = initResponse != null && initResponse.TryGetValue("result", out result) ? result as Dictionary<string, object> : null;
+                var c = res != null && res.TryGetValue("capabilities", out caps) ? caps as Dictionary<string, object> : null;
+                if (c == null || !c.TryGetValue("textDocumentSync", out sync) || sync == null) return 1;
+                var options = sync as Dictionary<string, object>;
+                if (options == null) return Convert.ToInt32(sync);
+                object change;
+                return options.TryGetValue("change", out change) && change != null ? Convert.ToInt32(change) : 1;
+            }
+            catch { return 1; }
+        }
+
+        /// <summary>
+        /// Send a didChange taking the server's copy of <paramref name="filePath"/> to <paramref name="text"/>: one
+        /// ranged change when incremental sync is in use and the server's current text is known, else the whole text.
+        /// Call under _docSyncLock, with the document already open.
+        /// </summary>
+        private void SendDidChange_NoLock(string filePath, string uri, int nextVersion, string text)
+        {
+            string serverText;
+            LspTextChange delta = null;
+            if (UsesIncrementalSync && _lastSyncedText.TryGetValue(filePath, out serverText) && serverText != null)
+                delta = LspTextDiff.Compute(serverText, text);
+
+            Dictionary<string, object> change;
+            if (delta != null)
+            {
+                change = new Dictionary<string, object>
+                {
+                    { "range", new Dictionary<string, object>
+                        {
+                            { "start", new Dictionary<string, object> { { "line", delta.StartLine }, { "character", delta.StartCharacter } } },
+                            { "end", new Dictionary<string, object> { { "line", delta.EndLine }, { "character", delta.EndCharacter } } }
+                        }
+                    },
+                    { "text", delta.Text }
+                };
+                IncrementalChangesSent++;
+            }
+            else
+            {
+                change = new Dictionary<string, object> { { "text", text } };   // no range = full replacement
+                FullChangesSent++;
+            }
+            var changeParms = new Dictionary<string, object>
+            {
+                { "textDocument", new Dictionary<string, object> { { "uri", uri }, { "version", nextVersion } } },
+                { "contentChanges", new System.Collections.ArrayList { change } }
+            };
+            SendNotificationWithText("textDocument/didChange", changeParms, change, "text", (string)change["text"]);   // 1d8d1c49
+            _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+            _lastSyncedText[filePath] = text;
+        }
 
         private void EnsureDocumentOpenWithText(string filePath, string text)
         {
@@ -1416,16 +1511,7 @@ namespace ClarionAssistant.Services
                     if (_lastSyncedHash.TryGetValue(filePath, out lastHash) && lastHash == hash)
                         return;
 
-                    int nextVersion = currentVersion + 1;
-                    var change = new Dictionary<string, object> { { "text", text } };
-                    var changes = new System.Collections.ArrayList { change };
-                    var changeParms = new Dictionary<string, object>
-                    {
-                        { "textDocument", new Dictionary<string, object> { { "uri", uri }, { "version", nextVersion } } },
-                        { "contentChanges", changes }
-                    };
-                    SendNotificationWithText("textDocument/didChange", changeParms, change, "text", text);   // 1d8d1c49
-                    _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+                    SendDidChange_NoLock(filePath, uri, currentVersion + 1, text);   // ranged when the server allows
                     _lastSyncedHash[filePath] = hash;
                     return;
                 }
@@ -1441,6 +1527,7 @@ namespace ClarionAssistant.Services
                 SendNotificationWithText("textDocument/didOpen", openParms, openDoc, "text", text);   // 1d8d1c49
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
                 _lastSyncedHash[filePath] = hash;
+                _lastSyncedText[filePath] = text;
             }
         }
 
@@ -1476,27 +1563,10 @@ namespace ClarionAssistant.Services
 
                 string uri = FilePathToUri(filePath);
                 string content = EncodingHelper.ReadAllText(filePath, out _);
-                int nextVersion = currentVersion + 1;
-
-                // LSP TextDocumentContentChangeEvent without `range` = full document replacement.
-                var changes = new System.Collections.ArrayList
-                {
-                    new Dictionary<string, object> { { "text", content } }
-                };
-
-                var parms = new Dictionary<string, object>
-                {
-                    { "textDocument", new Dictionary<string, object>
-                        {
-                            { "uri", uri },
-                            { "version", nextVersion }
-                        }
-                    },
-                    { "contentChanges", changes }
-                };
-
-                SendNotification("textDocument/didChange", parms);
-                _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+                SendDidChange_NoLock(filePath, uri, currentVersion + 1, content);
+                // The server now holds the DISK text, so the buffer hash must say so too. It used to keep the last
+                // buffer's hash: a buffer matching it afterwards was skipped as "unchanged" while the server held disk.
+                _lastSyncedHash[filePath] = content.Length ^ content.GetHashCode();
             }
         }
 

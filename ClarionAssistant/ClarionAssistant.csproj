@@ -173,6 +173,7 @@
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\LspTrace.cs" />
     <Compile Include="Services\LspClient.cs" />
+    <Compile Include="Services\LspTextDiff.cs" />
     <Compile Include="Services\LspService.cs" />
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
