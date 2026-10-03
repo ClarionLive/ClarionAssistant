@@ -93,9 +93,13 @@ namespace ClarionAssistant.Services
         private static readonly HashSet<string> FormatterKeySet = new HashSet<string>(FormatterKeys, StringComparer.Ordinal);
         private const int MaxFormatterStringLen = 32;
 
-        // Safety caps for the untrusted JS payload: bound how many overrides and how long a chord can be
-        // so a crafted settings.txt / postMessage can't bloat the file or the binding map.
-        private const int MaxKeyBindings = 64;
+        // Safety caps for the untrusted JS payload: bound how many overrides, how long a command id and how long a
+        // chord can be so a crafted settings.txt / postMessage can't bloat the file or the binding map.
+        // GH #206: the Keyboard table lists every Monaco action beside the Clarion commands (~150 rows today), so
+        // the override cap must cover ALL of them — at the old 64 a developer's 65th override was silently dropped.
+        // 256 leaves room for Monaco to grow. The id cap mirrors the page's looksLikeActionId (1 + 120 chars).
+        private const int MaxKeyBindings = 256;
+        private const int MaxCommandIdLength = 121;
         private const int MaxChordLength = 40;
 
         private const string Prefix = "ModernEmbeditor.";
@@ -371,6 +375,7 @@ namespace ClarionAssistant.Services
                 if (outp.Count >= MaxKeyBindings) break;
                 string id = kv.Key, chord = kv.Value;
                 if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(chord)) continue;
+                if (id.Length > MaxCommandIdLength) continue;
                 if (chord.Length > MaxChordLength) continue;
                 if (id.IndexOf('\r') >= 0 || id.IndexOf('\n') >= 0) continue;
                 if (chord.IndexOf('\r') >= 0 || chord.IndexOf('\n') >= 0) continue;
