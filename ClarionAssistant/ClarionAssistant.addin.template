@@ -30,6 +30,9 @@
     <!-- Save every dirty CA Editor (Monaco) tab right before a build starts — the native IDE's own
          save-before-build has no visibility into this WebView2-hosted editor (see SaveSourceEditorsBeforeBuildCommand). -->
     <Class id="ClarionAssistantSaveSourceEditorsBeforeBuild" class="ClarionAssistant.SaveSourceEditorsBeforeBuildCommand"/>
+    <!-- Remember the active document tab per solution and re-select it after the IDE's own file-list restore
+         (which only persists the list, so the last-listed file always wins). See ActiveDocumentRestoreCommand. -->
+    <Class id="ClarionAssistantActiveDocumentRestore" class="ClarionAssistant.ActiveDocumentRestoreCommand"/>
   </Path>
 
   <!-- Ordered addin teardown at shutdown. Our heavy teardown (stop MCP, kill ConPty child trees, dispose

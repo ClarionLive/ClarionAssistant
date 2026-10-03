@@ -502,10 +502,37 @@ namespace ClarionAssistant.Terminal
                     + " msg=" + (ex.Message ?? "").Replace("\r", " ").Replace("\n", " ")
                     + (ex.InnerException != null ? " inner=" + ex.InnerException.GetType().Name + ":" + ex.InnerException.Message : "")
                     + " " + MonacoSpikeLog.MemSummary());
-                RaiseInitFailed(ex is OutOfMemoryException || ex.HResult == unchecked((int)0x8007000E)
+                string reason = ex is OutOfMemoryException || ex.HResult == unchecked((int)0x8007000E)
                     ? "Clarion is out of memory"
-                    : "the browser component failed to start (" + ex.GetType().Name + ")");
+                    : "the browser component failed to start (" + ex.GetType().Name + ")";
+                // b9d70104: closing a solution can show a never-displayed CA Editor tab for a moment, which starts
+                // WebView2, and the close then destroys its window mid-start: E_ABORT. That is not a failure to
+                // report. The exception can arrive before the dispose has run, so decide a moment later.
+                if (ex.HResult == E_ABORT) { RaiseInitFailedUnlessClosed(reason); return; }
+                RaiseInitFailed(reason);
             }
+        }
+
+        private const int E_ABORT = unchecked((int)0x80004004);
+        private const int AbortSettleMs = 750;
+
+        private bool IsClosedForInit
+        {
+            get { return _disposedControl || IsDisposed || Disposing || _webView == null || _webView.IsDisposed || !IsHandleCreated; }
+        }
+
+        private void RaiseInitFailedUnlessClosed(string reason)
+        {
+            if (IsClosedForInit) { MonacoSpikeLog.Write("[webview-init] aborted host=" + HostName + ": the editor closed while starting (no notice)"); return; }
+            var settle = new Timer { Interval = AbortSettleMs };
+            settle.Tick += (s, e) =>
+            {
+                settle.Stop(); settle.Dispose();
+                if (IsClosedForInit) { MonacoSpikeLog.Write("[webview-init] aborted host=" + HostName + ": the editor closed while starting (no notice)"); return; }
+                MonacoSpikeLog.Write("[webview-init] E_ABORT but the editor is still open after " + AbortSettleMs + " ms -> reporting it");
+                RaiseInitFailed(reason);
+            };
+            settle.Start();
         }
 
         private void OnProcessFailed(object sender, CoreWebView2ProcessFailedEventArgs e)

@@ -129,9 +129,15 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
             # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
             @{ Name = "ClarionVersionService.ExeMatchTest"
-               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Sources = @("tests\ClarionVersionService.ExeMatchTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs", "Services\EffectiveClarionVersion.cs")
                Refs = @("System.dll", "System.Xml.dll")
                Args = @((Join-Path $TestDir "fixtures\gh209\ClarionProperties.xml")) }
+            # GH #247: the standalone server read the NEWEST settings folder's ClarionProperties.xml (its own
+            # exe is 5.9, not Clarion's 11.0). Fixtures = the reporter's 11.0 file and the 12.0 one the server read.
+            @{ Name = "ClarionVersionService.InstallDetectTest"
+               Sources = @("tests\ClarionVersionService.InstallDetectTest.cs", "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll")
+               Args = @((Join-Path $TestDir "fixtures\gh247\ClarionProperties.xml"), (Join-Path $TestDir "fixtures\gh247\ClarionProperties-12.0.xml")) }
             # 16d140e9 / 286f2e57: CA's version is the IDE's Build > Set Clarion Version only (no CA
             # override, VERSION is read-only), and every selection names the tier that decided it.
             # Gets the project dir for its source scans.
@@ -287,6 +293,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86"
                Args = @($RepoDir) }
+            # PR #237: the active tab re-selected on solution reopen - a view opening before the reopen loop
+            # (the .app tab from Recent Applications) neither gives up the restore nor lets the loop record
+            # over the saved choice; the store's temp file is per process and never left behind. IDE stubbed.
+            @{ Name = "ActiveDocumentRestore.Test"
+               Sources = @("tests\ActiveDocumentRestore.Test.cs", "tests\ActiveDocumentRestore.Stubs.cs", "ActiveDocumentRestoreCommand.cs")
+               Refs = @("System.dll", "System.Windows.Forms.dll") }
             # File-level EQUATEs in a .inc (outside any CLASS body) must become CodeGraph symbols.
             @{ Name = "ClarionParser.IncEquates.Test"
                Sources = @("tests\ClarionParser.IncEquates.Test.cs", "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs",

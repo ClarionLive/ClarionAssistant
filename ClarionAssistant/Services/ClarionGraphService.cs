@@ -277,7 +277,7 @@ namespace ClarionAssistant.Services
                 result.DbPath = dbPath;
 
                 // Never resolve silently: record which version (and which source chose it) this DB is for.
-                try { result.VersionSource = EffectiveClarionVersion.Resolve().Describe(); } catch { }
+                try { result.VersionSource = EffectiveClarionVersion.DescribeCurrent(); } catch { }
                 LspTrace.Write("[ClarionGraph] " + dbPath + " - " + (result.VersionSource ?? "(version source unknown)"));
 
                 // Reuse the cached DB unless forced — and only if it was built from THIS version's LibSrc.

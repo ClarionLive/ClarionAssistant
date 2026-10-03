@@ -101,4 +101,14 @@ namespace ClarionAssistant.Services
         /// </summary>
         string GetClarionInstallPath();
     }
+
+    /// <summary>
+    /// Optional, for a workspace that decides the Clarion version itself (the standalone MCP server): one line saying
+    /// which version was chosen and by which tier — or why there is none. get_solution_info reports it, so the agent
+    /// can tell "no Clarion version: this server is not installed in a Clarion folder" from a silent gap (GH #247).
+    /// </summary>
+    public interface IVersionNoteSource
+    {
+        string VersionNote { get; }
+    }
 }

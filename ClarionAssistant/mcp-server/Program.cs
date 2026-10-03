@@ -445,6 +445,17 @@ namespace ClarionAssistant.McpServer
                 // redirection file or library paths — the two silently disagreeing (d051fbd1 item 5).
                 ClarionAssistant.Services.LspService.VersionConfigProvider =
                     () => workspace.CurrentVersionConfig;
+                // And the ClarionGraph library (root + key), for the same reason (GH #247): it used to run its own
+                // Detect(), which outside a Clarion tree read the newest settings folder.
+                ClarionAssistant.Services.EffectiveClarionVersion.HostConfigProvider =
+                    () => workspace.CurrentVersionConfig;
+                // ...and the line that says which version that is and why, so ClarionGraph's log names the version it
+                // built for rather than what an independent Detect() would have picked.
+                ClarionAssistant.Services.EffectiveClarionVersion.HostDescribeProvider = () =>
+                {
+                    var unused = workspace.CurrentVersionConfig;   // resolves the version, which writes the note
+                    return workspace.VersionNote;
+                };
             }
 
             var dispatcher = new ClarionAssistant.Services.McpDispatcher(

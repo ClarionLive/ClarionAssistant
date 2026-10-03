@@ -756,6 +756,15 @@
                 <option value="visible">Show always</option>
                 <option value="hidden">Show never</option>
             </select></label>
+        <label title="How many levels of the Document structure pane are visible when it opens. 1 = top level only; 3 = e.g. Class &#8250; Methods &#8250; method names. &#8220;All&#8221; opens it fully expanded.">Document structure: open at level
+            <select id="setOutlineLevel">
+                <option value="0">All (expanded)</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+            </select></label>
+        <label title="Sort the entries at the opened level A-Z (within each parent); other levels keep source order. Only applies when a level is chosen above.">Document structure: sort that level <input type="checkbox" id="setOutlineSortLevel"></label>
         <div class="vsc-import">
             <button id="vscImportBtn" class="vsc-btn" type="button"
                     title="Read your VS Code settings.json and preview which of the settings above would change. Nothing is written until you confirm.">Import from VS Code&hellip;</button>
@@ -1429,6 +1438,7 @@
                 addRunToCursorAction(editor);  // right-click → Run to Cursor (CA Debugger, only while paused; 2484592b)
                 addBreakOnEntryAction(editor); // right-click → Break on Entry (CA Debugger, any state; e61e4f92)
                 installAutoCase(editor);        // as-you-type keyword casing (of → OF on word boundary)
+                installColonSuggest(editor);    // "glo:" / "PROP:" opens completion (ticket 38158e98)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
                 // GH #206: list Monaco's own actions in the gear panel's Keyboard table and apply any moved keys.
@@ -3081,6 +3091,41 @@
             if (' \t(),'.indexOf(text) >= 0 && liveKeywordCaseOn) autoCaseWordBefore(ed, text);  // keyword casing on word boundary
         });
     }
+    // Typing ':' straight after an identifier (glo:, PROP:, EVENT:, Cus:) opens completion, as Ctrl+Space does.
+    // ':' is a triggerCharacter on the provider, but the Clarion wordPattern keeps ':' inside a word, so once
+    // the list is already open while the identifier is typed (the instant local lane keeps it open) Monaco
+    // continues that session as the same word and re-filters it - nothing matches "glo:" - instead of
+    // asking the provider again. No request was even sent (ticket 38158e98). Next tick: after Monaco has
+    // closed the stale list. The provider's column-1 guard (col1TypingSuppressed) cannot see a run ending
+    // in ':', so a label typed at column 1 (LOC:Name in a data section - never completes, 8933fa05) is
+    // excluded here.
+    function isColonQualifierTyped(line, caretCol0) {
+        if (line.charAt(caretCol0 - 1) !== ':') return false;
+        if (!/[A-Za-z0-9_]/.test(line.charAt(caretCol0 - 2))) return false;           // "x:" - not ": " or "::"
+        var before = line.substring(0, caretCol0 - 1);
+        var run = /[A-Za-z_][A-Za-z0-9_:]*$/.exec(before);
+        if (!run) return false;                                                        // an identifier run, not "12:"
+        if (run.index === 0) return false;                                             // a label at column 1
+        if (typeof isInClarionString === 'function' && isInClarionString(line, caretCol0 - 1)) return false;
+        if (typeof isInClarionComment === 'function' && isInClarionComment(line, caretCol0 - 1)) return false;
+        return true;
+    }
+    function installColonSuggest(ed) {
+        if (!ed || typeof ed.onDidType !== 'function') return;
+        ed.onDidType(function (text) {
+            if (text !== ':') return;
+            var model = ed.getModel(), pos = ed.getPosition();
+            if (!model || !pos) return;
+            if (!isColonQualifierTyped(model.getLineContent(pos.lineNumber), pos.column - 1)) return;
+            setTimeout(function () {
+                // auto:true - like typing, not Ctrl+Space. An EXPLICIT invoke that comes back empty (the local
+                // layer has nothing for "g:" yet) shows Monaco's "No suggestions" box, and while that box is up
+                // Monaco calls no provider at this caret again - not the late refresh, not Ctrl+Space (1328 log).
+                // An auto one that comes back empty just closes quietly.
+                try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', { auto: true }); } catch (e) { }
+            }, 0);
+        });
+    }
     // Normalize a just-typed assignment '=' to " = " (2 spaces are applied later by Ctrl+I alignment).
     // Leaves comparisons/compound operators (== <= >= != += -= …) alone. Pairs with '=' as a completion
     // commit character: "tes=" accepts "TestVar" then becomes "TestVar = ".
@@ -3961,6 +4006,7 @@
         addRunToCursorAction(editor2);  // ...and Run to Cursor (keys seeded from the current debuggerState)
         addBreakOnEntryAction(editor2); // ...and Break on Entry
         installAutoCase(editor2);       // as-you-type keyword casing in the split pane too
+        installColonSuggest(editor2);   // and "glo:" completion (ticket 38158e98)
         installFormatOnEnter(editor2);  // format the completed line on Enter in the split pane too
         installCaretBehindEol(editor2); // caret-behind-EOL in the split pane too (shared model, one padded line)
         installDropInsert(editor2);    // accept Data-pad drops in the split pane too
@@ -5071,7 +5117,9 @@
     // Completion (R1/R2):
     //   * The LSP gets a LSP_RACE_BUDGET_MS head start. It misses -> the local items are returned with
     //     incomplete:true, and the LSP answer is merged on the NEXT re-query (the next keystroke) from the
-    //     cache below. Nothing re-triggers the suggest widget.
+    //     cache below. A showing list is never re-triggered. The one exception: when what was shown was
+    //     EMPTY, the late answer re-opens suggest once if the caret and text have not moved
+    //     (refreshWhenLspLands, ticket 38158e98) - otherwise "glo:" never shows its globals.
     //   * The cache is keyed on (model.id, line, wordStart) - NOT versionId, which every keystroke bumps - and
     //     serves any query whose typed prefix EXTENDS the cached one, filtered client-side. One entry per model.
     //   * LSP_MISSES_TO_SKIP consecutive race misses on a model = the LSP is slow on it: stop waiting for it and
@@ -5349,6 +5397,62 @@
         lspComplCache[id] = c;
         return c;
     }
+    // A late LSP answer is normally merged on the next keystroke (the provider re-queries every keystroke
+    // and the cache serves it). That fails when the list just shown was EMPTY - the local layer has nothing
+    // for "glo:" / "PROP:" (no CodeGraph lookup) and the LSP missed the race - because Monaco shows no list
+    // and the user, seeing none, types nothing: the 226 items sat in the cache until Ctrl+Space
+    // (ticket 38158e98, John's live test). So once that answer lands WITH items, and the caret and text
+    // are where they were, re-open suggest: the provider is then served from the cache at once.
+    // Pipeline run 2: only for an answer that lands within LATE_REFRESH_MAX_MS - on a huge module the LSP can
+    // take 9-44 s, and a list popping up that long after the user stopped (or pressed Escape) reads as a
+    // ghost; "glo:" lands in about 1 s. Armed once per request (the colon trigger and Monaco's own ':' can
+    // both ask), only for the focused editor, and only when an item survives the typed prefix.
+    var LATE_REFRESH_MAX_MS = 3000;
+    function refreshWhenLspLands(model, position, lsp, prefix) {
+        if (lsp.refreshArmed) { complLog('[compl-refresh] skip=already-armed'); return; }
+        lsp.refreshArmed = true;
+        var version = model.getVersionId(), line = position.lineNumber, column = position.column, armedAt = rtNow();
+        lsp.promise.then(function (resp) {
+            var why = 'fired';
+            try {
+                if (!resp || !resp.items || !resp.items.length) { why = 'skip=empty-answer'; return; }
+                if (rtNow() - armedAt > LATE_REFRESH_MAX_MS) { why = 'skip=too-late'; return; }
+                if (prefix && prefix.length > (lsp.prefix || '').length) {
+                    var P = prefix.toUpperCase();
+                    if (!resp.items.some(function (it) { return completionMatchesPrefix(it, P); })) { why = 'skip=prefix-filters-all'; return; }
+                }
+                var eds = [typeof activeEd === 'function' ? activeEd() : null, editor, editor2];
+                var ed = eds.filter(function (e) { return e && e.getModel && e.getModel() === model; })[0];
+                if (!ed || !ed.getPosition) { why = 'skip=no-editor'; return; }
+                if (model.getVersionId() !== version) { why = 'skip=text-changed'; return; }
+                if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) { why = 'skip=no-focus'; return; }
+                var p = ed.getPosition();
+                if (!p || p.lineNumber !== line || p.column !== column) { why = 'skip=caret-moved'; return; }
+                ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', { auto: true });   // see installColonSuggest
+            } catch (e) { why = 'error=' + (e && e.message); }
+            finally {
+                complLog('[compl-refresh] ' + why + ' items=' + (resp && resp.items ? resp.items.length : 0) +
+                    ' afterMs=' + Math.round(rtNow() - armedAt));
+            }
+        });
+    }
+    // Diagnostic (ticket 38158e98): late-refresh decisions and provider exceptions, into monaco-spike.log via
+    // the host - the only log that survives a deployed build. Rare lines only: the per-keystroke query lines
+    // that found the g: bug were removed once it was fixed. Never throws.
+    function complLog(line) { try { postToHost({ action: 'log', line: line }); } catch (e) { } }
+    // Log any SYNCHRONOUS throw from the completion provider: Monaco swallows a provider's exception and shows
+    // "No suggestions" with nothing in our log, which is how the g: bug hid until it was instrumented.
+    function wrapProviderForLog(provider) {
+        var inner = provider.provideCompletionItems;
+        provider.provideCompletionItems = function (model, position, context) {
+            try { return inner.apply(this, arguments); }
+            catch (e) {
+                complLog('[compl] SYNC-ERROR ' + (e && (e.stack || e.message) || e));
+                return { suggestions: [], incomplete: true };
+            }
+        };
+        return provider;
+    }
     // Resolves once `c` has answered or its race budget ran out, whichever is first; a budget that runs out
     // is a miss for model `id`. No race (resolved at once) when `c` already answered, is still deferred to the
     // idle sync (typing: not a miss), or `id` is in skip mode.
@@ -5474,7 +5578,7 @@
             }
             return out;
         }
-        monaco.languages.registerCompletionItemProvider('clarion', {
+        monaco.languages.registerCompletionItemProvider('clarion', wrapProviderForLog({
             triggerCharacters: ['.', ':', '?'],
             provideCompletionItems: function (model, position, context) {
                 // Completion replace-range = the trailing identifier chars only, breaking on ':' and '.'.
@@ -5586,11 +5690,16 @@
                         }
                         var kws = clarionKeywordSuggestions(before, range, seen);
                         if (kws.length) sugg = sugg.concat(kws);
+                        // Empty now, LSP still on its way: re-open once it lands (ticket 38158e98).
+                        if (!sugg.length && !lsp.done) refreshWhenLspLands(model, position, lsp, prefix);
                         return { suggestions: sugg, incomplete: true };
                     })
-                    .catch(function () { return { suggestions: [], incomplete: true }; });
+                    .catch(function (e) {
+                        complLog('[compl] ERROR ' + (e && (e.stack || e.message) || e));
+                        return { suggestions: [], incomplete: true };
+                    });
             }
-        });
+        }));
         // Code Snippets appear IN the completion list (classic Clarion Ctrl+J parity): typing a trigger
         // prefix shows the snippet with a snippet icon + an expansion preview; Enter/Tab (or space on an
         // exact full-trigger match) expands it via OUR engine — Monaco's native snippet insert is undone
@@ -6071,6 +6180,14 @@
         // formatterOptions() (Ctrl+I can't fire pre-init anyway, but the next one will then honor it). (deac3d16 adversary LOW)
         lastSettings = s;
         if (s.splitOrientation === 'v' || s.splitOrientation === 'h') splitOrientation = s.splitOrientation;
+        var prevOutlineLevel = outlineLevelPref, prevOutlineSortLevel = outlineSortLevelPref;
+        if (typeof s.outlineLevel === 'number') outlineLevelPref = Math.max(0, Math.min(4, s.outlineLevel | 0));
+        if (typeof s.outlineSortLevel === 'boolean') outlineSortLevelPref = s.outlineSortLevel;
+        // An open pane picks up a changed sort (or the depth it sorts at) now, not on its next refresh.
+        if (outlineSortLevelPref !== prevOutlineSortLevel || (outlineSortLevelPref && outlineLevelPref !== prevOutlineLevel)) {
+            var olp = document.getElementById('outlinePanel');
+            if (olp && !olp.classList.contains('hidden')) renderOutlineCurrent();
+        }
         // Capture + resolve follow-mode BEFORE building opts — the font and the swept options below all
         // need it, not just the indentation pair at the end.
         captureIdeOptions(s);
@@ -6247,6 +6364,9 @@
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
+        if ((el = document.getElementById('setOutlineLevel'))) el.value = String(typeof s.outlineLevel === 'number' ? s.outlineLevel : 0);
+        if ((el = document.getElementById('setOutlineSortLevel'))) el.checked = !!s.outlineSortLevel;
+        syncOutlineSettingsUi();
         populateFormatterPanel(s);
     }
 
@@ -6332,6 +6452,8 @@
             fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
+            outlineLevel: Math.max(0, Math.min(4, parseInt(sel('setOutlineLevel', '0'), 10) || 0)),
+            outlineSortLevel: chk('setOutlineSortLevel'),
             // ----- Smart Formatter -----
             preferredColumn: num('setPreferredColumn', D.preferredColumn || 31, 1, 120),
             contLineMultiplier: num('setContLineMultiplier', D.contLineMultiplier || 2, 1, 8),
@@ -6983,7 +7105,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
-        var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar',
+        var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar', 'setOutlineLevel', 'setOutlineSortLevel',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setAutoSpaceEquals', 'setLiveKeywordCase',
@@ -7003,6 +7125,8 @@
         // locally-built payload in applyEditorSettings, so it tracks the panel rather than the developer's pref.
         // (setFollowIdeIndent is deliberately NOT in the generic `ids` loop above — this is its only
         // listener, so the restore always runs before the save it triggers.)
+        var olSel = document.getElementById('setOutlineLevel');
+        if (olSel) olSel.addEventListener('change', syncOutlineSettingsUi);
         var fIde = document.getElementById('setFollowIdeIndent');
         if (fIde) fIde.addEventListener('change', function () {
             if (!fIde.checked) {
@@ -7928,6 +8052,14 @@
     var outlineSymbols = [];     // last regrouped (unfiltered) tree — filter/expand-all re-render off this
     var outlineFilter = '';      // active filter text ('' = none)
     var outlineSortEnabled = false;   // when true, each level's children are sorted A-Z independently (order preserved otherwise)
+    var outlineLevelPref = 0;           // setting: levels visible on open (0 = all expanded)
+    var outlineSortLevelPref = false;   // setting: sort the siblings at that opened level A-Z
+    var outlinePendingInit = false;     // true from open until the first non-empty render has applied the level
+    // The sort checkbox only means something when a level is chosen.
+    function syncOutlineSettingsUi() {
+        var l = document.getElementById('setOutlineLevel'), c = document.getElementById('setOutlineSortLevel');
+        if (l && c) c.disabled = (l.value === '0');
+    }
     var outlineRenderedPaths = [];   // exact container paths from the last render (single source of truth for collapse-all)
     function positionOutline() {
         var op = document.getElementById('outlinePanel'), ed = document.getElementById('editor');
@@ -7941,6 +8073,10 @@
         var op = document.getElementById('outlinePanel');
         if (!op) return;
         op.classList.remove('hidden');
+        // With a level chosen, each open starts from that depth (nothing is remembered between opens).
+        // At "All" the collapse state survives close/reopen as before; only "Expand all" clears it.
+        if (outlineLevelPref > 0) outlineCollapsed = {};
+        outlinePendingInit = outlineLevelPref > 0;
         positionOutline();
         refreshOutline();
     }
@@ -7975,7 +8111,8 @@
     // if enabled, an A-Z sort applied independently at each level (siblings reordered, hierarchy untouched).
     function renderOutlineCurrent() {
         var f = (outlineFilter || '').trim().toLowerCase();
-        var base = outlineSortEnabled ? sortSymbolsTree(outlineSymbols) : outlineSymbols;
+        var base = outlineSortEnabled ? sortSymbolsTree(outlineSymbols)
+            : (outlineSortLevelPref && outlineLevelPref > 0 ? sortSymbolsLevel(outlineSymbols, 0, outlineLevelPref - 1) : outlineSymbols);
         if (f) renderOutline(filterOutline(base, f), true);
         else renderOutline(base, false);
     }
@@ -7989,6 +8126,18 @@
         for (var i = 0; i < out.length; i++) {
             if (out[i].children && out[i].children.length) out[i] = Object.assign({}, out[i], { children: sortSymbolsTree(out[i].children) });
         }
+        return out;
+    }
+    // Sorts ONLY the siblings at depth `target` (within each parent); every other level keeps source order.
+    function sortSymbolsLevel(nodes, depth, target) {
+        if (!nodes || !nodes.length || depth > target) return nodes || [];
+        var out = nodes.slice();
+        if (depth === target) {
+            out.sort(function (a, b) { return (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base', numeric: true }); });
+            return out;
+        }
+        for (var i = 0; i < out.length; i++)
+            if (out[i].children && out[i].children.length) out[i] = Object.assign({}, out[i], { children: sortSymbolsLevel(out[i].children, depth + 1, target) });
         return out;
     }
     function toggleOutlineSort() {
@@ -8165,6 +8314,7 @@
                 for (var i = 0; i < s.children.length; i++) kidsBox.appendChild(buildNode(s.children[i], depth + 1, path));
                 node.appendChild(kidsBox);
 
+                if (outlinePendingInit && !forceExpand && depth >= outlineLevelPref - 1) outlineCollapsed[path] = true;   // "open at level n"
                 var apply = function (collapsed) {
                     node.classList.toggle('collapsed', collapsed);
                     tw.classList.toggle('codicon-chevron-right', collapsed);
@@ -8182,7 +8332,10 @@
         }
 
         if (!symbols || !symbols.length) { list.innerHTML = '<div class="ol-empty">No structure.</div>'; }
-        else for (var i = 0; i < symbols.length; i++) list.appendChild(buildNode(symbols[i], 0, ''));
+        else {
+            for (var i = 0; i < symbols.length; i++) list.appendChild(buildNode(symbols[i], 0, ''));
+            if (!forceExpand) outlinePendingInit = false;   // level applied once; later refreshes keep the user's own toggles
+        }
         if (countEl) countEl.textContent = n ? (n + (n === 1 ? ' symbol' : ' symbols')) : '';
     }
     // Header result count for the Find-All column (short form; the in-row count is hidden there).

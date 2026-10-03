@@ -451,7 +451,8 @@ async function main() {
     section('[local-rt]: one timing line per timed reply, on the page clock, sync attributed once');
     {
         const RT_RE = /^\[local-rt\] action=(\w+) v=(\S+) rtMs=(\d+) syncBytes=(\d+) syncMs=(\d+)( syncAgeMs=(\d+))?( timeout=1| null=1)?$/;
-        const logs = (e, mark) => e.sinceAll(mark || 0).filter(m => m.action === 'log');
+        // Only the [local-rt] timing lines: the page also logs [compl] diagnostics (38158e98) on that channel.
+        const logs = (e, mark) => e.sinceAll(mark || 0).filter(m => m.action === 'log' && /^\[local-rt\]/.test(m.line || ''));
         const parse = (m) => { const x = RT_RE.exec(m.line); return x && { action: x[1], v: x[2], rtMs: +x[3], syncBytes: +x[4], syncMs: +x[5],
             syncAgeMs: x[7] == null ? null : +x[7], flag: (x[8] || '').trim() }; };
         const lastReq = (e, action) => e.since(0).filter(m => m.action === action).pop();
