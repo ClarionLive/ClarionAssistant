@@ -115,6 +115,28 @@ MSBuild would slow every build without catching anything a pre-deploy run wouldn
 
 Run them before you deploy.
 
+## Measurements (run by hand)
+
+`tests\bench\Run-HoverBench.ps1` is not a pass/fail harness and is not in `Run-Tests.ps1`: it measures the
+CA Editor's local-first hover layer against the Clarion language server on real solutions, so the
+local-first trade-off (1c685f2e) can be revisited with numbers as the server changes. It runs the real
+`LocalLayerHandlers.HoverAt` over the solution's CodeGraph and the ClarionGraph library DBs, and the real
+`LspClient` against each `server.js` given, then reports latency (buffer unchanged / just edited), what each
+side answers, the server answers an authoritative local card hides, and the card sizes.
+
+    .\tests\bench\Run-HoverBench.ps1 -Solution 'F:\Apps\Inv\Inv.sln' -Version 'Clarion 12.0.14373' `
+        -Server 'shipped', 'dev=F:\github\Clarion-Extension\Clarion-Extension\out\server\src\server.js' -IndexMissing
+
+`shipped` is the pinned build `deploy.ps1` ships. Each run appends one JSON line per solution and server to
+`%LOCALAPPDATA%\ClarionAssistant\hover-bench-history.jsonl`, keyed by a fingerprint of the whole server build
+(every file under `out\server` and `out\common`, since `server.js` alone barely changes between builds); `-Dump <file>`
+writes every sample with both raw cards and both timings, for checking any number by hand.
+
+Compare runs by server timeouts and the worst hover after an edit, which each summary leads with: those hold
+steady between runs of the same build, while the p50 moves with whatever else the machine is doing. To compare
+builds, put them in one `-Server` list so they run back to back, and bench a copy of a build you are still working
+on (copy `out\` and junction `node_modules`) rather than the live working copy. `Terminal\test\tools\monaco-keymap-probe.js` is the other run-by-hand tool here.
+
 ## Adding to them
 
 Keep new harnesses standalone and dependency-light, and keep them pointed at real source. If you
