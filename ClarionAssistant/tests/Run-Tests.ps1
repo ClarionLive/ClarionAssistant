@@ -79,6 +79,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
     else {
         New-Item -ItemType Directory -Force $OutDir | Out-Null
 
+        # LspClient.IncrementalSync.Test's stand-in server keeps documents as the real server does. When deploy.ps1's
+        # pinned LSP build cache is here, point it at the REAL vscode-languageserver-textdocument from the newest build;
+        # otherwise it uses its port of that package (it prints which). Either way the harness is runnable.
+        $textDocPkg = Get-ChildItem (Join-Path $RepoDir ".lsp-build") -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^v(\d+\.\d+\.\d+)$' } |
+            Sort-Object { [version]($_.Name.Substring(1)) } -Descending |
+            ForEach-Object { Join-Path $_.FullName "node_modules\vscode-languageserver-textdocument" } |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+        $env:FAKE_TEXTDOC_MODULE = if ($textDocPkg) { $textDocPkg } else { "" }
+
         # Each harness pairs with the service file(s) it exercises. Listing the sources explicitly
         # (rather than globbing) keeps it obvious WHICH production code each harness actually covers.
         $harnesses = @(
@@ -220,13 +230,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # code + stderr tail) or its reader loop ends with the process still alive. The harness plays
             # the language server itself (copied to <temp>\node.exe), so it needs no node.
             # LSP incremental sync: the ranged change LspClient sends instead of the whole buffer must reproduce
-            # the new text exactly under the LSP's line/UTF-16 rules, and never split a CRLF or surrogate pair.
+            # the new text exactly under the LSP's line/UTF-16 rules, never split a CRLF or surrogate pair, and leave
+            # the server's incrementally patched line table (a port of TextDocument.update) equal to a fresh one.
             @{ Name = "LspTextDiff.Test"
                Sources = @("tests\LspTextDiff.Test.cs", "Services\LspTextDiff.cs")
                Refs = @("System.dll", "System.Core.dll") }
-            # ... and LspClient wired to it, against a stand-in server that applies changes by the LSP's rules:
-            # ranges only when the server advertises incremental sync, its copy exact after many edits, a disk
-            # resync re-based, and Stop forgetting every document. Needs node.exe where LspClient looks for it.
+            # ... and LspClient wired to it, against a stand-in server that applies changes as the real server does
+            # (TextDocument.update, incremental line table checked against a fresh document after every change):
+            # ranges only when the server advertises incremental sync (bare or { change: N }), its copy exact after
+            # many edits, a disk resync re-based (an unchanged one still sent, as an empty range), the retained texts
+            # bounded, and Stop/Start forgetting every document. Needs node.exe where LspClient looks for it.
             @{ Name = "LspClient.IncrementalSync.Test"
                Sources = @("tests\LspClient.IncrementalSync.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs",
                            "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
