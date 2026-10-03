@@ -12,7 +12,10 @@
 //   * the picker lists every profile and shows the active one
 //   * the "Default" column shows the ACTIVE profile's chord (what a reset returns to), headed with its name
 //   * the developer's own key still shows on top of the profile, marked custom
-//   * choosing a profile persists once and toasts; a reset override is reported as a warning, not success
+//   * choosing a profile persists once and toasts; a reset override is reported as a warning, not success,
+//     NAMING the keys reset — and choosing the old profile again restores them
+//   * the reset button's tooltip names the profile's key it returns to
+//   * capture refuses a core editing key (Ctrl+Z, a bare letter, Shift+Up...) and stays armed; F-keys are fine
 
 const fs = require('fs');
 let JSDOM;
@@ -97,6 +100,10 @@ if (env) {
     }
     check('the column is headed "Default" on Clarion', doc.getElementById('kbDefHead').textContent === 'Default');
     check('Clarion: Remove Line shows its Clarion chord', row(doc, 'removeLine').def === 'Ctrl+Shift+Y', JSON.stringify(row(doc, 'removeLine')));
+    {
+        const b = doc.querySelector('#keybindRows .kb-clear[data-cmd="removeLine"]');
+        check('Clarion: the reset button says default, with the key', b && b.getAttribute('title') === 'Reset to default (Ctrl+Shift+Y)', b && b.getAttribute('title'));
+    }
 
     section('Choosing Visual Studio');
     page.onKeyProfileChosen('vs');
@@ -107,6 +114,9 @@ if (env) {
     check('Structure Designer moved to Ctrl+Shift+D', row(doc, 'structureDesigner').key === 'Ctrl+Shift+D');
     check('Invert Case keeps its Clarion chord', row(doc, 'invertCase').key === 'Ctrl+\\');
     check('the choice is persisted once', spy.persisted === 1, String(spy.persisted));
+    const resetTitle = id => { const b = doc.querySelector('#keybindRows .kb-clear[data-cmd="' + id + '"]'); return b ? b.getAttribute('title') : null; };
+    check('the reset button says it returns to the profile\'s key, not "default"',
+        resetTitle('removeLine') === 'Reset to the Visual Studio key (Ctrl+Shift+L)', resetTitle('removeLine'));
     check('a clean switch toasts success, naming the profile',
         spy.toasts.length === 1 && spy.toasts[0].ok === true && /Visual Studio/.test(spy.toasts[0].msg), JSON.stringify(spy.toasts));
 
@@ -125,6 +135,24 @@ if (env) {
     check('the toast says so, as a warning', last && last.ok === false && /1 of your keys reset/.test(last.msg), JSON.stringify(last));
     check('Remove Line gets the Notepad++ chord', row(doc, 'removeLine').key === 'Ctrl+L');
     check('Uppercase falls back to its profile chord, not to nothing', row(doc, 'upperCase').key === 'Ctrl+Shift+U');
+    check('the toast names the key that was reset, and how to get it back',
+        last && /Uppercase Selection \(Ctrl\+L\)/.test(last.msg) && /Choosing Visual Studio again restores/.test(last.msg), last && last.msg);
+
+    section('Switching back restores what a switch reset');
+    page.onKeyProfileChosen('vs');
+    let back = spy.toasts[spy.toasts.length - 1];
+    check('choosing Visual Studio again puts Uppercase back on Ctrl+L', page.getBindings().upperCase === 'Ctrl+L'
+        && row(doc, 'upperCase').key === 'Ctrl+L', JSON.stringify(page.getBindings()));
+    check('... and the toast says so, as success', back.ok === true && /restored 1 of your keys: Uppercase Selection \(Ctrl\+L\)/.test(back.msg), JSON.stringify(back));
+    page.onKeyProfileChosen('npp');                  // resets it again
+    page.setBindings({ upperCase: 'Ctrl+8' });       // ... and the developer gives the row a new key meanwhile
+    page.onKeyProfileChosen('vs');
+    check('a row given a key since is NOT overwritten by the restore', page.getBindings().upperCase === 'Ctrl+8',
+        JSON.stringify(page.getBindings()));
+    page.onKeyProfileChosen('npp');
+    page.onKeyProfileChosen('vs');
+    check('the stash is spent once used (nothing comes back a second time)', page.getBindings().upperCase === 'Ctrl+8',
+        JSON.stringify(page.getBindings()));
 
     // ---------- the editor's own commands ----------
     section('The editor\'s own commands');
@@ -198,6 +226,39 @@ if (env) {
     t = spy.toasts[spy.toasts.length - 1];
     check('a Clarion command may take a Monaco key, and the toast says what it took',
         page.getBindings().upperCase === 'Ctrl+L' && t.ok === true && /Expand Line Selection/.test(t.msg), JSON.stringify(t));
+
+    section('Core editing keys are refused');
+    const lastToast = () => spy.toasts[spy.toasts.length - 1];
+    capture('removeLine');
+    press('KeyZ', { ctrlKey: true });
+    t = lastToast();
+    check('a Clarion command cannot take Ctrl+Z (Undo)', page.getBindings().removeLine === undefined
+        && t.ok === false && /core editing key \(Undo\)/.test(t.msg), JSON.stringify(t));
+    press('KeyA', {});
+    t = lastToast();
+    check('... nor a bare letter (typing)', page.getBindings().removeLine === undefined && /core editing key \(typing/.test(t.msg), JSON.stringify(t));
+    press('Enter', {});
+    check('... nor Enter', page.getBindings().removeLine === undefined && /core editing key/.test(lastToast().msg));
+    press('ArrowUp', { shiftKey: true });
+    t = lastToast();
+    check('... nor Shift+Up (selection)', page.getBindings().removeLine === undefined && /core editing key \(selection\)/.test(t.msg), JSON.stringify(t));
+    press('ArrowLeft', { ctrlKey: true });
+    check('... nor Ctrl+Left (word movement)', page.getBindings().removeLine === undefined && /Word Left/.test(lastToast().msg));
+    press('F9', { key: 'F9' });
+    check('it stays armed, and an unmodified F-key is accepted', page.getBindings().removeLine === 'F9', JSON.stringify(page.getBindings()));
+    capture('editor.action.gotoLine');
+    press('KeyV', { ctrlKey: true });
+    t = lastToast();
+    check('a Monaco action cannot take Ctrl+V (Paste)', page.getBindings()['editor.action.gotoLine'] === 'Ctrl+Alt+Q'
+        && /core editing key \(Paste\)/.test(t.msg), JSON.stringify(t));
+    page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });
+    page.setBindings({ cutClarion: 'Ctrl+Shift+X' });
+    page.buildKeybindTable();
+    capture('cutClarion');
+    const toastsBefore = spy.toasts.length;
+    press('KeyX', { ctrlKey: true });
+    check('Cut / Clear Line may go back to its own default, Ctrl+X', page.getBindings().cutClarion === undefined
+        && !spy.toasts.slice(toastsBefore).some(x => /core editing key/.test(x.msg)), JSON.stringify(page.getBindings()));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

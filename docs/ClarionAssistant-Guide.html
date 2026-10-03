@@ -1765,9 +1765,12 @@
       <strong>Your own keys sit on top</strong> &mdash; click any key cell, including an editor command's, and
       press the new key. The <em>Default</em> column shows the profile's key, which is what the reset arrow and
       <strong>Reset all keys</strong> return to. A key the CA Editor handles itself (Find, Save, the Clarion IDE's
-      keys) can't be taken. An editor command can't take a key another command holds, but a Clarion command can
+      keys) can't be taken, and neither can a core editing key: undo, redo, cut, copy, paste and select all,
+      a plain letter, digit or other unmodified key (except the F-keys), Shift with one of those, or
+      <kbd>Ctrl</kbd> with the arrows, <kbd>Home</kbd>/<kbd>End</kbd> or <kbd>Backspace</kbd>/<kbd>Delete</kbd>.
+      An editor command can't take a key another command holds, but a Clarion command can
       take an editor key, and a message says which. If switching profile makes one of your keys clash, your key is
-      reset and a message says how many were.
+      reset and a message names it; choosing the previous profile again (before closing the editor) puts it back.
     </li>
     <li>
       <strong>Two-step keys</strong> &mdash; the editor's own two-step keys work, such as

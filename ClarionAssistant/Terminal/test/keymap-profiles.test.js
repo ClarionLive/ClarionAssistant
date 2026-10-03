@@ -14,6 +14,9 @@
 //   * The mappings #206 asked for, including the deliberate collision moves (Ctrl+D, Ctrl+Q, Ctrl+Shift+L).
 //   * Switching profile never leaves two commands on one chord, and never drops a command: an override that
 //     clashes with the new profile is reset (and reported), so its command falls back to the profile's chord.
+//   * Nothing moves onto a core editing key (undo, clipboard, typing, caret movement); F-keys and other modified
+//     combinations stay free, and a row may stay on its own default (Cut / Clear Line on Ctrl+X).
+//   * The right-click Format Selection entry names the key Format Selection is currently on.
 
 const fs = require('fs');
 const path = require('path');
@@ -47,6 +50,8 @@ let api = null, loadError = null;
 try {
     const commandsSrc = slice(html, '    var keyBindings = {};', '    // Map a keydown to a canonical chord', 'key command section');
     const sanitizeSrc = slice(html, '    function sanitizeLoadedKeyBindings(raw) {', '    // GH #126: gray out', 'sanitizeLoadedKeyBindings');
+    // The right-click Format Selection entry (its label follows the Format Selection key).
+    const formatSrc = slice(html, '    function registerFormatAction(ed) {', '    // ----- Debugger "Run to Cursor"', 'addFormatAction');
     // Every page function the command table names (run: cmdX) is a stub here; only the chord logic runs.
     const runNames = new Set(['navEmbed', 'openSnippetPicker']);
     const re = /run:\s*([A-Za-z_$][\w$]*)/g;
@@ -59,13 +64,13 @@ try {
     const exported = ['EDITOR_COMMANDS', 'KEY_PROFILES', 'effectiveChord', 'chordForId', 'rebuildChordMap', 'baseChord',
         'setKeyProfile', 'normalizeKeyProfile', 'sanitizeLoadedKeyBindings', 'pageKeyLabel', 'chordFromMonacoLabel',
         'monacoKeybinding', 'loadEditorActions', 'computeEditorKeyRules', 'keyConflicts', 'editorActionKeys',
-        'chordOwner', 'resolveOverrideConflicts'];
+        'chordOwner', 'resolveOverrideConflicts', 'coreKeyLabel', 'coreKeyRefused', 'addFormatAction'];
     const exportsSrc = '\nreturn {' + exported.map(n => ' ' + n + ': typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined,').join('') +
         ' getProfile: function () { return typeof activeKeyProfile !== "undefined" ? activeKeyProfile : undefined; },' +
         ' getActions: function () { return typeof EDITOR_ACTIONS !== "undefined" ? EDITOR_ACTIONS : undefined; },' +
         ' setBindings: function (b) { keyBindings = b; }, getBindings: function () { return keyBindings; },' +
         ' chordMap: function () { return chordToCmd; } };';
-    api = new Function(...names, 'document', commandsSrc + '\n' + sanitizeSrc + exportsSrc)(
+    api = new Function(...names, 'document', commandsSrc + '\n' + sanitizeSrc + '\n' + formatSrc + exportsSrc)(
         ...names.map(() => function stub() { }), document);
 } catch (e) { loadError = e.message; }
 
@@ -405,5 +410,89 @@ for (let i = 0; i < 400 && !fuzz2; i++) {
 }
 check('400 random Clarion + Monaco override sets: consistent every time', !fuzz2, fuzz2);
 use('clarion');
+
+// ---------- core editing keys (review of #249) ----------
+// Undo, the clipboard, typing and caret movement are Monaco core commands, not table rows — so nothing may be
+// MOVED onto them: an action on Ctrl+Z, or a command on a bare letter, would break editing with no clash shown.
+section('Core editing keys');
+const core = ch => api.coreKeyLabel ? api.coreKeyLabel(ch) : null;
+check('the page defines coreKeyLabel / coreKeyRefused', typeof api.coreKeyLabel === 'function' && typeof api.coreKeyRefused === 'function');
+const CORE = ['Ctrl+Z', 'Ctrl+Y', 'Ctrl+Shift+Z', 'Ctrl+C', 'Ctrl+V', 'Ctrl+X', 'Ctrl+A', 'Ctrl+Insert', 'Shift+Insert', 'Shift+Delete',
+    'A', 'Q', '7', '/', 'Space', 'Enter', 'Tab', 'Escape', 'Up', 'Down', 'Left', 'Right', 'Home', 'End', 'PageUp', 'PageDown',
+    'Insert', 'Backspace', 'Delete', 'Shift+A', 'Shift+7', 'Shift+Tab', 'Shift+Enter', 'Shift+Up', 'Shift+Home', 'Shift+PageDown',
+    'Ctrl+Left', 'Ctrl+Right', 'Ctrl+Shift+Left', 'Ctrl+Home', 'Ctrl+Shift+End', 'Ctrl+Backspace', 'Ctrl+Delete', 'Ctrl+Z Ctrl+1'];
+check('undo, the clipboard, typing and caret keys are core keys', CORE.every(k => !!core(k)), CORE.filter(k => !core(k)).join(', '));
+const FREE = ['F2', 'F9', 'Shift+F2', 'Ctrl+F2', 'Shift+Alt+F5', 'Ctrl+D', 'Ctrl+Shift+Y', 'Alt+Left', 'Shift+Alt+Up', 'Ctrl+Alt+Z',
+    'Ctrl+Shift+A', 'Ctrl+2', 'Ctrl+K Ctrl+C', 'Ctrl+Up', 'Alt+Enter'];
+check('F-keys and other modified combinations are free', FREE.every(k => !core(k)), FREE.filter(k => core(k)).join(', '));
+check('Ctrl+Z is labelled Undo (the refusal names what the key does)', core('Ctrl+Z') === 'Undo' && core('Ctrl+V') === 'Paste');
+
+api.KEY_PROFILES.forEach(p => {
+    const map = p.map || {};
+    check(p.id + ': no profile chord is a core editing key', Object.keys(map).every(id => !core(map[id])),
+        Object.keys(map).filter(id => core(map[id])).map(id => id + '=' + map[id]).join(', '));
+});
+const coreDefs = CMDS.filter(c => core(c.def)).map(c => c.id + '=' + c.def);
+check('the only Clarion default on a core key is Cut / Clear Line on Ctrl+X (that IS the cut key)',
+    coreDefs.join(',') === 'cutClarion=Ctrl+X', coreDefs.join(', '));
+check('... and every row may stay on its own base key in every profile', profileIds.every(p => {
+    use(p); return CMDS.every(c => !c.def || !api.coreKeyRefused(c.id, api.baseChord(c)))
+        && ACTS.every(a => a.defs.every(k => !api.coreKeyRefused(a.id, k)));
+}));
+use('clarion');
+
+[['upperCase', 'Ctrl+Z'], ['removeLine', 'Ctrl+V'], ['removeLine', 'A'], ['markWord', 'Enter'], ['invertCase', 'Shift+Up'],
+ ['upperCase', 'Tab'], ['upperCase', 'Ctrl+Left'], ['upperCase', 'Ctrl+A']].forEach(([id, ch]) => {
+    const got = api.sanitizeLoadedKeyBindings({ [id]: ch });
+    check('a loaded Clarion override on ' + ch + ' (' + id + ') is dropped', got[id] === undefined, JSON.stringify(got));
+});
+let kept = api.sanitizeLoadedKeyBindings({ cutClarion: 'Ctrl+X', removeLine: 'F9', upperCase: 'Ctrl+Alt+Z' });
+check('a row on its own base core key, an F-key and a modified combo are kept',
+    kept.cutClarion === 'Ctrl+X' && kept.removeLine === 'F9' && kept.upperCase === 'Ctrl+Alt+Z', JSON.stringify(kept));
+[['editor.action.gotoLine', 'Ctrl+Z'], ['editor.action.gotoLine', 'Ctrl+A'], ['editor.action.selectHighlights', 'Q'],
+ ['editor.action.selectHighlights', 'Shift+Home'], ['editor.action.gotoLine', 'Ctrl+End']].forEach(([id, ch]) => {
+    const got = api.sanitizeLoadedKeyBindings({ [id]: ch });
+    check('a loaded Monaco override on ' + ch + ' (' + id + ') is dropped', got[id] === undefined, JSON.stringify(got));
+});
+kept = api.sanitizeLoadedKeyBindings({ 'editor.action.nextMatchFindAction': 'Enter', 'editor.action.gotoLine': 'Ctrl+Alt+G' });
+check('a Monaco action may stay on one of its own Monaco keys (Find Next on Enter)',
+    kept['editor.action.nextMatchFindAction'] === 'Enter' && kept['editor.action.gotoLine'] === 'Ctrl+Alt+G', JSON.stringify(kept));
+d = use('vscode', { upperCase: 'Ctrl+C', 'editor.action.gotoLine': 'Backspace' });
+check('a profile switch drops core-key overrides too, and reports them',
+    d.indexOf('upperCase') >= 0 && d.indexOf('editor.action.gotoLine') >= 0, JSON.stringify(d));
+
+const POOL3 = POOL2.concat(['Ctrl+Z', 'Ctrl+Y', 'Ctrl+C', 'Ctrl+V', 'Ctrl+X', 'Ctrl+A', 'A', 'Enter', 'Tab', 'Up', 'Shift+Left',
+    'Home', 'Delete', 'Space', 'Ctrl+Backspace', 'F9', 'Shift+F9']);
+let fuzz3 = null;
+for (let i = 0; i < 400 && !fuzz3; i++) {
+    const b = {};
+    const n = 1 + rnd(7);
+    for (let k = 0; k < n; k++) b[IDS[rnd(IDS.length)]] = POOL3[rnd(POOL3.length)];
+    use(profileIds[rnd(profileIds.length)], b);
+    const bad = Object.keys(api.getBindings()).filter(id => api.coreKeyRefused(id, api.getBindings()[id]));
+    if (bad.length) fuzz3 = JSON.stringify(b) + ' -> left on core keys: ' + bad.map(id => id + '=' + api.getBindings()[id]).join(', ');
+}
+check('400 random override sets with core keys in the pool: no override survives on a core key', !fuzz3, fuzz3);
+use('clarion');
+
+// ---------- the right-click Format Selection entry names its live key ----------
+section('Format Selection context-menu label');
+function fakeEd() {
+    const ed = { added: [], live: null, onDispose: null };
+    ed.addAction = function (desc) { const h = { label: desc.label, disposed: false, dispose() { this.disposed = true; } }; ed.added.push(h); ed.live = h; return h; };
+    ed.onDidDispose = function (cb) { ed.onDispose = cb; };
+    return ed;
+}
+const fed = fakeEd();
+api.addFormatAction(fed);
+check('the entry shows the default key', fed.live && fed.live.label === 'Format Selection (Ctrl+I)', fed.live && fed.live.label);
+use('clarion', { formatLine: 'Ctrl+Alt+9' });
+check('rebinding Format Selection re-adds the entry with the new key, disposing the old one',
+    fed.live.label === 'Format Selection (Ctrl+Alt+9)' && fed.added.length === 2 && fed.added[0].disposed, fed.live.label);
+use('clarion', { formatLine: 'Ctrl+Alt+9', upperCase: 'Ctrl+9' });
+check('an unrelated rebind leaves the entry alone', fed.added.length === 2);
+fed.onDispose();
+use('clarion');
+check('a disposed editor is dropped (its entry is not re-added)', fed.added.length === 2);
 
 finish();
