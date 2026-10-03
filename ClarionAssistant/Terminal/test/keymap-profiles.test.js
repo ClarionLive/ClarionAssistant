@@ -64,7 +64,7 @@ try {
     const exported = ['EDITOR_COMMANDS', 'KEY_PROFILES', 'effectiveChord', 'chordForId', 'rebuildChordMap', 'baseChord',
         'setKeyProfile', 'normalizeKeyProfile', 'sanitizeLoadedKeyBindings', 'pageKeyLabel', 'chordFromMonacoLabel',
         'monacoKeybinding', 'loadEditorActions', 'computeEditorKeyRules', 'keyConflicts', 'editorActionKeys',
-        'chordOwner', 'resolveOverrideConflicts', 'coreKeyLabel', 'coreKeyRefused', 'addFormatAction'];
+        'chordOwner', 'resolveOverrideConflicts', 'coreKeyLabel', 'coreKeyRefused', 'addFormatAction', 'commandForKey'];
     const exportsSrc = '\nreturn {' + exported.map(n => ' ' + n + ': typeof ' + n + ' !== "undefined" ? ' + n + ' : undefined,').join('') +
         ' getProfile: function () { return typeof activeKeyProfile !== "undefined" ? activeKeyProfile : undefined; },' +
         ' getActions: function () { return typeof EDITOR_ACTIONS !== "undefined" ? EDITOR_ACTIONS : undefined; },' +
@@ -494,5 +494,17 @@ check('an unrelated rebind leaves the entry alone', fed.added.length === 2);
 fed.onDispose();
 use('clarion');
 check('a disposed editor is dropped (its entry is not re-added)', fed.added.length === 2);
+
+section('Monaco two-key chords vs Clarion keys');
+use('vs');
+check('Visual Studio puts Lowercase on Ctrl+U', api.chordMap()['Ctrl+U'] && api.chordMap()['Ctrl+U'].id === 'lowerCase');
+check('Ctrl+K is left to Monaco (starts a chord)', api.commandForKey('Ctrl+K') === null);
+check('... and the Ctrl+U after it goes to Monaco (Uncomment), not Lowercase', api.commandForKey('Ctrl+U') === null);
+const solo = api.commandForKey('Ctrl+U');
+check('a Ctrl+U on its own still runs Lowercase', !!solo && solo.id === 'lowerCase');
+api.commandForKey('Ctrl+K');
+check('a key with no name (Escape) ends the pending chord', api.commandForKey(null) === null && !!api.commandForKey('Ctrl+U'));
+use('clarion');
+check('the Clarion profile runs its own commands as before (twice running)', !!api.commandForKey('Ctrl+D') && !!api.commandForKey('Ctrl+D'));
 
 finish();

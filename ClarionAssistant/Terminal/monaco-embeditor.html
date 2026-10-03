@@ -2832,11 +2832,38 @@
             var ch = effectiveChord(c);
             if (ch) chordToCmd[ch] = c;               // last-wins; the panel prevents real conflicts
         }
+        rebuildMonacoChordStarts();
         // Every binding change funnels through here (init + each gear-panel rebind), so this is the one place
         // that has to re-stamp the help copy mentioning the snippet chord — and re-apply Monaco's moved keys.
         refreshSnippetChordLabels();
         refreshFormatActionLabels();
         applyEditorKeyRules();
+    }
+
+    // Monaco's two-key chords ("Ctrl+K Ctrl+U"). After the first key of one that is still Monaco's (no Clarion
+    // command took it), the NEXT key belongs to Monaco even when a Clarion command sits on it: the Visual Studio
+    // profile puts Lowercase on Ctrl+U, and dispatching it would leave Ctrl+K Ctrl+U (Uncomment) dead.
+    var monacoChordStarts = {};     // first key of a Monaco two-key chord -> true
+    var monacoChordPending = false; // the previous key started one of them
+    function rebuildMonacoChordStarts() {
+        monacoChordStarts = {};
+        monacoChordPending = false;
+        for (var i = 0; i < EDITOR_ACTIONS.length; i++) {
+            var keys = editorActionKeys(EDITOR_ACTIONS[i]);
+            for (var k = 0; k < keys.length; k++) {
+                var parts = String(keys[k]).split(' ');
+                if (parts.length > 1 && !chordToCmd[parts[0]]) monacoChordStarts[parts[0]] = true;
+            }
+        }
+    }
+    // The Clarion command a key runs, or null to leave the key to Monaco; null chord = a key with no canonical
+    // name (Escape, a numpad op), which ends any pending chord just as it does in Monaco.
+    function commandForKey(chord) {
+        if (monacoChordPending) { monacoChordPending = false; return null; }
+        if (!chord) return null;
+        var cmd = chordToCmd[chord] || null;
+        if (!cmd && monacoChordStarts[chord]) monacoChordPending = true;
+        return cmd;
     }
 
     // Map a keydown to a canonical chord ("Ctrl+Shift+Y"). Physical keys come from ev.code so layout
@@ -2890,14 +2917,14 @@
         document.addEventListener('keydown', function (ev) {
             if (snippetPickerOpen) return;   // the snippet picker owns its own keydown handling while open
             if (capturingKey) { handleKeyCapture(ev); return; }
-            var chord = chordFromEvent(ev);
-            if (!chord) return;
-            var cmd = chordToCmd[chord];
+            if (/^(Control|Shift|Alt|Meta|AltGraph)$/.test(ev.key)) return;   // a bare modifier is no key yet
+            var cmd = commandForKey(chordFromEvent(ev));
             if (!cmd) return;
             ev.preventDefault();
             ev.stopImmediatePropagation();
             try { cmd.run(); } catch (e) { /* never let a command break the editor */ }
         }, true);   // capture phase — runs after the Find interceptor (installed first), ahead of Monaco
+        window.addEventListener('blur', function () { monacoChordPending = false; });
     }
 
     // Command palette: Monaco's standalone quick-command picker (editor.action.quickCommand). Bound per
