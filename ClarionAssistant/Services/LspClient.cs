@@ -176,6 +176,9 @@ namespace ClarionAssistant.Services
             _stopRequested = false;
             // A new server session: status support is re-detected from its own traffic (see Stop).
             _serverSendsDiagnosticsStatus = false;
+            // ... and it holds no documents yet. Stop clears these too, but a thread that passed IsRunning before Stop
+            // can still record a document after Stop cleared them; the new server never received it.
+            ForgetDocuments();
 
             if (!File.Exists(serverJsPath))
                 return false;
@@ -312,7 +315,9 @@ namespace ClarionAssistant.Services
                     return false;
                 }
 
-                LspTrace.Write("[LSP] Initialize succeeded");
+                _serverSyncKind = ReadSyncKind(initResult);
+                LspTrace.Write("[LSP] Initialize succeeded (textDocumentSync=" + _serverSyncKind
+                    + (UsesIncrementalSync ? ", incremental changes" : ", full-text changes") + ")");
 
                 // Send initialized notification
                 SendNotification("initialized", new Dictionary<string, object>());
@@ -537,6 +542,23 @@ namespace ClarionAssistant.Services
             // happens onto a server that does not send the status, a stale true here would turn every
             // lsp_diagnostics call into a full-budget pending:true. Start resets it too.
             _serverSendsDiagnosticsStatus = false;
+
+            // The same guard for document sync: a reused instance must not believe a fresh server already holds its
+            // documents. With incremental sync it matters more than it did: a ranged change against a text the new
+            // server never received does not fail, it corrupts the server's copy. Start clears them again.
+            ForgetDocuments();
+        }
+
+        /// <summary>Forget every document the server was sent, and its sync kind (Start and Stop).</summary>
+        private void ForgetDocuments()
+        {
+            lock (_docSyncLock)
+            {
+                _openDocuments.Clear();
+                _lastSyncedHash.Clear();
+                ForgetServerTexts_NoLock();
+            }
+            _serverSyncKind = 1;
         }
 
         #region LSP Requests
@@ -1388,6 +1410,10 @@ namespace ClarionAssistant.Services
 
                 SendNotificationWithText("textDocument/didOpen", parms, doc, "text", content);   // 1d8d1c49: streamed when large
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
+                // The server holds the DISK text: record it for the next ranged change, and as the "unchanged" hash,
+                // as SendDidChangeFromDisk does, so a buffer equal to the file is not re-sent for nothing.
+                _lastSyncedHash[filePath] = TextHash(content);
+                RecordServerText_NoLock(filePath, content);
             }
         }
 
@@ -1402,12 +1428,161 @@ namespace ClarionAssistant.Services
         private readonly Dictionary<string, int> _lastSyncedHash =
             new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>The value _lastSyncedHash holds for a text: one formula for every path that records it.</summary>
+        private static int TextHash(string text)
+        {
+            return text == null ? 0 : text.Length ^ text.GetHashCode();
+        }
+
+        // ---- Incremental sync ----
+        // The text the SERVER holds per file, as of the last didOpen/didChange we sent (a reference to the caller's
+        // string, not a copy). With it, a change is sent as the one small range LspTextDiff finds instead of the whole
+        // buffer: on a 2.5 MB generated module the full-text didChange was most of the post-edit hover cost (HoverBench).
+        // Only when the server advertises TextDocumentSyncKind.Incremental (2), and only while IncrementalSyncEnabled.
+        // Every path that changes the server's copy must record it here (RecordServerText_NoLock), or the next range
+        // lands on the wrong text.
+        //
+        // BOUNDED. Nothing ever closes a document (there is no didClose), so without a bound every module the session
+        // ever synced would stay referenced here, in a 32-bit IDE where a generated module is 5 MB of UTF-16. Past
+        // MaxRetainedServerChars the least recently synced texts are dropped. A dropped document is still open on the
+        // server with the right version; its next change simply goes as full text (SendDidChange_NoLock finds no base),
+        // which records it again. The most recently synced text is always kept, however large: it is the one being
+        // edited, and a single module over the cap is exactly where ranges matter most.
+        private readonly Dictionary<string, string> _lastSyncedText =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, long> _lastSyncedTextUse =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        private long _lastSyncedTextTick;
+        private long _lastSyncedTextChars;
+
+        /// <summary>Upper bound, in UTF-16 chars, on the server texts kept as bases for ranged changes (all documents
+        /// together; 8M chars = 16 MB). Static so a harness can shrink it.</summary>
+        public static long MaxRetainedServerChars = 8L * 1024 * 1024;
+
+        /// <summary>Number of documents whose server text is currently kept (diagnostics and tests).</summary>
+        public int RetainedServerTextCount { get { lock (_docSyncLock) return _lastSyncedText.Count; } }
+
+        /// <summary>Record the text the server now holds for <paramref name="filePath"/>, evicting the least recently
+        /// synced others while the total is over MaxRetainedServerChars. Call under _docSyncLock.</summary>
+        private void RecordServerText_NoLock(string filePath, string text)
+        {
+            string old;
+            if (_lastSyncedText.TryGetValue(filePath, out old) && old != null) _lastSyncedTextChars -= old.Length;
+            _lastSyncedText[filePath] = text;
+            _lastSyncedTextUse[filePath] = ++_lastSyncedTextTick;
+            if (text != null) _lastSyncedTextChars += text.Length;
+
+            while (_lastSyncedTextChars > MaxRetainedServerChars && _lastSyncedText.Count > 1)
+            {
+                string oldest = null; long oldestUse = long.MaxValue;
+                foreach (var kv in _lastSyncedTextUse)
+                    if (kv.Value < oldestUse && !string.Equals(kv.Key, filePath, StringComparison.OrdinalIgnoreCase)) { oldest = kv.Key; oldestUse = kv.Value; }
+                if (oldest == null) break;
+                string dropped;
+                if (_lastSyncedText.TryGetValue(oldest, out dropped) && dropped != null) _lastSyncedTextChars -= dropped.Length;
+                _lastSyncedText.Remove(oldest);
+                _lastSyncedTextUse.Remove(oldest);
+            }
+        }
+
+        private void ForgetServerTexts_NoLock()
+        {
+            _lastSyncedText.Clear();
+            _lastSyncedTextUse.Clear();
+            _lastSyncedTextChars = 0;
+        }
+
+        /// <summary>Process-wide switch for ranged (incremental) didChange. On by default; a host can turn it off
+        /// (kill switch) and HoverBench turns it off to measure full-text sync on the same server.</summary>
+        public static bool IncrementalSyncEnabled = true;
+
+        // TextDocumentSyncKind the server advertised in its initialize reply: 0 none, 1 full, 2 incremental.
+        private int _serverSyncKind = 1;
+
+        /// <summary>True when changes go to the server as ranges (the server supports it and it is enabled).</summary>
+        public bool UsesIncrementalSync { get { return _serverSyncKind == 2 && IncrementalSyncEnabled; } }
+
+        /// <summary>didChange counts by kind since start (diagnostics, and HoverBench's sanity line).</summary>
+        public int IncrementalChangesSent { get; private set; }
+        public int FullChangesSent { get; private set; }
+
+        private static int ReadSyncKind(Dictionary<string, object> initResponse)
+        {
+            try
+            {
+                object result, caps, sync;
+                var res = initResponse != null && initResponse.TryGetValue("result", out result) ? result as Dictionary<string, object> : null;
+                var c = res != null && res.TryGetValue("capabilities", out caps) ? caps as Dictionary<string, object> : null;
+                if (c == null || !c.TryGetValue("textDocumentSync", out sync) || sync == null) return 1;
+                var options = sync as Dictionary<string, object>;
+                if (options == null) return Convert.ToInt32(sync);
+                object change;
+                return options.TryGetValue("change", out change) && change != null ? Convert.ToInt32(change) : 1;
+            }
+            catch { return 1; }
+        }
+
+        /// <summary>
+        /// Send a didChange taking the server's copy of <paramref name="filePath"/> to <paramref name="text"/>: one
+        /// ranged change when incremental sync is in use and the server's current text is known, else the whole text.
+        /// Call under _docSyncLock, with the document already open.
+        /// </summary>
+        private void SendDidChange_NoLock(string filePath, string uri, int nextVersion, string text)
+        {
+            string serverText = null;
+            LspTextChange delta = null;
+            bool baseKnown = UsesIncrementalSync && _lastSyncedText.TryGetValue(filePath, out serverText) && serverText != null;
+            if (baseKnown)
+            {
+                delta = LspTextDiff.Compute(serverText, text);
+                // The server already holds exactly this text. Still send a change, an EMPTY one (nothing replaced at
+                // 0:0), rather than nothing or the whole text. Nothing would starve a caller that sent this to make
+                // the server re-analyse: GetDiagnostics -> SendDidChangeFromDisk waits for a NEW publish and
+                // diagnosticsStatus `complete` for the version it sent, and the server only re-validates on a change,
+                // so skipping it would leave lsp_diagnostics pending for its whole budget whenever the file on disk
+                // matches what the server holds (the usual case). It also keeps one rule for versions: every call
+                // bumps the version by one, as every call did before ranges. The whole text would do the same, at
+                // the full-text cost this path exists to avoid.
+                if (delta == null)
+                    delta = new LspTextChange { Text = "" };   // StartLine = StartCharacter = EndLine = EndCharacter = 0
+            }
+
+            Dictionary<string, object> change;
+            if (delta != null)
+            {
+                change = new Dictionary<string, object>
+                {
+                    { "range", new Dictionary<string, object>
+                        {
+                            { "start", new Dictionary<string, object> { { "line", delta.StartLine }, { "character", delta.StartCharacter } } },
+                            { "end", new Dictionary<string, object> { { "line", delta.EndLine }, { "character", delta.EndCharacter } } }
+                        }
+                    },
+                    { "text", delta.Text }
+                };
+                IncrementalChangesSent++;
+            }
+            else
+            {
+                change = new Dictionary<string, object> { { "text", text } };   // no range = full replacement
+                FullChangesSent++;
+            }
+            var changeParms = new Dictionary<string, object>
+            {
+                { "textDocument", new Dictionary<string, object> { { "uri", uri }, { "version", nextVersion } } },
+                { "contentChanges", new System.Collections.ArrayList { change } }
+            };
+            SendNotificationWithText("textDocument/didChange", changeParms, change, "text", (string)change["text"]);   // 1d8d1c49
+            _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+            RecordServerText_NoLock(filePath, text);
+        }
+
         private void EnsureDocumentOpenWithText(string filePath, string text)
         {
             lock (_docSyncLock)
             {
                 string uri = FilePathToUri(filePath);
-                int hash = (text != null ? text.Length : 0) ^ (text != null ? text.GetHashCode() : 0);
+                int hash = TextHash(text);
                 int currentVersion;
                 if (_openDocuments.TryGetValue(filePath, out currentVersion))
                 {
@@ -1416,16 +1591,7 @@ namespace ClarionAssistant.Services
                     if (_lastSyncedHash.TryGetValue(filePath, out lastHash) && lastHash == hash)
                         return;
 
-                    int nextVersion = currentVersion + 1;
-                    var change = new Dictionary<string, object> { { "text", text } };
-                    var changes = new System.Collections.ArrayList { change };
-                    var changeParms = new Dictionary<string, object>
-                    {
-                        { "textDocument", new Dictionary<string, object> { { "uri", uri }, { "version", nextVersion } } },
-                        { "contentChanges", changes }
-                    };
-                    SendNotificationWithText("textDocument/didChange", changeParms, change, "text", text);   // 1d8d1c49
-                    _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+                    SendDidChange_NoLock(filePath, uri, currentVersion + 1, text);   // ranged when the server allows
                     _lastSyncedHash[filePath] = hash;
                     return;
                 }
@@ -1441,6 +1607,7 @@ namespace ClarionAssistant.Services
                 SendNotificationWithText("textDocument/didOpen", openParms, openDoc, "text", text);   // 1d8d1c49
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
                 _lastSyncedHash[filePath] = hash;
+                RecordServerText_NoLock(filePath, text);
             }
         }
 
@@ -1456,7 +1623,7 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Send a full-document textDocument/didChange with the current file contents
+        /// Send a textDocument/didChange taking the server to the current file contents
         /// from disk. Used to force the server to re-analyze a file that's already open
         /// after it may have changed (e.g., after write_embed_content or an external edit).
         /// If the file hasn't been opened yet, falls through to EnsureDocumentOpen instead.
@@ -1476,27 +1643,10 @@ namespace ClarionAssistant.Services
 
                 string uri = FilePathToUri(filePath);
                 string content = EncodingHelper.ReadAllText(filePath, out _);
-                int nextVersion = currentVersion + 1;
-
-                // LSP TextDocumentContentChangeEvent without `range` = full document replacement.
-                var changes = new System.Collections.ArrayList
-                {
-                    new Dictionary<string, object> { { "text", content } }
-                };
-
-                var parms = new Dictionary<string, object>
-                {
-                    { "textDocument", new Dictionary<string, object>
-                        {
-                            { "uri", uri },
-                            { "version", nextVersion }
-                        }
-                    },
-                    { "contentChanges", changes }
-                };
-
-                SendNotification("textDocument/didChange", parms);
-                _openDocuments[filePath] = nextVersion; NoteSentVersion(filePath, nextVersion);
+                SendDidChange_NoLock(filePath, uri, currentVersion + 1, content);
+                // The server now holds the DISK text, so the buffer hash must say so too. It used to keep the last
+                // buffer's hash: a buffer matching it afterwards was skipped as "unchanged" while the server held disk.
+                _lastSyncedHash[filePath] = TextHash(content);
             }
         }
 
