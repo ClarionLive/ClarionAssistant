@@ -184,8 +184,10 @@ namespace ClarionAssistant.Terminal
         public void SetSolution(string path, bool openInIde)
         {
             path = path ?? "";
-            // Keep the END of a long path; the file name is the part that identifies it.
-            string label = path.Length > 60 ? "..." + path.Substring(path.Length - 57) : path;
+            // Show the solution's name only: in a narrow pane a full path cut off before the name never said
+            // which solution it was (testing feedback). The page's hover text carries the full path, and the
+            // copy button copies the host's own full path.
+            string label = path.Length == 0 ? "" : System.IO.Path.GetFileNameWithoutExtension(path);
             SendMessage("{\"type\":\"setSolution\",\"label\":\"" + EscapeJson(label) + "\",\"path\":\"" + EscapeJson(path)
                 + "\",\"open\":" + (openInIde ? "true" : "false") + "}");
         }
