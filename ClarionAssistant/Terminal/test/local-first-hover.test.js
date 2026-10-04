@@ -9,6 +9,8 @@
 //   * an authoritative local answer means no LSP hover request at all
 //   * otherwise the LSP card shows, unless it names the same symbol as the local card (case-insensitive)
 //   * a null or hung local answer lets the LSP proceed as before, after the short local timeout
+//   * GH #250: a FALLBACK local card (a keyword) shows nothing itself; the server's card wins, and the local card
+//     shows only when the server answers nothing or misses the 300 ms deadline counted from the hover's start
 
 const { load, track, flush, check, section, finish } = require('./local-first-loader');
 
@@ -111,6 +113,85 @@ async function main() {
         n.reply('hover', null);
         await flush();
         check('...and a null LSP reply shows no card', lspn.done && lspn.value == null);
+    }
+
+    section('GH #250: a fallback (keyword) card defers to the server, with a deadline');
+    {
+        const KW = ['  CODE', '    CASE EVENT()', '    OF EVENT:Timer', '    END'];
+        const END = { lineNumber: 4, column: 6 };
+        const kwCard = card('END', 'keyword · Control Flow');
+        const srvCard = '**END** — closes CASE\n\nCASE EVENT()';
+
+        const e = load({ lines: KW });
+        const [loc, lsp] = hoverBoth(e, END);
+        e.reply('localHover', { contents: kwCard, authoritative: false, fallback: true, kind: 'keyword' });
+        await flush();
+        check('#250 the local provider shows nothing for a fallback card', loc.done && loc.value == null, JSON.stringify(loc.value));
+        check('#250 ...and the server IS asked (no authoritative skip)', e.requests('hover').length === 1);
+        check('#250 ...and nothing shows until the server answers', !lsp.done);
+        e.reply('hover', { contents: srvCard });
+        await flush();
+        check('#250 the server card replaces the keyword card (one card)', lsp.done && value(lsp) === srvCard, JSON.stringify(lsp.value));
+
+        const n = load({ lines: KW });
+        const [locn, lspn] = hoverBoth(n, END);
+        n.reply('localHover', { contents: kwCard, authoritative: false, fallback: true, kind: 'keyword' });
+        await flush();
+        n.reply('hover', null);
+        await flush();
+        check('#250 server answers null: the keyword card is the fallback', lspn.done && value(lspn) === kwCard && locn.value == null, JSON.stringify(lspn.value));
+
+        const m = load({ lines: KW });
+        const [, lspm] = hoverBoth(m, END);
+        m.reply('localHover', { contents: kwCard, fallback: true });
+        await flush();
+        m.reply('hover', { contents: '' });
+        await flush();
+        check('#250 server answers empty contents: the keyword card', lspm.done && value(lspm) === kwCard, JSON.stringify(lspm.value));
+
+        const d = load({ lines: KW });
+        const [, lspd] = hoverBoth(d, END);
+        d.reply('localHover', { contents: kwCard, fallback: true });
+        await flush();
+        check('#250 the deadline timer is 300 ms', d.armed(300) === 1, 'armed(300)=' + d.armed(300));
+        const fired = d.fire(300);
+        await flush();
+        check('#250 server past the deadline: the keyword card shows at 300 ms', fired === 1 && lspd.done && value(lspd) === kwCard, JSON.stringify(lspd.value));
+        d.reply('hover', { contents: srvCard });
+        await flush();
+        check('#250 ...and a late server card does not replace it', value(lspd) === kwCard);
+
+        // The deadline runs from the hover's start: a local answer slower than it skips the server altogether.
+        const s = load({ lines: KW });
+        const [, lsps] = hoverBoth(s, END);
+        s.fire(300);
+        s.reply('localHover', { contents: kwCard, fallback: true });
+        await flush();
+        check('#250 deadline already passed when the local card lands: the card, no hover posted',
+            lsps.done && value(lsps) === kwCard && s.requests('hover').length === 0, 'hover posts=' + s.requests('hover').length);
+        // (While typing, the idle-sync case is in local-first-slices.test.js, which has the span-map setup.)
+    }
+
+    section('GH #250: non-fallback cards are unchanged');
+    {
+        const e = load({ lines: LINES });
+        const [loc, lsp] = hoverBoth(e);
+        e.reply('localHover', { contents: card('GloVar  LONG', 'index'), authoritative: true, fallback: false, kind: 'index' });
+        await flush();
+        check('#250 an authoritative index card still skips the server', lsp.done && lsp.value == null && e.requests('hover').length === 0 &&
+            loc.done && /GloVar/.test(value(loc) || ''));
+
+        const b = load({ lines: LINES });
+        const [locb, lspb] = hoverBoth(b);
+        b.reply('localHover', { contents: card('MyVar  LONG'), authoritative: false, fallback: false, kind: 'member' });
+        await flush();
+        check('#250 a non-fallback local card still shows at once beside the LSP', locb.done && /MyVar/.test(value(locb) || '') && !lspb.done);
+        b.fire(300);
+        await flush();
+        check('#250 ...and the 300 ms deadline does not touch it', !lspb.done);
+        b.reply('hover', { contents: card('MyVar  LONG', 'lsp') });
+        await flush();
+        check('#250 ...and the same-symbol dedupe still drops the LSP card', lspb.done && lspb.value == null, JSON.stringify(lspb.value));
     }
 
     section('6.9: inside a comment neither provider posts');

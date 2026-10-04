@@ -233,7 +233,8 @@ namespace ClarionAssistant.Services
                             {
                                 var h = HoverAt(source, line0, col0, options);
                                 items = h != null ? 1 : 0;
-                                reply = new Dictionary<string, object> { { "contents", h != null ? h.Markdown : null }, { "authoritative", h != null && h.Authoritative } };
+                                reply = new Dictionary<string, object> { { "contents", h != null ? h.Markdown : null }, { "authoritative", h != null && h.Authoritative },
+                                                                         { "fallback", h != null && h.Fallback }, { "kind", h != null ? h.Kind : null } };
                             }
                             break;
                         }
@@ -394,11 +395,10 @@ namespace ClarionAssistant.Services
             string word = LocalScopeIndex.WordAt(lineText, col);
             if (string.IsNullOrEmpty(word)) return null;
 
-            // H4 (Owner decision): a card from the live dictionary, the symbol index, or a keyword with its loaded
-            // description is FINAL (authoritative), so the page skips the LSP hover and Monaco shows no
-            // "Loading..." tail under it. Still non-authoritative: a keyword card that is name + category only
-            // (its data not loaded yet), and an in-buffer local-class member (LocalScopeIndex decides that; the
-            // LSP may know inherited members).
+            // H4 (Owner decision): a card from the live dictionary or the symbol index is FINAL (authoritative),
+            // so the page skips the LSP hover and Monaco shows no "Loading..." tail under it. Keyword cards were
+            // final too until GH #250 (below). Still non-authoritative: an in-buffer local-class member
+            // (LocalScopeIndex decides that; the LSP may know inherited members).
             var dict = LiveDictionaryIndex.HoverWord(word);
             if (dict != null) { dict.Authoritative = true; return dict; }
 
@@ -422,8 +422,12 @@ namespace ClarionAssistant.Services
                     if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = true, Kind = "index" };
                 }
             }
+            // GH #250: a keyword card is a FALLBACK, never final. The server's card for END / ELSE / ELSIF / OF /
+            // OROF / TO / a period terminator names the structure it closes or the branch it is, which the local
+            // layer cannot know; the page asks the server first and shows this card only when the server has
+            // nothing or misses its short deadline (FALLBACK_LSP_DEADLINE_MS), so no word list and no Loading tail.
             var kw = ClarionKeywordIndex.HoverWord(word);
-            if (kw != null) kw.Authoritative = ClarionKeywordIndex.IsFinalCard(word);   // L3: reserved words only
+            if (kw != null) { kw.Authoritative = false; kw.Fallback = true; }
             return kw;
         }
 
@@ -566,7 +570,7 @@ namespace ClarionAssistant.Services
             {
                 case SlotDiagnostics: return new Dictionary<string, object> { { "markers", new List<Dictionary<string, object>>() } };
                 case LocalCompletion: return new Dictionary<string, object> { { "items", new List<Dictionary<string, object>>() }, { "source", "local" } };
-                case LocalHover: return new Dictionary<string, object> { { "contents", null }, { "authoritative", false } };
+                case LocalHover: return new Dictionary<string, object> { { "contents", null }, { "authoritative", false }, { "fallback", false }, { "kind", null } };
                 default: return new Dictionary<string, object>();
             }
         }

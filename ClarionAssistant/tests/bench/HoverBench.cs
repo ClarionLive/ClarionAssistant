@@ -13,7 +13,8 @@ using ClarionAssistant.Services;
 //
 // WHY. The page answers a hover from CA's local layer (buffer, live dictionary, CodeGraph indexes, keywords) and,
 // when that card is "authoritative", never asks the language server (monaco-embeditor.html, the second hover
-// provider; LocalLayerHandlers.HoverAt). The design traded the server's richer card for speed: a full buffer sync
+// provider; LocalLayerHandlers.HoverAt). A "fallback" card (a keyword, GH #250) asks the server first and shows
+// only when the server has nothing or misses the page's FALLBACK_LSP_DEADLINE_MS (300 ms, mirrored below). The design traded the server's richer card for speed: a full buffer sync
 // once cost ~100 ms per keystroke (1c685f2e). The server has since got much faster. This measures, on real
 // solutions, whether local-first still pays for itself — latency on both sides, and what each side answers —
 // so the call can be made from numbers.
@@ -47,7 +48,9 @@ static class HoverBench
 
     sealed class Sample { public string File; public int Line0, Col0; public string Word; }
 
-    sealed class LocalAnswer { public bool Any, Auth; public string Kind, Symbol, Card; public double Ms; }
+    sealed class LocalAnswer { public bool Any, Auth, Fallback; public string Kind, Symbol, Card; public double Ms; }
+    // monaco-embeditor.html's FALLBACK_LSP_DEADLINE_MS: past it the page shows a fallback card instead of the server's.
+    const double FallbackDeadlineMs = 300;
     sealed class LspAnswer { public bool Any, TimedOut; public string Symbol, Card; public double Ms; }
 
     // LspClient.GetHover gives the server 1500 ms (SendRequest's deadline) and returns null when it passes. A null
@@ -229,7 +232,7 @@ static class HoverBench
     {
         int n = samples.Count;
         int localAny = 0, localAuth = 0, lspAny = 0, both = 0, localOnly = 0, lspOnly = 0, neither = 0, timeouts = 0;
-        int hidden = 0, hiddenDisagree = 0, localWrong = 0, lspWrong = 0;
+        int hidden = 0, hiddenDisagree = 0, localWrong = 0, lspWrong = 0, localFallback = 0, fallbackServerWon = 0, fallbackLate = 0;
         var disagreements = new List<string>();
         var lspOnlyEx = new List<string>();
         for (int i = 0; i < n; i++)
@@ -237,6 +240,12 @@ static class HoverBench
             var l = local[i]; var s = lsp[i]; var sm = samples[i];
             if (l.Any) localAny++;
             if (l.Auth) localAuth++;
+            if (l.Fallback)
+            {
+                localFallback++;
+                if (s.Any && !s.TimedOut && s.Ms <= FallbackDeadlineMs) fallbackServerWon++;   // the page shows the server's card
+                else if (s.Any) fallbackLate++;                                                  // the server had one, past the deadline
+            }
             if (s.Any) lspAny++;
             if (s.TimedOut) timeouts++;
             if (l.Any && s.Any) both++; else if (l.Any) localOnly++; else if (s.Any) lspOnly++; else neither++;
@@ -275,6 +284,8 @@ static class HoverBench
         Console.WriteLine("            both " + pct(both) + ", local only " + pct(localOnly) + ", server only " + pct(lspOnly) + ", neither " + pct(neither));
         Console.WriteLine("  hidden:   " + hidden + " server answers never asked for (an authoritative local card won), "
             + hiddenDisagree + " of them naming a different symbol");
+        Console.WriteLine("  fallback: " + localFallback + " keyword cards deferred to the server: its card shown for " + fallbackServerWon
+            + ", the local card past the " + FallbackDeadlineMs.ToString("0") + " ms deadline for " + fallbackLate + " the server could have answered");
         Console.WriteLine("  card names a different word than the one hovered: local " + localWrong + ", server " + lspWrong);
         if (bothIdx.Count > 0)
             Console.WriteLine("  card size where both answer (chars, median): local " + P(localLen, 50).ToString("0") + ", server " + P(serverLen, 50).ToString("0"));
@@ -300,7 +311,7 @@ static class HoverBench
             for (int i = 0; i < n; i++)
                 dump.AppendLine(ser.Serialize(new Dictionary<string, object> {
                     { "server", server.Key }, { "file", Path.GetFileName(samples[i].File) }, { "line", samples[i].Line0 + 1 }, { "word", samples[i].Word },
-                    { "localKind", local[i].Kind }, { "localAuth", local[i].Auth }, { "localSymbol", local[i].Symbol }, { "localCard", local[i].Card },
+                    { "localKind", local[i].Kind }, { "localAuth", local[i].Auth }, { "localFallback", local[i].Fallback }, { "localSymbol", local[i].Symbol }, { "localCard", local[i].Card },
                     { "localMs", Math.Round(local[i].Ms, 2) }, { "serverMs", Math.Round(lsp[i].Ms, 2) }, { "serverTimedOut", lsp[i].TimedOut },
                     { "serverSymbol", lsp[i].Symbol }, { "serverCard", lsp[i].Card } }));
             File.AppendAllText(o.DumpPath, dump.ToString());
@@ -318,6 +329,7 @@ static class HoverBench
             // What "after an edit" meant for this line: end and near runs (and ranged vs full sync) are not comparable.
             { "editMode", o.EditMode }, { "sync", SyncMode }, { "rangedChanges", RangedSent }, { "fullChanges", FullSent },
             { "sendP95", Math.Round(P(SendMs, 95), 1) }, { "nextHoverP95", Math.Round(P(NextHoverMs, 95), 1) },
+            { "localFallback", localFallback }, { "fallbackServerWon", fallbackServerWon }, { "fallbackLate", fallbackLate },
             { "serverTimeouts", timeouts }, { "serverEditedTimeouts", lspEditedTimeouts },{ "localCardChars", P(localLen, 50) }, { "serverCardChars", P(serverLen, 50) }, { "flagFastEnough", fastEnough }, { "flagCoversMore", coversMore }
         });
     }
@@ -345,7 +357,7 @@ static class HoverBench
         catch { h = null; }
         double ms = sw.Elapsed.TotalMilliseconds;
         bool any = h != null && !string.IsNullOrEmpty(h.Markdown);
-        return new LocalAnswer { Any = any, Auth = any && h.Authoritative, Kind = h != null ? (h.Kind ?? "local") : null,
+        return new LocalAnswer { Any = any, Auth = any && h.Authoritative, Fallback = any && h.Fallback, Kind = h != null ? (h.Kind ?? "local") : null,
                                  Symbol = any ? LocalSymbol(h.Markdown) : null, Card = any ? h.Markdown : null, Ms = ms };
     }
 

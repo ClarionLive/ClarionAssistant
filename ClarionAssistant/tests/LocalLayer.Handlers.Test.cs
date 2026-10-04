@@ -207,16 +207,20 @@ static class LocalLayerHandlersTest
             // H4: with the keyword data loaded, the card carries its description and is FINAL.
             ClarionKeywordIndex.DataDirOverride = KeywordDataDir;
             ClarionKeywordIndex.ResetForTest();
-            Check("(keyword fixture loads)", ClarionKeywordIndex.WaitForLoad(5000) && ClarionKeywordIndex.IsFinalCard("RETURN"));
+            var fixtureCard = ClarionKeywordIndex.WaitForLoad(5000) ? ClarionKeywordIndex.HoverWord("RETURN") : null;
+            Check("(keyword fixture loads)", fixtureCard != null && fixtureCard.Markdown.Contains("Terminates"));
             var hKwFull = At("localHover", 15, 4, o);
-            Check("H4 RETURN with its loaded description -> the full card, AUTHORITATIVE",
-                hKwFull["contents"] != null && ((string)hKwFull["contents"]).Contains("Terminates") && (bool)hKwFull["authoritative"], Json(hKwFull));
+            Check("#250 RETURN with its loaded description -> the full card, a FALLBACK (not authoritative), kind keyword",
+                hKwFull["contents"] != null && ((string)hKwFull["contents"]).Contains("Terminates") && !(bool)hKwFull["authoritative"] &&
+                (bool)hKwFull["fallback"] && (string)hKwFull["kind"] == "keyword", Json(hKwFull));
             var hDict = At("localHover", 16, 12, o);
-            Check("H4 a dictionary field (INV:Qty) -> the dictionary card, AUTHORITATIVE", hDict["contents"] != null && ((string)hDict["contents"]).Contains("Qty") && (bool)hDict["authoritative"], Json(hDict));
+            Check("H4 a dictionary field (INV:Qty) -> the dictionary card, AUTHORITATIVE, not a fallback", hDict["contents"] != null && ((string)hDict["contents"]).Contains("Qty") &&
+                (bool)hDict["authoritative"] && !(bool)hDict["fallback"] && (string)hDict["kind"] == "dictionary", Json(hDict));
             var hDb = LocalLayerHandlers.Handle("localHover", ModBuffer.Replace("glovar     LONG", "other      LONG"),
                 Req("{\"line\":16,\"column\":22}"), o);
             Check("H4 a solution global (GloVar) -> the index card, AUTHORITATIVE",
-                hDb["contents"] != null && ((string)hDb["contents"]).Contains("GloVar") && (bool)hDb["authoritative"], Json(hDb));
+                hDb["contents"] != null && ((string)hDb["contents"]).Contains("GloVar") && (bool)hDb["authoritative"] && !(bool)hDb["fallback"] &&
+                (string)hDb["kind"] == "index", Json(hDb));
             ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
             ClarionKeywordIndex.ResetForTest();
             ClarionKeywordIndex.WaitForLoad(5000);
@@ -241,9 +245,10 @@ static class LocalLayerHandlersTest
                 LocalLayerHandlers.ResetPathCache();
                 var noDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), new LocalLayerOptions { Log = log.Add });
                 Check("L3 PASSWORD with no DB -> the attribute card, NOT authoritative (the LSP may know a procedure)",
-                    noDb["contents"] != null && ((string)noDb["contents"]).Contains("password entry") && !(bool)noDb["authoritative"], Json(noDb));
+                    noDb["contents"] != null && ((string)noDb["contents"]).Contains("password entry") && !(bool)noDb["authoritative"] && (bool)noDb["fallback"], Json(noDb));
                 var ret = At("localHover", 15, 4, o);
-                Check("L3 RETURN (a reserved keyword with its description) -> authoritative", ret["contents"] != null && (bool)ret["authoritative"], Json(ret));
+                Check("#250 RETURN (a reserved keyword with its description) -> a fallback, NOT authoritative (the server's structure card wins)",
+                    ret["contents"] != null && !(bool)ret["authoritative"] && (bool)ret["fallback"], Json(ret));
                 Check("L3 FollowedByParen: '~PASSWORD(' yes, 'PASSWORD +' no",
                     LocalLayerHandlers.FollowedByParen("  x# = ~PASSWORD('IN')", 10, "PASSWORD") &&
                     !LocalLayerHandlers.FollowedByParen("  x# = PASSWORD + 1", 9, "PASSWORD"));
@@ -519,7 +524,8 @@ static class LocalLayerHandlersTest
             s = Json(LocalLayerHandlers.Handle("localCompletion", EmbedBuffer, Req("{\"line\":5,\"column\":7}"), embed));
             Check("localCompletion -> {items:[...], source:'local', ms}", Regex.IsMatch(s, "^\\{\"items\":\\[.*\\],\"source\":\"local\",\"ms\":\\d+\\}$"), s);
             s = Json(LocalLayerHandlers.Handle("localHover", EmbedBuffer, Req("{\"line\":5,\"column\":7}"), embed));
-            Check("localHover -> {contents, authoritative:<bool>, ms}", Regex.IsMatch(s, "^\\{\"contents\":(null|\".*\"),\"authoritative\":(true|false),\"ms\":\\d+\\}$"), s);
+            Check("localHover -> {contents, authoritative:<bool>, fallback:<bool>, kind, ms}",
+                Regex.IsMatch(s, "^\\{\"contents\":(null|\".*\"),\"authoritative\":(true|false),\"fallback\":(true|false),\"kind\":(null|\"[a-z]+\"),\"ms\":\\d+\\}$"), s);
         }
 
         Console.WriteLine("\nF6: the parsed payload is bounded; a reject is the empty shape plus one [webmsg] line");

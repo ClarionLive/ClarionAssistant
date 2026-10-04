@@ -319,21 +319,6 @@ namespace ClarionAssistant.Services
             return new LocalHoverResult { Markdown = sb.ToString(), Authoritative = false, Kind = "keyword" };
         }
 
-        /// <summary>
-        /// True when <see cref="HoverWord"/>'s card for <paramref name="word"/> is FINAL (1c685f2e H4, narrowed by L3):
-        /// the language data is loaded, holds a description for it, AND the word is a reserved keyword or built-in
-        /// (clarion-keywords.json / clarion-builtins.json) that cannot be a user identifier. An attribute, event,
-        /// control, directive or data-type name can also name a procedure or variable (PASSWORD in PRM002), so its
-        /// card is never final: the LSP may know better.
-        /// </summary>
-        public static bool IsFinalCard(string word)
-        {
-            if (string.IsNullOrEmpty(word)) return false;
-            var docs = Docs();
-            KeywordDoc d;
-            return docs != null && docs.TryGetValue(word, out d) && d != null && d.Reserved && !string.IsNullOrEmpty(d.Description);
-        }
-
         // ============================================================== the LSP's language data (H3)
         // The bundled Clarion language server ships clean, structured language help as JSON beside
         // server.js: <addin>\lsp-server\out\server\src\data\clarion-*.json. The files' shapes differ (a
@@ -344,10 +329,6 @@ namespace ClarionAssistant.Services
         internal sealed class KeywordDoc
         {
             public string Name, Category, Description, ReturnType;
-            /// <summary>L3: from clarion-keywords.json or clarion-builtins.json - a reserved word or built-in that
-            /// cannot be a user identifier. Attribute, event, control, directive and data-type names can
-            /// (PASSWORD is an attribute AND a procedure in PRM002).</summary>
-            public bool Reserved;
             public readonly List<string> Signatures = new List<string>();
         }
 
@@ -438,14 +419,13 @@ namespace ClarionAssistant.Services
                         {
                             string path = Path.Combine(dir, file);
                             if (!File.Exists(path)) continue;
-                            bool reserved = file == "clarion-keywords.json" || file == "clarion-builtins.json";   // L3
                             var root = ser.DeserializeObject(File.ReadAllText(path)) as IDictionary<string, object>;
                             if (root == null) continue;
                             foreach (var kv in root)
                             {
                                 var arr = kv.Value as object[];
                                 if (arr == null) continue;
-                                foreach (var o in arr) Merge(docs, o as IDictionary<string, object>, reserved);
+                                foreach (var o in arr) Merge(docs, o as IDictionary<string, object>);
                             }
                         }
                         catch (Exception ex) { LspTrace.Write("[keyword-index] " + file + ": " + ex.Message); }
@@ -466,13 +446,12 @@ namespace ClarionAssistant.Services
             return d != null && d.TryGetValue(key, out o) && o is string && ((string)o).Length > 0 ? (string)o : null;
         }
 
-        private static void Merge(Dictionary<string, KeywordDoc> docs, IDictionary<string, object> e, bool reserved)
+        private static void Merge(Dictionary<string, KeywordDoc> docs, IDictionary<string, object> e)
         {
             string name = Str(e, "name");
             if (name == null) return;
             KeywordDoc d;
             if (!docs.TryGetValue(name, out d)) docs[name] = d = new KeywordDoc { Name = name };
-            if (reserved) d.Reserved = true;
             if (d.Category == null) d.Category = Str(e, "category");
             if (d.ReturnType == null) d.ReturnType = Str(e, "returnType");
             string desc = Str(e, "description") ?? Str(e, "documentation");

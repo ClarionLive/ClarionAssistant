@@ -13,6 +13,10 @@ namespace ClarionAssistant.Services
     {
         public string Markdown;
         public bool Authoritative;
+        /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
+        /// server first and shows this card only when the server has nothing, is down, or misses its short
+        /// deadline. Never set together with <see cref="Authoritative"/>.</summary>
+        public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
         public string Kind;
     }

@@ -125,6 +125,37 @@ async function main() {
         check('R12.5 a deferred LSP request superseded by a later edit is never sent', count(f, 'hover') === 0 && count(f, 'bufferSync') === 1,
             JSON.stringify(actions(f)));
 
+        // GH #250: a fallback (keyword) card while typing. The 300 ms deadline runs from the hover's start, so
+        // it passes before the 400 ms idle sync: the keyword card shows, and the sync then posts no hover.
+        const k = setup();
+        type(k, 8, '  DO MyRtn ');
+        const kwCard = '```clarion\nDO\n```\n\nkeyword';
+        const [kloc, klsp] = k.providers.hover.map(p => track(p.provideHover(k.model, { lineNumber: 8, column: 4 })));
+        k.reply('localHover', { contents: kwCard, authoritative: false, fallback: true, kind: 'keyword' });
+        await flush();
+        check('#250 typing: a fallback card waits for the idle sync (no hover yet), local provider empty',
+            count(k, 'hover') === 0 && kloc.done && kloc.value == null && !klsp.done);
+        k.fire(300);
+        await flush();
+        check('#250 typing: the 300 ms deadline shows the keyword card', klsp.done && klsp.value && klsp.value.contents[0].value === kwCard);
+        fireIdle(k);
+        await flush();
+        check('#250 typing: the idle sync after the deadline posts no hover', count(k, 'hover') === 0 && count(k, 'bufferSync') === 1,
+            JSON.stringify(actions(k)));
+
+        // ...and a pause that comes first lets the server answer in time.
+        const q = setup();
+        type(q, 8, '  DO MyRtn ');
+        const [, qlsp] = q.providers.hover.map(p => track(p.provideHover(q.model, { lineNumber: 8, column: 4 })));
+        q.reply('localHover', { contents: kwCard, fallback: true });
+        await flush();
+        fireIdle(q);
+        await flush();
+        check('#250 typing: after the idle sync the server is asked', count(q, 'hover') === 1);
+        q.reply('hover', { contents: '**DO** MyRtn' });
+        await flush();
+        check('#250 typing: ...and its card wins', qlsp.done && qlsp.value && qlsp.value.contents[0].value === '**DO** MyRtn');
+
         const d = setup();
         d.embedRanges = [[7, 8]];
         type(d, 7, '  loc');

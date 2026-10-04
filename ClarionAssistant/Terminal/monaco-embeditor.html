@@ -5344,6 +5344,10 @@
     //     within the budget of its OWN request is a hit and resets the count, raced or not - so skip mode
     //     ends as soon as the LSP is fast again.
     var LOCAL_TIMEOUT_MS = 400;        // the local layer answers in ms; past this treat it as down and fall back
+    // GH #250: a FALLBACK local card (a keyword) waits this long, from the hover's start, for the server's card.
+    // The server answers keywords in single-digit ms once the document is open; past this the local card shows,
+    // so a slow or starting server on a huge module never leaves a Loading tail longer than this.
+    var FALLBACK_LSP_DEADLINE_MS = 300;
     var LSP_RACE_BUDGET_MS = 200;
     var LSP_MISSES_TO_SKIP = 3;
     var lspComplCache = {};            // model.id -> {line, wordStart, prefix, promise, done, resp, sentAt}
@@ -5701,9 +5705,14 @@
 
     // Hover (R7): the local card and the LSP card come from two providers, which Monaco renders as they
     // settle. Both share ONE localHover request per (model, version, position). The LSP provider waits for
-    // that answer before it asks: an authoritative local answer (a local, a parameter, a routine, a module
-    // procedure) means no LSP request at all; otherwise the LSP card is dropped when it names the same
-    // symbol as the local card, so the two never show the same thing twice.
+    // that answer before it asks, and the host decides which of three ways the local card plays:
+    //   authoritative (a local, a parameter, a routine, a module procedure, a dictionary or index card):
+    //       no LSP request at all;
+    //   fallback (a keyword card, GH #250): the local provider shows nothing; the LSP provider asks the
+    //       server and shows ITS card, or the local card when the server has nothing, is down, or misses
+    //       FALLBACK_LSP_DEADLINE_MS - one card either way;
+    //   otherwise: both, and the LSP card is dropped when it names the same symbol as the local card, so
+    //       the two never show the same thing twice.
     function sharedLocalHover(model, position) {
         var key = bufferKey(model) + ':' + position.lineNumber + ':' + position.column;
         if (localHoverShared && localHoverShared.key === key) return localHoverShared.promise;
@@ -5720,6 +5729,23 @@
         first = first.replace(/^[\s*_#>`]+/, '').replace(/^\([^)]*\)\s*/, '');
         var m = /^[A-Za-z_][A-Za-z0-9_:.]*/.exec(first);
         return m ? m[0].replace(/[.:]+$/, '').toUpperCase() : '';
+    }
+
+    // GH #250: the server's card for a FALLBACK local card, or the local card itself when the server has nothing,
+    // is down, or has not answered by the hover's deadline ({passed, fire}, armed when the hover started). Past
+    // the deadline no hover is posted: nobody would read its answer.
+    function fallbackHover(model, position, localCard, deadline) {
+        var localHover = { contents: [{ value: localCard }] };
+        if (deadline.passed) return Promise.resolve(localHover);
+        return new Promise(function (resolve) {
+            var settled = false;
+            var settle = function (h) { if (!settled) { settled = true; resolve(h); } };
+            deadline.fire = function () { settle(localHover); };
+            whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                .then(function (payload) { return payload && !settled ? requestFromHost('hover', payload) : null; })
+                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: resp.contents }] } : localHover); })
+                .catch(function () { settle(localHover); });
+        });
     }
 
     function registerClarionProviders() {
@@ -5975,6 +6001,7 @@
                 return sharedLocalHover(model, position)
                     .then(function (local) {
                         if (!local || !local.contents) return null;
+                        if (local.fallback) return null;   // the LSP provider shows it if the server has nothing
                         return { contents: [{ value: local.contents }] };
                     })
                     .catch(function () { return null; });
@@ -5987,10 +6014,15 @@
                 // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
                 // a wasted round-trip and needs no C# change. (task 37e2079f)
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
+                // GH #250: the fallback deadline runs from the hover's start, so the local answer and an idle-sync
+                // wait while typing both count against it.
+                var deadline = { passed: false };
+                setTimeout(function () { deadline.passed = true; if (deadline.fire) deadline.fire(); }, FALLBACK_LSP_DEADLINE_MS);
                 return sharedLocalHover(model, position)
                     .then(function (local) {
                         var localCard = local && local.contents;
                         if (localCard && local.authoritative) return null;   // the local card owns it: no LSP call
+                        if (localCard && local.fallback) return fallbackHover(model, position, localCard, deadline);
                         var localSymbol = localCard ? hoverCardSymbol(localCard) : '';
                         // R12: over a version still being typed, the LSP is asked after the idle sync.
                         return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
