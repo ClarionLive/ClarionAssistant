@@ -225,6 +225,7 @@
     <Compile Include="Dialogs\ModernEmbeditorPickerDialog.cs" />
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
     <Compile Include="Dialogs\CheatSheetDialog.cs" />
+    <Compile Include="Dialogs\CreateProjectFolderDialog.cs" />
     <Compile Include="Terminal\NativeMethods.cs" />
     <Compile Include="Terminal\ConPtyTerminal.cs" />
     <Compile Include="Terminal\WebViewTerminalRenderer.cs" />

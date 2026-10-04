@@ -743,10 +743,25 @@ namespace ClarionAssistant
             string folder = project.Folder;
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
             {
-                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenProjectInNewTab ABORTED: folder empty or not found");
-                MessageBox.Show("Project folder not found:\n" + (folder ?? "(empty)"),
-                    "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                // A project is usually listed before anything is on disk: offer to create its folder (d4e941e3).
+                using (var ask = new Dialogs.CreateProjectFolderDialog(project.Name, folder))
+                {
+                    if (ask.ShowDialog(this) != DialogResult.OK)
+                    {
+                        System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenProjectInNewTab: folder missing, create declined");
+                        return;
+                    }
+                }
+                try
+                {
+                    Directory.CreateDirectory(folder);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Could not create the project folder:\n" + folder + "\n\n" + ex.Message,
+                        "Open Project", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
             }
 
             string name = project.Name;
