@@ -139,7 +139,7 @@ namespace ClarionAssistant
                 Dock = DockStyle.Top,
                 Height = 28,
                 BackColor = _isDarkTheme ? Color.FromArgb(24, 24, 37) : Color.FromArgb(210, 214, 222),
-                Visible = false  // hidden until 2+ tabs
+                Visible = false  // TabManager shows it once the Home tab exists
             };
 
             // === Content area (tab pages shown/hidden via Visible) ===
