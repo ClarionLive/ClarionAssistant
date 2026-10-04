@@ -32,6 +32,9 @@ static class HoverBench
 {
     // After an edit: the didChange alone (CA's cost to send it) and the hover that follows (the server catching up).
     static readonly List<double> SendMs = new List<double>(), NextHoverMs = new List<double>();
+    // How the last server run sent its changes ("ranged"/"full") and how many of each, for its history line.
+    static string SyncMode = "";
+    static int RangedSent, FullSent;
     sealed class Opt
     {
         public string Sln, Version, PropsXml, ProjectDb, LibraryDb, HistoryPath, DumpPath, CaCommit = "";
@@ -79,8 +82,8 @@ static class HoverBench
         Console.WriteLine("HoverBench  solution=" + o.Sln);
         Console.WriteLine("  Clarion version: " + cfg.Name + "  (.red " + cfg.RedFileName + ")");
         Console.WriteLine("  project DB: " + (File.Exists(o.ProjectDb) ? o.ProjectDb : "(none - the local layer has no project index)"));
-        Console.WriteLine("  edits: " + (o.EditMode == "near" ? "near (same procedure, cumulative)" : "end of file"));
         Console.WriteLine("  library DB: " + (o.LibraryDb != null && File.Exists(o.LibraryDb) ? o.LibraryDb : "(none)"));
+        Console.WriteLine("  edits: " + (o.EditMode == "near" ? "near (same procedure, cumulative)" : "end of file"));
         var texts = new Dictionary<string, string>();
         var samples = new List<Sample>();
         foreach (var f in o.Files)
@@ -118,7 +121,7 @@ static class HoverBench
             Console.WriteLine("=== server: " + server.Key + "  " + server.Value + "  (build " + BuildSha(server.Value) + ")");
             // A server named "...-full" runs with ranged (incremental) sync off, so one session can compare both.
             LspClient.IncrementalSyncEnabled = !server.Key.EndsWith("-full", StringComparison.OrdinalIgnoreCase);
-            SendMs.Clear(); NextHoverMs.Clear();
+            SendMs.Clear(); NextHoverMs.Clear(); SyncMode = ""; RangedSent = FullSent = 0;
             var lsp = RunServer(o, cfg, server.Value, samples, texts, out List<double> lspEdited, out int lspEditedTimeouts, out string startNote);
             if (lsp == null) { Console.WriteLine("  COULD NOT START: " + startNote); continue; }
             history.Add(Report(o, server, samples, local, localEdited, lsp, lspEdited, lspEditedTimeouts));
@@ -208,6 +211,8 @@ static class HoverBench
                 if (IsTimeout(r, hoverMs)) editedTimeouts++;   // against the hover's own deadline, not send + hover
             }
             client.GetHover(samples[0].File, samples[0].Line0, samples[0].Col0, texts[samples[0].File]);   // leave it as found
+            SyncMode = client.UsesIncrementalSync ? "ranged" : "full";
+            RangedSent = client.IncrementalChangesSent; FullSent = client.FullChangesSent;
             Console.WriteLine("  sync: " + (client.UsesIncrementalSync ? "ranged (incremental)" : "full text")
                 + "  - changes sent: ranged " + client.IncrementalChangesSent + ", full " + client.FullChangesSent);
             if (SendMs.Count > 0)
@@ -310,6 +315,9 @@ static class HoverBench
             { "localEditedP95", Math.Round(P(localEdited, 95), 1) }, { "serverEditedP95", Math.Round(P(lspEdited, 95), 1) },
             { "localAnswers", localAny }, { "localAuthoritative", localAuth }, { "serverAnswers", lspAny },
             { "serverOnly", lspOnly }, { "localOnly", localOnly }, { "hidden", hidden }, { "hiddenDisagree", hiddenDisagree },
+            // What "after an edit" meant for this line: end and near runs (and ranged vs full sync) are not comparable.
+            { "editMode", o.EditMode }, { "sync", SyncMode }, { "rangedChanges", RangedSent }, { "fullChanges", FullSent },
+            { "sendP95", Math.Round(P(SendMs, 95), 1) }, { "nextHoverP95", Math.Round(P(NextHoverMs, 95), 1) },
             { "serverTimeouts", timeouts }, { "serverEditedTimeouts", lspEditedTimeouts },{ "localCardChars", P(localLen, 50) }, { "serverCardChars", P(serverLen, 50) }, { "flagFastEnough", fastEnough }, { "flagCoversMore", coversMore }
         });
     }
@@ -579,6 +587,8 @@ static class HoverBench
         }
         if (o.Sln == null || !File.Exists(o.Sln)) throw new ArgumentException("--sln <solution.sln> is required");
         if (o.Version == null) throw new ArgumentException("--version <Clarion version name> is required");
+        // A typo would otherwise run as 'end' and be recorded as whatever the caller thought it asked for.
+        if (o.EditMode != "end" && o.EditMode != "near") throw new ArgumentException("--edit-mode is 'end' or 'near', not '" + o.EditMode + "'");
         if (o.Servers.Count == 0 && !o.PrintRed && !o.PrintGraphHash) throw new ArgumentException("at least one --server name=<server.js> is required");
         return o;
     }
