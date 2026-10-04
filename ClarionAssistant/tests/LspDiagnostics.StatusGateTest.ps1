@@ -25,6 +25,13 @@
 #   nostatus run (an older server that never sends it - the fallback must be today's behaviour):
 #     twopass.clw    publish, symbolsRefreshed, semantic publish 200ms later -> pending:false, 1
 #     plain.clw      one publish, then silence                               -> pending:false, 0
+#   firstcall run (c7878eba; server.js is firstcall-server.js, which sends the status the way the real
+#   server does, so LspClient.Start finds the sender in the script):
+#     firstcall.clw  partial publish, NO status; full publish + complete 1500ms later. The first call of
+#                    the session, so no status has been seen on the wire yet -> pending:false, 2
+#
+# firstcall goes red on the pre-c7878eba LspClient (it settled on SYNC-PARTIAL after 400ms, pending:false,
+# count 1: the false 'complete' a 62k-line module showed on the first call of a session).
 #
 # MUST BE ABLE TO GO RED: against the pre-#216 LspClient the status cases deferred / wronguri /
 # stalever / superseded fail (settled after 400ms as pending:false, count 0). The nostatus cases
@@ -69,8 +76,9 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 # ---------------------------------------------------------------- stage
 $fakeJs  = Join-Path $PSScriptRoot 'fixtures\lsp-status-gate\fake-lsp-server.js'
+$firstJs = Join-Path $PSScriptRoot 'fixtures\lsp-status-gate\firstcall-server.js'
 $slnSrc  = Join-Path $PSScriptRoot 'fixtures\lsp-semantic-pass'
-if (-not (Test-Path $fakeJs) -or -not (Test-Path (Join-Path $slnSrc 'ctrl.sln'))) {
+if (-not (Test-Path $fakeJs) -or -not (Test-Path $firstJs) -or -not (Test-Path (Join-Path $slnSrc 'ctrl.sln'))) {
     Write-Host "COULD NOT RUN: fixture missing ($fakeJs or $slnSrc\ctrl.sln)" -ForegroundColor Red
     exit 2
 }
@@ -82,13 +90,18 @@ $ext  = Join-Path $work 'ext\msarson.clarion-extensions-99.0.0\out\server\src'
 New-Item -ItemType Directory -Force $src, $ext | Out-Null
 Copy-Item (Join-Path $slnSrc '*') $src -Force
 Copy-Item $fakeJs (Join-Path $ext 'server.js') -Force
+# The firstcall run's own discovery root: firstcall-server.js as server.js, the fake it wraps beside it.
+$extFirst = Join-Path $work 'ext-first\msarson.clarion-extensions-99.0.0\out\server\src'
+New-Item -ItemType Directory -Force $extFirst | Out-Null
+Copy-Item $firstJs (Join-Path $extFirst 'server.js') -Force
+Copy-Item $fakeJs (Join-Path $extFirst 'fake-lsp-server.js') -Force
 
-$docs = @('deferred.clw', 'wronguri.clw', 'stalever.clw', 'superseded.clw', 'clean.clw', 'twopass.clw', 'plain.clw')
+$docs = @('deferred.clw', 'wronguri.clw', 'stalever.clw', 'superseded.clw', 'clean.clw', 'twopass.clw', 'plain.clw', 'firstcall.clw')
 foreach ($d in $docs) {
     [System.IO.File]::WriteAllText((Join-Path $src $d), "  MEMBER()`r`n", (New-Object System.Text.UTF8Encoding($false)))
 }
 
-function Invoke-Server([string]$mode, [string[]]$files) {
+function Invoke-Server([string]$mode, [string[]]$files, [string]$extRoot = (Join-Path $work 'ext')) {
     $requests = New-Object System.Collections.Generic.List[string]
     $requests.Add('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"status-gate-test","version":"1"}}}')
     $requests.Add('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}')
@@ -108,7 +121,7 @@ function Invoke-Server([string]$mode, [string[]]$files) {
     $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $psi.StandardErrorEncoding  = New-Object System.Text.UTF8Encoding($false)
     # Child-only: the developer's own environment is untouched.
-    $psi.EnvironmentVariables['VSCODE_EXTENSIONS'] = (Join-Path $work 'ext')
+    $psi.EnvironmentVariables['VSCODE_EXTENSIONS'] = $extRoot
     $psi.EnvironmentVariables['FAKE_LSP_MODE']     = $mode
 
     $p = [System.Diagnostics.Process]::Start($psi)
@@ -206,6 +219,20 @@ try {
     # 8. and a clean file on an older server is answered clean, not turned into a timeout.
     Assert-That ($null -ne $r['plain.clw'] -and $r['plain.clw'].pending -eq $false -and [int]$r['plain.clw'].count -eq 0) `
         "plain.clw (no diagnosticsStatus): expected pending:false count:0 - a server that never sends the status must keep the settle-window fallback"
+
+    # ------------------------------------------------------------ firstcall run (c7878eba)
+    $run = Invoke-Server 'status' @('firstcall.clw') (Join-Path $work 'ext-first')
+    $r = $run.Results
+    Write-Host "firstcall run:"
+    Show 'firstcall.clw' $r['firstcall.clw']
+
+    # 9. the first call of a session waits for `complete`, not the settle window, when server.js sends the status.
+    Assert-That ($null -ne $r['firstcall.clw'] -and $r['firstcall.clw'].pending -eq $false -and [int]$r['firstcall.clw'].count -eq 2 -and (Has $r['firstcall.clw'] 'SEMANTIC-FULL')) `
+        "firstcall.clw: expected pending:false count:2 with SEMANTIC-FULL; the first call settled on the partial publish (status mode was not on before the first status)"
+
+    # 10. mechanism: the start-time probe found the sender (not the wire switching over by luck).
+    Assert-That ($run.Stderr -match 'server\.js sends clarion/diagnosticsStatus') `
+        "firstcall run: LspClient.Start did not report finding the diagnosticsStatus sender in server.js"
 }
 finally {
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }

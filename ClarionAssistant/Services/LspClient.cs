@@ -174,7 +174,7 @@ namespace ClarionAssistant.Services
             if (_running) return true;
             LastSpawnError = null;
             _stopRequested = false;
-            // A new server session: status support is re-detected from its own traffic (see Stop).
+            // A new server session: status support is re-detected from its script below, else its traffic (see Stop).
             _serverSendsDiagnosticsStatus = false;
             // ... and it holds no documents yet. Stop clears these too, but a thread that passed IsRunning before Stop
             // can still record a document after Stop cleared them; the new server never received it.
@@ -182,6 +182,15 @@ namespace ClarionAssistant.Services
 
             if (!File.Exists(serverJsPath))
                 return false;
+
+            // c7878eba: waiting for the server's first status on the wire is too late on a big module. Its
+            // sync-pass publish lands seconds before any status, so the first lsp_diagnostics of a session
+            // settled on that partial publish as complete. The script tells us up front instead.
+            if (ServerScriptSendsDiagnosticsStatus(serverJsPath))
+            {
+                _serverSendsDiagnosticsStatus = true;
+                LspTrace.Write("[LSP] server.js sends clarion/diagnosticsStatus - status mode from the first call");
+            }
 
             try
             {
@@ -958,12 +967,34 @@ namespace ClarionAssistant.Services
                                           expectedVersion: sentVersion, statusBaseline: statusBaseline);
         }
 
-        // True once THIS server session has sent ANY clarion/diagnosticsStatus notification (GH #216).
+        // True once THIS server session has sent ANY clarion/diagnosticsStatus notification (GH #216),
+        // or from Start when its server.js contains the sender (c7878eba: on a big module the first
+        // status comes seconds after the partial publish, too late for the first call).
         // Server 1.0.4+ sends one after its final publish for every analysis; older servers never do.
-        // Detected from the wire rather than from a version string because the version the server
-        // reports is not something every build fills in, and "has it ever said it" is the exact
-        // property the wait depends on. Reset in Start and Stop; surfaced by GetDebugStatus.
+        // Not from a version string: the version the server reports is not something every build
+        // fills in. Reset in Start and Stop; surfaced by GetDebugStatus.
         private volatile bool _serverSendsDiagnosticsStatus;
+
+        // The sender as the server writes it (server.js: `connection.sendNotification('clarion/diagnosticsStatus', ...)`).
+        // Matches the tsc output CA bundles and the esbuild bundle of the VS Code extension (1.0.5: one hit;
+        // 1.0.3, which predates the status, none).
+        private static readonly System.Text.RegularExpressions.Regex DiagnosticsStatusSender =
+            new System.Text.RegularExpressions.Regex(@"sendNotification\s*\(\s*['""]clarion/diagnosticsStatus['""]");
+
+        /// <summary>
+        /// c7878eba: true when the server script itself sends clarion/diagnosticsStatus, so status mode can be on
+        /// before the first status arrives. The server does not advertise it in initialize. False when the script
+        /// cannot be read: wire detection then switches it on as before.
+        /// </summary>
+        internal static bool ServerScriptSendsDiagnosticsStatus(string serverJsPath)
+        {
+            try { return DiagnosticsStatusSender.IsMatch(File.ReadAllText(serverJsPath)); }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[LSP] could not read server.js for the diagnosticsStatus probe: " + ex.Message);
+                return false;
+            }
+        }
 
         private int GetStatusSeq(string filePath)
         {

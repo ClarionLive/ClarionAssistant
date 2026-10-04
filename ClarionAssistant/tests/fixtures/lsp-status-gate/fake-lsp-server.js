@@ -40,10 +40,13 @@ function publish(uri, messages) {
     });
 }
 
+// firstcall-server.js swaps this for the real server's spelling of the sender (LspClient's start-time probe).
+let statusSender = p => notify('clarion/diagnosticsStatus', p);
+
 function status(uri, version, state) {
     const p = { uri, state };
     if (version !== undefined) p.version = version;
-    notify('clarion/diagnosticsStatus', p);
+    statusSender(p);
 }
 
 function later(ms, fn) { setTimeout(fn, ms); }
@@ -110,6 +113,16 @@ function analyse(uri, version) {
             });
             break;
 
+        case 'firstcall.clw':
+            // c7878eba, the shape of a 62k-line module: the sync-pass publish at once with NO status, the
+            // complete answer and its status 1500ms later (beyond the 400ms settle window).
+            publish(uri, ['SYNC-PARTIAL']);
+            later(1500, () => {
+                publish(uri, ['SYNC-PARTIAL', 'SEMANTIC-FULL']);
+                status(uri, version, 'complete');
+            });
+            break;
+
         default:
             // Plain clean file: one publish, complete straight away (the libsrc shape).
             publish(uri, []);
@@ -157,3 +170,5 @@ process.stdin.on('data', chunk => {
     }
 });
 process.stdin.on('end', () => process.exit(0));
+
+module.exports = { notify, setStatusSender: fn => { statusSender = fn; } };
