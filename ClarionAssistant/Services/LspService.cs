@@ -319,7 +319,8 @@ namespace ClarionAssistant.Services
                     LspTrace.Write("[LspService] server.js: " + serverJs + "  (source: " + resolveSource + ")");
 
                     // Resolve version config + redirection file ourselves (pane-independent).
-                    // Either may be null — the LSP still starts; only cross-file features degrade.
+                    // Either may be null — the LSP still starts and still loads the solution; only
+                    // library (redirection) lookups degrade.
                     ClarionVersionConfig versionConfig = null;
                     try
                     {
@@ -335,7 +336,7 @@ namespace ClarionAssistant.Services
                         {
                             versionConfig = VersionConfigProvider();
                             LspTrace.Write("[LspService] version from host: "
-                                + (versionConfig != null ? versionConfig.Name : "none - cross-file features will degrade"));
+                                + (versionConfig != null ? versionConfig.Name : "none - library (redirection) lookups will degrade"));
                         }
                         if (versionConfig == null)
                         {
@@ -367,14 +368,20 @@ namespace ClarionAssistant.Services
                     //   • redirectionPaths[0] MUST be the reddir DIRECTORY (global .red location).
                     //     The per-project .red is discovered via projectPaths[0] (the solution dir).
                     //
-                    // If versionConfig is null we SKIP updatePaths — the LSP still starts;
-                    // completion + in-buffer hover/diagnostics are context-free, only cross-file degrades.
+                    // If versionConfig is null we STILL send updatePaths, with the solution and project
+                    // paths only (no redirection file, macros or libsrc). Skipping it entirely (as before
+                    // 06632787) meant the server never loaded the solution: it deferred every file's
+                    // semantic pass waiting for one, so lsp_diagnostics read pending for up to ~60s on a
+                    // fresh server. Without a version only library (redirection) lookups degrade.
                     try
                     {
+                        string redirectionFileName = "";
+                        var redirectionPaths = new List<string>();
+                        var libsrcPaths = new List<string>();
                         if (versionConfig != null)
                         {
                             // redirectionFile: bare filename only (server path.join()s it).
-                            string redirectionFileName = versionConfig.RedFileName ?? "";
+                            redirectionFileName = versionConfig.RedFileName ?? "";
 
                             // redirectionPaths[0]: the reddir directory. Prefer the `reddir` macro
                             // (matches the VS Code client); fall back to the install red's own dir.
@@ -383,30 +390,33 @@ namespace ClarionAssistant.Services
                                 versionConfig.Macros.TryGetValue("reddir", out reddir);
                             if (string.IsNullOrEmpty(reddir) && !string.IsNullOrEmpty(versionConfig.RedFilePath))
                                 reddir = Path.GetDirectoryName(versionConfig.RedFilePath);
-
-                            var redirectionPaths = new List<string>();
                             if (!string.IsNullOrEmpty(reddir))
                                 redirectionPaths.Add(reddir);
 
                             // libsrcPaths from ClarionProperties.xml <libsrc> (not the red file).
-                            var libsrcPaths = versionConfig.LibSrcPaths ?? new List<string>();
-
-                            // projectPaths[0] is the solution directory (project-local .red anchor).
-                            var projectPaths = new List<string> { wsPath };
-
-                            _client.SetUpdatePaths(new Dictionary<string, object>
-                            {
-                                { "solutionFilePath", slnPath ?? "" },
-                                { "redirectionFile", redirectionFileName },
-                                { "clarionVersion", versionConfig.Name ?? "" },
-                                { "configuration", "Debug" },
-                                { "macros", versionConfig.Macros ?? new Dictionary<string, string>() },
-                                { "redirectionPaths", redirectionPaths },
-                                { "libsrcPaths", libsrcPaths },
-                                { "projectPaths", projectPaths },
-                                { "defaultLookupExtensions", new[] { ".clw", ".inc", ".equ", ".int" } }
-                            });
+                            if (versionConfig.LibSrcPaths != null)
+                                libsrcPaths = versionConfig.LibSrcPaths;
                         }
+                        else
+                        {
+                            LspTrace.Write("[LspService] no Clarion version - sending updatePaths with the solution only");
+                        }
+
+                        // projectPaths[0] is the solution directory (project-local .red anchor).
+                        var projectPaths = new List<string> { wsPath };
+
+                        _client.SetUpdatePaths(new Dictionary<string, object>
+                        {
+                            { "solutionFilePath", slnPath ?? "" },
+                            { "redirectionFile", redirectionFileName },
+                            { "clarionVersion", versionConfig != null ? (versionConfig.Name ?? "") : "" },
+                            { "configuration", "Debug" },
+                            { "macros", (versionConfig != null ? versionConfig.Macros : null) ?? new Dictionary<string, string>() },
+                            { "redirectionPaths", redirectionPaths },
+                            { "libsrcPaths", libsrcPaths },
+                            { "projectPaths", projectPaths },
+                            { "defaultLookupExtensions", new[] { ".clw", ".inc", ".equ", ".int" } }
+                        });
                     }
                     catch (Exception ex)
                     {
