@@ -2147,23 +2147,34 @@
         if (aux && t.classList.contains('actionable') && t.classList.contains('show')) {
             aux.textContent = message;
             aux.style.bottom = (14 + t.offsetHeight + 8) + 'px';
-            aux.className = 'show' + (ok === false ? ' err' : '');
-            if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
-            if (!persist)
-                toastAuxTimer = setTimeout(function () { aux.className = ''; }, ok === false ? 8000 : 6000);
+            toastAuxTimer = showToastIn(aux, toastAuxTimer, ok, persist);
             return;
         }
         hideToastAux();
         t.textContent = message;
-        t.className = 'show' + (ok === false ? ' err' : '');
-        if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
-        if (!persist)
-            toastTimer = setTimeout(function () { t.className = ''; }, ok === false ? 8000 : 6000);
+        toastTimer = showToastIn(t, toastTimer, ok, persist);
+    }
+    // Shows the plain toast already written into el (#toast or #toastAux), cancelling el's previous timer;
+    // returns el's new timer (null when persist), which the caller stores back in that element's timer variable.
+    function showToastIn(el, timer, ok, persist) {
+        el.className = 'show' + (ok === false ? ' err' : '');
+        if (timer) clearTimeout(timer);
+        if (persist) return null;
+        return setTimeout(function () { el.className = ''; }, ok === false ? 8000 : 6000);
     }
     function hideToastAux() {
         var aux = document.getElementById('toastAux');
         if (aux) aux.className = '';
         if (toastAuxTimer) { clearTimeout(toastAuxTimer); toastAuxTimer = null; }
+    }
+    // Dismisses the actionable toast (action click, its dismiss button, Escape). A plain toast still showing
+    // in #toastAux was raised above the notice (showToast); with the notice gone it drops back to #toast's
+    // place, so it does not hang in mid-air.
+    function hideActionToast() {
+        var t = document.getElementById('toast');
+        if (t) t.className = '';
+        var aux = document.getElementById('toastAux');
+        if (aux && aux.classList.contains('show')) aux.style.bottom = '';
     }
 
     // A toast with real, clickable buttons (external-change notice: Reload / Show diff / Close tab). Unlike
@@ -2192,7 +2203,7 @@
             btn.textContent = a.label;
             btn.addEventListener('click', function (ev) {
                 ev.stopPropagation();
-                if (a.dismiss !== false) t.className = '';   // resolving actions dismiss; a peek (dismiss:false) doesn't
+                if (a.dismiss !== false) hideActionToast();   // resolving actions dismiss; a peek (dismiss:false) doesn't
                 // The toast may already be gone by the time onClick runs, so a throwing handler would
                 // otherwise leave the user with no toast, no error, and no way to retry.
                 try { a.onClick(); } catch (ex) { showToast('Action failed: ' + ex.message, false); }
@@ -2204,7 +2215,7 @@
         dismissBtn.className = 'toast-action-btn toast-dismiss-btn';
         dismissBtn.title = 'Dismiss';
         dismissBtn.textContent = '✕';
-        dismissBtn.addEventListener('click', function (ev) { ev.stopPropagation(); t.className = ''; });
+        dismissBtn.addEventListener('click', function (ev) { ev.stopPropagation(); hideActionToast(); });
         t.appendChild(dismissBtn);
         t.className = 'show actionable' + (ok === false ? ' err' : '');
     }
@@ -2213,7 +2224,7 @@
     document.addEventListener('keydown', function (ev) {
         if (ev.key !== 'Escape') return;
         var t = document.getElementById('toast');
-        if (t && t.classList.contains('actionable') && t.classList.contains('show')) t.className = '';
+        if (t && t.classList.contains('actionable') && t.classList.contains('show')) hideActionToast();
     });
 
     // Shared "Show diff" toast action (live buffer, including unsaved edits, vs. disk) — used by both the
