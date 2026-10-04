@@ -30,6 +30,8 @@ using ClarionAssistant.Services;
 // Run-Tests.ps1: it needs real solutions and a server.js.
 static class HoverBench
 {
+    // After an edit: the didChange alone (CA's cost to send it) and the hover that follows (the server catching up).
+    static readonly List<double> SendMs = new List<double>(), NextHoverMs = new List<double>();
     sealed class Opt
     {
         public string Sln, Version, PropsXml, ProjectDb, LibraryDb, HistoryPath, DumpPath, CaCommit = "";
@@ -37,6 +39,7 @@ static class HoverBench
         public List<string> Files = new List<string>();
         public int MaxFiles = 4, PerFile = 60, Edited = 30, MarginMs = 20;
         public bool PrintRed, PrintGraphHash;
+        public string EditMode = "end";   // end: a comment line appended at the end of the file; near: see EditFor
     }
 
     sealed class Sample { public string File; public int Line0, Col0; public string Word; }
@@ -76,6 +79,7 @@ static class HoverBench
         Console.WriteLine("HoverBench  solution=" + o.Sln);
         Console.WriteLine("  Clarion version: " + cfg.Name + "  (.red " + cfg.RedFileName + ")");
         Console.WriteLine("  project DB: " + (File.Exists(o.ProjectDb) ? o.ProjectDb : "(none - the local layer has no project index)"));
+        Console.WriteLine("  edits: " + (o.EditMode == "near" ? "near (same procedure, cumulative)" : "end of file"));
         Console.WriteLine("  library DB: " + (o.LibraryDb != null && File.Exists(o.LibraryDb) ? o.LibraryDb : "(none)"));
         var texts = new Dictionary<string, string>();
         var samples = new List<Sample>();
@@ -95,10 +99,11 @@ static class HoverBench
         for (int w = 0; w < Math.Min(5, samples.Count); w++) LocalHover(sources[samples[w].File], samples[w]);   // warm the DB handles
         for (int i = 0; i < samples.Count; i++) local[i] = LocalHover(sources[samples[i].File], samples[i]);
         var localEdited = new List<double>();
+        var localRunning = new Dictionary<string, string>();
         for (int i = 0; i < Math.Min(o.Edited, samples.Count); i++)
         {
             var sm = samples[i];
-            string edited = Edit(texts[sm.File], i);
+            string edited = EditFor(o, localRunning, texts, sm, i);
             var sw = Stopwatch.StartNew();
             // As LocalHover: a throw is a miss (the page would show no local card), not the end of the run.
             try { LocalLayerHandlers.HoverAt(LocalSource.OfBuffer(edited), sm.Line0, sm.Col0, new LocalLayerOptions { FileName = Path.GetFileName(sm.File) }); }
@@ -111,6 +116,9 @@ static class HoverBench
         {
             Console.WriteLine();
             Console.WriteLine("=== server: " + server.Key + "  " + server.Value + "  (build " + BuildSha(server.Value) + ")");
+            // A server named "...-full" runs with ranged (incremental) sync off, so one session can compare both.
+            LspClient.IncrementalSyncEnabled = !server.Key.EndsWith("-full", StringComparison.OrdinalIgnoreCase);
+            SendMs.Clear(); NextHoverMs.Clear();
             var lsp = RunServer(o, cfg, server.Value, samples, texts, out List<double> lspEdited, out int lspEditedTimeouts, out string startNote);
             if (lsp == null) { Console.WriteLine("  COULD NOT START: " + startNote); continue; }
             history.Add(Report(o, server, samples, local, localEdited, lsp, lspEdited, lspEditedTimeouts));
@@ -184,17 +192,27 @@ static class HoverBench
                 string card = CardText(r);
                 res[i] = new LspAnswer { Any = sym != null, Symbol = sym, Card = card, Ms = ms, TimedOut = IsTimeout(r, ms) };
             }
+            var running = new Dictionary<string, string>();
             for (int i = 0; i < Math.Min(o.Edited, samples.Count); i++)
             {
                 var sm = samples[i];
-                string text = Edit(texts[sm.File], i);
+                string text = EditFor(o, running, texts, sm, i);
                 var sw = Stopwatch.StartNew();
-                var r = client.GetHover(sm.File, sm.Line0, sm.Col0, text);   // full-text didChange, then the hover
-                double ms = sw.Elapsed.TotalMilliseconds;
-                edited.Add(ms);
-                if (IsTimeout(r, ms)) editedTimeouts++;
+                client.EnsureBufferSynced(sm.File, text);   // the didChange (ranged or full text)
+                SendMs.Add(sw.Elapsed.TotalMilliseconds);
+                var hw = Stopwatch.StartNew();
+                var r = client.GetHover(sm.File, sm.Line0, sm.Col0, text);   // then the hover
+                double hoverMs = hw.Elapsed.TotalMilliseconds;
+                NextHoverMs.Add(hoverMs);
+                edited.Add(sw.Elapsed.TotalMilliseconds);
+                if (IsTimeout(r, hoverMs)) editedTimeouts++;   // against the hover's own deadline, not send + hover
             }
             client.GetHover(samples[0].File, samples[0].Line0, samples[0].Col0, texts[samples[0].File]);   // leave it as found
+            Console.WriteLine("  sync: " + (client.UsesIncrementalSync ? "ranged (incremental)" : "full text")
+                + "  - changes sent: ranged " + client.IncrementalChangesSent + ", full " + client.FullChangesSent);
+            if (SendMs.Count > 0)
+                Console.WriteLine(string.Format("  after an edit:  send p50 {0:0.0} p95 {1:0.0} max {2:0.0} ms   |   next hover p50 {3:0.0} p95 {4:0.0} max {5:0.0} ms",
+                    P(SendMs, 50), P(SendMs, 95), SendMs.Max(), P(NextHoverMs, 50), P(NextHoverMs, 95), NextHoverMs.Max()));
             return res;
         }
         finally { try { client.Stop(); } catch { } LspTrace.SetSink(null); }
@@ -415,6 +433,31 @@ static class HoverBench
     // <Compile Include> entries, each found beside the project or anywhere under the solution folder (generated
     // modules usually sit in a subfolder the .red points at, e.g. genfiles\source). Every .clw in the folder only
     // when no project says. A stray "X - Copy.clw" is not a module, and neither is another solution's.
+    // The text for edit i before hovering sample sm.
+    //   end  - the original text plus one comment line at the END of the file. Every hover is then OUTSIDE the edit,
+    //          which flatters any server that skips work for hovers away from the change.
+    //   near - a comment appended to the line ABOVE the hovered line: typing in a procedure, then hovering nearby.
+    //          Edits ACCUMULATE per file, as typing does (rebuilding from the original each time would make every change
+    //          span the gap between two edit sites). No line is added, so the samples keep their positions.
+    static string EditFor(Opt o, Dictionary<string, string> running, Dictionary<string, string> texts, Sample sm, int i)
+    {
+        if (o.EditMode != "near") return Edit(texts[sm.File], i);
+        string cur;
+        if (!running.TryGetValue(sm.File, out cur)) cur = texts[sm.File];
+        int target = sm.Line0 > 0 ? sm.Line0 - 1 : sm.Line0, line = 0, at = 0;
+        while (line < target && at < cur.Length)
+        {
+            int nl = cur.IndexOf('\n', at);
+            if (nl < 0) { at = cur.Length; break; }
+            at = nl + 1; line++;
+        }
+        int end = at;
+        while (end < cur.Length && cur[end] != '\r' && cur[end] != '\n') end++;
+        string next = cur.Substring(0, end) + " !e" + i + cur.Substring(end);
+        running[sm.File] = next;
+        return next;
+    }
+
     static List<string> DefaultFiles(string sln, int max)
     {
         string dir = Path.GetDirectoryName(sln);
@@ -530,6 +573,7 @@ static class HoverBench
                 case "--dump": o.DumpPath = next(); break;
                 case "--print-red": o.PrintRed = true; break;
                 case "--print-graph-hash": o.PrintGraphHash = true; break;
+                case "--edit-mode": o.EditMode = next().ToLowerInvariant(); break;
                 default: throw new ArgumentException("unknown option " + k);
             }
         }

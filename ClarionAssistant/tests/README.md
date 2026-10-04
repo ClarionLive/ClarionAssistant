@@ -137,6 +137,14 @@ steady between runs of the same build, while the p50 moves with whatever else th
 builds, put them in one `-Server` list so they run back to back, and bench a copy of a build you are still working
 on (copy `out\` and junction `node_modules`) rather than the live working copy. `Terminal\test\tools\monaco-keymap-probe.js` is the other run-by-hand tool here.
 
+Two options decide what "after an edit" means. `-EditMode end` (the default) appends a comment line at the end of
+the file, so every hover is outside the change; `-EditMode near` edits the line above each hovered line, in the same
+procedure, with the edits accumulating as typing does. `near` is the realistic case and the one to quote: on a large
+generated module it costs about twice `end`, and a server that skips work for hovers away from the change looks
+better under `end` than it is. A server named `...-full` runs with `LspClient.IncrementalSyncEnabled` off, so one
+`-Server` list can compare ranged and full-text sync on the same server; each run prints the time to send the change
+and the time of the hover that follows it separately.
+
 ## Adding to them
 
 Keep new harnesses standalone and dependency-light, and keep them pointed at real source. If you

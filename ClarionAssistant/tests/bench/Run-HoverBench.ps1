@@ -24,6 +24,7 @@ param(
     [int]$MarginMs = 20,
     [string]$History = (Join-Path $env:LOCALAPPDATA 'ClarionAssistant\hover-bench-history.jsonl'),
     [string]$Dump,
+    [ValidateSet('end', 'near')][string]$EditMode = 'end',   # near: edit the line above each hover (same procedure), cumulatively
     [string[]]$File,                  # specific source files (default: the largest modules the solution compiles)
     [switch]$IndexMissing
 )
@@ -61,7 +62,7 @@ $sources = @('tests\bench\HoverBench.cs', 'tests\LocalLayer.Handlers.Stubs.cs', 
              'CodeGraph\Graph\CodeGraphProvider.cs', 'CodeGraph\Graph\CodeGraphDatabase.cs',
              'CodeGraph\Parsing\Models\ClarionSymbol.cs', 'CodeGraph\Parsing\Models\ClarionRelationship.cs',
              'CodeGraph\Parsing\Models\SolutionProject.cs', 'CodeGraph\Parsing\Models\ParseResult.cs', 'CodeGraph\Parsing\ClarionBuiltins.cs',
-             'Services\LspClient.cs', 'Services\JsonTextStream.cs', 'Services\LspTrace.cs', 'Services\EncodingHelper.cs',
+             'Services\LspClient.cs', 'Services\LspTextDiff.cs', 'Services\JsonTextStream.cs', 'Services\LspTrace.cs', 'Services\EncodingHelper.cs',
              'Services\ClarionVersionService.cs', 'Services\ClarionConfigDirectory.cs') | ForEach-Object { Join-Path $repo $_ }
 Copy-Item (Join-Path $repo 'lib\sqlite-fts5\System.Data.SQLite.dll'), (Join-Path $repo 'lib\sqlite-fts5\SQLite.Interop.dll') $out -Force
 $exe = Join-Path $out 'HoverBench.exe'
@@ -125,6 +126,7 @@ foreach ($sln in $Solution) {
     if ($commit) { $a += @('--ca-commit', $commit) }
     if ($LibraryDb) { $a += @('--library-db', $LibraryDb) }
     foreach ($f in $File) { $a += @('--file', $f) }
+    $a += @('--edit-mode', $EditMode)
     if ($Dump) { $a += @('--dump', $Dump) }   # every sample with both raw cards, as JSON lines
     foreach ($s in $servers) { $a += @('--server', $s) }
     & $exe @a
