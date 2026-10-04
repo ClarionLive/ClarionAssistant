@@ -60,6 +60,8 @@ namespace ClarionAssistant
         // The dashboard dropdown's current value (d4e941e3). The COM Controls / IDE Addins tabs open project
         // terminals but have no dropdown of their own, so they launch with whatever the dashboard shows.
         private string _dashboardBackend;
+        // What the header's SOLUTION field last showed: open in the IDE, or CA's last solution kept on (d4e941e3).
+        private bool _solutionShownOpen;
         private ClarionVersionInfo _versionInfo;
         private ClarionVersionConfig _currentVersionConfig;
         private RedFileService _redFileService;
@@ -161,6 +163,7 @@ namespace ClarionAssistant
             // === Tab manager ===
             _tabManager = new TabManager(_tabStrip, _contentArea);
             _tabManager.ActiveTabChanged += OnActiveTabChanged;
+            _tabManager.TabRemoved += OnTabRemoved;
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
@@ -254,11 +257,14 @@ namespace ClarionAssistant
                 _pendingLaunchBackend = e.Backend;
             }
             // Every dashboard message carries the dropdown's value; the COM / Addin tabs launch with it.
-            if (!string.IsNullOrEmpty(e.Backend))
+            // Not homeReady: the page posts it before setBackend arrives, so it carries the page's initial
+            // 'Claude', and it can be handled after OnHomeReady has set the saved default.
+            if (!string.IsNullOrEmpty(e.Backend) && e.Action != "homeReady")
                 _dashboardBackend = e.Backend;
 
             switch (e.Action)
             {
+                case "backendChanged": break;   // captured into _dashboardBackend above
                 case "openComProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindCom); break;
                 case "openAddinProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindAddin); break;
                 case "workWithSolution": OnWorkWithSolution(); break;
@@ -330,7 +336,9 @@ namespace ClarionAssistant
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "refresh":
                     // Re-read the IDE's Build > Set Clarion Version now (the change hook and 10 s poll do it too).
-                    DetectFromIde();   // also restarts the LSP if the version moved
+                    // Through FollowIdeSolution, not DetectFromIde: if the IDE opened another solution since the
+                    // last poll, the switch must still release the symbol DBs and auto-index it (d4e941e3).
+                    FollowIdeSolution(EditorService.GetOpenSolutionPath());   // also restarts the LSP if the version moved
                     break;
                 case "fullIndex": RunIndex(false); break;
                 case "updateIndex": RunIndex(true); break;
@@ -438,13 +446,32 @@ namespace ClarionAssistant
             catch { }
         }
 
-        private string BuildProjectsJson()
+        /// <summary>
+        /// A project a COM / Addin tab may see and act on: its own kind, or a legacy "Other" (no longer created,
+        /// shown in both tabs so it stays reachable). The host enforces this; the page's own filter is cosmetic.
+        /// </summary>
+        private static bool ProjectBelongsToKind(ProjectEntry p, string kind)
+        {
+            return p != null && (p.Type == kind || p.Type == "Other");
+        }
+
+        /// <summary>The tab's own project by id, or null when the id is unknown or belongs to the other kind.</summary>
+        private ProjectEntry FindProjectForKind(string id, string kind)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            var entry = _projects.Find(p => p.Id == id);
+            return ProjectBelongsToKind(entry, kind) ? entry : null;
+        }
+
+        private string BuildProjectsJson(string kind)
         {
             var sb = new StringBuilder("[");
-            for (int i = 0; i < _projects.Count; i++)
+            bool first = true;
+            foreach (var p in _projects)
             {
-                var p = _projects[i];
-                if (i > 0) sb.Append(",");
+                if (!ProjectBelongsToKind(p, kind)) continue;
+                if (!first) sb.Append(",");
+                first = false;
                 sb.AppendFormat("{{\"id\":\"{0}\",\"name\":\"{1}\",\"type\":\"{2}\",\"folder\":\"{3}\",\"lastAccessed\":{4},\"githubAccountId\":\"{5}\",\"repoName\":\"{6}\"}}",
                     EscJson(p.Id), EscJson(p.Name), EscJson(p.Type), EscJson(p.Folder), p.LastAccessed,
                     EscJson(p.GitHubAccountId ?? ""), EscJson(p.RepoName ?? ""));
@@ -454,9 +481,9 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// After any project change: the dashboard's card counts, and the full list to every open COM / Addin tab
-        /// (each page keeps its own kind plus "Other"). A project of one kind can be shown in both tabs ("Other"),
-        /// so an edit in one tab must reach the other.
+        /// After any project change: the dashboard's card counts, and each open COM / Addin tab its own list (its
+        /// kind plus "Other"). An "Other" project is shown in both tabs, so an edit in one tab must reach the other.
+        /// A card's count is the number of rows its tab shows, so "Other" counts toward both.
         /// </summary>
         private void SendProjectsToViews()
         {
@@ -465,17 +492,14 @@ namespace ClarionAssistant
                 int com = 0, addin = 0;
                 foreach (var p in _projects)
                 {
-                    if (p.Type == Terminal.ProjectsWebView.KindCom) com++;
-                    else if (p.Type == Terminal.ProjectsWebView.KindAddin) addin++;
+                    if (ProjectBelongsToKind(p, Terminal.ProjectsWebView.KindCom)) com++;
+                    if (ProjectBelongsToKind(p, Terminal.ProjectsWebView.KindAddin)) addin++;
                 }
                 _homeView.SetProjectCounts(com, addin);
             }
 
-            var views = OpenProjectViews();
-            if (views.Count == 0) return;
-            string json = BuildProjectsJson();
-            foreach (var view in views)
-                view.SetProjectsJson(json);
+            foreach (var view in OpenProjectViews())
+                view.SetProjectsJson(BuildProjectsJson(view.Kind));
         }
 
         /// <summary>The open COM Controls / IDE Addins tabs whose page has loaded.</summary>
@@ -517,23 +541,50 @@ namespace ClarionAssistant
                 try { view.SetGitHubAccounts(BuildGitHubAccountsJson()); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] projects tab accounts: " + ex.Message); }
                 view.SetDefaultProjectFolder(_settings.Get("COM.ProjectsFolder") ?? "");
-                view.SetProjectsJson(BuildProjectsJson());
+                view.SetProjectsJson(BuildProjectsJson(view.Kind));
             };
 
             _tabManager.ActivateTab(tab.Id);
         }
 
+        /// <summary>
+        /// A COM / Addin tab's request. The page names projects by id only; the host resolves the id in its own
+        /// list and acts only on the tab's kind (or "Other"), and paths such as the folder to open come from that
+        /// entry, never from the page (pipeline run 1, security).
+        /// </summary>
         private void OnProjectsAction(Terminal.ProjectsWebView view, Terminal.ProjectsActionEventArgs e)
         {
             switch (e.Action)
             {
-                case "openFolder": OpenFolder(e.Data); break;
                 case "addProject": OnAddProject(e.Data, view.Kind); break;
-                case "editProject": OnEditProject(e.Data); break;
-                case "deleteProject": OnDeleteProject(e.Data); break;
-                case "openProject": OnOpenProject(e.Data); break;
                 case "browseProjectFolder": OnBrowseProjectFolder(view, e.Data); break;
+                case "openFolder":
+                {
+                    var entry = FindProjectForKind(e.Data, view.Kind);
+                    if (entry != null) OpenFolder(entry.Folder);
+                    break;
+                }
+                case "editProject":
+                    if (FindProjectForKind(ExtractJsonString(e.Data ?? "", "id"), view.Kind) != null) OnEditProject(e.Data);
+                    break;
+                case "deleteProject":
+                    if (FindProjectForKind(e.Data, view.Kind) != null) OnDeleteProject(e.Data);
+                    break;
+                case "openProject":
+                    if (FindProjectForKind(e.Data, view.Kind) != null) OnOpenProject(e.Data);
+                    break;
             }
+        }
+
+        /// <summary>
+        /// A closed COM / Addin tab: dispose its WebView2. TabManager.CloseTab only detaches content and
+        /// TerminalTab.Dispose drops the reference, so without this every reopen left another live WebView2
+        /// (pipeline run 1, debugger). TabRemoved fires before the reference is dropped.
+        /// </summary>
+        private void OnTabRemoved(object sender, TerminalTab tab)
+        {
+            var view = tab != null ? tab.ContentControl as Terminal.ProjectsWebView : null;
+            if (view != null) view.Dispose();
         }
 
         private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -996,8 +1047,7 @@ namespace ClarionAssistant
                 // the solution had none (77aceec5). Writes only on change, removes on close.
                 Services.IdeSolutionRecord.Publish(slnPath);
 
-                if (!string.IsNullOrEmpty(slnPath) && File.Exists(slnPath) &&
-                    !string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
+                if (IsIdeSolutionSwitch(slnPath))
                 {
                     System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Solution changed: " + slnPath);
                     OnSolutionChanged(slnPath);
@@ -1082,8 +1132,22 @@ namespace ClarionAssistant
                 RunIndexAutomatic(true); // incremental update
         }
 
-        // What the header's SOLUTION field last showed: open in the IDE, or CA's last solution kept on.
-        private bool _solutionShownOpen;
+        /// <summary>The IDE has a solution open that is not CA's: a switch OnSolutionChanged must handle.</summary>
+        private bool IsIdeSolutionSwitch(string idePath)
+        {
+            return !string.IsNullOrEmpty(idePath) && File.Exists(idePath)
+                && !string.Equals(idePath, _currentSlnPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Re-read the IDE: a solution switch goes through OnSolutionChanged (symbol DBs, auto-index), anything
+        /// else is a plain DetectFromIde. Never call this from OnSolutionChanged - that calls DetectFromIde itself.
+        /// </summary>
+        private void FollowIdeSolution(string idePath)
+        {
+            if (IsIdeSolutionSwitch(idePath)) OnSolutionChanged(idePath);
+            else DetectFromIde();
+        }
 
         private bool IsSolutionOpenInIde(string idePath)
         {
@@ -1462,7 +1526,7 @@ namespace ClarionAssistant
             histList.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
             _settings.Set("SolutionHistory", string.Join("|", histList));
 
-            LoadSolutionHistory(); // also refresh header dropdown
+            LoadSolutionHistory(); // also re-show the solution in the header
         }
 
         private void OnBrowseSolutionForNewTab()

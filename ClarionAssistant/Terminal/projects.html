@@ -373,14 +373,17 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     }
   }
 
-  function esc(s) {
-    if (!s) return '';
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = String(text);
+    return node;
   }
-  function escAttr(s) {
-    if (!s) return '';
-    return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")
-      .replace(/"/g,'&quot;').replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+  function iconButton(kindClass, title, glyph, onClick) {
+    var b = el('button', 'icon-btn ' + kindClass, glyph);
+    b.title = title;
+    b.addEventListener('click', function(e) { e.stopPropagation(); onClick(); });
+    return b;
   }
 
   /* This kind's projects, plus legacy "Other" ones (no longer offered for new projects). */
@@ -482,27 +485,34 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       ? 'Showing 1 entry'
       : 'Showing ' + (start + 1) + ' to ' + end + ' of ' + total + ' entries';
 
-    var pageItems = filteredProjects.slice(start, end);
-    var html = '';
-
-    for (var i = 0; i < pageItems.length; i++) {
-      var proj = pageItems[i];
+    // Rows are built with DOM calls: project names and folders reach the page as text only, and every
+    // handler is a closure over the project id. No string-built inline onclick, which an "&apos;" in a
+    // folder name could break out of. Open-folder posts the id; the host looks the folder up itself.
+    tbody.textContent = '';
+    filteredProjects.slice(start, end).forEach(function(proj) {
       var badgeClass = proj.type === 'COM Control' ? 'com' : proj.type === 'Addin' ? 'addin' : 'other';
-      html +=
-        '<tr class="project-row">' +
-          '<td><span class="project-name" onclick="send(\'openProject\',\'' + escAttr(proj.id) + '\')">' + esc(proj.name) + '</span></td>' +
-          '<td><span class="type-badge ' + badgeClass + '">' + esc(proj.type) + '</span></td>' +
-          '<td>' +
-            '<div class="row-actions">' +
-              '<button class="icon-btn icon-btn-edit" title="Edit project" onclick="event.stopPropagation();editProject(\'' + escAttr(proj.id) + '\')">&#9998;</button>' +
-              '<button class="icon-btn icon-btn-del" title="Remove from list" onclick="event.stopPropagation();deleteProject(\'' + escAttr(proj.id) + '\')">&#128465;</button>' +
-              '<button class="icon-btn icon-btn-folder" title="Open folder" onclick="event.stopPropagation();send(\'openFolder\',\'' + escAttr(proj.folder) + '\')">&#128193;</button>' +
-            '</div>' +
-          '</td>' +
-        '</tr>';
-    }
+      var tr = el('tr', 'project-row');
 
-    tbody.innerHTML = html;
+      var nameTd = el('td');
+      var name = el('span', 'project-name', proj.name);
+      name.addEventListener('click', function() { send('openProject', proj.id); });
+      nameTd.appendChild(name);
+      tr.appendChild(nameTd);
+
+      var typeTd = el('td');
+      typeTd.appendChild(el('span', 'type-badge ' + badgeClass, proj.type));
+      tr.appendChild(typeTd);
+
+      var actTd = el('td');
+      var actions = el('div', 'row-actions');
+      actions.appendChild(iconButton('icon-btn-edit', 'Edit project', '✎', function() { editProject(proj.id); }));
+      actions.appendChild(iconButton('icon-btn-del', 'Remove from list', '🗑', function() { deleteProject(proj.id); }));
+      actions.appendChild(iconButton('icon-btn-folder', 'Open folder', '📁', function() { send('openFolder', proj.id); }));
+      actTd.appendChild(actions);
+      tr.appendChild(actTd);
+
+      tbody.appendChild(tr);
+    });
 
     /* Pagination */
     if (totalPages <= 1) { pagEl.innerHTML = ''; return; }

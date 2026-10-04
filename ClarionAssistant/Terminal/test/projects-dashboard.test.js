@@ -189,6 +189,20 @@ section('projects.html — markup safety');
     p.fromHost({ type: 'setProjects', items: [{ id: 'x', name: '<img src=x onerror=alert(1)>', type: 'COM Control', folder: 'C:\\x', lastAccessed: 1 }] });
     check('a project name is text, never markup', !p.doc.querySelector('#projectList img') &&
           p.doc.querySelector('#projectList .project-name').textContent === '<img src=x onerror=alert(1)>');
+
+    // Pipeline run 1 (security): "&apos;" in a folder decoded back to a quote inside the old string-built inline
+    // onclick and broke out of it. Rows are now DOM-built with closures, and Open folder posts only the id.
+    p.window.__pwned = false;
+    const evil = "C:\\x&apos;);window.__pwned=true;//";
+    p.fromHost({ type: 'setProjects', items: [{ id: 'e1', name: "n&apos;);window.__pwned=true;//", type: 'COM Control', folder: evil, lastAccessed: 1 }] });
+    check('no inline on* handlers in the rendered rows', !p.doc.querySelector('#projectList [onclick]'));
+    p.posted.length = 0;
+    p.doc.querySelector('#projectList .icon-btn-folder').click();
+    p.doc.querySelector('#projectList .project-name').click();
+    check('an "&apos;" folder or name cannot run script when clicked', p.window.__pwned === false);
+    check('Open folder posts the project id, never the path',
+          p.posted.length === 2 && p.posted[0].action === 'openFolder' && p.posted[0].data === 'e1', JSON.stringify(p.posted));
+    check('the page no longer string-builds rows with escAttr', !/escAttr/.test(p.html));
 }
 
 console.log('\n' + (fail === 0 ? 'ALL PASS (' + pass + ')' : fail + ' FAILED, ' + pass + ' passed'));
