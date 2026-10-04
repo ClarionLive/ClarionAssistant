@@ -235,15 +235,15 @@ if (env) {
     press('KeyZ', { ctrlKey: true });
     t = lastToast();
     check('a Clarion command cannot take Ctrl+Z (Undo)', page.getBindings().removeLine === undefined
-        && t.ok === false && /core editing key \(Undo\)/.test(t.msg), JSON.stringify(t));
+        && t.ok === false && /is Undo, which cannot be reassigned\. Hold Ctrl or Alt with a key, or use a function key \(F1/.test(t.msg), JSON.stringify(t));
     press('KeyA', {});
     t = lastToast();
-    check('... nor a bare letter (typing)', page.getBindings().removeLine === undefined && /core editing key \(typing/.test(t.msg), JSON.stringify(t));
+    check('... nor a bare letter (typing)', page.getBindings().removeLine === undefined && /types or edits text, so it cannot be a shortcut/.test(t.msg), JSON.stringify(t));
     press('Enter', {});
-    check('... nor Enter', page.getBindings().removeLine === undefined && /core editing key/.test(lastToast().msg));
+    check('... nor Enter', page.getBindings().removeLine === undefined && /cannot be a shortcut/.test(lastToast().msg));
     press('ArrowUp', { shiftKey: true });
     t = lastToast();
-    check('... nor Shift+Up (selection)', page.getBindings().removeLine === undefined && /core editing key \(selection\)/.test(t.msg), JSON.stringify(t));
+    check('... nor Shift+Up (selection)', page.getBindings().removeLine === undefined && /extends the selection, so it cannot be a shortcut/.test(t.msg), JSON.stringify(t));
     press('ArrowLeft', { ctrlKey: true });
     check('... nor Ctrl+Left (word movement)', page.getBindings().removeLine === undefined && /Word Left/.test(lastToast().msg));
     press('F9', { key: 'F9' });
@@ -252,7 +252,7 @@ if (env) {
     press('KeyV', { ctrlKey: true });
     t = lastToast();
     check('a Monaco action cannot take Ctrl+V (Paste)', page.getBindings()['editor.action.gotoLine'] === 'Ctrl+Alt+Q'
-        && /core editing key \(Paste\)/.test(t.msg), JSON.stringify(t));
+        && /is Paste, which cannot be reassigned/.test(t.msg), JSON.stringify(t));
     page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });
     page.setBindings({ cutClarion: 'Ctrl+Shift+X' });
     page.buildKeybindTable();
@@ -260,7 +260,7 @@ if (env) {
     const toastsBefore = spy.toasts.length;
     press('KeyX', { ctrlKey: true });
     check('Cut / Clear Line may go back to its own default, Ctrl+X', page.getBindings().cutClarion === undefined
-        && !spy.toasts.slice(toastsBefore).some(x => /core editing key/.test(x.msg)), JSON.stringify(page.getBindings()));
+        && !spy.toasts.slice(toastsBefore).some(x => /cannot be (a shortcut|reassigned)/.test(x.msg)), JSON.stringify(page.getBindings()));
     // ---------- Visual Studio's two-key comment chords in the table (the Owner's report) ----------
     section('Two-key chords in the table');
     page.handleKeyCapture({ key: 'Escape', code: 'Escape', preventDefault() { }, stopImmediatePropagation() { } });

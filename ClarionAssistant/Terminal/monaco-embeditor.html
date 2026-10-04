@@ -2493,6 +2493,14 @@
         if (mods === 'Shift') return /^(Left|Right|Up|Down|Home|End|PageUp|PageDown)$/.test(token) ? 'selection' : 'typing and editing';
         return null;
     }
+    // The toast for a refused core key, in plain words: what the key already does, and what to pick instead.
+    function coreKeyRefusalMessage(chord) {
+        var what = coreKeyLabel(chord);
+        var instead = ' Hold Ctrl or Alt with a key, or use a function key (F1–F12).';
+        if (what === 'typing and editing') return '“' + chord + '” types or edits text, so it cannot be a shortcut.' + instead;
+        if (what === 'selection') return '“' + chord + '” extends the selection, so it cannot be a shortcut.' + instead;
+        return '“' + chord + '” is ' + what + ', which cannot be reassigned.' + instead;
+    }
     // True when row `id` may not move onto `chord`: a core key that is not where the row already is by default
     // (its base chord, or for a Monaco action one of Monaco's own keys for it).
     function coreKeyRefused(id, chord) {
@@ -7157,7 +7165,7 @@
             return;                         // stay armed so the dev can pick another
         }
         if (coreKeyRefused(id, chord)) {
-            showToast('“' + chord + '” is a core editing key (' + coreKeyLabel(chord) + ') — use a combination with Ctrl or Alt, or an F-key', false);
+            showToast(coreKeyRefusalMessage(chord), false);
             return;                         // stay armed
         }
         var owner = chordOwner(chord, id);
