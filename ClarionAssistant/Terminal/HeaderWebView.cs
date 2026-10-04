@@ -30,10 +30,12 @@ namespace ClarionAssistant.Terminal
         // Fixed height (82938fc7): there is no splitter and no saved height. Values are CSS px, measured in
         // header.html with headless Edge at 320, 420 and 800 px wide, dark and light (all identical):
         // the title row + tab strip end at 72; the Solution pane, the tallest pane, ends the page at 188.
+        // CssFullHeight adds 8 px under that (d4e941e3): the host's terminal tab strip, now always visible,
+        // sat right under the Reindex / Update buttons.
         // While Schema Sources or Source Control is active the page shrinks to the strip and the host's
         // SchemaSourcesView fills the pane below it (PanePixelHeight), so the header's total stays fixed.
         public const int CssStripHeight = 72;
-        public const int CssFullHeight = 188;
+        public const int CssFullHeight = 196;
 
         private string _activeTab = "solution";
 

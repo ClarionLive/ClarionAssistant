@@ -73,8 +73,8 @@ section('home.html');
     check('no projects table left on the Dashboard', !h.$('projectList') && !h.doc.querySelector('.projects-table'));
     check('no project modal left on the Dashboard', !h.$('projectModal'));
     check('no "Clarion COM and Addin Projects" section', !/Clarion COM and Addin Projects/.test(h.html));
-    check('separator drawn above the Dashboard title',
-          h.doc.body.firstElementChild && h.doc.body.firstElementChild.classList.contains('top-divider'));
+    // The host's tab strip, always visible now, is what divides the header from the Dashboard (d4e941e3).
+    check('no separator line of its own above the Dashboard title', !h.doc.querySelector('.top-divider'));
 
     const cards = Array.prototype.map.call(h.doc.querySelectorAll('.action-card .action-label'), l => l.textContent.trim());
     check('six cards, in order', JSON.stringify(cards) === JSON.stringify(
