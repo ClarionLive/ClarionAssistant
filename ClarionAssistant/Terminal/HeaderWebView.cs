@@ -176,21 +176,18 @@ namespace ClarionAssistant.Terminal
             SendMessage("{\"type\":\"setVersion\",\"label\":\"" + EscapeJson(label) + "\",\"title\":\"" + EscapeJson(title) + "\"}");
         }
 
-        /// <summary>Set the solution dropdown items.</summary>
-        public void SetSolutions(string[] paths, int selectedIndex)
+        /// <summary>
+        /// The SOLUTION field (d4e941e3): read-only, like VERSION, because the IDE decides which solution is open.
+        /// <paramref name="openInIde"/> false means CA is still on the last solution (CodeGraph and the MCP tools
+        /// keep working on it) while the IDE has none or another open; the page dims it and says so.
+        /// </summary>
+        public void SetSolution(string path, bool openInIde)
         {
-            var items = new System.Text.StringBuilder("[");
-            for (int i = 0; i < paths.Length; i++)
-            {
-                if (i > 0) items.Append(",");
-                string label = paths[i].Length > 60
-                    ? "..." + paths[i].Substring(paths[i].Length - 57)
-                    : paths[i];
-                items.AppendFormat("{{\"label\":\"{0}\",\"value\":\"{1}\",\"selected\":{2}}}",
-                    EscapeJson(label), EscapeJson(paths[i]), i == selectedIndex ? "true" : "false");
-            }
-            items.Append("]");
-            SendMessage("{\"type\":\"setSolutions\",\"items\":" + items + "}");
+            path = path ?? "";
+            // Keep the END of a long path; the file name is the part that identifies it.
+            string label = path.Length > 60 ? "..." + path.Substring(path.Length - 57) : path;
+            SendMessage("{\"type\":\"setSolution\",\"label\":\"" + EscapeJson(label) + "\",\"path\":\"" + EscapeJson(path)
+                + "\",\"open\":" + (openInIde ? "true" : "false") + "}");
         }
 
         /// <summary>Update the MCP/status text in the header.</summary>

@@ -2,80 +2,66 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
-using System.Text;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace ClarionAssistant.Terminal
 {
-    public class HomeActionEventArgs : EventArgs
+    public class ProjectsActionEventArgs : EventArgs
     {
         public string Action { get; private set; }
         public string Data { get; private set; }
-        /// <summary>Optional backend override from the dashboard backend dropdown
-        /// ("Claude", "Copilot", or null when the action is not launch-flavored).</summary>
-        public string Backend { get; private set; }
-        public HomeActionEventArgs(string action, string data, string backend = null)
-        {
-            Action = action; Data = data; Backend = backend;
-        }
+        public ProjectsActionEventArgs(string action, string data) { Action = action; Data = data; }
     }
 
     /// <summary>
-    /// WebView2-based Home page (the Dashboard): backend picker and quick-action cards.
-    /// Follows the same pattern as HeaderWebView.
+    /// WebView2 "COM Controls" / "IDE Addins" tab (d4e941e3): the COM and Addin project list, moved off the
+    /// Home dashboard so developers stop reading it as "one project per Clarion app". One page serves both
+    /// kinds; <see cref="Kind"/> picks which. Follows the same pattern as CreateClassWebView.
     /// </summary>
-    public class HomeWebView : UserControl
+    public class ProjectsWebView : UserControl
     {
+        public const string KindCom = "COM Control";
+        public const string KindAddin = "Addin";
+
         private WebView2 _webView;
         private bool _isInitialized;
         private bool _isInitializing;
+        private bool _isDark = true;
 
-        public event EventHandler<HomeActionEventArgs> ActionReceived;
-        public event EventHandler HomeReady;
+        public event EventHandler<ProjectsActionEventArgs> ActionReceived;
+        public event EventHandler Initialized;
 
         public bool IsReady { get { return _isInitialized; } }
 
-        public HomeWebView()
+        /// <summary>The project type this tab lists and creates: <see cref="KindCom"/> or <see cref="KindAddin"/>.</summary>
+        public string Kind { get; private set; }
+
+        public ProjectsWebView(string kind)
         {
+            Kind = kind == KindAddin ? KindAddin : KindCom;
+
             SuspendLayout();
             BackColor = Color.FromArgb(30, 30, 46);
             Dock = DockStyle.Fill;
 
-            _webView = new WebView2 { Dock = DockStyle.Fill, Name = "homeWebView" };
+            _webView = new WebView2 { Dock = DockStyle.Fill, Name = "projectsWebView" };
             Controls.Add(_webView);
             ResumeLayout(false);
 
             HandleCreated += OnHandleCreated;
         }
 
-        protected override void OnVisibleChanged(EventArgs e)
-        {
-            base.OnVisibleChanged(e);
-            System.Diagnostics.Debug.WriteLine("[HomeWebView] OnVisibleChanged: Visible=" + Visible
-                + ", IsHandleCreated=" + IsHandleCreated
-                + ", HasParent=" + (Parent != null));
-        }
-
         private async void OnHandleCreated(object sender, EventArgs e)
         {
-            System.Diagnostics.Debug.WriteLine("[HomeWebView] OnHandleCreated: Visible=" + Visible
-                + ", IsHandleCreated=" + IsHandleCreated
-                + ", HasParent=" + (Parent != null)
-                + ", _isInitializing=" + _isInitializing
-                + ", _isInitialized=" + _isInitialized);
-
             if (_isInitializing || _isInitialized) return;
             _isInitializing = true;
 
             try
             {
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Starting WebView2 init...");
                 var environment = await WebView2EnvironmentCache.GetEnvironmentAsync();
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Got environment, calling EnsureCoreWebView2Async...");
                 await _webView.EnsureCoreWebView2Async(environment);
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] EnsureCoreWebView2Async completed.");
 
                 var settings = _webView.CoreWebView2.Settings;
                 settings.IsScriptEnabled = true;
@@ -86,17 +72,20 @@ namespace ClarionAssistant.Terminal
 
                 _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
                 _webView.CoreWebView2.NavigationCompleted += OnNavigationCompleted;
-                _webView.ZoomFactorChanged += (s, ev) => WebViewZoomHelper.SetZoom("home", _webView.ZoomFactor);
+                _webView.ZoomFactorChanged += (s, ev) => WebViewZoomHelper.SetZoom("projects", _webView.ZoomFactor);
 
                 string htmlPath = GetHtmlPath();
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] htmlPath=" + htmlPath + ", exists=" + File.Exists(htmlPath));
                 if (File.Exists(htmlPath))
-                    _webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+                {
+                    string url = new Uri(htmlPath).AbsoluteUri
+                        + "?kind=" + (Kind == KindAddin ? "addin" : "com")
+                        + "&theme=" + (_isDark ? "dark" : "light");
+                    _webView.CoreWebView2.Navigate(url);
+                }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Init error: " + ex.GetType().Name + ": " + ex.Message);
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Stack: " + ex.StackTrace);
+                System.Diagnostics.Debug.WriteLine("[ProjectsWebView] Init error: " + ex.Message);
             }
         }
 
@@ -104,8 +93,8 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = true;
             _isInitializing = false;
-            _webView.ZoomFactor = WebViewZoomHelper.GetZoom("home");
-            HomeReady?.Invoke(this, EventArgs.Empty);
+            _webView.ZoomFactor = WebViewZoomHelper.GetZoom("projects");
+            Initialized?.Invoke(this, EventArgs.Empty);
         }
 
         private void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -113,44 +102,52 @@ namespace ClarionAssistant.Terminal
             try
             {
                 string json = e.TryGetWebMessageAsString();
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Message: " + json);
                 string action = ExtractJsonValue(json, "action");
                 string data = ExtractJsonValue(json, "data");
-                string backend = ExtractJsonValue(json, "backend");
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Action=" + action + ", Data=" + data + ", Backend=" + backend);
                 if (!string.IsNullOrEmpty(action))
-                    ActionReceived?.Invoke(this, new HomeActionEventArgs(action, data, backend));
+                    ActionReceived?.Invoke(this, new ProjectsActionEventArgs(action, data));
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[HomeWebView] Message error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[ProjectsWebView] Message error: " + ex.Message);
             }
         }
 
-        /// <summary>Send a JSON message to the home page JavaScript.</summary>
+        /// <summary>Send a JSON message to the projects page JavaScript.</summary>
         public void SendMessage(string json)
         {
             if (!_isInitialized || _webView.CoreWebView2 == null) return;
             _webView.CoreWebView2.PostWebMessageAsString(json);
         }
 
-        /// <summary>Project counts for the dashboard's COM Control / IDE Addin cards (d4e941e3). The lists
-        /// themselves live in the ProjectsWebView tabs; 0 hides a card's badge.</summary>
-        public void SetProjectCounts(int com, int addin)
+        /// <summary>Send ALL project entries as a pre-built JSON array; the page keeps its own kind (plus "Other").</summary>
+        public void SetProjectsJson(string jsonArray)
         {
-            SendMessage("{\"type\":\"setProjectCounts\",\"com\":" + com + ",\"addin\":" + addin + "}");
+            SendMessage("{\"type\":\"setProjects\",\"items\":" + jsonArray + "}");
         }
 
-        /// <summary>Tell the home page which backend is saved as the default. The page
-        /// uses this to preselect the dropdown and label the "Default: X" hint.</summary>
-        public void SetBackend(string backend)
+        /// <summary>Send the source-control accounts list for the project modal.</summary>
+        public void SetGitHubAccounts(string jsonArray)
         {
-            SendMessage("{\"type\":\"setBackend\",\"backend\":\"" + EscapeJson(backend ?? "Claude") + "\"}");
+            SendMessage("{\"type\":\"setGitHubAccounts\",\"accounts\":" + jsonArray + "}");
         }
 
-        /// <summary>Switch the home page between light and dark theme.</summary>
+        /// <summary>Send the default project base folder (COM.ProjectsFolder) to pre-fill a new project's folder.</summary>
+        public void SetDefaultProjectFolder(string folder)
+        {
+            SendMessage("{\"type\":\"setDefaultProjectFolder\",\"folder\":\"" + EscapeJson(folder ?? "") + "\"}");
+        }
+
+        /// <summary>Send folder browse result back to the page.</summary>
+        public void SendBrowseResult(string folder, string editId)
+        {
+            SendMessage("{\"type\":\"browseResult\",\"folder\":\"" + EscapeJson(folder ?? "") + "\",\"editId\":\"" + EscapeJson(editId ?? "") + "\"}");
+        }
+
+        /// <summary>Switch the page between light and dark theme.</summary>
         public void SetTheme(bool isDark)
         {
+            _isDark = isDark;
             BackColor = isDark ? Color.FromArgb(30, 30, 46) : Color.FromArgb(220, 224, 232);
             SendMessage("{\"type\":\"setTheme\",\"theme\":\"" + (isDark ? "dark" : "light") + "\"}");
         }
@@ -158,11 +155,11 @@ namespace ClarionAssistant.Terminal
         private string GetHtmlPath()
         {
             string assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string path = Path.Combine(assemblyDir, "Terminal", "home.html");
+            string path = Path.Combine(assemblyDir, "Terminal", "projects.html");
             if (File.Exists(path)) return path;
-            path = Path.Combine(assemblyDir, "home.html");
+            path = Path.Combine(assemblyDir, "projects.html");
             if (File.Exists(path)) return path;
-            return Path.Combine(assemblyDir, "Terminal", "home.html");
+            return Path.Combine(assemblyDir, "Terminal", "projects.html");
         }
 
         private static string EscapeJson(string s)
@@ -184,7 +181,7 @@ namespace ClarionAssistant.Terminal
             if (json[idx] == 'n') return null;
             if (json[idx] == '"')
             {
-                idx++; // skip opening quote
+                idx++;
                 var sb = new System.Text.StringBuilder();
                 while (idx < json.Length)
                 {

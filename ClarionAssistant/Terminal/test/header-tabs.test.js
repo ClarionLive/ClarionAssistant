@@ -103,10 +103,10 @@ check('a non-number count hides the badge', badge.hidden === true);
 
 // ---------- copy ----------
 section('copy solution path');
-fromHost({ type: 'setSolutions', items: [{ label: 'C:\\Apps\\School\\school.sln', value: 'C:\\Apps\\School\\school.sln', selected: true }] });
+fromHost({ type: 'setSolution', label: 'C:\\Apps\\School\\school.sln', path: 'C:\\Apps\\School\\school.sln', open: true });
 const copyBtn = $('btnCopySln');
-check('copy button sits in the SOLUTION row, beside the select',
-      copyBtn && copyBtn.parentElement === $('solutionSelect').parentElement);
+check('copy button sits in the SOLUTION row, beside the value',
+      copyBtn && copyBtn.parentElement === $('solutionValue').parentElement);
 posted.length = 0;
 copyBtn.click();
 check('click posts copySolutionPath', posted.length === 1 && posted[0].action === 'copySolutionPath', JSON.stringify(posted));
@@ -118,6 +118,45 @@ check('copyResult ok shows ✓', copyBtn.classList.contains('copied') && copyBtn
 fromHost({ type: 'copyResult', ok: false });
 check('copyResult failure shows ✗', copyBtn.classList.contains('copy-failed') && !copyBtn.classList.contains('copied') &&
       copyBtn.textContent === '\u2717', copyBtn.textContent);
+
+// ---------- SOLUTION is read-only (d4e941e3) ----------
+section('SOLUTION read-only');
+const sv = $('solutionValue');
+const SLN = 'C:\\Apps\\School\\school.sln';
+check('no solution dropdown left', !$('solutionSelect') && !doc.querySelector('#paneSolution select'));
+check('no browse ("...") button left', !/send\('browse'\)/.test(html));
+check('the page never posts solutionChanged', !/solutionChanged/.test(html));
+fromHost({ type: 'setSolution', label: SLN, path: SLN, open: true });
+check('open in the IDE: shows the path, no note', sv.textContent === SLN && !sv.classList.contains('not-open'), JSON.stringify(sv.textContent));
+check('the title carries the full path', sv.title.indexOf(SLN) === 0, sv.title);
+fromHost({ type: 'setSolution', label: SLN, path: SLN, open: false });
+check('not open in the IDE: path kept, note added, marked not-open',
+      sv.querySelector('.sv-path').textContent === SLN && /not open in the IDE/.test(sv.querySelector('.sv-note').textContent) &&
+      sv.classList.contains('not-open'), sv.textContent);
+check('the note is its own non-shrinking span (a narrow pane cuts the path, not the note)',
+      /#solutionValue \.sv-note\s*\{[^}]*flex-shrink:\s*0/.test(html));
+fromHost({ type: 'setSolution', label: SLN, path: SLN, open: true });
+check('back to open: the note goes away', !sv.querySelector('.sv-note') && !sv.classList.contains('not-open'));
+fromHost({ type: 'setSolution', label: '', path: '', open: false });
+check('no solution at all: says so, not marked not-open', sv.textContent === '(no solution open)' && !sv.classList.contains('not-open'),
+      sv.textContent);
+fromHost({ type: 'setSolution', label: '<b>x</b>.sln', path: '<b>x</b>.sln', open: false });
+check('the path is text, never markup', !sv.querySelector('b') && sv.querySelector('.sv-path').textContent === '<b>x</b>.sln');
+posted.length = 0;
+sv.click();
+check('clicking the field posts nothing', posted.length === 0, JSON.stringify(posted));
+
+// ---------- label column (d4e941e3) ----------
+section('label column');
+const labels = Array.prototype.map.call(doc.querySelectorAll('#paneSolution .config-label'), l => l.textContent.trim());
+check('all four labels share .config-label', JSON.stringify(labels) === JSON.stringify(['Solution', 'Version', 'RED', 'CodeGraph']),
+      JSON.stringify(labels));
+check('labels are left-aligned at a fixed width', /\.config-label\s*\{[^}]*width:\s*\d+px[^}]*text-align:\s*left/.test(html));
+const outside = Array.prototype.map.call(doc.querySelectorAll('#paneSolution .outside-row .config-label'), l => l.textContent.trim());
+check('RED and CodeGraph rows are inset to line up with the boxed rows', JSON.stringify(outside) === JSON.stringify(['RED', 'CodeGraph']),
+      JSON.stringify(outside));
+check('RED and CodeGraph label + value align on the text baseline',
+      doc.querySelectorAll('#paneSolution .baseline-row').length === 2 && /\.baseline-row\s*\{[^}]*align-items:\s*baseline/.test(html));
 
 // ---------- RED ----------
 section('RED link');

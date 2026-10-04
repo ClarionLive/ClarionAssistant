@@ -14,7 +14,7 @@
 #                          IDE references. Run outside Clarion entirely.
 #
 #   Terminal\test\*.test.js  node harnesses over the WebView2 pages. Mostly zero-dependency; the ones
-#                          that need jsdom (vscode-import-ui, header-tabs, schema-sources-solution-key,
+#                          that need jsdom (vscode-import-ui, header-tabs, projects-dashboard, schema-sources-solution-key,
 #                          editor-sweep-590) say so, and this script installs it into
 #                          Terminal\test\node_modules when missing.
 #

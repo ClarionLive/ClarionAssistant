@@ -40,13 +40,22 @@ body {
 .github-link:hover { background: #313244; border-color: #45475a; }
 .github-link svg { width: 14px; height: 14px; fill: currentColor; }
 
-/* Quick Actions */
+/* Separator under the host's Solution header (d4e941e3). The tab strip that would otherwise divide
+   the two is hidden while Home is the only tab, so the page draws its own top rule. */
+.top-divider { height: 2px; background: #313244; margin: 0 16px; }
+
+/* Quick Actions: a fixed 3-column grid in two labelled rows (d4e941e3) */
 .quick-actions {
-  display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px;
+}
+@media (max-width: 520px) { .quick-actions { grid-template-columns: repeat(2, 1fr); } }
+.group-label {
+  grid-column: 1 / -1; font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; color: #7f849c; margin: 6px 0 -2px 2px;
 }
 .action-card {
-  flex: 1; min-width: 140px;
-  padding: 14px 16px;
+  min-width: 0;
+  padding: 22px 12px 14px;
   background: #252536;
   border: 1px solid #313244;
   border-radius: 8px;
@@ -57,7 +66,17 @@ body {
 .action-card:hover { background: #313244; border-color: #45475a; }
 .action-card .action-icon { font-size: 22px; margin-bottom: 6px; }
 .action-card .action-label { font-size: 12px; font-weight: 600; color: #cdd6f4; }
-.action-card .action-desc { font-size: 11px; color: #6c7086; margin-top: 2px; }
+.action-card .action-desc { font-size: 11px; color: #6c7086; margin-top: 2px; line-height: 1.35; }
+.action-card .action-hint { font-size: 11px; color: #a6e3a1; margin-top: 6px; line-height: 1.35; }
+/* Project count on the COM / Addin cards, in place of the backend tag (those cards open a list, not a terminal) */
+.action-card .proj-count {
+  position: absolute; top: 6px; right: 8px;
+  font-size: 9px; letter-spacing: 0.5px; font-weight: 600;
+  padding: 2px 6px; border-radius: 3px;
+}
+.action-card .proj-count:empty { display: none; }
+.proj-count.com { background: rgba(203,166,247,0.15); color: #cba6f7; }
+.proj-count.addin { background: rgba(116,199,236,0.15); color: #74c7ec; }
 .action-card .backend-tag {
   position: absolute; top: 6px; right: 8px;
   font-size: 9px; letter-spacing: 0.5px; font-weight: 600;
@@ -97,133 +116,6 @@ body.light .backend-row .default-hint .current { color: #40a02b; }
 body.light .backend-row .reset-link { color: #1e66f5; }
 body.light .action-card .backend-tag { background: rgba(30,102,245,0.1); color: #1e66f5; }
 
-/* Section header */
-.section-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 12px;
-}
-.section-title { font-size: 18px; font-weight: 600; color: #89b4fa; }
-.section-subtitle { font-size: 12px; color: #6c7086; margin-top: 2px; }
-.section-divider { height: 2px; background: #313244; margin: 20px 0; }
-
-/* Buttons */
-.btn {
-  height: 28px; padding: 0 14px;
-  border: 1px solid #45475a; border-radius: 4px;
-  background: #313244; color: #cdd6f4;
-  font-size: 12px; font-family: 'Segoe UI', sans-serif;
-  cursor: pointer; white-space: nowrap;
-  transition: all 0.15s;
-  display: flex; align-items: center; gap: 6px;
-}
-.btn:hover { background: #45475a; border-color: #585b70; }
-.btn:active { background: #585b70; }
-.btn-primary { background: #1e66a8; border-color: #2580d4; color: #fff; font-weight: 600; }
-.btn-primary:hover { background: #2580d4; }
-
-/* Table controls */
-.table-controls {
-  display: flex; justify-content: space-between;
-  align-items: center; margin-bottom: 8px; gap: 16px;
-}
-.page-size-wrap { display: flex; align-items: center; gap: 6px; color: #7f849c; font-size: 12px; }
-.page-size-wrap select {
-  background: #313244; border: 1px solid #45475a;
-  color: #cdd6f4; font-size: 12px;
-  padding: 2px 6px; border-radius: 3px;
-  cursor: pointer; font-family: 'Segoe UI', sans-serif; outline: none;
-}
-.search-wrap { display: flex; align-items: center; gap: 8px; color: #7f849c; font-size: 12px; }
-.search-wrap input {
-  background: #313244; border: 1px solid #45475a;
-  color: #cdd6f4; font-size: 12px;
-  padding: 3px 8px; border-radius: 3px;
-  font-family: 'Segoe UI', sans-serif; width: 190px; outline: none;
-}
-.search-wrap input:focus { border-color: #89b4fa; }
-
-/* Projects table */
-.projects-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
-.projects-table thead th {
-  text-align: left; font-size: 11px; font-weight: 600;
-  color: #7f849c; padding: 7px 10px;
-  border-top: 1px solid #313244; border-bottom: 1px solid #313244;
-  text-transform: uppercase; letter-spacing: 0.4px;
-  white-space: nowrap; cursor: pointer;
-}
-.projects-table thead th:hover { color: #a6adc8; }
-.projects-table thead th .sort-arrow { margin-left: 3px; opacity: 0.4; }
-.projects-table thead th.sort-asc .sort-arrow,
-.projects-table thead th.sort-desc .sort-arrow { opacity: 1; color: #89b4fa; }
-.projects-table thead th.col-actions { cursor: default; }
-.project-row td { padding: 7px 10px; border-bottom: 1px solid rgba(49,50,68,0.5); font-size: 12px; }
-.project-row:hover td { background: rgba(137,180,250,0.04); }
-.project-name { color: #89b4fa; cursor: pointer; font-weight: 500; }
-.project-name:hover { text-decoration: underline; }
-
-.type-badge {
-  display: inline-block; padding: 2px 8px; border-radius: 4px;
-  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
-}
-.type-badge.com { background: rgba(203,166,247,0.15); color: #cba6f7; }
-.type-badge.addin { background: rgba(116,199,236,0.15); color: #74c7ec; }
-.type-badge.other { background: rgba(108,112,134,0.15); color: #6c7086; }
-
-.row-actions { display: flex; gap: 4px; justify-content: flex-end; }
-.icon-btn {
-  width: 26px; height: 26px; border: none; border-radius: 4px;
-  cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center;
-  transition: all 0.15s;
-}
-.icon-btn-del { color: #f38ba8; background: rgba(243,139,168,0.1); }
-.icon-btn-del:hover { background: rgba(243,139,168,0.22); }
-.icon-btn-folder { color: #89b4fa; background: rgba(137,180,250,0.1); }
-.icon-btn-folder:hover { background: rgba(137,180,250,0.22); }
-.icon-btn-edit { color: #a6e3a1; background: rgba(166,227,161,0.1); }
-.icon-btn-edit:hover { background: rgba(166,227,161,0.22); }
-
-/* Table footer */
-.table-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
-.showing-info { font-size: 11px; color: #6c7086; }
-.pagination { display: flex; gap: 3px; }
-.page-btn {
-  min-width: 28px; height: 26px; padding: 0 6px;
-  border: 1px solid #313244; border-radius: 4px;
-  background: #252536; color: #7f849c;
-  font-size: 11px; cursor: pointer; transition: all 0.15s;
-}
-.page-btn:hover { background: #313244; }
-.page-btn.active { background: #89b4fa; border-color: #89b4fa; color: #1e1e2e; font-weight: 600; }
-.page-btn:disabled { opacity: 0.3; cursor: default; }
-
-.empty-state { text-align: center; padding: 30px; color: #6c7086; font-size: 13px; }
-
-/* Modal */
-.modal-overlay {
-  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.55); z-index: 100;
-  justify-content: center; align-items: center;
-}
-.modal-overlay.visible { display: flex; }
-.modal {
-  background: #1e1e2e; border: 1px solid #45475a; border-radius: 10px;
-  padding: 20px; width: 420px; max-width: 90%;
-}
-.modal-title { font-size: 15px; font-weight: 600; color: #89b4fa; margin-bottom: 16px; }
-.form-group { margin-bottom: 12px; }
-.form-label { font-size: 11px; color: #7f849c; margin-bottom: 4px; font-weight: 500; display: block; }
-.form-input, .form-select {
-  width: 100%; height: 32px; padding: 0 10px;
-  background: #313244; color: #cdd6f4; border: 1px solid #45475a;
-  border-radius: 5px; font-size: 12px; font-family: 'Segoe UI', sans-serif; outline: none;
-}
-.form-input:focus, .form-select:focus { border-color: #89b4fa; }
-.form-select { cursor: pointer; }
-.form-error { color: #f38ba8; font-size: 11px; margin-top: 3px; display: none; }
-.folder-row { display: flex; gap: 6px; }
-.folder-row .form-input { flex: 1; }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -237,48 +129,20 @@ body.light .subtitle { color: #8c8fa1; }
 body.light .action-card { background: #e6e9ef; border-color: #ccd0da; }
 body.light .action-card:hover { background: #ccd0da; border-color: #bcc0cc; }
 body.light .action-card .action-label { color: #4c4f69; }
-body.light .action-card .action-desc { color: #8c8fa1; }
-body.light .section-title { color: #1e66f5; }
-body.light .section-subtitle { color: #8c8fa1; }
-body.light .section-divider { background: #bcc0cc; }
-body.light .btn { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .btn:hover { background: #ccd0da; }
-body.light .projects-table thead th { color: #7c7f93; border-color: #bcc0cc; }
-body.light .project-row td { border-bottom-color: #dce0e8; }
-body.light .project-row:hover td { background: rgba(30,102,245,0.04); }
-body.light .project-name { color: #1e66f5; }
-body.light .type-badge.com { background: rgba(136,57,239,0.12); color: #8839ef; }
-body.light .type-badge.addin { background: rgba(4,165,229,0.12); color: #04a5e5; }
-body.light .type-badge.other { background: rgba(108,111,133,0.12); color: #6c6f85; }
-body.light .icon-btn-del { color: #d20f39; background: rgba(210,15,57,0.1); }
-body.light .icon-btn-del:hover { background: rgba(210,15,57,0.22); }
-body.light .icon-btn-folder { color: #1e66f5; background: rgba(30,102,245,0.1); }
-body.light .icon-btn-folder:hover { background: rgba(30,102,245,0.22); }
-body.light .icon-btn-edit { color: #40a02b; background: rgba(64,160,43,0.1); }
-body.light .icon-btn-edit:hover { background: rgba(64,160,43,0.22); }
-body.light .showing-info { color: #6c6f85; }
-body.light .page-btn { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .page-btn:hover { background: #ccd0da; }
-body.light .page-btn.active { background: #1e66f5; border-color: #1e66f5; color: #fff; }
-body.light .empty-state { color: #8c8fa1; }
-body.light .modal { background: #eff1f5; border-color: #bcc0cc; }
-body.light .modal-title { color: #1e66f5; }
-body.light .form-label { color: #6c6f85; }
-body.light .form-input { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .form-input:focus { border-color: #1e66f5; }
-body.light .form-select { background: #e6e9ef; border-color: #bcc0cc; color: #4c4f69; }
-body.light .form-select:focus { border-color: #1e66f5; }
-body.light .modal-overlay { background: rgba(0,0,0,0.35); }
-body.light .search-wrap input { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
-body.light .search-wrap input:focus { border-color: #1e66f5; }
+body.light .action-card .action-desc { color: #6c6f85; }
+body.light .action-card .action-hint { color: #40a02b; }
+body.light .group-label { color: #6c6f85; }
+body.light .top-divider { background: #bcc0cc; }
+body.light .proj-count.com { background: rgba(136,57,239,0.12); color: #8839ef; }
+body.light .proj-count.addin { background: rgba(4,165,229,0.12); color: #0485b8; }
 body.light .github-link { background: #e6e9ef; border-color: #ccd0da; color: #4c4f69; }
 body.light .github-link:hover { background: #ccd0da; border-color: #bcc0cc; }
-body.light .page-size-wrap select { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
 body.light ::-webkit-scrollbar-thumb { background: #bcc0cc; }
 body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
 </style>
 </head>
 <body>
+<div class="top-divider"></div>
 <div class="home">
   <div class="home-header">
     <div class="title-block">
@@ -299,13 +163,16 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     <a class="reset-link hidden" id="backendResetLink" onclick="resetBackendToDefault()">Reset to default</a>
   </div>
 
-  <!-- Quick Actions -->
+  <!-- Quick Actions (d4e941e3): two labelled rows of three. COM controls and addins open their own
+       list tabs; they used to share a table here that read as "one project per Clarion app". -->
   <div class="quick-actions">
+    <div class="group-label">Your Clarion apps</div>
     <div class="action-card" onclick="send('workWithSolution')">
       <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128194;</div>
       <div class="action-label">Work With Open Solution</div>
       <div class="action-desc">Open terminal for IDE solution</div>
+      <div class="action-hint">Your apps work here &mdash; no setup needed</div>
     </div>
     <div class="action-card" onclick="send('newChat')">
       <div class="backend-tag" data-backend-tag></div>
@@ -319,115 +186,30 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       <div class="action-label">Evaluate Code</div>
       <div class="action-desc">Analyze current app</div>
     </div>
+
+    <div class="group-label">Build something new</div>
     <div class="action-card" onclick="send('createClass')">
       <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128736;</div>
       <div class="action-label">Create New Class</div>
       <div class="action-desc">Generate class from model</div>
     </div>
-  </div>
-
-  <div class="section-divider"></div>
-
-  <!-- Projects Section -->
-  <div class="section-header">
-    <div>
-      <div class="section-title">Clarion COM and Addin Projects</div>
-      <div class="section-subtitle">Create your own Clarion COM and/or Addin projects here</div>
+    <div class="action-card" onclick="send('openComProjects')">
+      <div class="proj-count com" id="comCount"></div>
+      <div class="action-icon">&#129513;</div>
+      <div class="action-label">Clarion COM Control</div>
+      <div class="action-desc">Build a .NET control to use on your Clarion windows</div>
     </div>
-    <button class="btn btn-primary" onclick="openProjectModal()">&#43; Add Project</button>
-  </div>
-
-  <div class="table-controls">
-    <div class="page-size-wrap">
-      <select id="projPageSize" onchange="onProjPageSizeChange()">
-        <option value="10">10</option>
-        <option value="25">25</option>
-        <option value="50">50</option>
-        <option value="100">100</option>
-      </select>
-      <span>records</span>
-    </div>
-    <div class="search-wrap">
-      <span>Search:</span>
-      <input type="text" id="projSearchInput" oninput="onProjSearch()" />
-    </div>
-  </div>
-
-  <table class="projects-table">
-    <thead>
-      <tr>
-        <th id="pth-name" onclick="projSortBy('name')">Name <span class="sort-arrow">&#8597;</span></th>
-        <th id="pth-type" onclick="projSortBy('type')" style="width:130px">Type <span class="sort-arrow">&#8597;</span></th>
-        <th class="col-actions" style="width:90px"></th>
-      </tr>
-    </thead>
-    <tbody id="projectList"></tbody>
-  </table>
-
-  <div class="table-footer">
-    <div class="showing-info" id="projShowingInfo"></div>
-    <div class="pagination" id="projPagination"></div>
-  </div>
-
-  <div id="projEmptyState" class="empty-state" style="display:none;">
-    No projects yet. Click "Add Project" to create a COM control or Addin.
-  </div>
-</div>
-
-<!-- Add/Edit Project Modal -->
-<div class="modal-overlay" id="projectModal">
-  <div class="modal">
-    <div class="modal-title" id="modalTitle">Add Project</div>
-    <input type="hidden" id="modalEditId" value="" />
-    <div class="form-group">
-      <label class="form-label">Project Type</label>
-      <select class="form-select" id="modalType">
-        <option value="COM Control">COM Control</option>
-        <option value="Addin">Addin</option>
-        <option value="Other">Other</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Project Name</label>
-      <input class="form-input" type="text" id="modalName" placeholder="MyProject" />
-      <div class="form-error" id="nameError">Project name is required.</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Project Folder</label>
-      <div class="folder-row">
-        <input class="form-input" type="text" id="modalFolder" placeholder="C:\Projects\MyProject" />
-        <button class="btn" onclick="browseProjectFolder()">Browse...</button>
-      </div>
-      <div class="form-error" id="folderError">Project folder is required.</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">GitHub Account</label>
-      <select class="form-select" id="modalGitHubAccount">
-        <option value="">(none)</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Repository Name</label>
-      <input class="form-input" type="text" id="modalRepoName" placeholder="e.g. MyProject" />
-    </div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeProjectModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveProject()">Save</button>
+    <div class="action-card" onclick="send('openAddinProjects')">
+      <div class="proj-count addin" id="addinCount"></div>
+      <div class="action-icon">&#129520;</div>
+      <div class="action-label">Clarion IDE Addin</div>
+      <div class="action-desc">Extend the Clarion IDE itself</div>
     </div>
   </div>
 </div>
 
 <script>
-  /* ==================== Projects State ==================== */
-  var allProjects = [];
-  var filteredProjects = [];
-  var projCurrentPage = 1;
-  var projPageSize = 10;
-  var projSortCol = 'lastAccessed';
-  var projSortDir = 'desc';
-  var defaultProjectFolder = '';
-
   // Dashboard backend state. _savedDefault mirrors settings.txt (Assistant.Backend);
   // _sessionBackend is the ephemeral dropdown value used for subsequent launches.
   // Neither is persisted from home.html — changing _sessionBackend does NOT rewrite
@@ -448,10 +230,13 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     return b === 'Claude' ? 'Claude Code' : (b || 'Claude Code');
   }
 
+  // The COM Controls / IDE Addins tabs launch terminals too (opening a project) but have no
+  // dropdown of their own, so the host is told whenever this one changes (d4e941e3).
   function onBackendChange() {
     var sel = document.getElementById('backendSel');
     _sessionBackend = sel ? sel.value : 'Claude';
     renderBackendState();
+    send('backendChanged');
   }
 
   function resetBackendToDefault() {
@@ -459,6 +244,7 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     var sel = document.getElementById('backendSel');
     if (sel) sel.value = _savedDefault;
     renderBackendState();
+    send('backendChanged');
   }
 
   function renderBackendState() {
@@ -480,212 +266,8 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     for (var i = 0; i < tags.length; i++) tags[i].textContent = displayBackendName(_sessionBackend).toUpperCase();
   }
 
-  function esc(s) {
-    if (!s) return '';
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-  }
-  function escAttr(s) {
-    if (!s) return '';
-    return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")
-      .replace(/"/g,'&quot;').replace(/\n/g,'\\n').replace(/\r/g,'\\r');
-  }
-
-  /* ==================== Projects: Filtering & sorting ==================== */
-  function applyProjFilter() {
-    var q = (document.getElementById('projSearchInput').value || '').toLowerCase().trim();
-    filteredProjects = q
-      ? allProjects.filter(function(p) {
-          return p.name.toLowerCase().indexOf(q) >= 0 || p.type.toLowerCase().indexOf(q) >= 0;
-        })
-      : allProjects.slice();
-    applyProjSort();
-  }
-
-  function applyProjSort() {
-    filteredProjects.sort(function(a, b) {
-      var av = a[projSortCol] || (typeof a[projSortCol] === 'number' ? 0 : '');
-      var bv = b[projSortCol] || (typeof b[projSortCol] === 'number' ? 0 : '');
-      if (typeof av === 'number' && typeof bv === 'number')
-        return projSortDir === 'asc' ? av - bv : bv - av;
-      av = String(av).toLowerCase(); bv = String(bv).toLowerCase();
-      if (av < bv) return projSortDir === 'asc' ? -1 : 1;
-      if (av > bv) return projSortDir === 'asc' ? 1 : -1;
-      return 0;
-    });
-    projCurrentPage = 1;
-    renderProjects();
-  }
-
-  function projSortBy(col) {
-    if (projSortCol === col) projSortDir = projSortDir === 'asc' ? 'desc' : 'asc';
-    else { projSortCol = col; projSortDir = col === 'lastAccessed' ? 'desc' : 'asc'; }
-    updateProjSortHeaders();
-    applyProjSort();
-  }
-
-  function updateProjSortHeaders() {
-    ['name','type'].forEach(function(c) {
-      var th = document.getElementById('pth-' + c);
-      if (!th) return;
-      var arrow = th.querySelector('.sort-arrow');
-      if (c === projSortCol) {
-        th.className = projSortDir === 'asc' ? 'sort-asc' : 'sort-desc';
-        if (arrow) arrow.innerHTML = projSortDir === 'asc' ? '&#8593;' : '&#8595;';
-      } else {
-        th.className = '';
-        if (arrow) arrow.innerHTML = '&#8597;';
-      }
-    });
-  }
-
-  function onProjPageSizeChange() {
-    projPageSize = parseInt(document.getElementById('projPageSize').value, 10);
-    projCurrentPage = 1;
-    renderProjects();
-  }
-  function onProjSearch() { applyProjFilter(); }
-  function goToProjPage(p) { projCurrentPage = p; renderProjects(); }
-
-  /* ==================== Projects: Render ==================== */
-  function renderProjects() {
-    var tbody = document.getElementById('projectList');
-    var emptyEl = document.getElementById('projEmptyState');
-    var showingEl = document.getElementById('projShowingInfo');
-    var pagEl = document.getElementById('projPagination');
-
-    var total = filteredProjects.length;
-    var totalPages = Math.max(1, Math.ceil(total / projPageSize));
-    if (projCurrentPage > totalPages) projCurrentPage = totalPages;
-
-    var start = (projCurrentPage - 1) * projPageSize;
-    var end = Math.min(start + projPageSize, total);
-
-    if (total === 0) {
-      tbody.innerHTML = '';
-      emptyEl.style.display = 'block';
-      showingEl.textContent = '';
-      pagEl.innerHTML = '';
-      return;
-    }
-
-    emptyEl.style.display = 'none';
-    showingEl.textContent = total === 1
-      ? 'Showing 1 entry'
-      : 'Showing ' + (start + 1) + ' to ' + end + ' of ' + total + ' entries';
-
-    var pageItems = filteredProjects.slice(start, end);
-    var html = '';
-
-    for (var i = 0; i < pageItems.length; i++) {
-      var proj = pageItems[i];
-      var badgeClass = proj.type === 'COM Control' ? 'com' : proj.type === 'Addin' ? 'addin' : 'other';
-      html +=
-        '<tr class="project-row">' +
-          '<td><span class="project-name" onclick="send(\'openProject\',\'' + escAttr(proj.id) + '\')">' + esc(proj.name) + '</span></td>' +
-          '<td><span class="type-badge ' + badgeClass + '">' + esc(proj.type) + '</span></td>' +
-          '<td>' +
-            '<div class="row-actions">' +
-              '<button class="icon-btn icon-btn-edit" title="Edit project" onclick="event.stopPropagation();editProject(\'' + escAttr(proj.id) + '\')">&#9998;</button>' +
-              '<button class="icon-btn icon-btn-del" title="Remove from list" onclick="event.stopPropagation();deleteProject(\'' + escAttr(proj.id) + '\')">&#128465;</button>' +
-              '<button class="icon-btn icon-btn-folder" title="Open folder" onclick="event.stopPropagation();send(\'openFolder\',\'' + escAttr(proj.folder) + '\')">&#128193;</button>' +
-            '</div>' +
-          '</td>' +
-        '</tr>';
-    }
-
-    tbody.innerHTML = html;
-
-    /* Pagination */
-    if (totalPages <= 1) { pagEl.innerHTML = ''; return; }
-    var ph = '';
-    ph += '<button class="page-btn" onclick="goToProjPage(' + (projCurrentPage - 1) + ')"' +
-          (projCurrentPage <= 1 ? ' disabled' : '') + '>&lt;</button>';
-    var ps = Math.max(1, projCurrentPage - 2);
-    var pe = Math.min(totalPages, ps + 4);
-    if (pe - ps < 4) ps = Math.max(1, pe - 4);
-    for (var p = ps; p <= pe; p++) {
-      ph += '<button class="page-btn' + (p === projCurrentPage ? ' active' : '') +
-            '" onclick="goToProjPage(' + p + ')">' + p + '</button>';
-    }
-    ph += '<button class="page-btn" onclick="goToProjPage(' + (projCurrentPage + 1) + ')"' +
-          (projCurrentPage >= totalPages ? ' disabled' : '') + '>&gt;</button>';
-    pagEl.innerHTML = ph;
-  }
-
-  function setProjects(items) {
-    allProjects = items || [];
-    applyProjFilter();
-  }
-
-  /* ==================== Project Modal ==================== */
-  function openProjectModal(editId) {
-    var modal = document.getElementById('projectModal');
-    var titleEl = document.getElementById('modalTitle');
-    var typeEl = document.getElementById('modalType');
-    var nameEl = document.getElementById('modalName');
-    var folderEl = document.getElementById('modalFolder');
-    var editIdEl = document.getElementById('modalEditId');
-    var ghAcctEl = document.getElementById('modalGitHubAccount');
-    var repoEl = document.getElementById('modalRepoName');
-
-    document.getElementById('nameError').style.display = 'none';
-    document.getElementById('folderError').style.display = 'none';
-
-    if (editId) {
-      var proj = allProjects.find(function(p) { return p.id === editId; });
-      if (!proj) return;
-      titleEl.textContent = 'Edit Project';
-      editIdEl.value = editId;
-      typeEl.value = proj.type;
-      typeEl.disabled = true;
-      nameEl.value = proj.name;
-      folderEl.value = proj.folder;
-      ghAcctEl.value = proj.githubAccountId || '';
-      repoEl.value = proj.repoName || '';
-    } else {
-      titleEl.textContent = 'Add Project';
-      editIdEl.value = '';
-      typeEl.value = 'COM Control';
-      typeEl.disabled = false;
-      nameEl.value = '';
-      folderEl.value = defaultProjectFolder || '';
-      ghAcctEl.value = '';
-      repoEl.value = '';
-    }
-
-    modal.classList.add('visible');
-    nameEl.focus();
-  }
-
-  function closeProjectModal() {
-    document.getElementById('projectModal').classList.remove('visible');
-  }
-
-  function saveProject() {
-    var editId = document.getElementById('modalEditId').value;
-    var type = document.getElementById('modalType').value;
-    var name = document.getElementById('modalName').value.trim();
-    var folder = document.getElementById('modalFolder').value.trim();
-
-    var valid = true;
-    if (!name) { document.getElementById('nameError').style.display = 'block'; valid = false; }
-    else { document.getElementById('nameError').style.display = 'none'; }
-    if (!folder) { document.getElementById('folderError').style.display = 'block'; valid = false; }
-    else { document.getElementById('folderError').style.display = 'none'; }
-    if (!valid) return;
-
-    var githubAccountId = document.getElementById('modalGitHubAccount').value;
-    var repoName = document.getElementById('modalRepoName').value.trim();
-    var data = JSON.stringify({ id: editId || '', type: type, name: name, folder: folder, githubAccountId: githubAccountId, repoName: repoName });
-    if (editId) { send('editProject', data); } else { send('addProject', data); }
-    closeProjectModal();
-  }
-
-  function editProject(id) { openProjectModal(id); }
-  function deleteProject(id) { send('deleteProject', id); }
-  function browseProjectFolder() {
-    var editId = document.getElementById('modalEditId').value || '';
-    send('browseProjectFolder', editId);
+  function countLabel(n) {
+    return n > 0 ? n + (n === 1 ? ' PROJECT' : ' PROJECTS') : '';   // empty hides the badge
   }
 
   /* ==================== Messages from C# ==================== */
@@ -693,25 +275,12 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     window.chrome.webview.addEventListener('message', function(e) {
       var msg = e.data;
       if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch(ex) { return; } }
-      if (msg.type === 'setProjects') setProjects(msg.items);
-      if (msg.type === 'setGitHubAccounts') {
-        var sel = document.getElementById('modalGitHubAccount');
-        var curVal = sel.value;
-        sel.innerHTML = '<option value="">(none)</option>';
-        (msg.accounts || []).forEach(function(a) {
-          var opt = document.createElement('option');
-          opt.value = a.id;
-          var provIcon = a.provider === 'bitbucket' ? 'BB' : 'GH';
-          opt.textContent = a.displayName + ' [' + provIcon + '] (' + a.username + ')';
-          sel.appendChild(opt);
-        });
-        sel.value = curVal;
+      if (msg.type === 'setProjectCounts') {
+        document.getElementById('comCount').textContent = countLabel(msg.com || 0);
+        document.getElementById('addinCount').textContent = countLabel(msg.addin || 0);
       }
       if (msg.type === 'setTheme') {
         document.body.classList.toggle('light', msg.theme === 'light');
-      }
-      if (msg.type === 'setDefaultProjectFolder') {
-        defaultProjectFolder = msg.folder || '';
       }
       if (msg.type === 'setBackend') {
         _savedDefault = msg.backend || 'Claude';
@@ -720,17 +289,8 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
         if (sel) sel.value = _sessionBackend;
         renderBackendState();
       }
-      if (msg.type === 'browseResult') {
-        if (msg.folder) {
-          document.getElementById('modalFolder').value = msg.folder;
-        }
-      }
     });
   }
-
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') closeProjectModal();
-  });
 
   renderBackendState(); // populate badges + hint before C# sends the saved default
   send('homeReady');

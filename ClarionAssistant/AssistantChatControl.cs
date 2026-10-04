@@ -57,6 +57,9 @@ namespace ClarionAssistant
         // initializing); if that becomes an issue, move consumption into the
         // synchronous per-handler tab-creation paths.
         private string _pendingLaunchBackend;
+        // The dashboard dropdown's current value (d4e941e3). The COM Controls / IDE Addins tabs open project
+        // terminals but have no dropdown of their own, so they launch with whatever the dashboard shows.
+        private string _dashboardBackend;
         private ClarionVersionInfo _versionInfo;
         private ClarionVersionConfig _currentVersionConfig;
         private RedFileService _redFileService;
@@ -186,37 +189,40 @@ namespace ClarionAssistant
         private void OnHomeReady(object sender, EventArgs e)
         {
             _homeView.SetTheme(_isDarkTheme);
-            _homeView.SetBackend(_settings.Get("Assistant.Backend") ?? "Claude");
+            string savedBackend = _settings.Get("Assistant.Backend") ?? "Claude";
+            _homeView.SetBackend(savedBackend);
+            _dashboardBackend = savedBackend;   // the page resets its dropdown to the saved default on setBackend
             LoadProjects();
-            SendProjectsToHome();
-            SendGitHubAccountsToHome();
-            SendDefaultProjectFolderToHome();
+            SendProjectsToViews();
         }
 
-        private void SendDefaultProjectFolderToHome()
+        private void SendDefaultProjectFolderToProjectViews()
         {
-            if (!_homeView.IsReady) return;
             try
             {
                 string folder = _settings.Get("COM.ProjectsFolder") ?? "";
-                _homeView.SetDefaultProjectFolder(folder);
+                foreach (var view in OpenProjectViews())
+                    view.SetDefaultProjectFolder(folder);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendDefaultProjectFolderToHome error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendDefaultProjectFolderToProjectViews error: " + ex.Message);
             }
         }
 
-        private void SendGitHubAccountsToHome()
+        private void SendGitHubAccountsToProjectViews()
         {
-            if (!_homeView.IsReady) return;
             try
             {
-                _homeView.SetGitHubAccounts(BuildGitHubAccountsJson());
+                var views = OpenProjectViews();
+                if (views.Count == 0) return;
+                string json = BuildGitHubAccountsJson();
+                foreach (var view in views)
+                    view.SetGitHubAccounts(json);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendGitHubAccountsToHome error: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine("[AssistantChatControl] SendGitHubAccountsToProjectViews error: " + ex.Message);
             }
         }
 
@@ -247,15 +253,14 @@ namespace ClarionAssistant
             {
                 _pendingLaunchBackend = e.Backend;
             }
+            // Every dashboard message carries the dropdown's value; the COM / Addin tabs launch with it.
+            if (!string.IsNullOrEmpty(e.Backend))
+                _dashboardBackend = e.Backend;
 
             switch (e.Action)
             {
-                case "openFolder": OpenFolder(e.Data); break;
-                case "addProject": OnAddProject(e.Data); break;
-                case "editProject": OnEditProject(e.Data); break;
-                case "deleteProject": OnDeleteProject(e.Data); break;
-                case "openProject": OnOpenProject(e.Data); break;
-                case "browseProjectFolder": OnBrowseProjectFolder(e.Data); break;
+                case "openComProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindCom); break;
+                case "openAddinProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindAddin); break;
                 case "workWithSolution": OnWorkWithSolution(); break;
                 case "newChat": OnNewChat(sender, EventArgs.Empty); break;
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
@@ -270,8 +275,7 @@ namespace ClarionAssistant
             return action == "newChat"
                 || action == "workWithSolution"
                 || action == "evaluateCode"
-                || action == "createClass"
-                || action == "openProject";
+                || action == "createClass";
         }
 
         /// <summary>
@@ -328,10 +332,8 @@ namespace ClarionAssistant
                     // Re-read the IDE's Build > Set Clarion Version now (the change hook and 10 s poll do it too).
                     DetectFromIde();   // also restarts the LSP if the version moved
                     break;
-                case "browse": OnBrowseSolution(sender, EventArgs.Empty); break;
                 case "fullIndex": RunIndex(false); break;
                 case "updateIndex": RunIndex(true); break;
-                case "solutionChanged": OnSolutionChanged(e.Data); break;
                 case "themeChanged": OnThemeChanged(e.Data); break;
                 case "headerTab": OnHeaderTab(e.Data); break;
                 case "copySolutionPath": OnCopySolutionPath(); break;
@@ -436,9 +438,8 @@ namespace ClarionAssistant
             catch { }
         }
 
-        private void SendProjectsToHome()
+        private string BuildProjectsJson()
         {
-            if (!_homeView.IsReady) return;
             var sb = new StringBuilder("[");
             for (int i = 0; i < _projects.Count; i++)
             {
@@ -449,7 +450,90 @@ namespace ClarionAssistant
                     EscJson(p.GitHubAccountId ?? ""), EscJson(p.RepoName ?? ""));
             }
             sb.Append("]");
-            _homeView.SetProjectsJson(sb.ToString());
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// After any project change: the dashboard's card counts, and the full list to every open COM / Addin tab
+        /// (each page keeps its own kind plus "Other"). A project of one kind can be shown in both tabs ("Other"),
+        /// so an edit in one tab must reach the other.
+        /// </summary>
+        private void SendProjectsToViews()
+        {
+            if (_homeView.IsReady)
+            {
+                int com = 0, addin = 0;
+                foreach (var p in _projects)
+                {
+                    if (p.Type == Terminal.ProjectsWebView.KindCom) com++;
+                    else if (p.Type == Terminal.ProjectsWebView.KindAddin) addin++;
+                }
+                _homeView.SetProjectCounts(com, addin);
+            }
+
+            var views = OpenProjectViews();
+            if (views.Count == 0) return;
+            string json = BuildProjectsJson();
+            foreach (var view in views)
+                view.SetProjectsJson(json);
+        }
+
+        /// <summary>The open COM Controls / IDE Addins tabs whose page has loaded.</summary>
+        private List<Terminal.ProjectsWebView> OpenProjectViews()
+        {
+            var views = new List<Terminal.ProjectsWebView>();
+            foreach (var tab in _tabManager.Tabs)
+            {
+                var view = tab.ContentControl as Terminal.ProjectsWebView;
+                if (view != null && view.IsReady) views.Add(view);
+            }
+            return views;
+        }
+
+        /// <summary>
+        /// Dashboard COM / Addin card (d4e941e3): bring that kind's tab forward, or open it. One tab per kind,
+        /// so a second click never stacks a duplicate list.
+        /// </summary>
+        private void OpenProjectsTab(string kind)
+        {
+            foreach (var existing in _tabManager.Tabs)
+            {
+                var open = existing.ContentControl as Terminal.ProjectsWebView;
+                if (open != null && open.Kind == kind)
+                {
+                    _tabManager.ActivateTab(existing.Id);
+                    return;
+                }
+            }
+
+            var view = new Terminal.ProjectsWebView(kind) { Dock = DockStyle.Fill };
+            view.SetTheme(_isDarkTheme);
+            var tab = _tabManager.CreateContentTab(kind == Terminal.ProjectsWebView.KindAddin ? "IDE Addins" : "COM Controls", view);
+
+            view.ActionReceived += (s, e) => OnProjectsAction(view, e);
+            view.Initialized += (s, ev) =>
+            {
+                view.SetTheme(_isDarkTheme);   // the theme may have changed while the page loaded
+                try { view.SetGitHubAccounts(BuildGitHubAccountsJson()); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[AssistantChatControl] projects tab accounts: " + ex.Message); }
+                view.SetDefaultProjectFolder(_settings.Get("COM.ProjectsFolder") ?? "");
+                view.SetProjectsJson(BuildProjectsJson());
+            };
+
+            _tabManager.ActivateTab(tab.Id);
+        }
+
+        private void OnProjectsAction(Terminal.ProjectsWebView view, Terminal.ProjectsActionEventArgs e)
+        {
+            switch (e.Action)
+            {
+                case "openFolder": OpenFolder(e.Data); break;
+                case "addProject": OnAddProject(e.Data, view.Kind); break;
+                case "editProject": OnEditProject(e.Data); break;
+                case "deleteProject": OnDeleteProject(e.Data); break;
+                case "openProject": OnOpenProject(e.Data); break;
+                case "browseProjectFolder": OnBrowseProjectFolder(view, e.Data); break;
+            }
         }
 
         private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -528,10 +612,9 @@ namespace ClarionAssistant
             return -1; // malformed JSON
         }
 
-        private void OnAddProject(string json)
+        private void OnAddProject(string json, string kind)
         {
             string name = ExtractJsonString(json, "name");
-            string type = ExtractJsonString(json, "type");
             string folder = ExtractJsonString(json, "folder");
             if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(folder)) return;
 
@@ -539,7 +622,7 @@ namespace ClarionAssistant
             {
                 Id = Guid.NewGuid().ToString("N").Substring(0, 8),
                 Name = name,
-                Type = type ?? "Other",
+                Type = kind,   // the tab's kind, not the page's say-so; "Other" is no longer created
                 Folder = folder,
                 LastAccessed = NowUnixMs(),
                 GitHubAccountId = ExtractJsonString(json, "githubAccountId"),
@@ -547,7 +630,7 @@ namespace ClarionAssistant
             };
             _projects.Add(entry);
             SaveProjects();
-            SendProjectsToHome();
+            SendProjectsToViews();
         }
 
         private void OnEditProject(string json)
@@ -565,7 +648,7 @@ namespace ClarionAssistant
             entry.GitHubAccountId = ExtractJsonString(json, "githubAccountId");
             entry.RepoName = ExtractJsonString(json, "repoName");
             SaveProjects();
-            SendProjectsToHome();
+            SendProjectsToViews();
         }
 
         private void OnDeleteProject(string id)
@@ -573,7 +656,7 @@ namespace ClarionAssistant
             if (string.IsNullOrEmpty(id)) return;
             _projects.RemoveAll(p => p.Id == id);
             SaveProjects();
-            SendProjectsToHome();
+            SendProjectsToViews();
         }
 
         private void OnOpenProject(string id)
@@ -585,12 +668,12 @@ namespace ClarionAssistant
             // Update lastAccessed
             entry.LastAccessed = NowUnixMs();
             SaveProjects();
-            SendProjectsToHome();
+            SendProjectsToViews();
 
             OpenProjectInNewTab(entry);
         }
 
-        private void OnBrowseProjectFolder(string editId)
+        private void OnBrowseProjectFolder(Terminal.ProjectsWebView view, string editId)
         {
             using (var dlg = new FolderBrowserDialog())
             {
@@ -598,7 +681,7 @@ namespace ClarionAssistant
                 dlg.ShowNewFolderButton = true;
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
-                    _homeView.SendBrowseResult(dlg.SelectedPath, editId ?? "");
+                    view.SendBrowseResult(dlg.SelectedPath, editId ?? "");
                 }
             }
         }
@@ -620,6 +703,9 @@ namespace ClarionAssistant
             var tab = _tabManager.CreateTerminalTab(name, renderer);
             tab.WorkingDirectory = folder;
             tab.VersionConfig = _currentVersionConfig;
+            // Opened from a COM / Addin tab, which has no backend dropdown: use the dashboard's (d4e941e3).
+            if (!string.IsNullOrEmpty(_dashboardBackend))
+                tab.RequestedBackend = _dashboardBackend;
 
             // Set startup command based on project type
             switch (project.Type)
@@ -838,36 +924,21 @@ namespace ClarionAssistant
 
         private void LoadSolutionHistory()
         {
-            string history = _settings.Get("SolutionHistory") ?? "";
-            var paths = new System.Collections.Generic.List<string>();
-            foreach (string path in history.Split('|'))
-            {
-                if (!string.IsNullOrEmpty(path) && File.Exists(path))
-                    paths.Add(path);
-            }
-
+            // Restore the last solution. CA keeps using it while the IDE has none open, so CodeGraph and the
+            // MCP tools still have a solution; the header marks it "not open in the IDE" (d4e941e3).
             string last = _settings.Get("LastSolutionPath");
-            int selectedIdx = -1;
             if (!string.IsNullOrEmpty(last) && File.Exists(last))
-            {
-                selectedIdx = paths.IndexOf(last);
-                if (selectedIdx < 0)
-                {
-                    paths.Insert(0, last);
-                    selectedIdx = 0;
-                }
                 _currentSlnPath = last;
-            }
 
-            _header.SetSolutions(paths.ToArray(), selectedIdx);
+            PushSolutionToHeader();
             UpdateIndexStatus();
-            // Schema Sources / Source Control follow the solution (82938fc7). DetectFromIde, OnBrowseSolution and
+            // Schema Sources / Source Control follow the solution (82938fc7). DetectFromIde and
             // OpenSolutionInNewTab change _currentSlnPath and then call this, and so does its own restore above.
-            // Its other callers only reload the dropdown; RefreshSolutionSettings skips an unchanged solution.
+            // Its other callers only re-show the solution; RefreshSolutionSettings skips an unchanged solution.
             RefreshSolutionSettings();
 
-            // NO auto-index here (ticket 7f1c67b2). THIS METHOD HAS SEVEN CALLERS and its job
-            // is to reload the solution dropdown — it is not a "solution was opened" signal.
+            // NO auto-index here (ticket 7f1c67b2). THIS METHOD HAS SEVERAL CALLERS and its job
+            // is to re-show the current solution — it is not a "solution was opened" signal.
             // Indexing from here fired on practically any refresh: once when CA restored the
             // last-used solution at startup (an unrequested run whose window habitually
             // appeared BEHIND the Clarion IDE), and again when a solution was actually opened,
@@ -879,8 +950,8 @@ namespace ClarionAssistant
             // reached it as well.
             //
             // Indexing now happens where a solution is deliberately opened — OpenSolutionInNewTab
-            // (browse dialog, "Work with active solution") and OnSolutionChanged (header
-            // dropdown) — silently in both cases. Do not reinstate a run here.
+            // (browse dialog, "Work with active solution") and OnSolutionChanged (the IDE opened
+            // another solution) — silently in both cases. Do not reinstate a run here.
             if (!string.IsNullOrEmpty(_currentSlnPath))
             {
                 // Eager-start the LSP on startup-restore so embeditor completion is
@@ -929,10 +1000,14 @@ namespace ClarionAssistant
                     !string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
                 {
                     System.Diagnostics.Debug.WriteLine("[AssistantChatControl] Solution changed: " + slnPath);
-                    DetectFromIde();
+                    OnSolutionChanged(slnPath);
                 }
                 else
                 {
+                    // The IDE closed its solution, or reopened CA's: re-mark the header's "not open in the IDE".
+                    if (IsSolutionOpenInIde(slnPath) != _solutionShownOpen)
+                        PushSolutionToHeader();
+
                     // Backstop for the Clarion.Version PropertyChanged hook (16d140e9): follow a
                     // Build > Set Clarion Version change within one poll even if the event was missed.
                     SyncVersionWithIde();
@@ -971,50 +1046,58 @@ namespace ClarionAssistant
 
             // Eager-start the LSP (background) when the IDE's open solution is detected,
             // so embeditor completion is fully populated without a manual LSP trigger.
-            // (This is the IDE-poll path; OnSolutionChanged covers the assistant-UI path.)
+            // (Startup, refresh and solution-switch paths all come through here.)
             if (!string.IsNullOrEmpty(_currentSlnPath))
                 _toolRegistry?.EnsureLspRunningInBackground();
         }
 
+        /// <summary>
+        /// The IDE opened a different solution (seen by PollForSolutionChange). Since d4e941e3 the header shows the
+        /// IDE's solution read-only, so this - with OpenSolutionInNewTab - is how CA's solution changes; it does
+        /// the switch work the header dropdown used to trigger.
+        /// </summary>
         private void OnSolutionChanged(string path)
         {
-            if (!string.IsNullOrEmpty(path) && File.Exists(path))
-            {
-                // Completion's held-open symbol DB connections belong to the old solution.
-                SymbolIndex.ReleaseAll();
-                _currentSlnPath = path;
-                AddToSolutionHistory(path);
-                UpdateIndexStatus();
-                LoadRedFile();
-                UpdateInstanceState();
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
 
-                // Eager-start the LSP (background) so embeditor completion is fully
-                // populated without the user first invoking an LSP feature. RedFile is
-                // loaded above so cross-file paths are available; the start itself can
-                // block several seconds, hence off the UI thread.
-                _toolRegistry?.EnsureLspRunningInBackground();
+            // Completion's held-open symbol DB connections belong to the old solution.
+            SymbolIndex.ReleaseAll();
 
-                var activeTab = _tabManager.ActiveTab;
-                if (activeTab != null && !activeTab.IsHome)
-                    activeTab.SolutionPath = path;
+            // _currentSlnPath, history, the header, index status, RED, LSP, and Schema Sources / Source Control
+            // (82938fc7) - all through LoadSolutionHistory.
+            DetectFromIde();
+            if (!string.Equals(_currentSlnPath, path, StringComparison.OrdinalIgnoreCase)) return;
 
-                // Schema Sources / Source Control are keyed on the solution (82938fc7).
-                RefreshSolutionSettings();
+            // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
+            // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
+            // solution rather than something the developer asked for, so it gets no
+            // window and raises no dialog if it cannot start.
+            // Reindex and Update on the header remain windowed — those ARE user actions.
+            string dbPath = Path.Combine(
+                Path.GetDirectoryName(path),
+                Path.GetFileNameWithoutExtension(path) + ".codegraph.db");
+            if (!File.Exists(dbPath))
+                RunIndexAutomatic(false); // full index
+            else
+                RunIndexAutomatic(true); // incremental update
+        }
 
-                // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
-                // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
-                // solution rather than something the developer asked for, so it gets no
-                // window and raises no dialog if it cannot start. The comment here always
-                // said "in background"; until 7f1c67b2 the code still popped the window.
-                // Reindex and Update on the header remain windowed — those ARE user actions.
-                string dbPath = Path.Combine(
-                    Path.GetDirectoryName(path),
-                    Path.GetFileNameWithoutExtension(path) + ".codegraph.db");
-                if (!File.Exists(dbPath))
-                    RunIndexAutomatic(false); // full index
-                else
-                    RunIndexAutomatic(true); // incremental update
-            }
+        // What the header's SOLUTION field last showed: open in the IDE, or CA's last solution kept on.
+        private bool _solutionShownOpen;
+
+        private bool IsSolutionOpenInIde(string idePath)
+        {
+            return !string.IsNullOrEmpty(_currentSlnPath) && !string.IsNullOrEmpty(idePath)
+                && string.Equals(idePath, _currentSlnPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Show CA's solution in the read-only SOLUTION field, marked when the IDE doesn't have it open.</summary>
+        private void PushSolutionToHeader()
+        {
+            string idePath = null;
+            try { idePath = EditorService.GetOpenSolutionPath(); } catch { }
+            _solutionShownOpen = IsSolutionOpenInIde(idePath);
+            _header.SetSolution(_currentSlnPath, _solutionShownOpen);
         }
 
         /// <summary>
@@ -1336,24 +1419,6 @@ namespace ClarionAssistant
             catch { }
         }
 
-        private void OnBrowseSolution(object sender, EventArgs e)
-        {
-            using (var dlg = new OpenFileDialog())
-            {
-                dlg.Filter = "Clarion Solution (*.sln)|*.sln";
-                dlg.Title = "Select Clarion Solution";
-                if (!string.IsNullOrEmpty(_currentSlnPath))
-                    dlg.InitialDirectory = Path.GetDirectoryName(_currentSlnPath);
-
-                if (dlg.ShowDialog() == DialogResult.OK)
-                {
-                    _currentSlnPath = dlg.FileName;
-                    AddToSolutionHistory(dlg.FileName);
-                    LoadSolutionHistory();
-                }
-            }
-        }
-
         private void UpdateIndexStatus()
         {
             if (!_header.IsReady) return;
@@ -1437,13 +1502,14 @@ namespace ClarionAssistant
             // is exactly the moment indexing SHOULD start.
             //
             // It lives here rather than in LoadSolutionHistory, where it used to. That method
-            // has SEVEN callers and reloads the solution dropdown, so indexing from it fired on
+            // has several callers and re-shows the solution, so indexing from it fired on
             // essentially any refresh: once at startup and again on opening a solution, which is
             // how two runs ended up colliding on the same database. LoadSolutionHistory loads a
             // list; it should not start work.
             //
-            // Not a double-fire with OnSolutionChanged: that handles the header dropdown, this
-            // handles opening a solution into a tab, and neither calls the other.
+            // Not a double-fire with OnSolutionChanged: that handles the IDE opening another
+            // solution, and it only fires when the IDE's solution differs from _currentSlnPath,
+            // which this method has just set. Neither calls the other.
             string autoDbPath = Path.Combine(
                 Path.GetDirectoryName(slnPath),
                 Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
@@ -2676,6 +2742,7 @@ namespace ClarionAssistant
             {
                 if (tab.Renderer != null) tab.Renderer.SetTheme(_isDarkTheme);
                 if (tab.ContentControl is CreateClassWebView ccv) ccv.SetTheme(_isDarkTheme);
+                if (tab.ContentControl is Terminal.ProjectsWebView pv) pv.SetTheme(_isDarkTheme);
             }
             Terminal.DiffViewContent.ApplyThemeToAll(_isDarkTheme);
             Terminal.MonacoDiffViewContent.ApplyThemeToAll(_isDarkTheme);
@@ -2753,8 +2820,8 @@ namespace ClarionAssistant
             dlg.FormClosed += (s2, e2) =>
             {
                 if (parent != null) parent.Enabled = true;
-                SendGitHubAccountsToHome(); // Refresh home dropdown after settings changes
-                SendDefaultProjectFolderToHome(); // COM.ProjectsFolder may have changed
+                SendGitHubAccountsToProjectViews(); // Refresh the project modals' account list after settings changes
+                SendDefaultProjectFolderToProjectViews(); // COM.ProjectsFolder may have changed
                 dlg.Dispose();
             };
 

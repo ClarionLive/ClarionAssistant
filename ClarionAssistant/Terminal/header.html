@@ -70,15 +70,32 @@
   }
   .config-row + .config-row { margin-top: 4px; }
 
+  /* One label column for SOLUTION / VERSION / RED / CODEGRAPH (d4e941e3): left-aligned at a fixed width,
+     the Windows convention, so every value starts at the same x. The two rows outside the bordered group
+     are inset by the group's border + padding (1 + 8 px) to line up with the two rows inside it. */
   .config-label {
     font-size: 10px;
     color: #7f849c;
-    min-width: 48px;
-    text-align: right;
+    width: 70px;
+    flex-shrink: 0;
+    text-align: left;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   body.light .config-label { color: #6c6f85; }
+  .outside-row { padding-left: 9px; }
+  /* Label and value share a text baseline on the unboxed rows: centring a 10px caps label against 11px
+     text left CODEGRAPH sitting visibly higher than "Indexed: ...". Buttons stay centred. */
+  .baseline-row { align-items: baseline; }
+  .baseline-row .config-label, .baseline-row .codegraph-status { line-height: 22px; }
+  .baseline-row .btn, .baseline-row .btn-icon { align-self: center; }
+
+  /* SOLUTION while the IDE has no solution (or another) open: CA keeps working on the last one. */
+  #solutionValue { display: flex; gap: 6px; }
+  #solutionValue .sv-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #solutionValue .sv-note { flex-shrink: 0; }
+  .form-value.not-open { font-style: italic; }
+  .form-value.not-open .sv-path { opacity: 0.8; }
 
   /* Form controls */
   .form-select {
@@ -189,14 +206,6 @@
     margin-bottom: 4px;
     min-height: 24px;
   }
-  .codegraph-label {
-    font-size: 10px;
-    color: #7f849c;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    flex-shrink: 0;
-  }
-  body.light .codegraph-label { color: #6c6f85; }
   .codegraph-status {
     font-size: 11px;
     color: #a6e3a1;
@@ -351,9 +360,9 @@
       <div class="config-group">
         <div class="config-row">
           <span class="config-label">Solution</span>
-          <select id="solutionSelect" class="form-select"></select>
+          <!-- Read-only (d4e941e3): the solution open in the IDE decides, as Build > Set Clarion Version does for VERSION. -->
+          <span id="solutionValue" class="form-value" title="Open a solution in the Clarion IDE to change it">(none)</span>
           <button class="btn-icon" id="btnCopySln" onclick="copySolutionPath()" title="Copy the solution path">&#10697;</button>
-          <button class="btn-icon" onclick="send('browse')" title="Browse for solution">&#8230;</button>
         </div>
         <div class="config-row">
           <span class="config-label">Version</span>
@@ -364,14 +373,14 @@
       </div>
 
       <!-- Redirection (.red) file in effect. A link to open it while it resolved; warning text when not. -->
-      <div class="config-row" style="margin-top:4px;">
+      <div class="config-row outside-row baseline-row" style="margin-top:4px;">
         <span class="config-label">RED</span>
         <span id="redFile" class="red-value codegraph-status warning" title="" onclick="openRedFile()">(not loaded)</span>
       </div>
 
       <!-- CodeGraph status row -->
-      <div class="codegraph-row">
-        <span class="codegraph-label">CodeGraph</span>
+      <div class="codegraph-row outside-row baseline-row">
+        <span class="config-label">CodeGraph</span>
         <span id="indexStatus" class="codegraph-status"></span>
         <button class="btn btn-primary" onclick="send('fullIndex')" id="btnFullIndex" title="Rebuild entire index from scratch">Reindex</button>
         <button class="btn" onclick="send('updateIndex')" id="btnUpdate" title="Index changed files only">Update</button>
@@ -402,11 +411,6 @@
     setTheme(newTheme);
     send('themeChanged', newTheme);
   }
-
-  // Solution select change
-  document.getElementById('solutionSelect').addEventListener('change', function() {
-    send('solutionChanged', this.value);
-  });
 
   // Header tabs (82938fc7). The host resizes the pane and shows its SchemaSourcesView for
   // 'schema' / 'repo'; this page only marks the active tab and hides the Solution pane.
@@ -455,16 +459,30 @@
       vv.title = msg.title || '';
     }
 
-    if (msg.type === 'setSolutions') {
-      var sel = document.getElementById('solutionSelect');
-      sel.innerHTML = '';
-      msg.items.forEach(function(item) {
-        var opt = document.createElement('option');
-        opt.value = item.value;
-        opt.textContent = item.label;
-        if (item.selected) opt.selected = true;
-        sel.appendChild(opt);
-      });
+    if (msg.type === 'setSolution') {
+      var sv = document.getElementById('solutionValue');
+      var open = msg.open === true;
+      if (!msg.path) {
+        sv.textContent = '(no solution open)';
+        sv.title = 'Open a solution in the Clarion IDE';
+      } else {
+        // Path and note are separate spans so a narrow pane ellipsizes the path, never the note.
+        sv.textContent = '';
+        var pathEl = document.createElement('span');
+        pathEl.className = 'sv-path';
+        pathEl.textContent = msg.label;
+        sv.appendChild(pathEl);
+        if (!open) {
+          var noteEl = document.createElement('span');
+          noteEl.className = 'sv-note';
+          noteEl.textContent = '— not open in the IDE';
+          sv.appendChild(noteEl);
+        }
+        sv.title = msg.path + (open
+          ? '\nOpen a different solution in the Clarion IDE to change it'
+          : '\nNot open in the Clarion IDE: Clarion Assistant is still using this, its last solution');
+      }
+      sv.classList.toggle('not-open', !!msg.path && !open);
     }
 
     if (msg.type === 'setStatus') {

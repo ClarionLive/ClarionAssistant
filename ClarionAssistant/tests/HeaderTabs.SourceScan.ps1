@@ -8,7 +8,8 @@
 # H2  ONE solution-level panel: no AttachSchemaSourcesView, no TerminalTab.SchemaSourcesView, exactly one
 #     `new SchemaSourcesView(`, disposed in Dispose, theme not applied per tab.
 # H3  every method that assigns _currentSlnPath then calls RefreshSolutionSettings() or LoadSolutionHistory(),
-#     and LoadSolutionHistory and OnSolutionChanged themselves call RefreshSolutionSettings().
+#     LoadSolutionHistory itself calls RefreshSolutionSettings(), and OnSolutionChanged (the IDE switched
+#     solution; d4e941e3 retired the header dropdown that used to drive it) goes through DetectFromIde().
 # H4  OnSchemaSourcesReady runs once: wired only to the view's Ready event; no "schemaSourcesReady" case.
 # H5  worker-thread results (HandleIndexSource, HandleTestConnection) go through PostToSchemaView, which
 #     checks IsDisposed; the modal still grows the panel to 580 and restores the pane height.
@@ -124,10 +125,10 @@ function Invoke-Scan($p) {
             $fails.Add('H3 ' + $m.Name + ' changes _currentSlnPath without RefreshSolutionSettings / LoadSolutionHistory after it')
         }
     }
-    foreach ($sig in @('private void LoadSolutionHistory(', 'private void OnSolutionChanged(')) {
-        $b = Get-Body $chat $sig
-        if (-not $b -or -not $b.Contains('RefreshSolutionSettings();')) { $fails.Add("H3 $sig does not call RefreshSolutionSettings()") }
-    }
+    $lsh = Get-Body $chat 'private void LoadSolutionHistory('
+    if (-not $lsh -or -not $lsh.Contains('RefreshSolutionSettings();')) { $fails.Add('H3 LoadSolutionHistory does not call RefreshSolutionSettings()') }
+    $osc = Get-Body $chat 'private void OnSolutionChanged('
+    if (-not $osc -or -not $osc.Contains('DetectFromIde();')) { $fails.Add('H3 OnSolutionChanged does not go through DetectFromIde()') }
     $refresh = Get-Body $chat 'private void RefreshSolutionSettings('
     if (-not $refresh -or -not $refresh.Contains('SendSchemaSources();') -or -not $refresh.Contains('SendRepoData();')) {
         $fails.Add('H3 RefreshSolutionSettings does not send both the sources and the repo data')
@@ -270,7 +271,8 @@ try {
     Test-Mutation 'header height back to a literal' 'Header' 'Height = ToPixels(CssFullHeight);' 'Height = 110;'
     Test-Mutation 'per-tab SchemaSourcesView property restored' 'Tab' 'public string StartupCommand { get; set; }' 'public string StartupCommand { get; set; } public SchemaSourcesView SchemaSourcesView { get; set; }'
     Test-Mutation 'panel not disposed' 'Chat' 'if (_schemaView != null) { _schemaView.Dispose(); _schemaView = null; }' ''
-    Test-Mutation 'OnBrowseSolution no longer refreshes' 'Chat' "_currentSlnPath = dlg.FileName;`r`n                    AddToSolutionHistory(dlg.FileName);`r`n                    LoadSolutionHistory();" "_currentSlnPath = dlg.FileName;`r`n                    AddToSolutionHistory(dlg.FileName);"
+    Test-Mutation 'OpenSolutionInNewTab no longer refreshes' 'Chat' "_currentSlnPath = slnPath;`r`n            AddToSolutionHistory(slnPath);`r`n            LoadSolutionHistory();" "_currentSlnPath = slnPath;`r`n            AddToSolutionHistory(slnPath);"
+    Test-Mutation 'OnSolutionChanged skips DetectFromIde' 'Chat' "            DetectFromIde();`r`n            if (!string.Equals(_currentSlnPath, path" "            if (!string.Equals(_currentSlnPath, path"
     Test-Mutation 'LoadSolutionHistory no longer refreshes' 'Chat' "            RefreshSolutionSettings();`r`n`r`n            // NO auto-index here" "`r`n            // NO auto-index here"
     Test-Mutation 'OnSchemaSourcesReady run twice' 'Chat' 'case "getGlobalSources":' "case `"schemaSourcesReady`": OnSchemaSourcesReady(null, EventArgs.Empty); break;`r`n                case `"getGlobalSources`":"
     Test-Mutation 'test-connection result posted without the guard' 'Chat' 'PostToSchemaView(view => view.SendMessage(resultJson));' 'BeginInvoke(new Action(() => _schemaView.SendMessage(resultJson)));'

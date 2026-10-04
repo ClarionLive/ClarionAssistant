@@ -234,6 +234,7 @@
     <Compile Include="Terminal\SolutionStamp.cs" />
     <Compile Include="Terminal\HomeWebView.cs" />
     <Compile Include="Terminal\CreateClassWebView.cs" />
+    <Compile Include="Terminal\ProjectsWebView.cs" />
     <Compile Include="Terminal\TerminalTab.cs" />
     <Compile Include="Terminal\TabManager.cs" />
     <Compile Include="Terminal\DiffViewContent.cs" />
@@ -337,6 +338,9 @@
     </Content>
     <EmbeddedResource Include="Terminal\models.json" />
     <Content Include="Terminal\create-class.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Terminal\projects.html">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="Terminal\ClassModels\ctClarionLive.inc">
