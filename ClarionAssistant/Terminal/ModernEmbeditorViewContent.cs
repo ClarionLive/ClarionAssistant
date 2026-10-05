@@ -2514,6 +2514,7 @@ namespace ClarionAssistant.Terminal
                 // Run 3, Codex security). It still gets its own answer, as a refusal.
                 const string superseded = "Save skipped: a newer save replaced this one.";
                 MonacoSpikeLog.Write("[save-timing] a superseded (stale) save callback ran late — refused");
+                try { if (_panel != null) PostSaveResult(false, superseded); } catch { }   // its own page answer too
                 RaiseEmbedSaveFinished(false, superseded, _panel != null);
                 return;
             }
@@ -2544,12 +2545,26 @@ namespace ClarionAssistant.Terminal
         /// for the result message, or "" when nothing newer was typed. (Charlie: Ctrl+Q during a save must never
         /// close with lost edits.)
         /// </summary>
-        private string KeepTypedDuringSave(List<string> saved)
+        private string KeepTypedDuringSave(List<string> saved, bool surfaceGone)
         {
             var latest = _mirroredSlots;
             if (!_mirroredDirty || latest == null || Services.EmbedSavePlanner.SameSlots(latest, saved)) return "";
             string rec = WriteRecoveryFile("you typed more while a save was closing the CA Embeditor", latest);
             string note = RecoveryNote(rec);
+            if (surfaceGone && !string.IsNullOrEmpty(_procedureName) && latest.Count == saved.Count)
+            {
+                // The overlay is gone, so the disk copy must not be the ONLY copy: a full disk or a denied folder
+                // would lose the text (final run, Codex adversary HIGH). Stash it in memory too, against the baseline
+                // that was just SAVED — reopening the procedure in the CA Embeditor restores it (TryRestoreStashedEdits).
+                _editStash = new EmbedEditStash
+                {
+                    Proc = _procedureName,
+                    Original = new List<string>(saved),
+                    Edited = new List<string>(latest),
+                    RecoveryFile = rec
+                };
+                note += " Reopen " + _procedureName + " in the CA Embeditor to get them back.";
+            }
             if (note.Length > 0)
                 try
                 {
@@ -2621,7 +2636,7 @@ namespace ClarionAssistant.Terminal
                     if (o.Plan != null && o.Plan.Foreign > 0)
                         try { CaNotice.Post("embed-save-foreign", "CA Embeditor saved", msg); } catch { }
                     // The overlay is gone now; anything typed while it saved was not in the save. Keep it on disk.
-                    msg += KeepTypedDuringSave(current);
+                    msg += KeepTypedDuringSave(current, true);
                 }
                 else if (editorIntact)
                     RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
@@ -2699,8 +2714,11 @@ namespace ClarionAssistant.Terminal
             // on this success although its text is newer, so put the newer text on disk now, whatever happens next.
             bool typedDuring = ok && _mirroredDirty && _mirroredSlots != null &&
                 !Services.EmbedSavePlanner.SameSlots(_mirroredSlots, current);
-            if (typedDuring) msg += KeepTypedDuringSave(current);
-            PostSaveResult(ok, msg);
+            if (typedDuring) msg += KeepTypedDuringSave(current, false);   // the tab stays open with the text
+            // savedSeq -1 when newer text was typed: the page clears its ● only when the echoed sequence matches its
+            // own (always 0 in embed mode), so -1 keeps it dirty — a later Ctrl+Q then asks instead of closing on a
+            // false "clean" (final run, debugger).
+            PostSaveResult(ok, msg, typedDuring ? -1 : 0);
             mark("postSaveResult — DONE");
 
             // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
