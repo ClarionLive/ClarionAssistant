@@ -1548,7 +1548,7 @@ namespace ClarionAssistant.Terminal
         // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
         // not the open-time text; the save planner accepts it as ours instead of calling it a conflict. (1565ef7b)
         private List<string> _nativeSyncedSlots;
-        // One save at a time per surface (pipeline Run 1): a save arriving while one runs joins it. See EmbedSaveGate.
+        // One save at a time per surface (pipeline Runs 1-3): a save arriving while one runs is refused. See EmbedSaveGate.
         private readonly Services.EmbedSaveGate _saveGate = new Services.EmbedSaveGate();
         private List<string> _lastRecoverySlots;   // what WriteRecoveryFile last wrote, so a teardown doesn't write it twice
         private string _lastRecoveryFile;
@@ -2062,14 +2062,17 @@ namespace ClarionAssistant.Terminal
             // re-opens the native embeditor and drives it with nested Application.DoEvents() pumps; on this
             // reentrant stack that deadlocks the IDE — the same failure mode the deferred ShowView fixed on
             // open. Post it so this handler returns and the round-trip runs on a settled UI turn.
-            // ONE SAVE AT A TIME (pipeline Runs 1-2: Codex security HIGH). The round-trip pumps DoEvents, so a second
-            // Ctrl+S or a routed save could otherwise re-enter it and plan/write/close against the same native embed.
-            // A save arriving while one runs is kept as the pending request; when the running save ends, newer text
-            // runs as ONE follow-up save whose outcome answers both (see EmbedSaveGate). Nothing is dropped.
+            // ONE SAVE AT A TIME (pipeline Runs 1-3: Codex security HIGH). The round-trip pumps DoEvents, so a second
+            // Ctrl+S, Ctrl+Q or routed save could otherwise re-enter it and plan/write/close against the same native
+            // embed. A save arriving while one runs is REFUSED on the spot with its own answer: the editor stays open
+            // with the text, the page toasts why (and drops any Ctrl+Q exit — a failed save never closes), and its own
+            // EmbedSaveFinished lets a routed save return at once. The running save reports separately when it ends.
             int token = _saveGate.TryEnter(DateTime.UtcNow);
             if (token == 0)
             {
-                JoinRunningSave(current);
+                MonacoSpikeLog.Write("[save-timing] save refused — one is already in progress (slots=" + current.Count + ")");
+                PostSaveResult(false, Services.EmbedSaveGate.BusyMessage);
+                RaiseEmbedSaveFinished(false, Services.EmbedSaveGate.BusyMessage, true);
                 return;
             }
             var captured = current;
@@ -2652,12 +2655,18 @@ namespace ClarionAssistant.Terminal
         // WebView2 message loop and deadlock the IDE.
         private void RunSaveRoundTrip(List<string> current, int token)
         {
-            // A queued save whose gate went stale and was taken by a newer one must not run alongside it: hand its
-            // text to the running save as the pending request instead (it is then saved, or reported, once).
-            if (!_saveGate.Start(token)) { JoinRunningSave(current); return; }
+            if (!_saveGate.Start(token))
+            {
+                // Superseded: this queued callback went stale (its hand-off sat for StaleAfter) and a NEWER save took
+                // the gate. Its text is older than that save's by construction, so it must never be saved (pipeline
+                // Run 3, Codex security). It still gets its own answer, as a refusal.
+                const string superseded = "Save skipped: a newer save replaced this one.";
+                MonacoSpikeLog.Write("[save-timing] a superseded (stale) save callback ran late — refused");
+                RaiseEmbedSaveFinished(false, superseded, _panel != null);
+                return;
+            }
 
-            // Every exit raises EmbedSaveFinished exactly once per save CYCLE, including an unexpected throw: either
-            // here, or — when newer text was requested meanwhile — by the follow-up save that answers both.
+            // Every exit raises EmbedSaveFinished exactly once, including an unexpected throw.
             bool ok = false, intact = true;
             string msg = "Save error: the save round-trip did not complete.";
             try { RunSaveRoundTripCore(current, out ok, out msg, out intact); }
@@ -2672,71 +2681,32 @@ namespace ClarionAssistant.Terminal
             finally
             {
                 _saveGate.Exit(token);   // before the event, so a subscriber reacting to it can save again
-                var followUp = _saveGate.TakeFollowUp(current);
-                if (followUp != null && intact && _panel != null)
-                {
-                    // Newer text was requested during this save and the surface is still here: save it now. Its
-                    // result and its EmbedSaveFinished answer every request of this cycle (pipeline Run 2).
-                    MonacoSpikeLog.Write("[save-timing] newer text was requested during the save — running it as a follow-up");
-                    PostFollowUpSave(followUp);
-                }
-                else
-                {
-                    // The surface is gone (save-and-exit, or a failure after the detach): text requested during the
-                    // save can't be saved any more, so it must not vanish with it.
-                    if (followUp != null) msg += KeepUnsavedRequest(followUp);
-                    RaiseEmbedSaveFinished(ok, msg, intact);
-                }
+                RaiseEmbedSaveFinished(ok, msg, intact);
             }
         }
 
-        /// <summary>A save requested while another runs: keep it as the pending request (latest wins).</summary>
-        private void JoinRunningSave(List<string> slots)
+        /// <summary>
+        /// A save-and-exit (overlay, or a live tab) closes the editor with the snapshot it captured when it began. Text
+        /// typed while it ran — including a Ctrl+Q whose own save was refused as "already in progress" — is newer
+        /// than that snapshot and would vanish with the editor. Keep it: recovery file + notice. Returns the sentence
+        /// for the result message, or "" when nothing newer was typed. (Charlie: Ctrl+Q during a save must never
+        /// close with lost edits.)
+        /// </summary>
+        private string KeepTypedDuringSave(List<string> saved)
         {
-            _saveGate.Join(slots);
-            try { MonacoSpikeLog.Write("[save-timing] save requested while one is in flight — pending (slots=" + (slots != null ? slots.Count : 0) + ")"); } catch { }
-        }
-
-        /// <summary>Run the pending request as its own save, off this stack. Busy again (another cycle took the
-        /// gate first)? It stays pending for that one.</summary>
-        private void PostFollowUpSave(List<string> slots)
-        {
-            Action run = () =>
-            {
-                int t = _saveGate.TryEnter(DateTime.UtcNow);
-                if (t == 0) { JoinRunningSave(slots); return; }
-                RunSaveRoundTrip(slots, t);
-            };
-            try
-            {
-                if (_panel != null && _panel.IsHandleCreated) { _panel.BeginInvoke(run); return; }
-            }
-            catch (Exception ex) { MonacoSpikeLog.Write("[save-timing] follow-up BeginInvoke failed, running inline: " + ex.Message); }
-            run();
-        }
-
-        /// <summary>Text requested during a save that closed the CA Embeditor: recovery file + notice. Returns the
-        /// sentence for the result message.</summary>
-        private string KeepUnsavedRequest(List<string> slots)
-        {
-            string rec = WriteRecoveryFile("you asked to save newer edits while a save was closing the CA Embeditor", slots);
+            var latest = _mirroredSlots;
+            if (!_mirroredDirty || latest == null || Services.EmbedSavePlanner.SameSlots(latest, saved)) return "";
+            string rec = WriteRecoveryFile("you typed more while a save was closing the CA Embeditor", latest);
             string note = RecoveryNote(rec);
             if (note.Length > 0)
                 try
                 {
-                    CaNotice.Post("embed-save-newer-kept", "CA Embeditor: newer edits kept",
-                        "You asked to save newer edits to " + _procedureName + " while a save was closing the CA Embeditor, " +
-                        "so they were not saved." + note);
+                    CaNotice.Post("embed-typed-during-save", "CA Embeditor: later edits kept",
+                        "You edited " + _procedureName + " while it was being saved and closed, so those later edits were " +
+                        "not in the save." + note);
                 }
                 catch { }
-            return note.Length > 0 ? " Newer edits requested during the save were not saved." + note : "";
-        }
-
-        /// <summary>A newer save is waiting, so this one must not report to the page or close the tab: the follow-up
-        /// will (pipeline Run 2: a Ctrl+Q "Yes" during a save otherwise closed the tab on the OLDER save's success).</summary>
-        private bool FollowUpPending(List<string> current)
-        {
-            return _panel != null && _saveGate.HasNewerPending(current);
+            return note.Length > 0 ? " Edits made during the save were not in it." + note : "";
         }
 
         private void RunSaveRoundTripCore(List<string> current, out bool ok, out string msg, out bool editorIntact)
@@ -2798,6 +2768,8 @@ namespace ClarionAssistant.Terminal
                     // it in a notice rather than let it pass unmentioned.
                     if (o.Plan != null && o.Plan.Foreign > 0)
                         try { CaNotice.Post("embed-save-foreign", "CA Embeditor saved", msg); } catch { }
+                    // The overlay is gone now; anything typed while it saved was not in the save. Keep it on disk.
+                    msg += KeepTypedDuringSave(current);
                 }
                 else if (editorIntact)
                     RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
@@ -2810,8 +2782,6 @@ namespace ClarionAssistant.Terminal
                 try
                 {
                     if (ok) RefreshPadSources();
-                    else if (editorIntact && FollowUpPending(current))
-                        MonacoSpikeLog.Write("[save-timing] refusal not shown — a newer save is pending and will report");
                     else
                     {
                         // Both, deliberately: the toast clears the page's "Saving…" state (and answers a routed save's
@@ -2873,18 +2843,19 @@ namespace ClarionAssistant.Terminal
             // Refresh the pad's IDE-sourced caches (UI thread) so Local/Global Data + Other Files reflect the save.
             if (ok) RefreshPadSources();
             mark("refreshPadSources");
-            // A newer save requested meanwhile reports instead: the page treats any success as covering what it last
-            // asked for (Ctrl+Q's exit-after-save), so the older result must not reach it (pipeline Run 2).
-            bool newerPending = FollowUpPending(current);
-            if (!newerPending) PostSaveResult(ok, msg);
+            // Typed while the save ran (e.g. a Ctrl+Q refused as "already in progress")? The page marks itself clean
+            // on this success although its text is newer, so put the newer text on disk now, whatever happens next.
+            bool typedDuring = ok && _mirroredDirty && _mirroredSlots != null &&
+                !Services.EmbedSavePlanner.SameSlots(_mirroredSlots, current);
+            if (typedDuring) msg += KeepTypedDuringSave(current);
+            PostSaveResult(ok, msg);
             mark("postSaveResult — DONE");
 
             // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
             // tab — mirroring native Clarion embed editing. Deferred so it runs after the WebView2 gets its save
-            // result and the close stack is clean.
-            // Not while newer text waits: the tab (now a snapshot — the live embed just closed) stays for the follow-up,
-            // which saves through the re-open path.
-            if (live && ok && !newerPending) { PostCloseTab(); editorIntact = false; }
+            // result and the close stack is clean. NOT when newer text was typed during the save: the tab (now a
+            // snapshot — the live embed just closed) stays open with that text, never a close with lost edits.
+            if (live && ok && !typedDuring) { PostCloseTab(); editorIntact = false; }
         }
 
         /// <summary>True if THIS tab is still the live one AND its native embed is still open (GetEmbedInfo). A tab

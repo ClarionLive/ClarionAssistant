@@ -69,28 +69,49 @@ static class EmbedSaveOrderSourceScan
             int next = view.IndexOf("private void ", hs + 1, StringComparison.Ordinal);
             string body = view.Substring(hs, (next > hs ? next : view.Length) - hs)
                 .Replace("if (_fileMode) { HandleFileSave(json); return; }", "");   // CA Editor file saves are out of scope
-            // The one return allowed without a raise is the JOIN: a save arriving while one is in flight shares that
-            // save's single outcome (pipeline Run 1), so raising for it too would be a second event for one save.
-            int joinAt = body.IndexOf("_saveGate.TryEnter(", StringComparison.Ordinal);
-            int joins = body.Contains("JoinRunningSave(current);") ? 1 : 0;
+            // A save arriving while one runs is REFUSED with its own answer (Charlie's scope cut after pipeline Run 3):
+            // it posts the busy refusal to the page and raises its own event — so every return raises.
+            int busyAt = body.IndexOf("_saveGate.TryEnter(", StringComparison.Ordinal);
             int returns = Count(body, "return;"), raises = Count(body, "RaiseEmbedSaveFinished(");
-            Ok("every early return in HandleSave raises EmbedSaveFinished, bar the in-flight join (" + returns + " returns, " +
-                raises + " raises, " + joins + " join)", returns == raises + joins && raises > 0);
+            Ok("every early return in HandleSave raises EmbedSaveFinished (" + returns + " returns, " + raises + " raises)",
+                returns == raises && raises > 0);
+            int busyEnd = busyAt >= 0 ? body.IndexOf("return;", busyAt, StringComparison.Ordinal) : -1;
+            string busyBlock = busyAt >= 0 && busyEnd > busyAt ? body.Substring(busyAt, busyEnd - busyAt) : "";
+            Ok("a second save while one runs is refused: page told, own event raised, editor intact",
+                busyBlock.Contains("if (token == 0)") &&
+                busyBlock.Contains("PostSaveResult(false, Services.EmbedSaveGate.BusyMessage)") &&
+                busyBlock.Contains("RaiseEmbedSaveFinished(false, Services.EmbedSaveGate.BusyMessage, true)") &&
+                !busyBlock.Contains("RunSaveRoundTrip(") && !busyBlock.Contains("PostCloseTab") && !busyBlock.Contains("Cancel"));
             int handOff = body.IndexOf("BeginInvoke((Action)(() => RunSaveRoundTrip(captured, token)))", StringComparison.Ordinal);
-            Ok("one save at a time: the gate is taken before the round-trip is handed off", joinAt >= 0 && handOff > joinAt);
+            Ok("one save at a time: the gate is taken before the round-trip is handed off", busyAt >= 0 && handOff > busyAt);
             Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured, token);"));
         }
         int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current, int token)", StringComparison.Ordinal);
-        Ok("a queued save that lost the gate does not run (Start(token) first)", rt >= 0 &&
-            view.IndexOf("if (!_saveGate.Start(token)) { JoinRunningSave(current); return; }", rt, StringComparison.Ordinal) > rt);
+        int st = rt >= 0 ? view.IndexOf("if (!_saveGate.Start(token))", rt, StringComparison.Ordinal) : -1;
+        int tr = rt >= 0 ? view.IndexOf("try { RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
+        string startBlock = st > rt && tr > st ? view.Substring(st, tr - st) : "";
+        // Pipeline Run 3 (Codex security): a superseded callback is OLDER than the save that superseded it, so it never
+        // saves — it is refused (its own event) and nothing else.
+        Ok("a superseded queued save never saves; it is refused with its own event",
+            startBlock.Length > 0 && startBlock.Contains("return;") && startBlock.Contains("RaiseEmbedSaveFinished(false,") &&
+            !startBlock.Contains("TryEnter("));
         int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
         string finBody = fin > rt && core > fin ? view.Substring(fin, core - fin) : "";
         Ok("RunSaveRoundTrip raises in a finally, and releases ITS OWN gate token there", finBody.Contains("RaiseEmbedSaveFinished(") &&
             finBody.Contains("_saveGate.Exit(token)"));
-        Ok("newer text requested during a save is saved by a follow-up, or kept on disk — never dropped",
-            finBody.Contains("_saveGate.TakeFollowUp(current)") && finBody.Contains("PostFollowUpSave(followUp)") &&
-            finBody.Contains("KeepUnsavedRequest(followUp)"));
+        // The follow-up/replay design is DELETED, not left dormant (Charlie, after pipeline Run 3).
+        string[] gone = { "TakeFollowUp", "HasNewerPending", "JoinRunningSave", "PostFollowUpSave", "_closeAfterFollowUp",
+                          "FollowUpPending", "KeepUnsavedRequest", "_saveGate.Join(", "public void Join(" };
+        string flow = File.ReadAllText(Path.Combine(root, "Services", "EmbedSaveFlow.cs"));
+        string left = string.Join(", ", Array.FindAll(gone, g => view.Contains(g) || flow.Contains(g)));
+        Ok("no follow-up/replay machinery left (view or gate)", left.Length == 0, left);
+        // Ctrl+Q during a save must never close with lost edits: a live save-and-exit does not close the tab when text
+        // was typed during it, and that text also goes to disk (the page marks itself clean on the older save).
+        Ok("a save-and-exit keeps text typed during the save (tab stays open; recovery copy)",
+            view.Contains("if (live && ok && !typedDuring) { PostCloseTab(); editorIntact = false; }") &&
+            view.Contains("if (typedDuring) msg += KeepTypedDuringSave(current);") &&
+            Count(view, "KeepTypedDuringSave(current)") >= 2);   // the tab path and the overlay's success path
         // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
         int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
         int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);
