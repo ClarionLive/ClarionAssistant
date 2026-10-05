@@ -3248,6 +3248,10 @@ namespace ClarionAssistant
             McpToolRegistry.AppTreeFactory = () => new AppTreeService();
             McpToolRegistry.IdeProbeFactory = () => new Services.IdeProbeService();
             McpToolRegistry.DiagnosticLog = msg => MonacoSpikeLog.Write(msg);
+            // 73bd1f03: the facts EmbedOverlayGuard needs to keep the embed/editor tools from writing the
+            // native embed document hidden behind the CA Embeditor. IDE-coupled, so supplied here.
+            McpToolRegistry.CaEmbeditorLiveProbe = () => ModernEmbeditorViewContent.HasLiveOverlay;
+            McpToolRegistry.ActiveEditorCoveredProbe = () => ModernEmbeditorViewContent.ActiveEditorIsCoveredByOverlay();
 
             // LspService no longer calls EditorService.GetOpenSolutionPath() directly (that static
             // was the one thing keeping an otherwise IDE-free file out of the standalone build).

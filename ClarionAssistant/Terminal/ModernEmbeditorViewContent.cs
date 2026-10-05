@@ -60,11 +60,74 @@ namespace ClarionAssistant.Terminal
         // native embed the instant it opened — demoting the very first save off the live fast path (no save-and-
         // exit). Gate the release on this flag so open-time churn can't drop the embed. (a5bbf005 probe fix)
         private bool _liveActivatedOnce;
-        private static ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
+        // volatile: HasLiveOverlay is read off the UI thread by the MCP tool guard (73bd1f03); writes stay UI-only.
+        private static volatile ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
         /// <summary>True while any CA embeditor overlay/tab holds the native embed open — the state whose
         /// teardown by Clarion's error navigation is disruptive. Read by ErrorPadNavigationInterceptor's
         /// dispatch rule (d3ab083a).</summary>
         internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
+
+        /// <summary>
+        /// True when the ACTIVE workbench view is the native ClaGenEditor that the live overlay covers, i.e.
+        /// when EditorService's text-area tools (insert_text_at_cursor, replace_range, ...) would edit the
+        /// hidden native embed document instead of Monaco (73bd1f03, read through McpToolRegistry's
+        /// ActiveEditorCoveredProbe). Resolves the active view the way EditorService.GetActiveTextArea does:
+        /// the window's ViewContent, or one of its SecondaryViewContents.
+        ///
+        /// SAFE FROM ANY THREAD. Today the tools that ask run on the UI thread, but fc420c30 moves the routed
+        /// editor tools off it (they wait on a Monaco page reply, which a UI-thread wait would deadlock). Off
+        /// the UI thread the workbench read is marshalled over with a bounded wait; a timeout or a missing
+        /// main form THROWS, which McpToolRegistry's probe treats as "covered" (fail closed). Never Invoke():
+        /// an unbounded wait on a busy UI thread would hang the tool call.
+        /// </summary>
+        internal static bool ActiveEditorIsCoveredByOverlay()
+        {
+            var form = WorkbenchSingleton.MainForm;
+            if (form == null || form.IsDisposed) throw new InvalidOperationException("no workbench main form");
+            if (!form.InvokeRequired) return ActiveEditorIsCoveredByOverlayOnUi();
+
+            bool result = false;
+            Exception error = null;
+            var ar = form.BeginInvoke((Action)(() =>
+            {
+                try { result = ActiveEditorIsCoveredByOverlayOnUi(); }
+                catch (Exception ex) { error = ex; }
+            }));
+            if (!ar.AsyncWaitHandle.WaitOne(CoveredProbeTimeoutMs))
+                throw new TimeoutException("UI thread did not answer the CA Embeditor probe within " + CoveredProbeTimeoutMs + " ms");
+            if (error != null) throw error;
+            return result;
+        }
+
+        private const int CoveredProbeTimeoutMs = 2000;
+
+        private static bool ActiveEditorIsCoveredByOverlayOnUi()
+        {
+            var live = LiveOverlayInstance;
+            if (live == null) return false;
+            var genEditor = live._overlayGenEditor;
+            if (genEditor == null) return true;   // overlay up but its editor unknown: fail closed
+
+            const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            Func<object, string, object> prop = (o, n) =>
+            {
+                if (o == null) return null;
+                var p = o.GetType().GetProperty(n, all);
+                return p == null ? null : p.GetValue(o, null);
+            };
+
+            var wb = WorkbenchSingleton.Workbench;
+            var window = prop(wb, "ActiveWorkbenchWindow") ?? prop(wb, "ActiveContent");
+            if (window == null) return false;
+            var view = prop(window, "ViewContent") ?? prop(window, "ActiveViewContent") ?? window;
+            if (ReferenceEquals(view, genEditor)) return true;
+            var secondary = prop(view, "SecondaryViewContents") as System.Collections.IEnumerable;
+            if (secondary != null)
+                foreach (var sv in secondary)
+                    if (ReferenceEquals(sv, genEditor)) return true;
+            return false;
+        }
 
         /// <summary>
         /// The CA Embeditor OVERLAY instance currently covering the open native embeditor, or null when

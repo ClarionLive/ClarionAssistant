@@ -212,6 +212,7 @@
     <Compile Include="Services\ModernEmbeditorLauncher.cs" />
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\EmbedAdoptPolicy.cs" />
+    <Compile Include="Services\EmbedOverlayGuard.cs" />
     <Compile Include="Services\EmbedApplyFlow.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\LocalLayerHandlers.cs" />

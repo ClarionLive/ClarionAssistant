@@ -136,6 +136,22 @@ namespace ClarionAssistant.Services
         public static Action<string> DiagnosticLog;
 
         /// <summary>
+        /// Supplied by the addin (left null by a standalone host, which registers no embed or editor tools):
+        /// true while the CA Embeditor (Monaco overlay or live tab) holds the native embeditor open. Read on
+        /// the UI thread, by <see cref="ExecuteTool"/>, for the tools <see cref="EmbedOverlayGuard"/> covers.
+        /// </summary>
+        public static Func<bool> CaEmbeditorLiveProbe;
+
+        /// <summary>
+        /// Supplied by the addin: true when the ACTIVE editor's text area is the native embed document hidden
+        /// under the CA Embeditor overlay, i.e. where the editor tools would land. See
+        /// <see cref="EmbedOverlayGuard"/>. Both probes must be callable from ANY thread: a tool flagged
+        /// RequiresUiThread=false reaches ExecuteTool off the UI thread, so the addin's implementation does
+        /// its own bounded UI marshal, and a timeout throws (refused, fail closed).
+        /// </summary>
+        public static Func<bool> ActiveEditorCoveredProbe;
+
+        /// <summary>
         /// True when the editor-agnostic tools are served by a SEPARATE process and this registry
         /// must not also offer them (ticket d051fbd1). Set by the addin once clarion-mcp-server.exe
         /// is installed beside it; the two then partition the tool set instead of duplicating it.
@@ -226,7 +242,9 @@ namespace ClarionAssistant.Services
             if (!_tools.TryGetValue(name, out tool))
                 throw new ArgumentException("Unknown tool: " + name);
 
-            return tool.Handler(arguments ?? new Dictionary<string, object>());
+            // 73bd1f03: never write the native embed document from behind the CA Embeditor.
+            return EmbedOverlayGuard.Run(name, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe,
+                () => tool.Handler(arguments ?? new Dictionary<string, object>()), DiagnosticLog);
         }
 
         /// <summary>True when the tool has a streaming variant (progressToken-aware clients).</summary>
@@ -1326,11 +1344,13 @@ IdeOnly = true,
                     "user-deletable. When rewriting multiple embeds in one pass, write the HIGHEST line " +
                     "number first and work downward so earlier «E:N» tokens stay valid. " +
                     "Response reports the line delta: if non-zero, all «E:N» tokens after this line are stale — " +
-                    "call search_embeditor_source or get_embeditor_source again before writing to later embeds.",
+                    "call search_embeditor_source or get_embeditor_source again before writing to later embeds. " +
+                    "Refused (nothing written) while the CA Embeditor is open on the procedure: the native buffer " +
+                    "this writes is hidden behind it and the CA Embeditor's save would lose the change.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" },
-                    { "code",        "Complete replacement Clarion code for the embed. Include a trailing newline so Ctrl-X can delete every code line. Indentation is applied automatically." }
+                    { "code",      "Complete replacement Clarion code for the embed. Include a trailing newline so Ctrl-X can delete every code line. Indentation is applied automatically." }
                 }, new[] { "line_number", "code" }),
                 RequiresUiThread = true,
                 Handler = args =>
