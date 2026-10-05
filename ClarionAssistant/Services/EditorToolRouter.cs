@@ -58,6 +58,25 @@ namespace ClarionAssistant.Services
         /// CaEditorSettings.SourceAppliesTo). UI thread. Null = never (the standalone server).</summary>
         public static Func<string, bool> OverlayExpectedFor;
 
+        /// <summary>open_file, second level of activation: give the file's tab keyboard focus. UI thread. Set by the addin
+        /// (MonacoClarionEditor.FocusTabFor); null = select only.</summary>
+        public static Func<string, bool> FocusTab;
+
+        /// <summary>
+        /// Bring an open file's workbench window to the front (UI thread): SelectWindow, THEN keyboard focus to its
+        /// editor. SelectWindow alone only displays the tab: the IDE's ActiveWorkbenchWindow moves only when a document
+        /// takes keyboard focus, and with focus in the terminal it stayed on the previous window (live, combined-1005c:
+        /// from the .app view, open_file of an already-open CA Editor tab timed out twice with the .app still active).
+        /// </summary>
+        public static bool ActivateTab(object window, string path)
+        {
+            if (window == null) return false;
+            try { window.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(window, null); } catch { }
+            var focus = FocusTab;
+            if (focus != null) { try { focus(path); } catch { } }
+            return true;
+        }
+
         /// <summary>How one call is routed: a WRITE names the file (and line) it changed in its result; ExpectedPath
         /// refuses the call unless that file is the active editor.</summary>
         public sealed class RouteOptions

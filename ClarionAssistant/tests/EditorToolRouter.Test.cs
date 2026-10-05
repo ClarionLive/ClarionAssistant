@@ -139,6 +139,14 @@ static class EditorToolRouterTest
         }
     }
 
+    // ---- an IWorkbenchWindow: SelectWindow displays the tab (it does NOT make it the active window) ----
+    public sealed class FakeWorkbenchWindow
+    {
+        public bool Displayed;
+        public int Selects;
+        public void SelectWindow() { Selects++; Displayed = true; }
+    }
+
     // ---- the native editor: counts every call ----
     static int NativeCalls;
     static object Native(string what) { NativeCalls++; return "NATIVE:" + what; }
@@ -343,6 +351,22 @@ static class EditorToolRouterTest
             active = nativeActive; activations = 0;
             r = orouter.OpenAndWait(target, () => "Opened " + target, () => { activations++; active = target; }, 5000);
             Check("...selected once when that is enough", r as string == "Opened " + target && activations == 1, r + " activations=" + activations);
+
+            // Live (combined-1005c): from the .app view, SelectWindow DISPLAYED the already-open tab but the IDE's
+            // ActiveWorkbenchWindow only moves when a document takes keyboard focus, and focus was in the terminal.
+            // The IDE as it behaves: SelectWindow shows the tab; focusing its editor makes it active.
+            active = @"H:\Dev\aPOSitive\v61PRM002\PRM002.app";
+            var tab = new FakeWorkbenchWindow();
+            EditorToolRouter.FocusTab = p => { if (tab.Displayed && string.Equals(p, target, StringComparison.OrdinalIgnoreCase)) active = target; return true; };
+            r = orouter.OpenAndWait(target, () => "Opened " + target, () => EditorToolRouter.ActivateTab(tab, target), 5000);
+            Check("from the .app view, an already-open tab is selected AND focused, so it becomes active",
+                r as string == "Opened " + target && tab.Selects >= 1, r + " selects=" + tab.Selects);
+            EditorToolRouter.FocusTab = null;
+            active = @"H:\Dev\aPOSitive\v61PRM002\PRM002.app"; tab = new FakeWorkbenchWindow();
+            r = orouter.OpenAndWait(target, () => "Opened " + target, () => EditorToolRouter.ActivateTab(tab, target), 2000);
+            Check("...(control: select alone leaves the .app active, the live failure, reported as an error)",
+                (r as string ?? "").StartsWith("Error: opened") && tab.Selects == 2, r + " selects=" + tab.Selects);
+            Check("ActivateTab of a file that is not open does nothing", !EditorToolRouter.ActivateTab(null, target));
 
             // A CA Editor takes the file: wait for its page too.
             var tpage = new FakePage { Path = target, Text = "x\r\n", UiThreadId = ui.Thread.ManagedThreadId, Ready = false };
