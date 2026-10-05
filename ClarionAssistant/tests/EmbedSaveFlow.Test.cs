@@ -275,12 +275,38 @@ static class EmbedSaveFlowTest
         {
             var gate = new EmbedSaveGate();
             var t0 = new DateTime(2026, 10, 5, 12, 0, 0, DateTimeKind.Utc);
-            Ok("gate: first save enters", gate.TryEnter(t0));
-            Ok("gate: a second save while one runs does NOT enter (it joins)", !gate.TryEnter(t0.AddSeconds(2)) && gate.Busy(t0.AddSeconds(2)));
-            gate.Exit();
-            Ok("gate: free again after the first finishes", gate.TryEnter(t0.AddSeconds(3)));
-            Ok("gate: an entry whose callback was dropped stops blocking after StaleAfter",
-                gate.TryEnter(t0.AddSeconds(3) + EmbedSaveGate.StaleAfter));
+            int a = gate.TryEnter(t0);
+            Ok("gate: first save gets a token", a > 0);
+            Ok("gate: a second save while one is queued does NOT enter", gate.TryEnter(t0.AddSeconds(2)) == 0 && gate.Busy(t0.AddSeconds(2)));
+            Ok("gate: the queued save starts", gate.Start(a));
+            // Pipeline Run 2 (both Codex gates): a RUNNING save never expires, however long the IDE stalls in it.
+            var late = t0 + EmbedSaveGate.StaleAfter + TimeSpan.FromMinutes(30);
+            Ok("gate: a RUNNING save is never stale", gate.TryEnter(late) == 0 && gate.Busy(late));
+            gate.Exit(a);
+            int b = gate.TryEnter(late);
+            Ok("gate: free again after the owner exits", b > 0);
+            Ok("gate: an old token's Exit does not release the new owner", ((Func<bool>)(() => { gate.Exit(a); return gate.Busy(late); }))());
+            // A queued callback that was dropped (destroyed handle) goes stale; its token can no longer start.
+            var later = late + EmbedSaveGate.StaleAfter;
+            int c = gate.TryEnter(later);
+            Ok("gate: a never-started QUEUED entry goes stale after StaleAfter", c > 0);
+            Ok("gate: the superseded token can't start (no overlap)", !gate.Start(b) && gate.Start(c));
+            gate.Exit(c);
+        }
+        {
+            // Pipeline Run 2 (debugger + adversary): newer text requested mid-save is never dropped.
+            var gate = new EmbedSaveGate();
+            var saving = new List<string> { "  x = 1", O1, O2 };
+            Ok("follow-up: none pending", gate.TakeFollowUp(saving) == null && !gate.HasNewerPending(saving));
+            gate.Join(new List<string> { "  x = 1", O1, O2 });
+            Ok("follow-up: a duplicate (same text) shares the running save", !gate.HasNewerPending(saving) && gate.TakeFollowUp(saving) == null);
+            gate.Join(new List<string> { "  x = 2", O1, O2 });
+            gate.Join(new List<string> { "  x = 3", O1, O2 });
+            Ok("follow-up: newer text is pending", gate.HasNewerPending(saving));
+            var f = gate.TakeFollowUp(saving);
+            Ok("follow-up: the LATEST request wins and is taken once", f != null && f[0] == "  x = 3" && gate.TakeFollowUp(saving) == null);
+            gate.Join(new List<string> { "  x = 1\r\n", O1, O2 });
+            Ok("follow-up: CRLF-only difference is the same text", gate.TakeFollowUp(new List<string> { "  x = 1\n", O1, O2 }) == null);
         }
 
         // ---------------- MergeStash ----------------
