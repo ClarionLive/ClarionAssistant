@@ -437,6 +437,10 @@ namespace ClarionAssistant
                 else
                 {
                     _mcpServer = new McpServer(this, _settingsService);
+                    // 73bd1f03: this registry serves the editor tools too, so it needs the CA Embeditor
+                    // probes even when the chat panel (which also sets them) never started.
+                    McpToolRegistry.CaEmbeditorLiveProbe = () => Terminal.ModernEmbeditorViewContent.HasLiveOverlay;
+                    McpToolRegistry.ActiveEditorCoveredProbe = () => Terminal.ModernEmbeditorViewContent.ActiveEditorIsCoveredByOverlay();
                     var toolRegistry = new McpToolRegistry(_editorService, _parser);
                     _mcpServer.SetToolRegistry(toolRegistry);
 

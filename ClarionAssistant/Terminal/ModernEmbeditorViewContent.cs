@@ -67,6 +67,41 @@ namespace ClarionAssistant.Terminal
         internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
 
         /// <summary>
+        /// True when the ACTIVE workbench view is the native ClaGenEditor that the live overlay covers, i.e.
+        /// when EditorService's text-area tools (insert_text_at_cursor, replace_range, ...) would edit the
+        /// hidden native embed document instead of Monaco (73bd1f03, read through McpToolRegistry's
+        /// ActiveEditorCoveredProbe). Resolves the active view the way EditorService.GetActiveTextArea does:
+        /// the window's ViewContent, or one of its SecondaryViewContents. UI thread only.
+        /// </summary>
+        internal static bool ActiveEditorIsCoveredByOverlay()
+        {
+            var live = LiveOverlayInstance;
+            if (live == null) return false;
+            var genEditor = live._overlayGenEditor;
+            if (genEditor == null) return true;   // overlay up but its editor unknown: fail closed
+
+            const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            Func<object, string, object> prop = (o, n) =>
+            {
+                if (o == null) return null;
+                var p = o.GetType().GetProperty(n, all);
+                return p == null ? null : p.GetValue(o, null);
+            };
+
+            var wb = WorkbenchSingleton.Workbench;
+            var window = prop(wb, "ActiveWorkbenchWindow") ?? prop(wb, "ActiveContent");
+            if (window == null) return false;
+            var view = prop(window, "ViewContent") ?? prop(window, "ActiveViewContent") ?? window;
+            if (ReferenceEquals(view, genEditor)) return true;
+            var secondary = prop(view, "SecondaryViewContents") as System.Collections.IEnumerable;
+            if (secondary != null)
+                foreach (var sv in secondary)
+                    if (ReferenceEquals(sv, genEditor)) return true;
+            return false;
+        }
+
+        /// <summary>
         /// The CA Embeditor OVERLAY instance currently covering the open native embeditor, or null when
         /// none (no live embed, or the live instance is a plain tab, not the overlay). Read by the Data
         /// pad's insert/goto routing (a9aa19ba): with the overlay up, the native ICSharpCode buffer is

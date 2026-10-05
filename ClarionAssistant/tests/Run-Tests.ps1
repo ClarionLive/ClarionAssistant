@@ -215,6 +215,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedAdoptPolicy.Test"
                Sources = @("tests\EmbedAdoptPolicy.Test.cs", "Services\EmbedAdoptPolicy.cs")
                Refs = @("System.dll") }
+            # 73bd1f03: no embed/editor tool writes the native embed document hidden behind the CA Embeditor.
+            @{ Name = "EmbedOverlayGuard.Test"
+               Sources = @("tests\EmbedOverlayGuard.Test.cs", "Services\EmbedOverlayGuard.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             # PR #198 pipeline round: apply_embed_edits' write/commit/save half - an abandoned call rolls
             # back instead of saving; a failed save or unconfirmed close discards our writes.
             @{ Name = "EmbedApplyFlow.Test"
