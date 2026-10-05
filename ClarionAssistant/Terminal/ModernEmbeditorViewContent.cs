@@ -1908,10 +1908,19 @@ namespace ClarionAssistant.Terminal
             // was already blocked before the save even started — a completely different fault than a slow
             // save round-trip, and worth being able to tell apart.
             try { MonacoSpikeLog.Write("[save-timing] posted to UI thread (slots=" + captured.Count + ")"); } catch { }
-            if (_panel != null && _panel.IsHandleCreated)
-                _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
-            else
-                RunSaveRoundTrip(captured);
+            bool posted = false;
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated)
+                {
+                    _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
+                    posted = true;
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-timing] BeginInvoke failed, saving inline: " + ex.Message); }
+            // Inline when the hand-off isn't possible: RunSaveRoundTrip always raises EmbedSaveFinished, which a
+            // routed save waits on — a dropped hand-off would leave it waiting with nothing saved.
+            if (!posted) RunSaveRoundTrip(captured);
         }
 
         /// <summary>Cancel/Discard from our toolbar (replaces the hidden native red-X). Overlay mode: detach the

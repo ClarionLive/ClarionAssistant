@@ -1968,7 +1968,14 @@
     }
 
     function doSave() {
-        if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
+        // Mirror mode can't save, but the HOST still has to hear about the attempt: it answers with the refusal
+        // and raises EmbedSaveFinished, which a routed save (73bd1f03) waits on. Returning here without a word
+        // to the host left that caller waiting out its whole budget. (1565ef7b)
+        if (!saveEnabled) {
+            if (fileMode) showToast('Save not available (mirror mode)', false);
+            else postToHost({ action: 'save', slots: [] });   // the host's saveResult toasts the reason
+            return;
+        }
         if (_snippetTabState) clearSnippetTabState();   // converge any in-progress mirrored stops before persisting (adversary FAILURE 2)
         // Drop any caret-behind-EOL padding BEFORE the cursor is captured, so we neither save the spaces
         // (file mode reads getValue() directly, bypassing gatherSlots) nor persist a caret sitting in

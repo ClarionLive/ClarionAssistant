@@ -5,7 +5,9 @@ using System.IO;
 //   1. RunSaveRoundTrip's overlay branch must not detach the CA Embeditor before the save has decided. The only
 //      DetachOverlay() in that branch is the one inside the beforeClose callback handed to SaveLive.
 //   2. ModernEmbeditorSaver.SaveLive must never CancelEmbeditor (a cancel there discarded the developer's text).
-// Both were violated on master 3904549 (the live repro of 73bd1f03 Case A); this scan is red there.
+//   3. Every embed save raises EmbedSaveFinished exactly once (EmbedSave's routed save waits on it), including
+//      HandleSave's early refusals and the page's mirror-mode refusal.
+// 1 and 2 were violated on master 3904549 (the live repro of 73bd1f03 Case A); this scan is red there.
 //
 // Run:  tests\Run-Tests.ps1   (arg 0 = the ClarionAssistant project dir)
 static class EmbedSaveOrderSourceScan
@@ -15,6 +17,13 @@ static class EmbedSaveOrderSourceScan
     {
         Console.WriteLine((cond ? "  [ok]   " : "  [FAIL] ") + name + (cond || detail == null ? "" : "  -> " + detail));
         if (!cond) fail++;
+    }
+
+    static int Count(string s, string needle)
+    {
+        int n = 0;
+        for (int i = s.IndexOf(needle, StringComparison.Ordinal); i >= 0; i = s.IndexOf(needle, i + needle.Length, StringComparison.Ordinal)) n++;
+        return n;
     }
 
     static int Main(string[] args)
@@ -49,6 +58,33 @@ static class EmbedSaveOrderSourceScan
             string body = saver.Substring(sl, (next > sl ? next : saver.Length) - sl);
             Ok("SaveLive never calls CancelEmbeditor", body.IndexOf("CancelEmbeditor", StringComparison.Ordinal) < 0);
         }
+
+        // ---- 3. every embed save raises EmbedSaveFinished exactly once ----
+        // EmbedSave's routed save_and_close_embeditor (73bd1f03) posts the page's save and waits on the event;
+        // an exit that doesn't raise it leaves that caller waiting out its whole budget.
+        int hs = view.IndexOf("private void HandleSave(string json)", StringComparison.Ordinal);
+        Ok("HandleSave found", hs >= 0);
+        if (hs >= 0)
+        {
+            int next = view.IndexOf("private void ", hs + 1, StringComparison.Ordinal);
+            string body = view.Substring(hs, (next > hs ? next : view.Length) - hs)
+                .Replace("if (_fileMode) { HandleFileSave(json); return; }", "");   // CA Editor file saves are out of scope
+            int returns = Count(body, "return;"), raises = Count(body, "RaiseEmbedSaveFinished(");
+            Ok("every early return in HandleSave raises EmbedSaveFinished (" + returns + " returns, " + raises + " raises)",
+                returns == raises && returns > 0);
+            Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured);"));
+        }
+        int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current)", StringComparison.Ordinal);
+        Ok("RunSaveRoundTrip raises in a finally", rt >= 0 &&
+            view.IndexOf("finally { RaiseEmbedSaveFinished(", rt, StringComparison.Ordinal) > rt &&
+            view.IndexOf("finally { RaiseEmbedSaveFinished(", rt, StringComparison.Ordinal) <
+                view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal));
+        string page = File.ReadAllText(Path.Combine(root, "Terminal", "monaco-embeditor.html"));
+        int ds = page.IndexOf("function doSave()", StringComparison.Ordinal);
+        int gate = ds >= 0 ? page.IndexOf("if (!saveEnabled)", ds, StringComparison.Ordinal) : -1;
+        int gateEnd = gate >= 0 ? page.IndexOf("return;", gate, StringComparison.Ordinal) : -1;
+        Ok("the page's mirror-mode refusal still tells the host (embed mode)",
+            gate > ds && gateEnd > gate && page.Substring(gate, gateEnd - gate).Contains("postToHost({ action: 'save'"));
 
         Console.WriteLine(fail == 0 ? "all passed" : fail + " failed");
         return fail == 0 ? 0 : 1;
