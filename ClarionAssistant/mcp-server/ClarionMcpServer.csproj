@@ -198,15 +198,15 @@
     <Compile Include="..\Services\IdeSolutionRecord.cs"><Link>Services\IdeSolutionRecord.cs</Link></Compile>
     <Compile Include="..\Services\IdeEndpointRecord.cs"><Link>Services\IdeEndpointRecord.cs</Link></Compile>
     <Compile Include="..\Services\IdeLiveTextClient.cs"><Link>Services\IdeLiveTextClient.cs</Link></Compile>
+    <Compile Include="..\Services\EditorToolRouter.cs"><Link>Services\EditorToolRouter.cs</Link></Compile>
+    <Compile Include="..\Services\EditorTextOps.cs"><Link>Services\EditorTextOps.cs</Link></Compile>
+    <Compile Include="..\Services\HostRequestBroker.cs"><Link>Services\HostRequestBroker.cs</Link></Compile>
     <Compile Include="..\Services\SharedLspBridge.cs"><Link>Services\SharedLspBridge.cs</Link></Compile>
     <Compile Include="..\Services\ColonQualifierScope.cs"><Link>Services\ColonQualifierScope.cs</Link></Compile>
     <Compile Include="..\Services\LocalScopeIndex.cs"><Link>Services\LocalScopeIndex.cs</Link></Compile>
     <Compile Include="..\Services\SymbolIndex.cs"><Link>Services\SymbolIndex.cs</Link></Compile>
     <Compile Include="..\Services\LiveDictionaryIndex.cs"><Link>Services\LiveDictionaryIndex.cs</Link></Compile>
     <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
-    <Compile Include="..\Services\EditorToolRouter.cs"><Link>Services\EditorToolRouter.cs</Link></Compile>
-    <Compile Include="..\Services\EditorTextOps.cs"><Link>Services\EditorTextOps.cs</Link></Compile>
-    <Compile Include="..\Services\HostRequestBroker.cs"><Link>Services\HostRequestBroker.cs</Link></Compile>
     <Compile Include="..\Services\ClarionClDiagnosis.cs"><Link>Services\ClarionClDiagnosis.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
