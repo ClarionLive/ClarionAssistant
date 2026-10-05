@@ -921,7 +921,13 @@ namespace ClarionAssistant.Services
         /// <summary>The verified open with its outcome, for callers that branch on success (OpenAndMirror).</summary>
         internal ProcedureOpenResult OpenProcedureEmbedChecked(string procedureName, int[] charDelaysMs)
         {
-            return ProcedureOpenFlow.Open(new ProcedureOpenOps(this), procedureName, charDelaysMs);
+            // Busy for the whole flow (pipeline run 1): the flow pumps messages while the open settles, and without
+            // this the CA overlay monitor attaches Monaco to whatever opened - a WRONG procedure included - and the
+            // cancel then runs under a live WebView2 (the re-entrant hang / TryClose deadlock). The monitor attaches
+            // after a verified open instead. Re-entrant counter, so OpenAndMirror's own busy section nests safely.
+            ModernEmbeditorLauncher.EnterBusy();
+            try { return ProcedureOpenFlow.Open(new ProcedureOpenOps(this), procedureName, charDelaysMs); }
+            finally { ModernEmbeditorLauncher.LeaveBusy(); }
         }
 
         /// <summary>
@@ -930,7 +936,9 @@ namespace ClarionAssistant.Services
         /// </summary>
         public string SelectProcedure(string procedureName)
         {
-            return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message;
+            ModernEmbeditorLauncher.EnterBusy();   // as OpenProcedureEmbedChecked: no pad/overlay activity mid-flow
+            try { return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message; }
+            finally { ModernEmbeditorLauncher.LeaveBusy(); }
         }
 
         /// <summary>The open embeditor's procedure name, focused or not, for get_embed_info. Null when none is open
@@ -988,12 +996,34 @@ namespace ClarionAssistant.Services
                 var mainCtrl = _t.GetAppMainControl();
                 if (mainCtrl == null || !mainCtrl.IsHandleCreated) return "the app window is not available";
                 var log = new StringBuilder();
-                return _t.ClickEmbeditorButton(_t.GetChildWindows(mainCtrl.Handle), log)
-                    ? null : "the app tree's Embeditor button was not found";
+                if (_t.ClickEmbeditorButton(_t.GetChildWindows(mainCtrl.Handle), log)) return null;
+                // Keep the button scan (which ClaButtons, which captions): it is the one clue to why it failed.
+                return "the app tree's Embeditor button was not found (" + log.ToString().Trim().Replace("\r\n", "; ").Replace("\n", "; ") + ")";
             }
 
             public bool WaitForOpen(int timeoutMs) { return ModernEmbeditorLauncher.WaitForEmbedOpen(_t, timeoutMs); }
-            public string OpenProcedureName() { return _t.GetOpenNativeEmbeditorProcName(); }
+
+            // Read the open's identity until it settles (ProcedureOpenFlow.DecideOpenedName): the same settled answer on
+            // two consecutive readings, or the last reading once IdentitySettleMs runs out.
+            public string OpenProcedureName(string requested)
+            {
+                string expectedModule = _t.GetProcedureModule(requested);
+                string previous = null, answer = null;
+                bool done = ModernEmbeditorLauncher.PumpUntil(() =>
+                {
+                    bool settled;
+                    string now = ProcedureOpenFlow.DecideOpenedName(_t.ReadEmbeditorHeaderProcName(), _t.ReadEmbeditorDocumentProcName(),
+                        _t.ReadOpenEmbedModule(), expectedModule, false, out settled);
+                    if (!settled) { previous = null; return false; }
+                    if (previous != null && string.Equals(previous, now, StringComparison.Ordinal)) { answer = now; return true; }
+                    previous = now;
+                    return false;
+                }, ProcedureOpenFlow.IdentitySettleMs);
+                if (done) return answer;
+                bool last;
+                return ProcedureOpenFlow.DecideOpenedName(_t.ReadEmbeditorHeaderProcName(), _t.ReadEmbeditorDocumentProcName(),
+                    _t.ReadOpenEmbedModule(), expectedModule, true, out last);
+            }
 
             public string CancelAndWaitClosed()
             {
@@ -1053,6 +1083,58 @@ namespace ClarionAssistant.Services
                 return string.IsNullOrWhiteSpace(name) ? null : name.Trim();
             }
             catch { return null; }
+        }
+
+        // --- The open embeditor's identity, piece by piece, for ProcedureOpenFlow.DecideOpenedName (pipeline run 1).
+        // Kept apart (rather than GetOpenNativeEmbeditorProcName's header-else-document answer) so the flow can require
+        // the pieces to AGREE: the ClaGenEditor is reused, and any one of them can still describe the previous open.
+
+        // The procedure named by the open embeditor's header ("Proc - Embeditor - (module.clw)"), or null.
+        private string ReadEmbeditorHeaderProcName()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                if (editor == null || GetOpenPweeDetails() == null) return null;
+                return ProcFromHeaderTitle(
+                    (GetProp(editor, "HeaderTitle") ?? GetProp(editor, "TitleName") ?? GetProp(editor, "TabPageText")) as string);
+            }
+            catch { return null; }
+        }
+
+        // The procedure declared at column 0 of the open embeditor's document (validated against the app's procedures), or null.
+        private string ReadEmbeditorDocumentProcName()
+        {
+            try
+            {
+                if (GetOpenPweeDetails() == null) return null;
+                return ModernEmbeditorLauncher.ProcNameFromSource(GetEmbeditorDocumentText(), GetProcedureNames());
+            }
+            catch { return null; }
+        }
+
+        // The generated module of the embed that is open NOW (PweeEditorDetails.Module: the details object exists only
+        // while an embed is open, so it belongs to this open, not a previous one), or null.
+        private string ReadOpenEmbedModule()
+        {
+            try { return GetProp(GetOpenPweeDetails(), "Module") as string; }
+            catch { return null; }
+        }
+
+        // The module the app assigns to procedure <paramref name="name"/>, or null when unknown.
+        private string GetProcedureModule(string name)
+        {
+            try
+            {
+                foreach (var d in GetProcedureDetails())
+                    if (string.Equals((d["name"] ?? "").ToString(), name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string m = (d["module"] ?? "").ToString().Trim();
+                        return m.Length > 0 ? m : null;
+                    }
+            }
+            catch { }
+            return null;
         }
 
         /// <summary>
@@ -1165,7 +1247,7 @@ namespace ClarionAssistant.Services
             }
 
             // Send BM_CLICK to the Embeditor button. One DoEvents dispatches the posted click; we do NOT
-            // sleep here — the caller (OpenAndMirror) immediately runs WaitForEmbedOpen, which polls
+            // sleep here — the caller (ProcedureOpenFlow, via ops.WaitForOpen) immediately runs WaitForEmbedOpen, which polls
             // GetEmbedInfo() while pumping DoEvents until the embed actually opens. The old fixed
             // Sleep(500) was therefore pure dead latency the poll already covers (~500ms off every open). [perf]
             SendMessage(embeditorBtn, BM_CLICK, IntPtr.Zero, IntPtr.Zero);

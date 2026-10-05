@@ -28,8 +28,10 @@ namespace ClarionAssistant.Services
         string ClickEmbeditor();
         /// <summary>Pump until an embeditor is open. False on timeout.</summary>
         bool WaitForOpen(int timeoutMs);
-        /// <summary>The OPEN embeditor's procedure name (focused or not), or null when it cannot be read.</summary>
-        string OpenProcedureName();
+        /// <summary>The OPEN embeditor's procedure, once its identity has settled (see
+        /// <see cref="ProcedureOpenFlow.DecideOpenedName"/>): its name, a description that cannot equal
+        /// <paramref name="requested"/> when the evidence contradicts itself, or null when it cannot be read.</summary>
+        string OpenProcedureName(string requested);
         /// <summary>Cancel the open embeditor WITHOUT saving and wait for it to close. Null on success, else why not.</summary>
         string CancelAndWaitClosed();
     }
@@ -60,6 +62,10 @@ namespace ClarionAssistant.Services
         public const int ClaListTimeoutMs = 3000;
         public const int SelectionTimeoutMs = 2000;
         public const int OpenTimeoutMs = 45000;
+        /// <summary>After the open times out, how long to keep watching for it to arrive late (to cancel it).</summary>
+        public const int LateOpenDrainMs = 5000;
+        /// <summary>How long the post-open identity may take to settle before the last reading is taken as final.</summary>
+        public const int IdentitySettleMs = 3000;
 
         public static ProcedureOpenResult Open(IProcedureOpenOps ops, string requested, int[] charDelaysMs)
         {
@@ -134,14 +140,21 @@ namespace ClarionAssistant.Services
 
                 if (!ops.WaitForOpen(OpenTimeoutMs))
                 {
-                    // It may still open late: if it did by now, close it unsaved rather than leave it unverified.
-                    string late = ops.OpenEmbeditorFile() != null ? ops.CancelAndWaitClosed() : null;
-                    return Fail(canonical, "Error: the embeditor did not open for '" + canonical + "' within " +
-                        (OpenTimeoutMs / 1000) + "s." + (late != null ? " " + CouldNotClose(late) : ""));
+                    // The click is still outstanding: the IDE may finish the open after we give up. Keep watching a
+                    // little longer and cancel anything that arrives, unsaved, rather than leave it unverified.
+                    string msg = "Error: the embeditor did not open for '" + canonical + "' within " + (OpenTimeoutMs / 1000) + "s.";
+                    bool arrived = ops.OpenEmbeditorFile() != null || ops.WaitForOpen(LateOpenDrainMs);
+                    if (!arrived)
+                        return Fail(canonical, msg + " If an embeditor still appears later it was NOT verified: check it with " +
+                            "get_embed_info and cancel it with cancel_embeditor unless it shows '" + canonical + "'.");
+                    string lateErr = ops.CancelAndWaitClosed();
+                    return Fail(canonical, msg + (lateErr == null
+                        ? " It opened late and was cancelled without saving. Nothing is open."
+                        : " It opened late. " + CouldNotClose(lateErr)));
                 }
 
                 // Post-open check: the hard guarantee. An unreadable name is treated as a mismatch.
-                string opened = ops.OpenProcedureName();
+                string opened = ops.OpenProcedureName(canonical);
                 if (Same(opened, canonical))
                     return new ProcedureOpenResult { Ok = true, Procedure = canonical, Message = "Embeditor opened for '" + canonical + "'." };
 
@@ -152,6 +165,62 @@ namespace ClarionAssistant.Services
                     "'; it was cancelled without saving. Nothing is open.";
             }
             return Fail(canonical, lastError);
+        }
+
+        /// <summary>
+        /// Decide which procedure an embeditor that has just opened is showing, from one reading of its evidence
+        /// (pipeline run 1, a964cde3). The native ClaGenEditor is REUSED across opens and its header and document
+        /// are updated asynchronously, so right after the open is detected they can still describe the PREVIOUS
+        /// procedure. That is dangerous exactly when the previous procedure is the one requested and the locator
+        /// picked another. So a reading is only trusted when its parts agree:
+        ///   * <paramref name="module"/> (from PweeEditorDetails, which exists only while an embed is open, so it
+        ///     belongs to THIS open) must match <paramref name="expectedModule"/>, the requested procedure's module
+        ///     in the app, when both are known. A mismatch settles at once as a description that can never equal
+        ///     the requested name.
+        ///   * the header's name and the document's col-0 PROCEDURE name must agree when both are readable.
+        /// Until then the reading is unsettled (null) and the caller reads again. On the <paramref name="final"/>
+        /// reading (the settle window ran out): a single readable name is taken; a disagreement is described as
+        /// such (so it fails the comparison); nothing readable is null. Pure; the caller pumps between readings.
+        /// </summary>
+        public static string DecideOpenedName(string header, string document, string module, string expectedModule,
+            bool final, out bool settled)
+        {
+            settled = false;
+            header = Clean(header); document = Clean(document);
+            string mod = ModuleKey(module), expected = ModuleKey(expectedModule);
+
+            if (mod != null && expected != null && !string.Equals(mod, expected, StringComparison.OrdinalIgnoreCase))
+            {
+                settled = true;
+                return (header ?? document ?? "a procedure") + " (in module " + module.Trim() + ", not " + expectedModule.Trim() + ")";
+            }
+            // The open's own details are not readable yet: its module is the evidence tied to THIS open, so wait.
+            if (mod == null && expected != null && !final) return null;
+
+            if (header != null && document != null)
+            {
+                if (Same(header, document)) { settled = true; return header; }
+                if (!final) return null;
+                settled = true;
+                return "'" + header + "' by its header but '" + document + "' by its source";
+            }
+            if (!final) return null;
+            settled = true;
+            return header ?? document;
+        }
+
+        private static string Clean(string s) { return string.IsNullOrWhiteSpace(s) ? null : s.Trim(); }
+
+        // "C:\App\PRM002022.clw" / "prm002022.CLW" / "PRM002022" -> "PRM002022": the comparison is on the module's
+        // name, since the app's procedure list and the open's details need not spell the path the same way.
+        private static string ModuleKey(string module)
+        {
+            module = Clean(module);
+            if (module == null) return null;
+            int slash = Math.Max(module.LastIndexOf('\\'), module.LastIndexOf('/'));
+            if (slash >= 0) module = module.Substring(slash + 1);
+            if (module.EndsWith(".clw", StringComparison.OrdinalIgnoreCase)) module = module.Substring(0, module.Length - 4);
+            return module.Length == 0 ? null : module;
         }
 
         private static string Describe(string opened)

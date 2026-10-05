@@ -41,9 +41,10 @@ static class ProcedureOpenFlowTest
         public List<string> OpenedNames = new List<string>();
         public string CancelError;
         public bool LateOpen;                       // WaitForOpen times out but the embeditor is open by then
+        public bool OpensDuringDrain;               // WaitForOpen times out, then the open arrives during the drain
 
         bool activated, open;
-        int typed, clicks;
+        int typed, clicks, waits;
 
         public string OpenEmbeditorFile() { Log.Add("openfile?"); return AlreadyOpen ?? (open ? "PRM002022.clw" : null); }
         public bool HasApp() { return App; }
@@ -71,10 +72,15 @@ static class ProcedureOpenFlowTest
             if (Opens || LateOpen) open = true;
             return null;
         }
-        public bool WaitForOpen(int ms) { Log.Add("waitOpen"); return Opens && open; }
-        public string OpenProcedureName()
+        public bool WaitForOpen(int ms)
         {
-            Log.Add("name?");
+            Log.Add("waitOpen:" + ms);
+            if (++waits > 1 && OpensDuringDrain) open = true;
+            return (Opens || waits > 1) && open;
+        }
+        public string OpenProcedureName(string requested)
+        {
+            Log.Add("name?:" + requested);
             int i = clicks - 1;
             return i < OpenedNames.Count ? OpenedNames[i] : "CheckComma";
         }
@@ -195,6 +201,7 @@ static class ProcedureOpenFlowTest
             var ide = new FakeIde { Selections = new List<string> { null } };
             var r = ProcedureOpenFlow.Open(ide, "CheckComma", Delays);
             Ok("selection unreadable: proceeds to the verified open", r.Ok && ide.Count("click") == 1 && ide.Count("name?") == 1, r.Message + " | " + ide);
+            Ok("post-open name is asked for the canonical request", ide.Log.Contains("name?:CheckComma"), ide.ToString());
         }
 
         // 9. THE BUG: the embeditor opens another procedure -> cancel (no save), retry slower, verified.
@@ -242,6 +249,20 @@ static class ProcedureOpenFlowTest
             var ide = new FakeIde { Opens = false, LateOpen = true };
             var r = ProcedureOpenFlow.Open(ide, "CheckComma", Delays);
             Ok("late open: cancelled", !r.Ok && ide.Count("cancel") == 1 && !ide.IsOpen, r.Message + " | " + ide);
+            Ok("late open: says it opened late and was cancelled", r.Message.Contains("opened late and was cancelled without saving"), r.Message);
+        }
+        // ... arrives only during the drain after the timeout: still cancelled, never left unverified.
+        {
+            var ide = new FakeIde { Opens = false, OpensDuringDrain = true };
+            var r = ProcedureOpenFlow.Open(ide, "CheckComma", Delays);
+            Ok("drain: waited a second time, for the drain", ide.Log.Contains("waitOpen:" + ProcedureOpenFlow.LateOpenDrainMs), ide.ToString());
+            Ok("drain: the late open was cancelled", !r.Ok && ide.Count("cancel") == 1 && !ide.IsOpen, r.Message + " | " + ide);
+        }
+        // ... never arrives: the error warns that a later one is unverified.
+        {
+            var ide = new FakeIde { Opens = false };
+            var r = ProcedureOpenFlow.Open(ide, "CheckComma", Delays);
+            Ok("never opens: warns a later embeditor is NOT verified", r.Message.Contains("NOT verified") && r.Message.Contains("cancel_embeditor"), r.Message);
         }
 
         // 11. Locator / click failures are reported and nothing opens.
@@ -277,6 +298,39 @@ static class ProcedureOpenFlowTest
             var ide = new FakeIde { Loaded = false };
             var r = ProcedureOpenFlow.Select(ide, "CheckComma", Delays);
             Ok("select while loading: refused", !r.Ok && r.Message.Contains("still loading"), r.Message);
+        }
+
+        // 13. DecideOpenedName: one reading of the open's identity (pipeline run 1, the stale-header race).
+        {
+            bool st; string n;
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", "PRM002007.clw", "PRM002007.clw", false, out st);
+            Ok("identity: all agree -> settled on the name", st && n == "CheckComma", n);
+
+            // THE RACE: a stale header (and document) still naming the request, while the open's own module says otherwise.
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", "PRM002022.clw", "PRM002007.clw", false, out st);
+            Ok("identity: stale name but this open's module differs -> settled, never the requested name", st && n != null && !string.Equals(n, "CheckComma", StringComparison.OrdinalIgnoreCase) && n.Contains("PRM002022"), n);
+
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "VerifyInventoryFiles", "PRM002007.clw", "PRM002007.clw", false, out st);
+            Ok("identity: header and document disagree -> keep reading", !st && n == null, n);
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "VerifyInventoryFiles", "PRM002007.clw", "PRM002007.clw", true, out st);
+            Ok("identity: still disagreeing at the end -> a description that cannot match", st && n != null && n != "CheckComma" && n.Contains("VerifyInventoryFiles"), n);
+
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", null, "PRM002007.clw", false, out st);
+            Ok("identity: this open's details not readable yet -> keep reading", !st && n == null, n);
+
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", null, "PRM002007.clw", "PRM002007.clw", false, out st);
+            Ok("identity: only the header readable -> keep reading until the end", !st && n == null, n);
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", null, "PRM002007.clw", "PRM002007.clw", true, out st);
+            Ok("identity: only the header readable at the end -> taken", st && n == "CheckComma", n);
+
+            n = ProcedureOpenFlow.DecideOpenedName(null, null, null, null, true, out st);
+            Ok("identity: nothing readable at the end -> null (fails the check)", n == null, n);
+
+            n = ProcedureOpenFlow.DecideOpenedName(" CheckComma ", "checkcomma", @"C:\Apps\prm002007.CLW", "PRM002007", false, out st);
+            Ok("identity: module spelled differently (path, case, extension) still matches", st && n == "CheckComma", n);
+
+            n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", "PRM002022.clw", null, false, out st);
+            Ok("identity: requested module unknown -> name agreement decides", st && n == "CheckComma", n);
         }
 
         Console.WriteLine();

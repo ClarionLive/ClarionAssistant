@@ -12,9 +12,14 @@
 #     SourceMentionsProcedure acceptance is gone.
 # W4  ActivateAppTree raises the tree with SwitchView(0) only when the window's active view is not the app view;
 #     ActivateAppView (used while an embeditor must stay in front: save/cancel) never calls SwitchView.
-# W5  The post-open name comes from GetOpenNativeEmbeditorProcName (non-focus; 44a1b10c), and
-#     GetOpenEmbeditorProcedureName (get_embed_info) uses it too.
+# W5  The post-open identity settles on the header name, the document's name and THIS open's module
+#     (PweeEditorDetails.Module) against the requested procedure's module, via ProcedureOpenFlow.DecideOpenedName
+#     (pipeline run 1: the reused ClaGenEditor can still describe the previous open). GetOpenEmbeditorProcedureName
+#     (get_embed_info) uses GetOpenNativeEmbeditorProcName (non-focus; 44a1b10c).
 # W6  ProcedureOpenFlow.cs is compiled into the addin and its test is registered in Run-Tests.ps1.
+# W7  OpenProcedureEmbedChecked and SelectProcedure hold ModernEmbeditorLauncher's busy flag for the whole flow
+#     (taken before it, released in a finally), so the CA overlay monitor can't attach Monaco to an open that is
+#     still being verified - and then cancel under a live WebView2 (pipeline run 1, debugger finding).
 #
 # PROVES IT CAN FAIL: after the real scan passes, the same scan runs on temp copies with one planted mutation
 # each (listed at the bottom); every one must go red.
@@ -127,10 +132,30 @@ function Invoke-Scan($p) {
     elseif ($view.Contains('SwitchView')) { $fails.Add('W4 ActivateAppView calls SwitchView (it would hide the embeditor on save/cancel)') }
 
     # W5
-    if ($ops -and -not $ops.Contains('public string OpenProcedureName() { return _t.GetOpenNativeEmbeditorProcName(); }')) { $fails.Add('W5 the post-open name is not GetOpenNativeEmbeditorProcName') }
+    $opsName = if ($ops) { Get-Body $ops 'public string OpenProcedureName(string requested)' } else { $null }
+    if (-not $opsName) { $fails.Add('W5 ProcedureOpenOps.OpenProcedureName(requested) not found') }
+    else {
+        foreach ($need in @('_t.GetProcedureModule(requested)', 'ProcedureOpenFlow.DecideOpenedName(_t.ReadEmbeditorHeaderProcName(), _t.ReadEmbeditorDocumentProcName(),',
+                            '_t.ReadOpenEmbedModule(), expectedModule, false, out settled)', 'ProcedureOpenFlow.IdentitySettleMs')) {
+            if (-not $opsName.Contains($need)) { $fails.Add("W5 the post-open identity does not settle on header + document + this open's module (lacks: $need)") }
+        }
+    }
+    $modRead = Get-Body $at 'private string ReadOpenEmbedModule()'
+    if (-not $modRead -or -not $modRead.Contains('GetProp(GetOpenPweeDetails(), "Module")')) { $fails.Add('W5 ReadOpenEmbedModule does not read the OPEN embed''s PweeEditorDetails.Module') }
     $named = Get-Body $at 'public string GetOpenEmbeditorProcedureName()'
     if (-not $named -or -not $named.Contains('GetOpenNativeEmbeditorProcName()')) { $fails.Add('W5 GetOpenEmbeditorProcedureName does not use GetOpenNativeEmbeditorProcName') }
     if (-not (Get-Body $at 'public string GetOpenNativeEmbeditorProcName()')) { $fails.Add('W5 GetOpenNativeEmbeditorProcName is missing') }
+
+    # W7 busy for the whole flow, so the overlay monitor never attaches to an open being verified (pipeline run 1)
+    foreach ($b in @(@('OpenProcedureEmbedChecked', $checked), @('SelectProcedure', $select))) {
+        if (-not $b[1]) { continue }
+        $e = $b[1].IndexOf('ModernEmbeditorLauncher.EnterBusy();', [StringComparison]::Ordinal)
+        $f = $b[1].IndexOf('ProcedureOpenFlow.', [StringComparison]::Ordinal)
+        if ($e -lt 0 -or $e -gt $f) { $fails.Add("W7 $($b[0]) does not take the busy flag before the flow runs") }
+        $l = $b[1].IndexOf('ModernEmbeditorLauncher.LeaveBusy();', [StringComparison]::Ordinal)
+        if ($l -ge 0 -and $l -lt $f) { $fails.Add("W7 $($b[0]) releases the busy flag before the flow runs") }
+        if ($b[1] -notmatch 'finally \{ ModernEmbeditorLauncher\.LeaveBusy\(\); \}') { $fails.Add("W7 $($b[0]) does not release the busy flag in a finally") }
+    }
 
     # W6
     if (-not $proj.Contains('<Compile Include="Services\ProcedureOpenFlow.cs" />')) { $fails.Add('W6 ProcedureOpenFlow.cs is not compiled into the addin') }
@@ -152,12 +177,15 @@ Write-Host "ProcedureOpen.SourceScan: all wiring checks pass" -ForegroundColor G
 $mutations = @(
     @{ Name = 'open bypasses the flow';         Key = 'AppTree';  From = 'return ProcedureOpenFlow.Open(new ProcedureOpenOps(this), procedureName, charDelaysMs);'; To = 'return new ProcedureOpenResult();' }
     @{ Name = 'select bypasses the flow';       Key = 'AppTree';  From = 'return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message;'; To = 'return TypeLocator(procedureName, 100);' }
-    @{ Name = 'a second click site';            Key = 'AppTree';  From = 'private IntPtr FindVisibleClaList()'; To = 'private void Stray() { ClickEmbeditorButton(null, null); }' + "`r`n        private IntPtr FindVisibleClaList()" }
+    @{ Name = 'a second click site';            Key = 'AppTree';  From = 'private IntPtr FindVisibleClaList()'; To = 'private void Stray() { ClickEmbeditorButton(null, null); }' + "`n        private IntPtr FindVisibleClaList()" }
     @{ Name = 'handler waits unchecked again';  Key = 'Registry'; From = 'string openResult = _appTree.OpenProcedureEmbed(name);'; To = 'string openResult = _appTree.OpenProcedureEmbed(name); _appTree.WaitForEmbedOpen(45000);' }
     @{ Name = 'get_embed_info loses the name';  Key = 'Registry'; From = 'info["procedureName"] = _appTree.GetOpenEmbeditorProcedureName();'; To = '' }
     @{ Name = 'mirror uses the raw open';       Key = 'Launcher'; From = 'var opened = appTree.OpenProcedureEmbedChecked(procName, CharDelaysMs);'; To = 'appTree.OpenProcedureEmbed(procName, 70); var opened = new ProcedureOpenResult { Ok = true };' }
     @{ Name = 'SwitchView ungated';             Key = 'AppTree';  From = 'if (active != null && !ReferenceEquals(active, vc))'; To = 'if (window != null)' }
-    @{ Name = 'post-open name by focus only';   Key = 'AppTree';  From = 'public string OpenProcedureName() { return _t.GetOpenNativeEmbeditorProcName(); }'; To = 'public string OpenProcedureName() { return _t.GetFocusedNativeEmbeditorProcName(); }' }
+    @{ Name = 'identity ignores this open''s module'; Key = 'AppTree'; From = '_t.ReadOpenEmbedModule(), expectedModule, false, out settled)'; To = 'null, null, false, out settled)' }
+    @{ Name = 'module read from a stale source'; Key = 'AppTree';  From = 'try { return GetProp(GetOpenPweeDetails(), "Module") as string; }'; To = 'try { return GetProp(GetClaGenEditor(), "Module") as string; }' }
+    @{ Name = 'open not busy-guarded';          Key = 'AppTree';  From = "ModernEmbeditorLauncher.EnterBusy();`n            try { return ProcedureOpenFlow.Open("; To = "try { return ProcedureOpenFlow.Open(" }
+    @{ Name = 'select releases busy early';     Key = 'AppTree';  From = 'try { return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message; }'; To = 'ModernEmbeditorLauncher.LeaveBusy(); try { return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message; } finally { }' }
     @{ Name = 'flow not compiled';              Key = 'Project';  From = '<Compile Include="Services\ProcedureOpenFlow.cs" />'; To = '' }
 )
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ("ProcOpenScan_" + [Guid]::NewGuid().ToString('N'))
@@ -171,7 +199,8 @@ try {
             Copy-Item $paths[$k] $dst -Force
             $mp[$k] = $dst
         }
-        $text = [IO.File]::ReadAllText($mp[$m.Key])
+        # Line endings depend on the checkout (core.autocrlf), so match anchors on LF-normalized text.
+        $text = [IO.File]::ReadAllText($mp[$m.Key]).Replace("`r`n", "`n")
         if (-not $text.Contains($m.From)) { Write-Host "  [FAIL] mutation '$($m.Name)': its anchor is gone from the source" -ForegroundColor Red; $survivors++; continue }
         [IO.File]::WriteAllText($mp[$m.Key], $text.Replace($m.From, $m.To))
         $r = Invoke-Scan $mp
