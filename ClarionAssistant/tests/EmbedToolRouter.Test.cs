@@ -263,6 +263,40 @@ static class EmbedToolRouterTest
         catch (HostRequestBroker.RefusedException ex) { refusedCode = ex.Code; }
         Ok("the page refuses to start the save (no event will come) -> RefusedException, not a long wait", refusedCode == "saveDisabled", refusedCode);
 
+        // ONE SAVE AT A TIME (1565ef7b final): a save asked for while another runs is refused at once, with its own
+        // busy-refusal event AND (for the page's pending host save) a saveResult(ok=false) reply.
+        const string busy = "A save is already in progress; try again in a moment.";
+        string busyCode = null;
+        var swb = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            EmbedSaveWait.Run("UpdateCust", sub, unsub, () =>
+            {
+                var e = current(); if (e != null) e("UpdateCust", false, busy, true);
+                return new Dictionary<string, object> { { "saved", false }, { "message", busy } };
+            }, 5000);
+        }
+        catch (HostRequestBroker.RefusedException ex) { busyCode = ex.Code; }
+        swb.Stop();
+        Ok("OUR save refused as busy -> RefusedException(saveInProgress) at once, not a wait",
+            busyCode == EmbedSaveWait.InProgressCode && swb.ElapsedMilliseconds < 1000, busyCode + " in " + swb.ElapsedMilliseconds + " ms");
+
+        // The developer's Ctrl+S is refused WHILE our save runs: its busy event is not our outcome; ours follows.
+        d = Try(() => EmbedSaveWait.Run("UpdateCust", sub, unsub, () =>
+        {
+            var e = current();
+            if (e != null) { e("UpdateCust", false, busy, true); e("UpdateCust", true, "Saved 1 embed slot(s).", false); }
+            throw new TimeoutException("page gone");   // our successful overlay save disposed the page
+        }, 5000));
+        Ok("someone else's busy-refusal event is skipped; our save's own event is the answer",
+            d != null && (bool)d["saved"] && (string)d["message"] == "Saved 1 embed slot(s).", d == null ? null : (string)d["message"]);
+
+        p = page();
+        EmbedToolRouter.LiveEmbedResolver = () => p;
+        r = router.Run("save_and_close_embeditor", native, ov => { throw new HostRequestBroker.RefusedException(EmbedSaveWait.InProgressCode); });
+        Ok("router words the busy refusal for Claude: in progress, try again shortly, nothing saved",
+            (r as string ?? "").StartsWith("Error: a save is already in progress in the CA Embeditor; try again shortly."), r as string);
+
         bool timedOut = false;
         var swt = System.Diagnostics.Stopwatch.StartNew();
         try { EmbedSaveWait.Run("UpdateCust", sub, unsub, () => { Thread.Sleep(2000); return null; }, 300); }

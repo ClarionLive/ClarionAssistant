@@ -122,6 +122,7 @@ namespace ClarionAssistant.Services
                 case "readOnly": return "the CA Embeditor is read-only right now; nothing was changed.";
                 case "notEditable": return "that range is not an editable embed slot in the CA Embeditor; nothing was changed.";
                 case "notReady": return "the CA Embeditor has not loaded the procedure yet; nothing was done. Try again in a moment.";
+                case EmbedSaveWait.InProgressCode: return "a save is already in progress in the CA Embeditor; try again shortly. Nothing was saved by this call, and the developer's edits are still open.";
                 default: return "the CA Embeditor refused (" + code + "); nothing was changed.";
             }
         }
@@ -169,9 +170,29 @@ namespace ClarionAssistant.Services
     /// (the freeze rule), so that reply never comes. EmbedSaveFinished is raised exactly once per save on every
     /// branch, refusals included. The save request is therefore posted from a worker thread and its reply only
     /// matters when it is a refusal (the page never started a save, so no event will follow).
+    ///
+    /// ONE SAVE AT A TIME (1565ef7b's final contract): a save requested while another is in flight is refused at
+    /// once, editor intact, with its own refusal event whose message starts <see cref="InProgressPrefix"/>. The
+    /// events carry no request id (dc4f7115), so such an event may be ANOTHER request's refusal (the developer's
+    /// Ctrl+S pressed while our save runs): it is not taken as our outcome. Ours is recognised by the page's reply
+    /// to OUR request carrying that refusal, which arrives only when the save we asked for was the one refused.
+    /// Residual ambiguity until dc4f7115: the page answers its pending host save from ANY saveResult, so a
+    /// developer Ctrl+S refused while our save runs can reach our request and make us report "in progress" while
+    /// our save in fact completes (no harm: a retry is refused or saves nothing new).
     /// </summary>
     public static class EmbedSaveWait
     {
+        /// <summary>The start of 1565ef7b's refusal message for a save requested while another is in flight.</summary>
+        public const string InProgressPrefix = "A save is already in progress";
+
+        /// <summary>The RefusedException code for that refusal (EmbedToolRouter.Describe words it for Claude).</summary>
+        public const string InProgressCode = "saveInProgress";
+
+        private static bool IsInProgress(string message)
+        {
+            return message != null && message.StartsWith(InProgressPrefix, StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <returns>{ saved, message, editorIntact }.</returns>
         /// <exception cref="TimeoutException">No outcome within <paramref name="timeoutMs"/>.</exception>
         /// <exception cref="HostRequestBroker.RefusedException">The page refused to start the save.</exception>
@@ -186,6 +207,7 @@ namespace ClarionAssistant.Services
             Action<string, bool, string, bool> handler = (proc, o, m, i) =>
             {
                 if (!string.Equals(proc, procedure, StringComparison.OrdinalIgnoreCase)) return;
+                if (IsInProgress(m)) return;   // some request's busy-refusal; ours shows up as our page reply (below)
                 lock (gate)
                 {
                     if (done.IsSet) return;
@@ -198,7 +220,16 @@ namespace ClarionAssistant.Services
             {
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    try { requestSave(); }
+                    try
+                    {
+                        var reply = requestSave();
+                        object v;
+                        string m = reply != null && reply.TryGetValue("message", out v) ? v as string : null;
+                        bool saved = reply != null && reply.TryGetValue("saved", out v) && v is bool && (bool)v;
+                        if (!saved && IsInProgress(m))
+                            lock (gate) { if (!done.IsSet) { refused = InProgressCode; done.Set(); } }
+                        // any other reply: the event is the authority
+                    }
                     catch (HostRequestBroker.RefusedException ex)
                     {
                         lock (gate) { if (!done.IsSet) { refused = ex.Code; done.Set(); } }
