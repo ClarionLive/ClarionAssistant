@@ -73,8 +73,15 @@ namespace ClarionAssistant
             // label disk text as the editor's (the disk can change after the tab opened).
             if (MonacoClarionEditor.IsOpenInOverlay(path))
                 return new SharedLspBridge.LiveText { Reason = "open in the CA Editor with no unsaved edits (the file on disk is current)" };
+            // fc420c30 (live, combined-1005b): a tab in NATIVE mode (CA Editor toggled off) is not "no unsaved edits":
+            // the native editor's buffer is invisible to the tool, so the disk may be behind it.
+            if (MonacoClarionEditor.IsOpenInNativeEditor(path))
+                return new SharedLspBridge.LiveText { Reason = NativeEditorReason };
             return null;   // nothing has it open
         }
+
+        internal const string NativeEditorReason =
+            "open in the native Clarion editor (the CA Editor is off for it); its unsaved edits, if any, are not visible to the tool, so the file on disk was checked";
 
         // (1): null when no embed of this module is open; a LiveText with Text, or with only a Reason on a timeout.
         private static SharedLspBridge.LiveText ReadEmbeditorDocument(string path)

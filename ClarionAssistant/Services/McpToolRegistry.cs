@@ -103,7 +103,13 @@ namespace ClarionAssistant.Services
         private IUiDispatcher _ui;
         // fc420c30: the editor tools go to the CA Editor (Monaco) when one holds the active file, else the native editor.
         private EditorToolRouter _editorRouterField;
-        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui)); } }
+        // fc420c30 safety: a write names the file it changed; with file_path it is refused unless that file is active.
+        private static EditorToolRouter.RouteOptions WriteOpts(Dictionary<string, object> args, int nativeLine = 0)
+        {
+            return new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = McpJsonRpc.GetString(args, "file_path"), NativeLine = nativeLine };
+        }
+        private const string WriteFilePathHelp = "Optional. Absolute path of the file you mean to change: refused (nothing changed) unless it is the active editor. Pass it after open_file.";
+        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui, () => _editorService.GetActiveDocumentPath())); } }
         // 73bd1f03 fix (2): the embed tools, routed to the CA Embeditor's Monaco buffer while it holds the procedure.
         private EmbedToolRouter _embedRouterField;
         private EmbedToolRouter EmbedRouter { get { return _embedRouterField ?? (_embedRouterField = new EmbedToolRouter(() => _ui)); } }
@@ -433,7 +439,7 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Insert text at the current cursor position in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string> { { "text", "The text to insert" } },
+                    new Dictionary<string, string> { { "text", "The text to insert" }, { "file_path", WriteFilePathHelp } },
                     new[] { "text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
@@ -445,7 +451,7 @@ IdeOnly = true,
                     {
                         var result = _editorService.InsertTextAtCaret(text);
                         return result.Success ? "Text inserted successfully" : "Error: " + result.ErrorMessage;
-                    }, ov => ov.InsertTextAtCursor(text));
+                    }, ov => ov.InsertTextAtCursor(text), WriteOpts(args));
                 }
             });
 
@@ -458,7 +464,8 @@ IdeOnly = true,
                     new Dictionary<string, string>
                     {
                         { "old_text", "The exact text to find and replace" },
-                        { "new_text", "The replacement text" }
+                        { "new_text", "The replacement text" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "old_text", "new_text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -472,7 +479,7 @@ IdeOnly = true,
                     {
                         var result = _editorService.ReplaceText(oldText, newText);
                         return result.Success ? "Text replaced successfully" : "Error: " + result.ErrorMessage;
-                    }, ov => ov.ReplaceText(oldText, newText));
+                    }, ov => ov.ReplaceText(oldText, newText), WriteOpts(args));
                 }
             });
 
@@ -488,7 +495,8 @@ IdeOnly = true,
                         { "start_col", "Start column (1-based)" },
                         { "end_line", "End line (1-based)" },
                         { "end_col", "End column (1-based)" },
-                        { "new_text", "Replacement text (empty string to delete)" }
+                        { "new_text", "Replacement text (empty string to delete)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line", "new_text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -503,7 +511,7 @@ IdeOnly = true,
                     {
                         var result = _editorService.ReplaceRange(startLine, startCol, endLine, endCol, newText);
                         return result.Success ? "Range replaced successfully" : "Error: " + result.ErrorMessage;
-                    }, ov => ov.ReplaceRange(startLine, startCol, endLine, endCol, newText));
+                    }, ov => ov.ReplaceRange(startLine, startCol, endLine, endCol, newText), WriteOpts(args, startLine));
                 }
             });
 
@@ -547,7 +555,8 @@ IdeOnly = true,
                         { "start_line", "Start line (1-based)" },
                         { "start_col", "Start column (1-based)" },
                         { "end_line", "End line (1-based)" },
-                        { "end_col", "End column (1-based)" }
+                        { "end_col", "End column (1-based)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -561,7 +570,7 @@ IdeOnly = true,
                     {
                         var result = _editorService.DeleteRange(startLine, startCol, endLine, endCol);
                         return result.Success ? "Text deleted" : "Error: " + result.ErrorMessage;
-                    }, ov => ov.DeleteRange(startLine, startCol, endLine, endCol));
+                    }, ov => ov.DeleteRange(startLine, startCol, endLine, endCol), WriteOpts(args, startLine));
                 }
             });
 
@@ -570,11 +579,11 @@ IdeOnly = true,
                 Name = "undo",
 IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args => EditorRouter.Run("undo",
                     () => _editorService.Undo() ? "Undo successful" : "Nothing to undo",
-                    ov => ov.Undo())
+                    ov => ov.Undo(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -582,11 +591,11 @@ IdeOnly = true,
                 Name = "redo",
 IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args => EditorRouter.Run("redo",
                     () => _editorService.Redo() ? "Redo successful" : "Nothing to redo",
-                    ov => ov.Redo())
+                    ov => ov.Redo(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -594,13 +603,13 @@ IdeOnly = true,
                 Name = "save_file",
 IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 // fc420c30: with a CA Editor up this saves ITS text through its own save path. It used to Save() the
                 // native shell, which the overlay keeps clean: the developer's unsaved edits were not saved at all.
                 Handler = args => EditorRouter.Run("save_file",
                     () => _editorService.SaveActiveDocument() ? "File saved" : "Error: could not save",
-                    ov => ov.Save())
+                    ov => ov.Save(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -608,13 +617,13 @@ IdeOnly = true,
                 Name = "close_file",
 IdeOnly = true,
                 Description = "Close the currently active editor tab.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 // fc420c30: a CA Editor with unsaved edits is NOT closed (John, 2026-10-05). CloseWindow(true) skips the
                 // closing prompt, and the overlay's Dispose fallback would then write the edits silently.
                 Handler = args => EditorRouter.Run("close_file",
                     () => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close",
-                    ov => ov.Close())
+                    ov => ov.Close(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -735,7 +744,8 @@ IdeOnly = true,
                     new Dictionary<string, string>
                     {
                         { "start_line", "First line to toggle (1-based)" },
-                        { "end_line", "Last line to toggle (1-based, inclusive)" }
+                        { "end_line", "Last line to toggle (1-based, inclusive)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -747,7 +757,7 @@ IdeOnly = true,
                     {
                         var result = _editorService.ToggleComment(startLine, endLine);
                         return result.Success ? "Comment toggled on lines " + startLine + "-" + endLine : "Error: " + result.ErrorMessage;
-                    }, ov => ov.ToggleComment(startLine, endLine));
+                    }, ov => ov.ToggleComment(startLine, endLine), WriteOpts(args, startLine));
                 }
             });
 
@@ -1594,7 +1604,10 @@ IdeOnly = true,
                         { "line", "Line number to navigate to (optional, 1-based). Omit to leave the IDE's remembered last position untouched." }
                     },
                     new[] { "path" }),
-                RequiresUiThread = true,
+                // fc420c30 safety: off the UI thread so it can wait (bounded) until the file IS the active editor and its
+                // CA Editor is ready. It used to return "Opened" while the previous file was still active, and the next
+                // write would have landed in that file (live, combined-1005b).
+                RequiresUiThread = false,
                 Handler = args =>
                 {
                     string path = McpJsonRpc.GetString(args, "path");
@@ -1602,15 +1615,17 @@ IdeOnly = true,
                         return "Error: file not found: " + path;
 
                     bool lineProvided = args != null && args.ContainsKey("line") && args["line"] != null;
-                    if (!lineProvided)
-                    {
-                        _editorService.OpenFileOnly(path);
-                        return "Opened " + path;
-                    }
-
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    _editorService.NavigateToFileAndLine(path, line);
-                    return "Opened " + path + " at line " + line;
+                    return EditorRouter.OpenAndWait(path, () =>
+                    {
+                        if (!lineProvided)
+                        {
+                            _editorService.OpenFileOnly(path);
+                            return "Opened " + path;
+                        }
+                        _editorService.NavigateToFileAndLine(path, line);
+                        return "Opened " + path + " at line " + line;
+                    }, () => _editorService.ActivateOpenFile(path));
                 }
             });
 

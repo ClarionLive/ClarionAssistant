@@ -49,32 +49,72 @@ namespace ClarionAssistant.Services
 
         public const int ResolveTimeoutMs = 3000;
         public const int NativeTimeoutMs = 30000;
+        /// <summary>open_file: how long to wait for the opened file to become the active editor (and its CA Editor ready).</summary>
+        public const int OpenActivateTimeoutMs = 15000;
+        /// <summary>open_file: when the file is still not active this long after the open, select its tab once more.</summary>
+        public const int ReactivateAfterMs = 1500;
+
+        /// <summary>open_file: whether a CA Editor overlay will take this file (MonacoSourceOverlay.Enabled +
+        /// CaEditorSettings.SourceAppliesTo). UI thread. Null = never (the standalone server).</summary>
+        public static Func<string, bool> OverlayExpectedFor;
+
+        /// <summary>How one call is routed: a WRITE names the file (and line) it changed in its result; ExpectedPath
+        /// refuses the call unless that file is the active editor.</summary>
+        public sealed class RouteOptions
+        {
+            public bool IsWrite;
+            public string ExpectedPath;
+            /// <summary>The line a native write touched, when the arguments say (0 = unknown).</summary>
+            public int NativeLine;
+        }
 
         private readonly Func<IUiDispatcher> _ui;
+        private readonly Func<string> _nativeActivePath;
 
-        public EditorToolRouter(Func<IUiDispatcher> ui) { _ui = ui; }
+        /// <param name="nativeActivePath">The native editor's active document path (UI thread), for the active-file
+        /// checks when no CA Editor holds it.</param>
+        public EditorToolRouter(Func<IUiDispatcher> ui, Func<string> nativeActivePath = null)
+        {
+            _ui = ui;
+            _nativeActivePath = nativeActivePath;
+        }
+
+        private sealed class Target { public IEditorOverlayChannel Channel; public string NativePath; }
 
         /// <summary>
         /// Run tool <paramref name="tool"/>: <paramref name="overlay"/> when a CA Editor is up for the active file, else
         /// <paramref name="native"/> on the UI thread.
         /// </summary>
-        public object Run(string tool, Func<object> native, Func<OverlayEditorOps, object> overlay)
+        public object Run(string tool, Func<object> native, Func<OverlayEditorOps, object> overlay, RouteOptions opts = null)
         {
+            opts = opts ?? new RouteOptions();
             var sw = Stopwatch.StartNew();
-            IEditorOverlayChannel ch = null;
-            if (ActiveOverlayResolver != null)
+            bool timedOut;
+            var target = OnUi(() => new Target
             {
-                bool timedOut;
-                ch = OnUi(() => ActiveOverlayResolver(), ResolveTimeoutMs, out timedOut);
-                if (timedOut)
-                {
-                    Write(tool, "?", null, sw, "error: UI did not answer");
-                    return "Error: the IDE's UI thread did not answer within " + (ResolveTimeoutMs / 1000)
-                        + " s, so it could not tell whether a CA Editor holds the file; nothing was changed.";
-                }
+                Channel = ActiveOverlayResolver != null ? ActiveOverlayResolver() : null,
+                NativePath = (ActiveOverlayResolver == null || opts.IsWrite || opts.ExpectedPath != null) && _nativeActivePath != null
+                    ? SafeNativePath() : null
+            }, ResolveTimeoutMs, out timedOut);
+            if (timedOut)
+            {
+                Write(tool, "?", null, sw, "error: UI did not answer");
+                return "Error: the IDE's UI thread did not answer within " + (ResolveTimeoutMs / 1000)
+                    + " s, so it could not tell which editor holds the file; nothing was changed.";
+            }
+            var ch = target.Channel;
+            string activePath = ch != null ? ch.FilePath : target.NativePath;
+
+            // fc420c30 safety: a write meant for one file must never land in another (live: open_file returned before
+            // its tab was active, and the next insert would have gone into the developer's real file).
+            if (!string.IsNullOrEmpty(opts.ExpectedPath) && !SamePath(activePath, opts.ExpectedPath))
+            {
+                Write(tool, ch != null ? "overlay" : "native", activePath, sw, "refused: expected " + opts.ExpectedPath);
+                return "Error: the active editor holds " + (string.IsNullOrEmpty(activePath) ? "no file" : activePath)
+                    + ", not " + opts.ExpectedPath + "; nothing was changed. Open it with open_file (and wait for it) first.";
             }
 
-            if (ch == null) return RunNative(tool, native, sw);
+            if (ch == null) return Label(RunNative(tool, native, sw), opts, activePath, opts.NativeLine);
 
             if (!ch.PageReady)
             {
@@ -83,10 +123,11 @@ namespace ClarionAssistant.Services
             }
             try
             {
-                var result = overlay(new OverlayEditorOps(ch));
-                if (ReferenceEquals(result, UseNative)) return RunNative(tool, native, sw);
+                var ops = new OverlayEditorOps(ch);
+                var result = overlay(ops);
+                if (ReferenceEquals(result, UseNative)) return Label(RunNative(tool, native, sw), opts, ch.FilePath, 0);
                 Write(tool, "overlay", ch.FilePath, sw, result is string && ((string)result).StartsWith("Error") ? (string)result : "ok");
-                return result;
+                return Label(result, opts, ch.FilePath, ops.LastLine);
             }
             catch (TimeoutException ex)
             {
@@ -104,6 +145,91 @@ namespace ClarionAssistant.Services
                 return "Error: the CA Editor request failed (" + ex.Message + "); nothing was done in the native editor underneath.";
             }
         }
+
+        private string SafeNativePath()
+        {
+            try { return _nativeActivePath(); } catch { return null; }
+        }
+
+        // A successful write names the file (and line) it changed, so a write that landed in the wrong file shows at once.
+        private static object Label(object result, RouteOptions opts, string path, int line)
+        {
+            var s = result as string;
+            if (!opts.IsWrite || s == null || s.StartsWith("Error") || s.StartsWith("Nothing") || string.IsNullOrEmpty(path)) return result;
+            return s + " — " + System.IO.Path.GetFileName(path) + (line > 0 ? ":" + line : "") + " (" + path + ")";
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            try { a = System.IO.Path.GetFullPath(a); b = System.IO.Path.GetFullPath(b); } catch { }
+            return string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Files open_file hands to something other than a text editor (the app tree, the dictionary editor, a solution):
+        // there is no editor to wait for.
+        private static readonly HashSet<string> NoEditorExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".app", ".dct", ".dctx", ".sln", ".cwproj", ".txa", ".txd" };
+
+        /// <summary>
+        /// open_file (fc420c30 safety): open <paramref name="path"/>, then return only once it is the ACTIVE editor and,
+        /// when a CA Editor takes it, that editor's page is ready. Bounded: on timeout an error says it is not active
+        /// yet, so no write can follow into whichever file IS active (live: "Opened" came back while the developer's real
+        /// file was still active). <paramref name="activate"/> (UI thread) selects the file's tab: run right after the open
+        /// and again once if it is still not active after <see cref="ReactivateAfterMs"/> (live: an already-open native-mode
+        /// tab stayed behind the previous one).
+        /// </summary>
+        public object OpenAndWait(string path, Func<object> nativeOpen, Action activate = null, int timeoutMs = OpenActivateTimeoutMs)
+        {
+            var sw = Stopwatch.StartNew();
+            var opened = RunNative("open_file", nativeOpen, sw);
+            var s = opened as string;
+            if (s == null || s.StartsWith("Error")) return opened;
+            if (NoEditorExtensions.Contains(System.IO.Path.GetExtension(path) ?? "")) return opened;
+
+            string lastActive = null;
+            bool expectOverlay = false, overlayReady = false;
+            int activations = 0;
+            while (true)
+            {
+                if (activate != null && (activations == 0 || (activations == 1 && sw.ElapsedMilliseconds >= ReactivateAfterMs)))
+                {
+                    activations++;
+                    bool t;
+                    OnUi<object>(() => { activate(); return null; }, ResolveTimeoutMs, out t);
+                }
+                bool timedOut;
+                var probe = OnUi(() =>
+                {
+                    var ch = ActiveOverlayResolver != null ? ActiveOverlayResolver() : null;
+                    return new object[]
+                    {
+                        ch != null ? ch.FilePath : SafeNativePathOrNull(),
+                        OverlayExpectedFor != null && OverlayExpectedFor(path),
+                        ch != null && ch.PageReady
+                    };
+                }, ResolveTimeoutMs, out timedOut);
+                if (!timedOut && probe != null)
+                {
+                    lastActive = (string)probe[0];
+                    expectOverlay = (bool)probe[1];
+                    overlayReady = (bool)probe[2];
+                    if (SamePath(lastActive, path) && (!expectOverlay || overlayReady))
+                    {
+                        Write("open_file", expectOverlay ? "overlay" : "native", path, sw, "active");
+                        return opened;
+                    }
+                }
+                if (sw.ElapsedMilliseconds >= timeoutMs) break;
+                Thread.Sleep(150);
+            }
+            Write("open_file", "?", path, sw, "error: not active (active: " + (lastActive ?? "none") + ")");
+            return "Error: opened " + path + ", but it is not the active editor yet (the active editor is "
+                + (lastActive ?? "none") + (expectOverlay && SamePath(lastActive, path) && !overlayReady ? ", its CA Editor still loading" : "")
+                + "). Do NOT edit yet: wait and check with get_active_file, or pass file_path to the write so a mismatch is refused.";
+        }
+
+        private string SafeNativePathOrNull() { return _nativeActivePath != null ? SafeNativePath() : null; }
 
         private object RunNative(string tool, Func<object> native, Stopwatch sw)
         {
@@ -180,6 +306,8 @@ namespace ClarionAssistant.Services
         private readonly IEditorOverlayChannel _ch;
         public OverlayEditorOps(IEditorOverlayChannel ch) { _ch = ch; }
         public string FilePath { get { return _ch.FilePath; } }
+        /// <summary>The line the last edit touched (for the result's "file:line"), 0 = none.</summary>
+        public int LastLine { get; private set; }
 
         public sealed class State
         {
@@ -347,8 +475,11 @@ namespace ClarionAssistant.Services
 
         public object InsertTextAtCursor(string text)
         {
-            return Edit(false, st => Plan(Range(st.CursorLine, st.CursorCol, st.CursorLine, st.CursorCol, text)),
-                "Text inserted successfully", caretAtEnd: true);
+            return Edit(false, st =>
+            {
+                LastLine = st.CursorLine;
+                return Plan(Range(st.CursorLine, st.CursorCol, st.CursorLine, st.CursorCol, text));
+            }, "Text inserted successfully", caretAtEnd: true);
         }
 
         public object ReplaceText(string oldText, string newText)
@@ -358,6 +489,7 @@ namespace ClarionAssistant.Services
                 string o = MatchEol(st.Text, oldText), n = MatchEol(st.Text, newText ?? "");
                 var offs = EditorTextOps.ReplaceOffsets(st.Text, o);
                 if (offs.Count == 0) return Fail("Text not found in document");
+                LastLine = EditorTextOps.Position(st.Text, offs[0])[0];   // the first occurrence
                 var edits = new List<Dictionary<string, object>>();
                 foreach (int off in offs) edits.Add(RangeOf(st.Text, off, off + o.Length, n));
                 return Tuple.Create(edits, (string)null);
@@ -370,6 +502,7 @@ namespace ClarionAssistant.Services
             {
                 int a = EditorTextOps.Offset(st.Text, sl, sc), b = EditorTextOps.Offset(st.Text, el, ec);
                 if (a < 0 || b < 0) return Fail("Invalid line/column range");
+                LastLine = sl;
                 return Plan(RangeOf(st.Text, a, b, newText ?? ""));
             }, ok, caretAtEnd: true);
         }
@@ -386,6 +519,7 @@ namespace ClarionAssistant.Services
                 string error;
                 string block = EditorTextOps.ToggleCommentLines(st.Text, startLine, endLine, out error);
                 if (block == null) return Fail(error);
+                LastLine = startLine;
                 // Monaco keeps line breaks out of line content: replace the lines' content (to the end of endLine,
                 // before its break) with the block's lines, line breaks as '\n' (Monaco applies the model's EOL).
                 var lines = block.Split('\n');
