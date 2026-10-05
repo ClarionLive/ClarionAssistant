@@ -108,7 +108,7 @@ function makeWorld(text, slots, opts) {
         + '         applyChanges: function (c) { embedRanges = W.embedRanges; applyChangesToRanges(c); } };\n'
         + '})';
     const api = eval(src).call({}, editor, { Range: Range, editor: { EditorOption: { readOnly: 'readOnly' } } }, () => editor,
-        m => W.posted.push(m), () => { }, isEditableRange, () => { }, !!opts.fileMode, true, W);
+        m => W.posted.push(m), () => { }, isEditableRange, opts.doSave || (() => { }), !!opts.fileMode, true, W);
     applyChanges = api.applyChanges;
     return { W, model, api, last: () => W.posted[W.posted.length - 1] };
 }
@@ -168,6 +168,18 @@ console.log('\nslot write round trip (what EmbedOverlayOps.WriteEmbedContent sen
     env.api.handle({ type: 'hostRequest', reqId: 9, action: 'applyEdits', args: {
         expectedVersionId: 1, edits: [{ startLine: 3, startCol: 1, endLine: 3, endCol: 1, text: 'X' }] } });
     check('a write planned against an old version is refused "stale"', env.last().ok === false && env.last().error === 'stale');
+}
+
+console.log('\nrouted save: a page that fails BEFORE reaching the host still answers (1565ef7b edge)');
+{
+    // EmbedSaveWait (C#) waits for EmbedSaveFinished, which the host raises only once it hears of the save. If
+    // doSave throws before posting to the host (e.g. in gatherSlots), no event will ever come, so the page's
+    // reply to the 'save' host request must be the error, or the routed save waits out its whole budget.
+    const env = makeWorld(SEED, [[3, 3], [6, 7]], { doSave: () => { throw new Error('gatherSlots blew up'); } });
+    env.api.handle({ type: 'hostRequest', reqId: 40, action: 'save', args: {} });
+    const r = env.last();
+    check('doSave throws -> the save request is answered at once with an error',
+        r && r.reqId === 40 && r.ok === false && /^exception: gatherSlots blew up/.test(r.error), JSON.stringify(r));
 }
 
 console.log('\n' + (fail === 0 ? 'PASS' : 'FAIL') + ' - ' + pass + ' passed, ' + fail + ' failed');
