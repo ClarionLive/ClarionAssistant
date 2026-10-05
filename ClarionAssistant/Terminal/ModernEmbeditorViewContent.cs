@@ -2506,7 +2506,14 @@ namespace ClarionAssistant.Terminal
         {
             // A queued save whose gate went stale and was taken by a newer one must not run alongside it: hand its
             // text to the running save as the pending request instead (it is then saved, or reported, once).
-            if (!_saveGate.Start(token)) { JoinRunningSave(current); return; }
+            if (!_saveGate.Start(token))
+            {
+                // Superseded. If the save that took over has already finished, nobody would pick this text up as a
+                // follow-up — so run it now under a fresh token rather than leave it (and a waiter) stranded.
+                int fresh = _saveGate.TryEnter(DateTime.UtcNow);
+                if (fresh == 0 || !_saveGate.Start(fresh)) { JoinRunningSave(current); return; }
+                token = fresh;
+            }
 
             // Every exit raises EmbedSaveFinished exactly once per save CYCLE, including an unexpected throw: either
             // here, or — when newer text was requested meanwhile — by the follow-up save that answers both.

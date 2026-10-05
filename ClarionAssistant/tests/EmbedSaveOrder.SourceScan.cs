@@ -81,8 +81,11 @@ static class EmbedSaveOrderSourceScan
             Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured, token);"));
         }
         int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current, int token)", StringComparison.Ordinal);
-        Ok("a queued save that lost the gate does not run (Start(token) first)", rt >= 0 &&
-            view.IndexOf("if (!_saveGate.Start(token)) { JoinRunningSave(current); return; }", rt, StringComparison.Ordinal) > rt);
+        int st = rt >= 0 ? view.IndexOf("if (!_saveGate.Start(token))", rt, StringComparison.Ordinal) : -1;
+        int tr = rt >= 0 ? view.IndexOf("try { RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
+        string startBlock = st > rt && tr > st ? view.Substring(st, tr - st) : "";
+        Ok("a queued save that lost the gate never runs alongside the owner (Start(token) first; join when busy)",
+            startBlock.Contains("JoinRunningSave(current); return;") && startBlock.Contains("_saveGate.Start(fresh)"));
         int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
         string finBody = fin > rt && core > fin ? view.Substring(fin, core - fin) : "";
