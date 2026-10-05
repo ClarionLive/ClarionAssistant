@@ -168,6 +168,7 @@
     <Compile Include="Services\ClarionConfigDirectory.cs" />
     <Compile Include="Services\ClarionVersionService.cs" />
     <Compile Include="Services\EffectiveClarionVersion.cs" />
+    <Compile Include="Services\SolutionVersionResolver.cs" />
     <Compile Include="Services\IdeVersionFollower.cs" />
     <Compile Include="Services\LspStartGate.cs" />
     <Compile Include="Services\RedFileService.cs" />
@@ -177,7 +178,6 @@
     <Compile Include="Services\LspService.cs" />
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
-    <Compile Include="Services\SolutionVersionResolver.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\ColonQualifierScope.cs" />
     <Compile Include="Services\LocalScopeIndex.cs" />
