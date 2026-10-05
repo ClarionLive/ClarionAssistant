@@ -94,6 +94,23 @@ static class EmbedToolRouterTest
         try { return f(); } catch (Exception ex) { Console.WriteLine("         (threw " + ex.GetType().Name + ": " + ex.Message + ")"); return null; }
     }
 
+    // An editor-tool channel that labels its own writes (the CA Embeditor's covered view): fc420c30's EditorToolRouter
+    // must use that label instead of "file:line (path)" (Charlie's round-2 finding: results named the .app).
+    sealed class LabelledPage : IEditorOverlayChannel, IOverlayWriteLabel
+    {
+        public string FilePath { get { return @"C:\apps\CacheTPSABC.app"; } }
+        public bool PageReady { get { return true; } }
+        public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
+        {
+            if (action == "getState")
+                return new Dictionary<string, object> { { "versionId", 1L }, { "lineCount", 300 },
+                    { "cursor", new Dictionary<string, object> { { "line", 265 }, { "column", 5 } } } };
+            if (action == "applyEdits") return new Dictionary<string, object>();
+            throw new HostRequestBroker.RefusedException("unknownAction:" + action);
+        }
+        public string WriteLabel(int line) { return "BrowseDepartment" + (line > 0 ? " line " + line : "") + " (CA Embeditor)"; }
+    }
+
     static int Count(List<string> l, string s) { int n = 0; foreach (var x in l) if (x == s) n++; return n; }
 
     static int Main()
@@ -307,6 +324,16 @@ static class EmbedToolRouterTest
         try { EmbedSaveWait.Run("UpdateCust", sub, unsub, () => { Thread.Sleep(2000); return null; }, 300); }
         catch (TimeoutException) { timedOut = true; }
         Ok("no outcome in time -> TimeoutException, bounded", timedOut && swt.ElapsedMilliseconds < 1500 && evt == null, swt.ElapsedMilliseconds + " ms");
+
+        // --- editor tools on the CA Embeditor name the procedure and line, not the .app ---
+        var savedResolver = EditorToolRouter.ActiveOverlayResolver;
+        EditorToolRouter.ActiveOverlayResolver = () => new LabelledPage();
+        var editorRouter = new EditorToolRouter(() => ui, () => @"C:\apps\CacheTPSABC.app");
+        r = editorRouter.Run("insert_text_at_cursor", () => "NATIVE", ov => ov.InsertTextAtCursor("! x"),
+            new EditorToolRouter.RouteOptions { IsWrite = true });
+        EditorToolRouter.ActiveOverlayResolver = savedResolver;
+        Ok("an editor write in the CA Embeditor is labelled with the procedure and line, not the .app",
+            (r as string) == "Text inserted successfully — BrowseDepartment line 265 (CA Embeditor)", r as string);
 
         // --- a blocked UI thread: bounded, says so, touches nothing ---
         p = page();

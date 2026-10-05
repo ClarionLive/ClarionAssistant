@@ -331,7 +331,7 @@ namespace ClarionAssistant.Services
         public object SearchEmbeditorSource(string pattern, int contextLines)
         {
             var s = GetSlots();
-            string r = EmbedSlotText.Search(EmbedSlotText.Annotate(s.Text, s.Ranges), pattern, contextLines);
+            string r = EmbedSlotText.Search(s.Text, s.Ranges, pattern, contextLines);
             return r.StartsWith("Error") ? r : Noted(r);
         }
 

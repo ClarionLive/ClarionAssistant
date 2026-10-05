@@ -5,6 +5,14 @@ using System.Threading;
 
 namespace ClarionAssistant.Services
 {
+    /// <summary>73bd1f03: optional on an <see cref="IEditorOverlayChannel"/>. Names what a successful write changed, in
+    /// place of the default "file:line (path)" (the CA Embeditor: "BrowseDepartment line 265 (CA Embeditor)").
+    /// Null or empty = the default.</summary>
+    public interface IOverlayWriteLabel
+    {
+        string WriteLabel(int line);
+    }
+
     /// <summary>fc420c30: the CA Editor (Monaco overlay) that owns the active file, as the router sees it.</summary>
     public interface IEditorOverlayChannel
     {
@@ -146,7 +154,7 @@ namespace ClarionAssistant.Services
                 var result = overlay(ops);
                 if (ReferenceEquals(result, UseNative)) return Label(RunNative(tool, native, sw), opts, ch.FilePath, 0);
                 Write(tool, "overlay", ch.FilePath, sw, result is string && ((string)result).StartsWith("Error") ? (string)result : "ok");
-                return Label(result, opts, ch.FilePath, ops.LastLine);
+                return Label(result, opts, ch.FilePath, ops.LastLine, ch);
             }
             catch (TimeoutException ex)
             {
@@ -171,10 +179,16 @@ namespace ClarionAssistant.Services
         }
 
         // A successful write names the file (and line) it changed, so a write that landed in the wrong file shows at once.
-        private static object Label(object result, RouteOptions opts, string path, int line)
+        // 73bd1f03: a channel that is not a file's editor (the CA Embeditor, whose native path is the .app) names the
+        // write itself through IOverlayWriteLabel.
+        private static object Label(object result, RouteOptions opts, string path, int line, IEditorOverlayChannel ch = null)
         {
             var s = result as string;
-            if (!opts.IsWrite || s == null || s.StartsWith("Error") || s.StartsWith("Nothing") || string.IsNullOrEmpty(path)) return result;
+            if (!opts.IsWrite || s == null || s.StartsWith("Error") || s.StartsWith("Nothing")) return result;
+            var labeler = ch as IOverlayWriteLabel;
+            string own = labeler != null ? labeler.WriteLabel(line) : null;
+            if (!string.IsNullOrEmpty(own)) return s + " — " + own;
+            if (string.IsNullOrEmpty(path)) return result;
             return s + " — " + System.IO.Path.GetFileName(path) + (line > 0 ? ":" + line : "") + " (" + path + ")";
         }
 

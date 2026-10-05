@@ -106,8 +106,15 @@ namespace ClarionAssistant.Terminal
         /// <summary>The CA Embeditor as the tool routers see it: the procedure, readiness, its open-time (native) slot
         /// ranges, and requests to the page over fc420c30's host-request channel. Serves both EmbedToolRouter (embed
         /// tools) and EditorToolRouter (editor tools on the covered view).</summary>
-        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel
+        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel, IOverlayWriteLabel
         {
+            /// <summary>An editor-tool write in the CA Embeditor names the procedure and buffer line, matching
+            /// write_embed_content's "— BrowseDepartment «E:N» (CA Embeditor)", not the .app the native path reports.</summary>
+            public string WriteLabel(int line)
+            {
+                return ProcedureName + (line > 0 ? " line " + line : "") + " (CA Embeditor)";
+            }
+
             private readonly ModernEmbeditorViewContent _v;
             private readonly List<int[]> _native;
             private readonly string _path;

@@ -1336,7 +1336,7 @@ IdeOnly = true,
                     "Editable embed slots are marked «E:N/» (empty) or «E:N»...«/E:N» (filled). " +
                     "N is the 1-based line number — use it directly as line_number in write_embed_content. " +
                     "Generated code passes through as context; noise lines (! Start of, ! End of, ! [Priority N], !!!) are stripped. " +
-                    "Use search_embeditor_source for targeted searches to avoid large output.",
+                    "Use search_embeditor_source for targeted searches to avoid large output. " + EmbedSlotText.NumberingRule,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args => EmbedRouter.Run("get_embeditor_source", () =>
@@ -1354,7 +1354,7 @@ IdeOnly = true,
                     "Returns only the matching lines and surrounding context — much faster than get_embeditor_source " +
                     "for finding a specific embed point. Use SPECIFIC patterns (e.g. 'AddCard', 'OPEN.Window') — " +
                     "broad terms may match too many lines and truncate output. " +
-                    "Overlapping match windows are automatically merged. Output is capped at ~6 KB.",
+                    "Overlapping match windows are automatically merged. Output is capped at ~6 KB. " + EmbedSlotText.NumberingRule,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "pattern",       "Regex pattern to search for (case-insensitive). Use specific terms to avoid truncation." },

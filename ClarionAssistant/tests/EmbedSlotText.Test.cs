@@ -30,23 +30,41 @@ static class EmbedSlotTextTest
 
         // --- Annotate: get_embeditor_source's format ---
         string a = EmbedSlotText.Annotate(buf, ranges);
-        string expected = J("P PROCEDURE", "\u00ABE:3/\u00BB", "\u00ABE:6\u00BB", "    x = 1", "    y = 2", "\u00AB/E:6\u00BB",
-                            "\u00ABE:9/\u00BB", "  CODE") + "\r\n";
-        Ok("annotate: empty slot «E:N/», filled «E:N»..«/E:N», noise and blank lines outside slots dropped",
+        string expected = J("1| P PROCEDURE", "\u00ABE:3/\u00BB", "\u00ABE:6\u00BB", "6|     x = 1", "7|     y = 2", "\u00AB/E:6\u00BB",
+                            "\u00ABE:9/\u00BB", "11|   CODE") + "\r\n";
+        Ok("annotate: empty slot «E:N/», filled «E:N»..«/E:N», noise and blank lines outside slots dropped, "
+            + "every code line numbered with its BUFFER line, markers unnumbered",
             a == expected, Show(a));
         Ok("annotate: LF input gives the same answer", EmbedSlotText.Annotate(buf.Replace("\r\n", "\n"), ranges) == expected, null);
         Ok("annotate: no ranges = only the non-noise lines",
-            EmbedSlotText.Annotate(buf, null) == J("P PROCEDURE", "    x = 1", "    y = 2", "  CODE") + "\r\n",
+            EmbedSlotText.Annotate(buf, null) == J("1| P PROCEDURE", "6|     x = 1", "7|     y = 2", "11|   CODE") + "\r\n",
             Show(EmbedSlotText.Annotate(buf, null)));
 
         // --- Search: search_embeditor_source's format ---
-        string s = EmbedSlotText.Search(a, "x = 1", 1);
-        Ok("search: header, a merged window with its 1-based line span, the lines",
-            s == J("Matches for: x = 1", "--- lines 3–5 ---", "\u00ABE:6\u00BB", "    x = 1", "    y = 2"), Show(s));
-        Ok("search: no match", EmbedSlotText.Search(a, "nothing-here", 2) == "No matches for: nothing-here", null);
-        Ok("search: bad regex is an Error", EmbedSlotText.Search(a, "(", 2).StartsWith("Error: invalid pattern"), null);
-        string two = EmbedSlotText.Search(a, "PROCEDURE|CODE", 0);
-        Ok("search: separate windows stay separate", two.Contains("--- lines 1–1 ---") && two.Contains("--- lines 8–8 ---"), Show(two));
+        string s = EmbedSlotText.Search(buf, ranges, "x = 1", 1);
+        Ok("search: header names the BUFFER lines the block spans; lines numbered; markers unnumbered",
+            s == J("Matches for: x = 1", "--- buffer lines 6–7 ---", "\u00ABE:6\u00BB", "6|     x = 1", "7|     y = 2"), Show(s));
+        Ok("search: no match", EmbedSlotText.Search(buf, ranges, "nothing-here", 2) == "No matches for: nothing-here", null);
+        Ok("search: bad regex is an Error", EmbedSlotText.Search(buf, ranges, "(", 2).StartsWith("Error: invalid pattern"), null);
+        string two = EmbedSlotText.Search(buf, ranges, "PROCEDURE|CODE", 0);
+        Ok("search: separate windows stay separate", two.Contains("--- buffer lines 1–1 ---") && two.Contains("--- buffer lines 11–11 ---"), Show(two));
+        Ok("search: the pattern sees the line's TEXT, not its number prefix (anchored patterns still work)",
+            EmbedSlotText.Search(buf, ranges, "^\\s*CODE$", 0).Contains("11|   CODE") && EmbedSlotText.Search(buf, ranges, "^11", 0).StartsWith("No matches"), null);
+
+        // --- Charlie's live finding (round 2): every printed number IS the buffer line of that text ---
+        // The marker line made "! CLAUDE-R2" read as line 266 while the buffer (find_in_file, get_line_text) had it at 265.
+        var big = new List<string>();
+        for (int k = 1; k <= 300; k++) big.Add(k % 7 == 0 ? "  ! Start of \"x\"" : (k % 5 == 0 ? "" : "  L" + k));
+        big[264] = "    ! CLAUDE-R2";   // buffer line 265
+        string bigText = string.Join("\r\n", big);
+        var bigRanges = new List<int[]> { new[] { 100, 100 }, new[] { 265, 266 }, new[] { 280, 282 } };
+        bool allMatch = true; string firstBad = null;
+        var bufLines = EmbedSlotText.Lines(bigText);
+        foreach (var l in EmbedSlotText.AnnotateLines(bigText, bigRanges))
+            if (l.Line > 0 && bufLines[l.Line - 1] != l.Text) { allMatch = false; firstBad = l.ToString(); break; }
+        Ok("every numbered line's text equals the buffer at that line (300-line buffer, 3 slots, noise)", allMatch, firstBad);
+        string r2 = EmbedSlotText.Search(bigText, bigRanges, "CLAUDE-R2", 1);
+        Ok("the R2 line reads as 265, the line get_line_text/find_in_file use", r2.Contains("265|     ! CLAUDE-R2") && !r2.Contains("266|     ! CLAUDE-R2"), Show(r2));
 
         // --- SlotContent: get_embed_content ---
         Ok("content: a filled slot's lines", EmbedSlotText.SlotContent(buf, ranges, 6) == J("    x = 1", "    y = 2"),

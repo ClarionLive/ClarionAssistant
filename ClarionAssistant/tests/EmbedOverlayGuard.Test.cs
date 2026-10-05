@@ -285,7 +285,15 @@ static class EmbedOverlayGuardTest
 
             string ats = File.ReadAllText(Path.Combine(dir, @"Services\AppTreeService.cs"));
             Ok("native search_embeditor_source shares EmbedSlotText.Search (one format for both editors)",
-                ats.Contains("return EmbedSlotText.Search(source, pattern, contextLines);"), null);
+                ats.Contains("return EmbedSlotText.Search(text, ranges, pattern, contextLines);"), null);
+            Ok("native get_embeditor_source is built by EmbedSlotText.Annotate (same numbered lines as the CA Embeditor's)",
+                ats.Contains("return EmbedSlotText.Annotate(text, ranges);"), null);
+            Ok("both annotated tools document the buffer-line numbering rule",
+                reg.Contains("for targeted searches to avoid large output. \" + EmbedSlotText.NumberingRule")
+                && reg.Contains("capped at ~6 KB. \" + EmbedSlotText.NumberingRule"), null);
+            string etr = File.ReadAllText(Path.Combine(dir, @"Services\EditorToolRouter.cs"));
+            Ok("editor-tool writes in the CA Embeditor are labelled by the channel (procedure + line), not the .app",
+                mevc.Contains("IEditorOverlayChannel, IOverlayWriteLabel") && etr.Contains("Label(result, opts, ch.FilePath, ops.LastLine, ch)"), null);
 
             Ok("addin project compiles the guard",
                 File.ReadAllText(Path.Combine(dir, "ClarionAssistant.csproj")).Contains(@"Services\EmbedOverlayGuard.cs"), null);

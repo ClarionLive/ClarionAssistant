@@ -29,8 +29,32 @@ namespace ClarionAssistant.Services
             return (text ?? "").Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
         }
 
-        /// <summary>The «E:N» annotated source, as AppTreeService.GetEmbeditorSource builds it.</summary>
-        public static string Annotate(string text, IList<int[]> ranges)
+        /// <summary>
+        /// One line of the annotated source: <see cref="Line"/> is its 1-based BUFFER line (the number get_line_text,
+        /// replace_range, go_to_line and find_in_file use), or 0 for a «E:N» / «/E:N» / «E:N/» marker, which is not a
+        /// buffer line.
+        /// </summary>
+        public struct AnnotatedLine
+        {
+            public int Line;
+            public string Text;
+            public AnnotatedLine(int line, string text) { Line = line; Text = text; }
+            /// <summary>How it is printed: buffer lines carry their number ("265| code"), markers do not.</summary>
+            public override string ToString() { return Line > 0 ? Line + "| " + Text : Text; }
+        }
+
+        /// <summary>The rule the annotated output follows, for tool descriptions and docs.</summary>
+        public const string NumberingRule =
+            "Every code line is prefixed with its buffer line number (\"265| ...\"): that is the line number get_line_text, " +
+            "get_lines_range, replace_range, go_to_line and find_in_file use. «E:N» / «/E:N» / «E:N/» marker lines are NOT buffer " +
+            "lines: N is the slot's first buffer line (the line_number for write_embed_content / get_embed_content).";
+
+        /// <summary>
+        /// The «E:N» annotated source as lines: slots wrapped in «E:N»..«/E:N» (or «E:N/» when empty), generated noise
+        /// lines (! Start of, ! End of, ! [Priority N], !!!) and blank lines outside slots dropped, every kept buffer line
+        /// tagged with its buffer line number. Both editors build their answers here (73bd1f03), so they cannot drift.
+        /// </summary>
+        public static List<AnnotatedLine> AnnotateLines(string text, IList<int[]> ranges)
         {
             var lines = Lines(text);
             var starts = new Dictionary<int, int>();   // 0-based start -> 0-based end
@@ -38,29 +62,29 @@ namespace ClarionAssistant.Services
                 foreach (var r in ranges)
                     if (r != null && r.Length >= 2 && r[0] >= 1) starts[r[0] - 1] = Math.Max(r[0], r[1]) - 1;
 
-            var sb = new StringBuilder();
+            var result = new List<AnnotatedLine>();
             int i = 0;
             while (i < lines.Length)
             {
                 int end;
                 if (starts.TryGetValue(i, out end))
                 {
-                    var slot = new List<string>();
+                    var slot = new List<AnnotatedLine>();
                     bool hasContent = false;
                     for (int j = i; j <= end && j < lines.Length; j++)
                     {
-                        slot.Add(lines[j]);
+                        slot.Add(new AnnotatedLine(j + 1, lines[j]));
                         if (lines[j].Trim().Length > 0) hasContent = true;
                     }
                     if (hasContent)
                     {
-                        sb.AppendLine("«E:" + (i + 1) + "»");
-                        foreach (var l in slot) sb.AppendLine(l);
-                        sb.AppendLine("«/E:" + (i + 1) + "»");
+                        result.Add(new AnnotatedLine(0, "\u00ABE:" + (i + 1) + "\u00BB"));
+                        result.AddRange(slot);
+                        result.Add(new AnnotatedLine(0, "\u00AB/E:" + (i + 1) + "\u00BB"));
                     }
                     else
                     {
-                        sb.AppendLine("«E:" + (i + 1) + "/»");
+                        result.Add(new AnnotatedLine(0, "\u00ABE:" + (i + 1) + "/\u00BB"));
                     }
                     i = end + 1;
                     continue;
@@ -69,38 +93,49 @@ namespace ClarionAssistant.Services
                 string t = lines[i].Trim();
                 if (!(t.Length == 0 || t.StartsWith("! Start of ") || t.StartsWith("! End of ") ||
                       t.StartsWith("! [Priority ") || t.StartsWith("!!!")))
-                    sb.AppendLine(lines[i]);
+                    result.Add(new AnnotatedLine(i + 1, lines[i]));
                 i++;
             }
+            return result;
+        }
+
+        /// <summary>get_embeditor_source: <see cref="AnnotateLines"/>, one per line.</summary>
+        public static string Annotate(string text, IList<int[]> ranges)
+        {
+            var sb = new StringBuilder();
+            foreach (var l in AnnotateLines(text, ranges)) sb.AppendLine(l.ToString());
             return sb.ToString();
         }
 
-        /// <summary>search_embeditor_source over an annotated source (AppTreeService.SearchEmbeditorSource's body).</summary>
-        public static string Search(string annotated, string pattern, int contextLines)
+        /// <summary>
+        /// search_embeditor_source: the pattern is matched against each annotated line's TEXT (never its number
+        /// prefix), match windows of ±<paramref name="contextLines"/> annotated lines are merged, each block is headed
+        /// with the BUFFER lines it spans, and the output is capped at ~6 KB.
+        /// </summary>
+        public static string Search(string text, IList<int[]> ranges, string pattern, int contextLines)
         {
-            var lines = (annotated ?? "").Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var lines = AnnotateLines(text, ranges);
             Regex rx;
             try { rx = new Regex(pattern, RegexOptions.IgnoreCase); }
             catch (Exception ex) { return "Error: invalid pattern — " + ex.Message; }
 
-            // Collect [start, end] ranges for each match (with context), then merge overlaps
-            var ranges = new List<int[]>();
-            for (int i = 0; i < lines.Length; i++)
+            // Collect [start, end] windows for each match (with context), then merge overlaps
+            var windows = new List<int[]>();
+            for (int i = 0; i < lines.Count; i++)
             {
-                if (rx.IsMatch(lines[i]))
+                if (rx.IsMatch(lines[i].Text))
                 {
                     int from = Math.Max(0, i - contextLines);
-                    int to   = Math.Min(lines.Length - 1, i + contextLines);
-                    ranges.Add(new[] { from, to });
+                    int to   = Math.Min(lines.Count - 1, i + contextLines);
+                    windows.Add(new[] { from, to });
                 }
             }
 
-            if (ranges.Count == 0)
+            if (windows.Count == 0)
                 return "No matches for: " + pattern;
 
-            // Merge overlapping/adjacent ranges
-            var merged = new List<int[]> { ranges[0] };
-            foreach (var r in ranges)
+            var merged = new List<int[]> { windows[0] };
+            foreach (var r in windows)
             {
                 var last = merged[merged.Count - 1];
                 if (r[0] <= last[1] + 1) last[1] = Math.Max(last[1], r[1]);
@@ -113,10 +148,13 @@ namespace ClarionAssistant.Services
             int blocksEmitted = 0;
             foreach (var m in merged)
             {
-                var block = new StringBuilder();
-                block.AppendLine("--- lines " + (m[0] + 1) + "–" + (m[1] + 1) + " ---");
+                int first = 0, lastLine = 0;
                 for (int i = m[0]; i <= m[1]; i++)
-                    block.AppendLine(lines[i]);
+                    if (lines[i].Line > 0) { if (first == 0) first = lines[i].Line; lastLine = lines[i].Line; }
+                var block = new StringBuilder();
+                block.AppendLine(first > 0 ? "--- buffer lines " + first + "–" + lastLine + " ---" : "--- (slot markers only) ---");
+                for (int i = m[0]; i <= m[1]; i++)
+                    block.AppendLine(lines[i].ToString());
 
                 if (sb.Length + block.Length > MaxOutputChars)
                 {
