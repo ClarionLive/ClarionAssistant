@@ -268,6 +268,11 @@ static class EmbedOverlayGuardTest
                 Regex.IsMatch(mevc, @"if \(action == ""save""\)") && mevc.Contains("EmbedSaveWait.Run(ProcedureName")
                 && mevc.Contains("h => EmbedSaveFinished += h, h => EmbedSaveFinished -= h"), null);
 
+            // fc420c30's file_path check and "— file:line (path)" naming read the channel's FilePath: on the covered view
+            // it must be the path the NATIVE editor reports there, or file_path writes are refused only with the overlay up.
+            Ok("the covered CA Embeditor channel reports the native active path as its FilePath",
+                mevc.Contains("new EmbedChannel(v, NativeActivePath())") && mevc.Contains("return _path ?? ("), null);
+
             // The routed save recognises 1565ef7b's busy refusal by its text (no request id until dc4f7115): the gate's
             // message must keep starting with the prefix EmbedSaveWait matches.
             string flow = File.Exists(Path.Combine(dir, @"Services\EmbedSaveFlow.cs")) ? File.ReadAllText(Path.Combine(dir, @"Services\EmbedSaveFlow.cs")) : "";

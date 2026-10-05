@@ -110,15 +110,20 @@ namespace ClarionAssistant.Terminal
         {
             private readonly ModernEmbeditorViewContent _v;
             private readonly List<int[]> _native;
-            public EmbedChannel(ModernEmbeditorViewContent v)
+            private readonly string _path;
+            /// <param name="activePath">For the covered-view channel (EditorToolRouter): the path the NATIVE editor
+            /// reports for this view, so fc420c30's file_path check and its "— file:line (path)" naming behave exactly as
+            /// they do with the CA Embeditor off. Null = describe the CA Embeditor instead.</param>
+            public EmbedChannel(ModernEmbeditorViewContent v, string activePath = null)
             {
                 _v = v;
+                _path = activePath;
                 _native = new List<int[]>();
                 if (v._editableRanges != null)
                     foreach (var r in v._editableRanges) if (r != null) _native.Add(new[] { r[0], r[1] });
             }
             public string ProcedureName { get { return _v._procedureName ?? "embeditor"; } }
-            public string FilePath { get { return "the CA Embeditor ('" + ProcedureName + "')"; } }
+            public string FilePath { get { return _path ?? ("the CA Embeditor ('" + ProcedureName + "')"); } }
             public bool PageReady { get { return _v._panel != null && _v._isInitialized; } }
             public IList<int[]> NativeRanges { get { return _native; } }
             public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
@@ -160,7 +165,31 @@ namespace ClarionAssistant.Terminal
         {
             var v = LiveEmbedView();
             if (v == null || !v._embedOverlay) return null;
-            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v) : null;
+            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v, NativeActivePath()) : null;
+        }
+
+        /// <summary>The active document path as EditorService.GetActiveDocumentPath derives it (the window's ToolTipText
+        /// when it is a path, else the view's FileName), for the covered-view channel. UI thread; null when unknown.</summary>
+        private static string NativeActivePath()
+        {
+            try
+            {
+                const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public |
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                Func<object, string, object> prop = (o, n) =>
+                {
+                    if (o == null) return null;
+                    var p = o.GetType().GetProperty(n, all);
+                    try { return p == null ? null : p.GetValue(o, null); } catch { return null; }
+                };
+                var window = prop(WorkbenchSingleton.Workbench, "ActiveWorkbenchWindow");
+                var tip = prop(window, "ToolTipText") as string;
+                if (!string.IsNullOrEmpty(tip) && tip.Contains("\\") && tip.Contains(".")) return tip;
+                var view = prop(window, "ViewContent") ?? prop(window, "ActiveViewContent");
+                var name = prop(view, "FileName") as string;
+                return string.IsNullOrEmpty(name) ? null : name;
+            }
+            catch { return null; }
         }
 
         /// <summary>True when Claude's tools can be routed to the CA Embeditor's page (it has loaded). Read off the UI
