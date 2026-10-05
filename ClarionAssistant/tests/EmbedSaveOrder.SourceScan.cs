@@ -127,7 +127,16 @@ static class EmbedSaveOrderSourceScan
         Ok("the edit stash is per procedure; a save drops only its own procedure's entry",
             !view.Contains("EmbedEditStash _editStash;") && !view.Contains("_editStash = ") &&
             view.Contains("Dictionary<string, EmbedEditStash>") &&
-            Count(view, "DropStash(_procedureName)") == 2 && !view.Contains("_editStashes.Clear("));
+            !view.Contains("_editStashes.Clear(") && !view.Contains("TakeStash("));
+        // ...and a restore removes the stash only AFTER delivering it: it may be the last copy (re-check, Codex adversary).
+        int tre = view.IndexOf("private void TryRestoreStashedEdits()", StringComparison.Ordinal);
+        int treEnd = tre >= 0 ? view.IndexOf("private void FocusIfActiveTab()", tre, StringComparison.Ordinal) : -1;
+        string treBody = tre >= 0 && treEnd > tre ? view.Substring(tre, treEnd - tre) : "";
+        int peek = treBody.IndexOf("PeekStash(_procedureName)", StringComparison.Ordinal);
+        int post = treBody.IndexOf("\\\"restoreSlots\\\",\\\"slots\\\"", StringComparison.Ordinal);
+        int drop = post >= 0 ? treBody.IndexOf("DropStash(_procedureName);", post, StringComparison.Ordinal) : -1;
+        Ok("a restore peeks the stash and drops it only after delivering it", peek >= 0 && post > peek && drop > post,
+            "peek@" + peek + " post@" + post + " drop@" + drop);
         // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
         int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
         int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);

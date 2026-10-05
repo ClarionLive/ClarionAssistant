@@ -1414,12 +1414,10 @@ namespace ClarionAssistant.Terminal
             new Dictionary<string, EmbedEditStash>(StringComparer.OrdinalIgnoreCase);
         private static void PutStash(EmbedEditStash s) { if (s != null && !string.IsNullOrEmpty(s.Proc)) _editStashes[s.Proc] = s; }
         private static void DropStash(string proc) { if (!string.IsNullOrEmpty(proc)) _editStashes.Remove(proc); }
-        private static EmbedEditStash TakeStash(string proc)
+        private static EmbedEditStash PeekStash(string proc)
         {
             EmbedEditStash s;
-            if (string.IsNullOrEmpty(proc) || !_editStashes.TryGetValue(proc, out s)) return null;
-            _editStashes.Remove(proc);
-            return s;
+            return !string.IsNullOrEmpty(proc) && _editStashes.TryGetValue(proc, out s) ? s : null;
         }
         // The slot texts the last successful close-gesture SyncLive pushed into the NATIVE buffer (bcba6efb). If
         // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
@@ -1802,8 +1800,11 @@ namespace ClarionAssistant.Terminal
             try
             {
                 if (_panel == null) return;
-                var stash = TakeStash(_procedureName);   // only THIS procedure's; others wait for their own re-open
-                if (stash == null) return;               // single-shot: consumed (or invalidated) by this attach
+                // Only THIS procedure's stash; others wait for their own re-open. PEEK, don't take: it may be the only
+                // copy (a failed recovery write), so it is removed only once the restore has been DELIVERED — a throw
+                // anywhere below keeps it for the next open (1565ef7b final run, Codex adversary).
+                var stash = PeekStash(_procedureName);
+                if (stash == null) return;
                 // Per slot, not all-or-nothing (1565ef7b): a slot changed elsewhere since the teardown (e.g. Clarion's
                 // own "Save changes?" Yes) no longer blocks restoring the slots the developer actually edited.
                 var restored = Services.EmbedSavePlanner.MergeStash(stash.Original, stash.Edited, _originalSlotTexts);
@@ -1822,10 +1823,14 @@ namespace ClarionAssistant.Terminal
                         else _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}");
                     }
                     catch { }
+                    // Drop it only when a disk copy exists; without one, memory is the last copy — keep it (it costs
+                    // little, and the edits stay retrievable in this IDE session rather than silently discarded).
+                    if (where.Length > 0) DropStash(_procedureName);
                     ClarionAssistant.MonacoSpikeLog.Write("stashed unsaved edits NOT restored — baseline changed (" + _procedureName + ")");
                     return;
                 }
                 _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(restored) + "}");
+                DropStash(_procedureName);   // delivered — single-shot
                 ClarionAssistant.MonacoSpikeLog.Write("restored stashed unsaved edits into re-opened embed (" + _procedureName + ")");
             }
             catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("TryRestoreStashedEdits error: " + ex.Message); }
