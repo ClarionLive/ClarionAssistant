@@ -1020,7 +1020,7 @@ namespace ClarionAssistant.Services
         /// Clear every still-unresolved name that the owning PROGRAM module declares as global data. Follows
         /// <paramref name="modulePath"/>'s own MEMBER('…') line to the PROGRAM .clw, then looks for a
         /// column-1 label in its DECLARATION section (everything before the global CODE, per
-        /// ClarionParser.FindMainTailStart). Column-1 anchoring is what keeps indented MAP prototypes and
+        /// FindProgramGlobalCode). Column-1 anchoring is what keeps indented MAP prototypes and
         /// nested structure fields out; GROUP/QUEUE depth tracking in FindDataLabelInRange does the rest.
         ///
         /// This is the .app-globals case the whole filter exists for: in the CA Embeditor the buffer is a
@@ -1068,13 +1068,9 @@ namespace ClarionAssistant.Services
                     if (!File.Exists(programPath)) return;
                 }
 
-                int tailStart;
-                try { tailStart = new ClarionParser().FindMainTailStart(programPath); }
-                catch { return; }
-
                 var lines = EncodingHelper.ReadAllLines(programPath, out _);
                 if (lines == null || lines.Length == 0) return;
-                if (tailStart <= 0 || tailStart > lines.Length) tailStart = lines.Length;
+                int tailStart = FindProgramGlobalCode(lines);
 
                 var pending = new List<string>();
                 foreach (var kv in names) if (!kv.Value) pending.Add(kv.Key);
@@ -1085,6 +1081,41 @@ namespace ClarionAssistant.Services
             {
                 LspTrace.Write("[SharedLspBridge] ResolveNamesFromProgramGlobals('" + modulePath + "'): " + ex.Message);
             }
+        }
+
+        // A bare CODE statement, and an unconditional OMIT('term') (no second argument: dead in every build).
+        private static readonly Regex CgBareCode = new Regex(@"^\s*CODE\s*(!.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex CgUnconditionalOmit = new Regex(
+            @"^\s*OMIT\s*\(\s*'([^']+)'\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// Line index of a PROGRAM's global CODE statement — the end of its declaration section — or
+        /// lines.Length when there is none. The first bare CODE line outside an unconditional OMIT block:
+        /// no declaration-section construct contains one.
+        ///
+        /// e2f87efb: this used to be ClarionParser.FindMainTailStart, whose defensive rule also stops at the
+        /// first column-1 "X PROCEDURE" line. A template-generated PROGRAM writes CLASS method prototypes at
+        /// column 1 (PRM002.clw: "TranslateString PROCEDURE(...),STRING,VIRTUAL" inside a CLASS,TYPE at line
+        /// 92), so the range ended there and none of the FILE labels thousands of lines further down were
+        /// seen. A column-1 field label CODE (`CODE  STRING(16)` in a FILE's RECORD) is not bare and does
+        /// not end the range either.
+        /// </summary>
+        private static int FindProgramGlobalCode(string[] lines)
+        {
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var omit = CgUnconditionalOmit.Match(lines[i]);
+                if (omit.Success)
+                {
+                    string term = omit.Groups[1].Value;
+                    int j = i + 1;
+                    while (j < lines.Length && !lines[j].Contains(term)) j++;
+                    i = j;
+                    continue;
+                }
+                if (CgBareCode.IsMatch(lines[i])) return i;
+            }
+            return lines.Length;
         }
 
         private static readonly Regex CgGroupQueueOpen = LocalScopeIndex.GroupQueueOpen;

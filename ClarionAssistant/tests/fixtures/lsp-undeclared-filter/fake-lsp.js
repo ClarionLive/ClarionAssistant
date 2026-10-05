@@ -8,6 +8,8 @@
 //                   list. This is the case that leaked: an empty filtered answer, then the raw cache read.
 //   mixed.clw       'GlobRes' plus 'NoSuchThing' (declared nowhere): the negative control. NoSuchThing
 //                   must still show.
+//   any other file  the names on its "! fake-lsp-undeclared: A,B,C" line, if it has one (e2f87efb:
+//                   UndeclaredFilter.ProgramGlobalsTest.ps1 lists its names in the fixture itself).
 
 'use strict';
 
@@ -30,10 +32,15 @@ function undeclared(names) {
     }));
 }
 
-function analyse(uri, version) {
+function listedNames(text) {
+    const m = /^\s*!\s*fake-lsp-undeclared:\s*(.*)$/mi.exec(text || '');
+    return m ? m[1].split(',').map(s => s.trim()).filter(s => s.length > 0) : [];
+}
+
+function analyse(uri, version, text) {
     const name = uri.substring(uri.lastIndexOf('/') + 1).toLowerCase();
     process.stderr.write('[fake-lsp] analyse ' + name + ' v' + version + '\n');
-    const names = name === 'mixed.clw' ? ['GlobRes', 'NoSuchThing'] : name === 'onlyglobal.clw' ? ['GlobRes'] : [];
+    const names = name === 'mixed.clw' ? ['GlobRes', 'NoSuchThing'] : name === 'onlyglobal.clw' ? ['GlobRes'] : listedNames(text);
     notify('textDocument/publishDiagnostics', { uri, version, diagnostics: undeclared(names) });
     notify('clarion/diagnosticsStatus', { uri, version, state: 'complete' });
 }
@@ -46,7 +53,9 @@ function handle(msg) {
     }
     if (msg.method === 'textDocument/didOpen' || msg.method === 'textDocument/didChange') {
         const td = msg.params.textDocument;
-        analyse(td.uri, td.version);
+        const changes = msg.params.contentChanges;
+        analyse(td.uri, td.version, td.text !== undefined ? td.text
+            : (changes && changes.length ? changes[changes.length - 1].text : ''));
     } else if (msg.method === 'exit') {
         process.exit(0);
     }
