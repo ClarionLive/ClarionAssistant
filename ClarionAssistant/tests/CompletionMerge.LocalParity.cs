@@ -13,6 +13,12 @@
 // refactor adds on purpose (procedure parameters; the owning procedure's locals inside a local-class
 // method, test 1.5). Everything else must be byte-identical, in order.
 //
+// 4dfa1e18 edited golden-master.json by hand (procedure kinds; master called every procedure "local"):
+// LocalHelper, prototyped in the MEMBER module's MAP, reads "module procedure" (completion rows at Loc,
+// LO and Lo, and its hover); ProcA/ProcB, implemented here but prototyped in no MAP of this buffer, read
+// "(procedure)". "Local procedure" now means only a procedure's own local MAP. The "Init" row at "In" is
+// left as generated: ExpectedRemoved strips it before comparing.
+//
 // Args: <fake-lsp.js> <work dir> <two-procs.clw> <golden.json> generate|check
 // Exit: 0 pass, 1 fail, 2 could-not-run.
 using System;

@@ -87,6 +87,7 @@ static class LocalScopeIndexTest
 
         Completion();
         Hover();
+        ProcedureKinds();
         Encodings(dir);
         R3(sourcePath);
         Threads();
@@ -248,6 +249,144 @@ static class LocalScopeIndexTest
     }
 
     static string Md(LocalHoverResult r) { return r == null ? "(null)" : r.Markdown.Replace("\n", "\\n"); }
+
+    // ------------------------------------------------------------------------------ procedure kinds (4dfa1e18)
+    // A procedure's hover/completion says what John means by its kind: "local procedure" ONLY for one in a
+    // procedure's own local MAP; "module procedure" for the MEMBER module's MAP; "global procedure" for the
+    // PROGRAM file's MAP; plain "procedure" for one implemented here but prototyped in none of this buffer's
+    // MAPs (the prototype is elsewhere - claiming "global" would be a guess). Master called them ALL "local".
+
+    // The hover card's footer: the line after the signature block ("<what> · <file>").
+    static string What(LocalHoverResult r)
+    {
+        if (r == null) return "(null)";
+        int i = r.Markdown.LastIndexOf("```\n\n", StringComparison.Ordinal);
+        string foot = i < 0 ? r.Markdown : r.Markdown.Substring(i + 5);
+        int dot = foot.IndexOf(" · ", StringComparison.Ordinal);
+        return dot < 0 ? foot : foot.Substring(0, dot);
+    }
+
+    static string DetailOf(List<LspClient.CompletionItemInfo> items, string label)
+    {
+        var it = items.FirstOrDefault(x => string.Equals(x.Label, label, StringComparison.OrdinalIgnoreCase));
+        return it == null ? "(absent)" : it.Detail + " [kind " + it.Kind + "]";
+    }
+
+    // John's repro, PRM002130.clw in miniature: a MEMBER module with no MAP of its own whose procedure is
+    // prototyped in the program's global MAP, with the ABC-shaped CLASS of column-1 method prototypes.
+    const string MemberNoMap =
+        "                     MEMBER('PRM002.clw')                  ! This is a MEMBER module\r\n" +
+        "\r\n" +
+        "InventoryDetailToolBar PROCEDURE\r\n" +
+        "LOC:Row              LONG\r\n" +
+        "ThisWindow           CLASS(WindowManager)\r\n" +
+        "Init                   PROCEDURE(),BYTE,PROC,DERIVED\r\n" +
+        "                     END\r\n" +
+        "  CODE\r\n" +
+        "  InventoryDetailToolBar()\r\n" +
+        "  Inv\r\n" +
+        "  RETURN\r\n";
+
+    // A procedure with a local MAP: one indented prototype, one at column 1, a MODULE block, and DATA on
+    // both sides of the MAP. Inner and Inner2 are implemented below Outer, in their own procedures.
+    // The column-1 prototype comes FIRST: one placed after an indented prototype is misread as an
+    // implementation by IsImplHeader (InsideDeclarationBlock stops at the indented line) - a separate,
+    // pre-existing gap, logged as a follow-up on 4dfa1e18.
+    const string LocalMapBuf =
+        "                     MEMBER()\r\n" +
+        "\r\n" +
+        "Outer                PROCEDURE\r\n" +
+        "LOC:Before           LONG\r\n" +
+        "                     MAP\r\n" +
+        "Inner2                 PROCEDURE(STRING)\r\n" +
+        "                       Inner PROCEDURE(LONG)\r\n" +
+        "                       MODULE('other.clw')\r\n" +
+        "                         Elsewhere PROCEDURE\r\n" +
+        "                       END\r\n" +
+        "                     END\r\n" +
+        "LOC:After            LONG\r\n" +
+        "  CODE\r\n" +
+        "  Inner(LOC:Before + LOC:After)\r\n" +
+        "  Inner2('x')\r\n" +
+        "  Elsewhere()\r\n" +
+        "  In\r\n" +
+        "  LO\r\n" +
+        "Inner                PROCEDURE(LONG pN)\r\n" +
+        "  CODE\r\n" +
+        "Inner2               PROCEDURE(STRING pS)\r\n" +
+        "  CODE\r\n" +
+        "Sibling              PROCEDURE\r\n" +
+        "  CODE\r\n";
+
+    static void ProcedureKinds()
+    {
+        Console.WriteLine("procedure kinds (4dfa1e18)");
+
+        // pk.1 - John's case: hovering the procedure on its own PROCEDURE line, and at a call.
+        var g1 = HoverOn(MemberNoMap, "InventoryDetailToolBar PROCEDURE", "InventoryDetailToolBar");
+        Check(What(g1) == "procedure" && g1.Authoritative && g1.Markdown.Contains("InventoryDetailToolBar PROCEDURE"), "pk.1",
+              "a procedure implemented here, in no MAP of this buffer -> 'procedure', never 'local procedure': " + Md(g1));
+        var g1b = HoverOn(MemberNoMap, "InventoryDetailToolBar()", "InventoryDetailToolBar");
+        Check(What(g1b) == "procedure", "pk.1b", "...and the same at a call site: " + Md(g1b));
+        Check(DetailOf(At(MemberNoMap, "Inv"), "InventoryDetailToolBar") == "(procedure) [kind 3]", "pk.1c",
+              "completion detail -> (procedure): " + DetailOf(At(MemberNoMap, "Inv"), "InventoryDetailToolBar"));
+
+        // pk.2 - the fixture's ProcA/ProcB (implemented, no MAP) and LocalHelper (the MEMBER module's MAP).
+        var pa = HoverOn(_two, "ProcA                PROCEDURE(LONG pId, *STRING pName, <BYTE pOpt>, LONG pDef=5, ? pAny, *QUEUE pQ)", "ProcA");
+        Check(What(pa) == "procedure", "pk.2a", "ProcA on its header -> 'procedure': " + Md(pa));
+        var lh = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "LocalHelper");
+        Check(What(lh) == "module procedure" && lh.Markdown.Contains("LocalHelper PROCEDURE(LONG)"), "pk.2b",
+              "LocalHelper, prototyped in the MEMBER MAP -> 'module procedure': " + Md(lh));
+        var loc = At(_two, "Loc");
+        Check(DetailOf(loc, "LocalHelper") == "LocalHelper PROCEDURE(LONG)  (module procedure) [kind 3]", "pk.2c",
+              "completion detail of a MEMBER-MAP procedure: " + DetailOf(loc, "LocalHelper"));
+        var pr = At(_two, "Pr");
+        Check(DetailOf(pr, "ProcA") == "(procedure) [kind 3]" && DetailOf(pr, "ProcB") == "(procedure) [kind 3]", "pk.2d",
+              "completion detail of an implementation with no MAP here: " + DetailOf(pr, "ProcA"));
+
+        // pk.3 - the same MAP in a PROGRAM file is the global MAP.
+        string prog = WithLine(_two, "MEMBER()", "                     PROGRAM");
+        var gp = HoverOn(prog, "ReturnValue = LocalHelper(pMode)", "LocalHelper");
+        Check(What(gp) == "global procedure", "pk.3a", "a PROGRAM file's MAP -> 'global procedure': " + Md(gp));
+        Check(DetailOf(At(prog, "Loc"), "LocalHelper") == "LocalHelper PROCEDURE(LONG)  (global procedure) [kind 3]", "pk.3b",
+              "completion detail: " + DetailOf(At(prog, "Loc"), "LocalHelper"));
+        string progCommented = "! a leading comment\r\n" + prog;
+        Check(What(HoverOn(progCommented, "ReturnValue = LocalHelper(pMode)", "LocalHelper")) == "global procedure", "pk.3c",
+              "leading comments do not hide the PROGRAM statement");
+
+        // pk.4 - a procedure's local MAP.
+        var li = HoverOn(LocalMapBuf, "Inner(LOC:Before + LOC:After)", "Inner");
+        Check(What(li) == "local procedure of Outer" && li.Kind == "procedure" && li.Markdown.Contains("Inner PROCEDURE(LONG)"), "pk.4a",
+              "Inner, in Outer's local MAP -> 'local procedure of Outer', the MAP prototype as signature: " + Md(li));
+        var li2 = HoverOn(LocalMapBuf, "Inner2('x')", "Inner2");
+        Check(What(li2) == "local procedure of Outer" && li2.Kind == "procedure", "pk.4b",
+              "Inner2, a COLUMN-1 prototype in the local MAP -> a local procedure, not a DATA 'local': " + Md(li2));
+        var lih = HoverOn(LocalMapBuf, "Inner                PROCEDURE(LONG pN)", "Inner");
+        Check(What(lih) == "local procedure of Outer", "pk.4c", "Inner on its own implementation line (outside Outer) -> still local: " + Md(lih));
+        var sib = HoverOn(LocalMapBuf, "Sibling              PROCEDURE", "Sibling");
+        Check(What(sib) == "procedure", "pk.4d", "Sibling, in no MAP -> 'procedure': " + Md(sib));
+        var inItems = At(LocalMapBuf, "In");
+        Check(DetailOf(inItems, "Inner") == "Inner PROCEDURE(LONG)  (local procedure) [kind 3]" &&
+              DetailOf(inItems, "Inner2") == "Inner2                 PROCEDURE(STRING)  (local procedure) [kind 3]",
+              "pk.4e", "completion: Inner " + DetailOf(inItems, "Inner") + "; Inner2 " + DetailOf(inItems, "Inner2"));
+        var locItems = Labels(At(LocalMapBuf, "LO"));
+        Check(locItems.Contains("LOC:Before") && locItems.Contains("LOC:After") && locItems.Count == 2, "pk.4f",
+              "the DATA on both sides of the local MAP stays in scope; the MAP's lines are not data: " + string.Join(",", locItems));
+        var le = HoverOn(LocalMapBuf, "Elsewhere()", "Elsewhere");
+        Check(What(le) == "local procedure of Outer" && le.Markdown.Contains("Elsewhere PROCEDURE"), "pk.4g",
+              "a MODULE block inside the local MAP is followed: " + Md(le));
+
+        // pk.5 - the slice path: hovering Inner on its own implementation line with a slice that holds
+        // only Inner's procedure, not Outer's DATA - the span map's local MAPs must answer.
+        var map = LocalScopeIndex.BuildSpanMap(LocalMapBuf);
+        var raw = LocalMapBuf.Replace("\r\n", "\n").Split('\n');
+        var ip = map.Procs.First(p => p.Name == "Inner");
+        var sb = new StringBuilder();
+        for (int i = ip.Start; i <= ip.End && i <= raw.Length; i++) { if (i > ip.Start) sb.Append('\n'); sb.Append(raw[i - 1]); }
+        var pieces = new List<SlicePiece> { new SlicePiece(ip.Start, sb.ToString()) };
+        var sh = LocalScopeIndex.Hover(map.HeaderHash, null, pieces, ip.Routines, ip.Start - 1, 2, "two-procs.clw");
+        Check(What(sh) == "local procedure of Outer", "pk.5", "slice hover on Inner's header (Outer's DATA not in the slice) -> local: " + Md(sh));
+    }
 
     // ------------------------------------------------------------------------------ encodings 1.15, 1.16
 

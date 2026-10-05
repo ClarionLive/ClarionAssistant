@@ -7,7 +7,7 @@ using ClarionCodeGraph.Parsing;
 namespace ClarionAssistant.Services
 {
     /// <summary>A buffer-local hover answer. <see cref="Authoritative"/> is true when the word resolved to
-    /// something declared right here (a local, a parameter, a routine, or a module-local procedure), so no
+    /// something declared right here (a local, a parameter, a routine, or a procedure of this file), so no
     /// other source can name a better declaration and the caller may skip the language server.</summary>
     public sealed class LocalHoverResult
     {
@@ -92,8 +92,8 @@ namespace ClarionAssistant.Services
     ///  - the module header (MEMBER to the first procedure: module data + MAP) is parsed once per
     ///    distinct header text, keyed by a content hash, so a new buffer instance with an unchanged
     ///    header costs one hash walk over the header and nothing else;
-    ///  - the list of procedure implementations in the buffer (for "local procedure" completion/hover)
-    ///    is one allocation-free walk per buffer INSTANCE, cached by reference.
+    ///  - the list of procedure implementations in the buffer, and the prototypes of every local MAP
+    ///    (for procedure completion/hover) is one walk per buffer INSTANCE, cached by reference.
     ///
     /// SharedLspBridge's late merge (after the LSP) calls this same code, so the local layer and the
     /// merged list cannot disagree about what is in scope.
@@ -401,7 +401,8 @@ namespace ClarionAssistant.Services
         private static readonly Regex LineComment = new Regex(@"!.*$");
         private static readonly Regex SelfClosingStructure = new Regex(@"(?:\bEND\b|\.)\s*$", RegexOptions.IgnoreCase);
         private static readonly Regex MapOpen = new Regex(@"^\s*MAP\b", RegexOptions.IgnoreCase);
-        private static readonly Regex MapModuleOpen = new Regex(@"^\s*MODULE\b", RegexOptions.IgnoreCase);
+        private static readonly Regex ProgramStatement = new Regex(@"^\s*PROGRAM\b", RegexOptions.IgnoreCase);
+        private static readonly Regex MapModuleOpen =new Regex(@"^\s*MODULE\b", RegexOptions.IgnoreCase);
         private static readonly Regex MapDirective = new Regex(@"^\s*(INCLUDE|OMIT|COMPILE|SECTION|PRAGMA|!)", RegexOptions.IgnoreCase);
         private static readonly Regex MapProtoName = new Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.IgnoreCase);
         private static readonly Regex PreAttr = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
@@ -501,18 +502,22 @@ namespace ClarionAssistant.Services
             private readonly Header _header;
             private readonly List<KeyValuePair<string, string>> _procs;   // slice: the span map's procedures
             private readonly IList<string> _extraRoutines;                  // slice: the span map's routines
+            private readonly Dictionary<string, LocalProc> _extraLocalMaps; // slice: the span map's local MAPs
             private List<Struct> _structs;
 
             /// <param name="header">A slice's header, already resolved (else parsed from the buffer).</param>
             /// <param name="procs">A slice's procedure list (else the buffer's own, per instance).</param>
             /// <param name="extraRoutines">A slice's routine names, unioned with those in the buffer.</param>
+            /// <param name="extraLocalMaps">A slice's local-MAP procedures, consulted after the buffer's own.</param>
             internal Scope(string buf, int origin, int caretLineStart, Header header = null,
-                           List<KeyValuePair<string, string>> procs = null, IList<string> extraRoutines = null)
+                           List<KeyValuePair<string, string>> procs = null, IList<string> extraRoutines = null,
+                           Dictionary<string, LocalProc> extraLocalMaps = null)
             {
                 _buf = buf;
                 _origin = origin;
                 _procs = procs;
                 _extraRoutines = extraRoutines;
+                _extraLocalMaps = extraLocalMaps;
                 int cle = LineEnd(buf, caretLineStart);
                 CaretLine = buf.Substring(caretLineStart, cle - caretLineStart);
                 _header = header ?? GetHeader(buf, origin);
@@ -583,10 +588,23 @@ namespace ClarionAssistant.Services
                 {
                     var lines = new List<string>();
                     bool sawLabel = false;
+                    int mapDepth = 0;   // inside a local MAP: prototypes declare procedures, not data
                     for (int p = first; p >= 0 && p < end; p = NextLine(_buf, p))
                     {
+                        if (mapDepth > 0)
+                        {
+                            int le = LineEnd(_buf, p), i = SkipWs(_buf, p, le);
+                            if (MatchWord(_buf, i, le, "MODULE")) mapDepth++;
+                            else if (IsEndLineAt(_buf, p)) mapDepth--;
+                            continue;
+                        }
                         if (IsLabelStart(_buf[p])) { sawLabel = true; lines.Add(LineText(_buf, p)); }
-                        else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                        else
+                        {
+                            int le = LineEnd(_buf, p), i = SkipWs(_buf, p, le);
+                            if (IsMapOpenAt(_buf, i, le)) mapDepth = 1;
+                            else if (sawLabel && IsEndLineAt(_buf, p)) lines.Add(LineText(_buf, p));
+                        }
                     }
                     data = _rangeData.GetOrAdd(key, new RangeData(lines));
                 }
@@ -677,20 +695,48 @@ namespace ClarionAssistant.Services
 
             internal void AddLocalProcedures(string prefix, HashSet<string> seen, List<LspClient.CompletionItemInfo> items)
             {
-                // (a) Inline MAP prototypes - the signature goes in the detail column.
+                // (a) Local MAP prototypes (a MAP inside a procedure's DATA) - the signature goes in the detail.
+                foreach (var lm in new[] { LocalMapsOf(_buf, _origin), _extraLocalMaps })
+                {
+                    if (lm == null) continue;
+                    foreach (var kv in lm)
+                    {
+                        string name = kv.Key;
+                        if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
+                        items.Add(new LspClient.CompletionItemInfo { Label = name, Kind = 3 /*Function*/, Detail = kv.Value.Proto + "  (local procedure)", InsertText = name });
+                    }
+                }
+                // (b) The header MAP's prototypes: the global MAP of a PROGRAM file, else the module's MAP.
+                string mapKind = HeaderMapKind;
                 foreach (var kv in _header.MapProcs)
                 {
                     string name = kv.Key;
                     if (!name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(name)) continue;
-                    string detail = string.IsNullOrEmpty(kv.Value) ? "(local procedure)" : kv.Value + "  (local procedure)";
+                    string detail = string.IsNullOrEmpty(kv.Value) ? "(" + mapKind + ")" : kv.Value + "  (" + mapKind + ")";
                     items.Add(new LspClient.CompletionItemInfo { Label = name, Kind = 3 /*Function*/, Detail = detail, InsertText = name });
                 }
-                // (b) Procedure implementations in this buffer (Class.Method / prefixed labels excluded).
+                // (c) Procedure implementations in this buffer prototyped in none of its MAPs: the prototype is
+                // elsewhere (the program's MAP, or one a MAP INCLUDEs), so no scope is claimed for it.
+                // Class.Method / prefixed labels excluded.
                 foreach (var pe in _procs ?? ProcList(_buf, _origin))
                 {
                     if (!pe.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(pe.Key)) continue;
-                    items.Add(new LspClient.CompletionItemInfo { Label = pe.Key, Kind = 3 /*Function*/, Detail = "(local procedure)", InsertText = pe.Key });
+                    items.Add(new LspClient.CompletionItemInfo { Label = pe.Key, Kind = 3 /*Function*/, Detail = "(procedure)", InsertText = pe.Key });
                 }
+            }
+
+            /// <summary>What the header MAP's procedures are: "global procedure" in a PROGRAM file (its MAP
+            /// is the global MAP), else "module procedure" (a MEMBER module's own MAP).</summary>
+            private string HeaderMapKind { get { return _header.IsProgram ? "global procedure" : "module procedure"; } }
+
+            /// <summary>The local-MAP entry for <paramref name="name"/> - the buffer's own first, then a
+            /// slice's span-map list - or null.</summary>
+            private LocalProc FindLocalMapProc(string name)
+            {
+                LocalProc lp;
+                if (LocalMapsOf(_buf, _origin).TryGetValue(name, out lp)) return lp;
+                if (_extraLocalMaps != null && _extraLocalMaps.TryGetValue(name, out lp)) return lp;
+                return null;
             }
 
             internal void AddNoPreFields(string prefix, HashSet<string> seen, List<LspClient.CompletionItemInfo> items)
@@ -886,12 +932,18 @@ namespace ClarionAssistant.Services
                             if (string.Equals(p.Name, word, StringComparison.OrdinalIgnoreCase))
                                 return Card(string.IsNullOrEmpty(p.Type) ? p.Name : p.Name + "  " + p.Type, "parameter", fileName, "parameter");
                 }
+                // Procedures, narrowest declaration first: a procedure's local MAP, the header MAP (global in
+                // a PROGRAM file, module in a MEMBER one), then an implementation whose prototype is not in
+                // this buffer - it is declared elsewhere, so no scope is claimed for it.
+                var lp = FindLocalMapProc(word);
+                if (lp != null)
+                    return Card(lp.Proto, "local procedure of " + lp.Owner, fileName, "procedure");
                 foreach (var kv in _header.MapProcs)
                     if (string.Equals(kv.Key, word, StringComparison.OrdinalIgnoreCase))
-                        return Card(string.IsNullOrEmpty(kv.Value) ? word : kv.Value, "local procedure", fileName, "procedure");
+                        return Card(string.IsNullOrEmpty(kv.Value) ? word : kv.Value, HeaderMapKind, fileName, "procedure");
                 foreach (var pe in _procs ?? ProcList(_buf, _origin))
                     if (string.Equals(pe.Key, word, StringComparison.OrdinalIgnoreCase))
-                        return Card(pe.Value, "local procedure", fileName, "procedure");
+                        return Card(pe.Value, "procedure", fileName, "procedure");
                 foreach (var name in RoutineNames())
                     if (string.Equals(name, word, StringComparison.OrdinalIgnoreCase))
                         return Card(name + " ROUTINE", "routine", fileName, "routine");
@@ -1430,7 +1482,12 @@ namespace ClarionAssistant.Services
             public WeakReference Ref;
             public int AnchorLine = -1, AnchorOffset;
             public List<KeyValuePair<string, string>> Procs;
+            public Dictionary<string, LocalProc> LocalMaps;
         }
+
+        /// <summary>A procedure prototyped in a procedure's own local MAP: callable only inside
+        /// <see cref="Owner"/>. <see cref="Proto"/> is the prototype line.</summary>
+        internal sealed class LocalProc { public string Owner; public string Proto; }
 
         private static readonly object _instLock = new object();
         private static readonly InstanceInfo[] _instances = new InstanceInfo[4];
@@ -1481,17 +1538,74 @@ namespace ClarionAssistant.Services
         {
             var info = InfoFor(s);
             lock (_instLock) { if (info.Procs != null) return info.Procs; }
+            ScanProcs(s, origin, info);
+            return info.Procs;
+        }
+
+        /// <summary>Every procedure prototyped in a LOCAL map - a MAP inside some procedure's DATA - in
+        /// the buffer: name -> owner and prototype. Built by the same walk as <see cref="ProcList"/>.</summary>
+        private static Dictionary<string, LocalProc> LocalMapsOf(string s, int origin)
+        {
+            var info = InfoFor(s);
+            lock (_instLock) { if (info.LocalMaps != null) return info.LocalMaps; }
+            ScanProcs(s, origin, info);
+            return info.LocalMaps;
+        }
+
+        /// <summary>One walk over the buffer: the procedure implementations, and, inside each one's DATA
+        /// (header down to CODE), the prototypes of its local MAP (MODULE...END nesting counted).</summary>
+        private static void ScanProcs(string s, int origin, InstanceInfo info)
+        {
             var list = new List<KeyValuePair<string, string>>();
+            var locals = new Dictionary<string, LocalProc>(StringComparer.OrdinalIgnoreCase);
+            string dataOf = null;   // the procedure whose DATA is open (no CODE yet)
+            int mapDepth = 0;
             for (int p = origin; p >= 0; p = NextLine(s, p))
             {
-                if (p >= s.Length || !IsLabelStart(s[p])) continue;
-                if (!IsImplHeader(s, p, origin)) continue;
-                string label = LabelAt(s, p);
-                if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0) continue;
-                list.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(s, p).Trim()).Trim()));
+                if (p < s.Length && IsLabelStart(s[p]) && IsImplHeader(s, p, origin))
+                {
+                    string label = LabelAt(s, p);
+                    dataOf = label;
+                    mapDepth = 0;
+                    if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0) continue;
+                    list.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(s, p).Trim()).Trim()));
+                    continue;
+                }
+                if (dataOf == null) continue;
+                int le = LineEnd(s, p);
+                int i = SkipWs(s, p, le);
+                if (i >= le || s[i] == '!') continue;
+                if (MatchWord(s, i, le, "CODE")) { dataOf = null; mapDepth = 0; continue; }
+                if (mapDepth == 0)
+                {
+                    if (IsMapOpenAt(s, i, le)) mapDepth = 1;
+                    continue;
+                }
+                if (MatchWord(s, i, le, "MODULE")) { mapDepth++; continue; }
+                if (IsEndLineAt(s, p)) { mapDepth--; continue; }
+                if (!IsLabelStart(s[i]) || IsMapDirectiveAt(s, i, le)) continue;
+                int e = i;
+                while (e < le && IsWordChar(s[e])) e++;
+                string name = s.Substring(i, e - i);
+                if (!locals.ContainsKey(name))
+                    locals[name] = new LocalProc { Owner = dataOf, Proto = StripTrailingComment(s.Substring(i, le - i)).Trim() };
             }
-            lock (_instLock) { info.Procs = list; }
-            return list;
+            lock (_instLock) { info.Procs = list; info.LocalMaps = locals; }
+        }
+
+        /// <summary>A MAP opener: the word MAP alone on its line (bar a comment) - so a DATA label that
+        /// happens to be called "Map" is not one.</summary>
+        private static bool IsMapOpenAt(string s, int i, int le)
+        {
+            if (!MatchWord(s, i, le, "MAP")) return false;
+            int j = SkipWs(s, i + 3, le);
+            return j >= le || s[j] == '!';
+        }
+
+        private static bool IsMapDirectiveAt(string s, int i, int le)
+        {
+            return MatchWord(s, i, le, "INCLUDE") || MatchWord(s, i, le, "OMIT") || MatchWord(s, i, le, "COMPILE") ||
+                   MatchWord(s, i, le, "SECTION") || MatchWord(s, i, le, "PRAGMA");
         }
 
         // ============================================================================ module header cache
@@ -1501,9 +1615,14 @@ namespace ClarionAssistant.Services
             public string Text;
             public readonly List<RangeData> ModuleRanges = new List<RangeData>();
             public readonly List<KeyValuePair<string, string>> MapProcs = new List<KeyValuePair<string, string>>();
+            /// <summary>The header opens with PROGRAM: its MAP is the program's global MAP (else a MEMBER
+            /// module's MAP, whose procedures are module procedures).</summary>
+            public bool IsProgram;
             /// <summary>The procedure implementations of the last full buffer this header was mapped from
             /// (BuildSpanMap) - what a slice cannot see for itself. Null until a map is built.</summary>
             public volatile List<KeyValuePair<string, string>> Procs;
+            /// <summary>The local-MAP procedures of that same buffer (see <see cref="Procs"/>).</summary>
+            public volatile Dictionary<string, LocalProc> LocalMaps;
         }
 
         private static readonly BoundedCache<Header> _headers =
@@ -1581,6 +1700,7 @@ namespace ClarionAssistant.Services
             string text = map.HeaderText;
             var hdr = HeaderFor(map.HeaderHash, () => text);
             hdr.Procs = ProcList(buffer, origin);
+            hdr.LocalMaps = LocalMapsOf(buffer, origin);
 
             int line = 1;
             for (int i = buffer.IndexOf('\n', 0); i >= 0 && i < end; i = buffer.IndexOf('\n', i + 1)) line++;
@@ -1857,7 +1977,7 @@ namespace ClarionAssistant.Services
                     if (label.IndexOf('.') >= 0 || label.IndexOf(':') >= 0 || !known.Add(label)) continue;
                     procs.Add(new KeyValuePair<string, string>(label, StripTrailingComment(LineText(buf, p).Trim()).Trim()));
                 }
-            return new Scope(buf, 0, caretOff, hdr, procs, routines);
+            return new Scope(buf, 0, caretOff, hdr, procs, routines, hdr.LocalMaps ?? (mapped != null ? mapped.LocalMaps : null));
         }
 
         private static int CountNewlines(string s, int from = 0)
@@ -1916,6 +2036,15 @@ namespace ClarionAssistant.Services
             var hdr = new Header();
             string[] lines = text.Replace("\r\n", "\n").Split('\n');
             for (int i = 0; i < lines.Length; i++) lines[i] = lines[i].TrimEnd('\r');
+
+            // PROGRAM or MEMBER: the first statement decides what the header's MAP declares.
+            foreach (var ln in lines)
+            {
+                string t = ln.Trim();
+                if (t.Length == 0 || t[0] == '!') continue;
+                hdr.IsProgram = ProgramStatement.IsMatch(ln);
+                break;
+            }
 
             // Module data ranges, split around MAP blocks (prototypes declare procedures, not data).
             int rangeStart = 0, mapDepth = 0;
