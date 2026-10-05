@@ -265,6 +265,16 @@ static class EmbedOverlayGuardTest
                 Regex.IsMatch(mevc, @"if \(action == ""save""\)") && mevc.Contains("EmbedSaveWait.Run(ProcedureName")
                 && mevc.Contains("h => EmbedSaveFinished += h, h => EmbedSaveFinished -= h"), null);
 
+            // The routed save recognises 1565ef7b's busy refusal by its text (no request id until dc4f7115): the gate's
+            // message must keep starting with the prefix EmbedSaveWait matches.
+            string flow = File.Exists(Path.Combine(dir, @"Services\EmbedSaveFlow.cs")) ? File.ReadAllText(Path.Combine(dir, @"Services\EmbedSaveFlow.cs")) : "";
+            string router = File.ReadAllText(Path.Combine(dir, @"Services\EmbedToolRouter.cs"));
+            var busyM = Regex.Match(flow, "public const string BusyMessage = \"([^\"]*)\"");
+            var prefM = Regex.Match(router, "public const string InProgressPrefix = \"([^\"]*)\"");
+            Ok("1565ef7b's EmbedSaveGate.BusyMessage starts with EmbedSaveWait.InProgressPrefix",
+                busyM.Success && prefM.Success && busyM.Groups[1].Value.StartsWith(prefM.Groups[1].Value, StringComparison.OrdinalIgnoreCase),
+                (busyM.Success ? busyM.Groups[1].Value : "BusyMessage not found") + " / " + (prefM.Success ? prefM.Groups[1].Value : "prefix not found"));
+
             string ats = File.ReadAllText(Path.Combine(dir, @"Services\AppTreeService.cs"));
             Ok("native search_embeditor_source shares EmbedSlotText.Search (one format for both editors)",
                 ats.Contains("return EmbedSlotText.Search(source, pattern, contextLines);"), null);
