@@ -859,7 +859,7 @@ namespace ClarionAssistant.Services
 
                 LspTrace.Write("[SharedLspBridge] suppressed " + dropped
                     + " 'not declared in this file' diagnostic(s) CodeGraph resolves non-locally in '" + filePath + "'.");
-                return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = result.Pending };
+                return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = result.Pending, Partial = result.Partial };
             }
             catch (Exception ex)
             {
@@ -1060,8 +1060,15 @@ namespace ClarionAssistant.Services
         /// surface unwrapped, exactly as .GetAwaiter().GetResult() did, so existing catches still work.</summary>
         private static T Block<T>(Func<Task<T>> start, string what)
         {
+            return Block(start, what, BlockCapMs);
+        }
+
+        /// <summary>As above with the caller's own cap: lsp_diagnostics' timeout_ms may ask for more than
+        /// BlockCapMs (92d06c29), and the cap must not cut that wait short.</summary>
+        private static T Block<T>(Func<Task<T>> start, string what, int capMs)
+        {
             var t = Task.Run(start);
-            if (!WaitBounded(t, what)) throw new TimeoutException("LSP '" + what + "' exceeded " + BlockCapMs + "ms");
+            if (!WaitBounded(t, what, capMs)) throw new TimeoutException("LSP '" + what + "' exceeded " + capMs + "ms");
             return t.GetAwaiter().GetResult();
         }
 
@@ -1075,9 +1082,9 @@ namespace ClarionAssistant.Services
 
         // Wait swallowing only the AggregateException a faulted task raises, so the caller can rethrow it
         // UNWRAPPED via GetResult() and preserve the original exception type in the existing catch blocks.
-        private static bool WaitBounded(Task t, string what)
+        private static bool WaitBounded(Task t, string what, int capMs = BlockCapMs)
         {
-            try { return t.Wait(BlockCapMs); }
+            try { return t.Wait(capMs); }
             catch (AggregateException) { return true; }   // faulted — let GetResult() rethrow it unwrapped
         }
 
@@ -1234,7 +1241,8 @@ namespace ClarionAssistant.Services
             {
                 string capturedBuffer = buffer ?? "";
                 LspModels.DiagnosticResult[] diags =
-                    Block(() => c.GetDiagnosticsAsync(filePath, capturedBuffer, timeoutMs), "diagnostics");
+                    Block(() => c.GetDiagnosticsAsync(filePath, capturedBuffer, timeoutMs), "diagnostics",
+                          Math.Max(BlockCapMs, timeoutMs + 5000));
                 result.Entries = DiagnosticsToEntries(diags);
                 result.Pending = false;
                 lock (_sharedDiagLock) { _sharedDiagCache[filePath] = result.Entries; }

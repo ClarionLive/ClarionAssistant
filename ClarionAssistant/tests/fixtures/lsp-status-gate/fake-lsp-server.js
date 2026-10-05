@@ -19,6 +19,7 @@
 const MODE = process.env.FAKE_LSP_MODE || 'status';
 
 let buffer = Buffer.alloc(0);
+const texts = new Map();   // uri -> the last text accepted (the #359 guard's snapshot)
 
 function send(msg) {
     const body = Buffer.from(JSON.stringify(msg), 'utf8');
@@ -28,8 +29,9 @@ function send(msg) {
 
 function notify(method, params) { send({ jsonrpc: '2.0', method, params }); }
 
-function publish(uri, messages) {
-    notify('textDocument/publishDiagnostics', {
+// version: optional; the real server sends it from v1.0.8 (#619), 1.0.5 never did.
+function publish(uri, messages, version) {
+    const p = {
         uri,
         diagnostics: messages.map((m, i) => ({
             range: { start: { line: i, character: 0 }, end: { line: i, character: 5 } },
@@ -37,13 +39,18 @@ function publish(uri, messages) {
             source: 'fake-lsp',
             message: m
         }))
-    });
+    };
+    if (version !== undefined) p.version = version;
+    notify('textDocument/publishDiagnostics', p);
 }
+
+// firstcall-server.js swaps this for the real server's spelling of the sender (LspClient's start-time probe).
+let statusSender = p => notify('clarion/diagnosticsStatus', p);
 
 function status(uri, version, state) {
     const p = { uri, state };
     if (version !== undefined) p.version = version;
-    notify('clarion/diagnosticsStatus', p);
+    statusSender(p);
 }
 
 function later(ms, fn) { setTimeout(fn, ms); }
@@ -110,6 +117,57 @@ function analyse(uri, version) {
             });
             break;
 
+        case 'firstcall.clw':
+            // c7878eba, the shape of a 62k-line module: the sync-pass publish at once with NO status, the
+            // complete answer and its status 1500ms later (beyond the 400ms settle window).
+            publish(uri, ['SYNC-PARTIAL']);
+            later(1500, () => {
+                publish(uri, ['SYNC-PARTIAL', 'SEMANTIC-FULL']);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'partial.clw':
+            // 92d06c29: the v1.0.8 shape on a huge module. A versioned sync-pass publish at once, the complete
+            // answer long after a 3 s budget. The budget expires on a publish for the current text: partial.
+            publish(uri, ['PARTIAL-SO-FAR'], version);
+            later(6000, () => {
+                publish(uri, ['PARTIAL-SO-FAR', 'PARTIAL-REST'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'slow.clw':
+            // 92d06c29: completes at 5 s. Pending at the 3 s default; complete with timeout_ms 10000.
+            publish(uri, ['SLOW-SYNC'], version);
+            later(5000, () => {
+                publish(uri, ['SLOW-SYNC', 'SLOW-FULL'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'emptypartial.clw':
+            // 92d06c29 (b): a current-version publish with NOTHING in it, the complete much later. Pending,
+            // and NOT partial: partial is only ever true with entries.
+            publish(uri, [], version);
+            later(6000, () => {
+                publish(uri, ['EMPTYPARTIAL-LATE'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'settled.clw':
+            // 92d06c29: analysed and complete at once. Asked about again with the disk text unchanged, the
+            // second call must answer from that complete; a re-sent identical version is skipped (#359).
+            publish(uri, ['SETTLED-ONE'], version);
+            status(uri, version, 'complete');
+            break;
+
+        case 'stalepub.clw':
+            // 92d06c29: the only publish describes an OLDER text. Never served, not even as partial.
+            publish(uri, ['OLD-TEXT'], version - 1);
+            break;
+
         default:
             // Plain clean file: one publish, complete straight away (the libsrc shape).
             publish(uri, []);
@@ -132,9 +190,22 @@ function handle(msg) {
     }
     if (msg.method === 'textDocument/didOpen') {
         const td = msg.params.textDocument;
+        texts.set(td.uri, td.text);
         analyse(td.uri, td.version);
     } else if (msg.method === 'textDocument/didChange') {
         const td = msg.params.textDocument;
+        // The real server's #359 ContentChangeGuard: a change whose text is identical to the last accepted text
+        // is skipped. No analysis, no publish, no status, ever, for that version (92d06c29). This server
+        // advertises full sync, so the last change carries the whole text.
+        const changes = msg.params.contentChanges || [];
+        const last = changes.length ? changes[changes.length - 1] : null;
+        if (last && !last.range && typeof last.text === 'string') {
+            if (texts.get(td.uri) === last.text) {
+                process.stderr.write('[fake-lsp] #359 skipping identical-content change v' + td.version + '\n');
+                return;
+            }
+            texts.set(td.uri, last.text);
+        }
         analyse(td.uri, td.version);
     } else if (msg.method === 'exit') {
         process.exit(0);
@@ -157,3 +228,5 @@ process.stdin.on('data', chunk => {
     }
 });
 process.stdin.on('end', () => process.exit(0));
+
+module.exports = { notify, setStatusSender: fn => { statusSender = fn; } };

@@ -2690,13 +2690,17 @@ COMMON QUERIES:
                     "Call this after writing code to verify the edit is syntactically valid — it's Claude's feedback loop " +
                     "for self-correcting typos, missing imports, and other errors before save. Triggers a fresh analysis " +
                     "(didChange if the file was already open) so results reflect the current on-disk content.\n" +
-                    "Returns: { pending: false, count: N, diagnostics: [{severity, line, character, message, source}] } on success " +
-                    "(N may be 0 for a clean file). Returns { pending: true } if the server didn't respond within the timeout — " +
-                    "treat that as 'still analyzing', NOT as 'no errors'. Severity: 1=error, 2=warning, 3=info, 4=hint.",
+                    "Returns: { pending: false, partial: false, count: N, diagnostics: [{severity, line, character, message, source}] } " +
+                    "when analysis finished (N may be 0 for a clean file). If the timeout runs out first, pending is true: " +
+                    "treat that as 'still analyzing', NOT as 'no errors'. With pending: true, partial: true means the diagnostics " +
+                    "are what the server has found SO FAR for the current text (real problems, but not all of them); " +
+                    "partial: false (always with count 0) means nothing found yet. Very large generated modules (60k+ lines) can take 20-40 s to finish: " +
+                    "pass timeout_ms (e.g. 45000) to wait for the complete answer. Severity: 1=error, 2=warning, 3=info, 4=hint.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "file_path", "Absolute path to the .clw or .inc file to check" }
+                        { "file_path", "Absolute path to the .clw or .inc file to check" },
+                        { "timeout_ms", "Optional. How long to wait for the analysis to finish, in milliseconds. Default 3000, max " + LspDiagnosticsMaxTimeoutMs + "." }
                     },
                     new[] { "file_path" }),
                 RequiresUiThread = false,
@@ -2712,19 +2716,27 @@ COMMON QUERIES:
                     if (!File.Exists(filePath))
                         return "Error: File not found: " + filePath;
 
-                    var result = SharedLspBridge.GetDiagnostics(filePath, 3000);
+                    int timeoutMs = LspDiagnosticsTimeoutMs(args);
+                    var result = SharedLspBridge.GetDiagnostics(filePath, timeoutMs);
 
+                    // Counted after CA's 'not declared' filter: a partial list it emptied is "nothing yet", not partial.
+                    bool partial = result.Pending && result.Partial && result.Entries.Count > 0;
                     var response = new Dictionary<string, object>
                     {
                         { "pending", result.Pending },
+                        { "partial", partial },
                         { "count", result.Entries.Count }
                     };
 
                     if (result.Pending)
                     {
-                        response["note"] = "Server did not publish diagnostics within 3 seconds. "
-                            + "The file may still be analyzing — retry shortly. Empty 'diagnostics' "
-                            + "here does NOT mean the file is clean.";
+                        response["note"] = partial
+                            ? "Analysis did not finish within " + timeoutMs + " ms. These are the problems found SO FAR "
+                              + "for the current text: real, but not all of them. Call again with a larger timeout_ms "
+                              + "(e.g. 45000 for a very large module) for the complete answer."
+                            : "Server did not publish diagnostics within " + timeoutMs + " ms. "
+                              + "The file may still be analyzing — retry shortly, or with a larger timeout_ms. Empty "
+                              + "'diagnostics' here does NOT mean the file is clean.";
                     }
 
                     var diagList = new List<Dictionary<string, object>>();
@@ -5035,6 +5047,20 @@ IdeOnly = true,
             var result = LspService.EnsureRunning();
             _lspClient = LspClient.Active;
             return result;
+        }
+
+        // 92d06c29: lsp_diagnostics' optional timeout_ms. 3 s stays the default (a normal module finishes well
+        // inside it); a 62k-line generated module needs ~17 s after an edit and ~40 s on the first call.
+        internal const int LspDiagnosticsDefaultTimeoutMs = 3000;
+        internal const int LspDiagnosticsMaxTimeoutMs = 120000;
+
+        /// <summary>timeout_ms from the arguments: absent, unparsable or below 1 gives the default; above the
+        /// maximum is capped.</summary>
+        internal static int LspDiagnosticsTimeoutMs(Dictionary<string, object> args)
+        {
+            int ms = McpJsonRpc.GetInt(args, "timeout_ms", LspDiagnosticsDefaultTimeoutMs);
+            if (ms < 1) return LspDiagnosticsDefaultTimeoutMs;
+            return Math.Min(ms, LspDiagnosticsMaxTimeoutMs);
         }
 
         /// <summary>
