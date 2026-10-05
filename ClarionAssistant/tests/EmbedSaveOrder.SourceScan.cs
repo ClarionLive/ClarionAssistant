@@ -84,16 +84,28 @@ static class EmbedSaveOrderSourceScan
         int st = rt >= 0 ? view.IndexOf("if (!_saveGate.Start(token))", rt, StringComparison.Ordinal) : -1;
         int tr = rt >= 0 ? view.IndexOf("try { RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         string startBlock = st > rt && tr > st ? view.Substring(st, tr - st) : "";
-        Ok("a queued save that lost the gate never runs alongside the owner (Start(token) first; join when busy)",
-            startBlock.Contains("JoinRunningSave(current); return;") && startBlock.Contains("_saveGate.Start(fresh)"));
+        // Pipeline Run 3 (Codex security): a superseded callback is OLDER than the save that superseded it, so it is
+        // discarded — never saved and never made pending (either would put older text on top of newer).
+        Ok("a superseded queued save is discarded: it never runs, saves or becomes pending",
+            startBlock.Length > 0 && startBlock.Contains("return;") && !startBlock.Contains("RunSaveRoundTripCore") &&
+            !startBlock.Contains("JoinRunningSave(") && !startBlock.Contains("TryEnter("));
         int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
         string finBody = fin > rt && core > fin ? view.Substring(fin, core - fin) : "";
         Ok("RunSaveRoundTrip raises in a finally, and releases ITS OWN gate token there", finBody.Contains("RaiseEmbedSaveFinished(") &&
             finBody.Contains("_saveGate.Exit(token)"));
         Ok("newer text requested during a save is saved by a follow-up, or kept on disk — never dropped",
-            finBody.Contains("_saveGate.TakeFollowUp(current)") && finBody.Contains("PostFollowUpSave(followUp)") &&
-            finBody.Contains("KeepUnsavedRequest(followUp)"));
+            finBody.Contains("_saveGate.TakeFollowUp(current)") && finBody.Contains("KeepUnsavedRequest(followUp)"));
+        // Pipeline Run 3 (debugger + Codex adversary): the follow-up runs INLINE under a token reserved right after the
+        // release — never deferred (a gap let older text land last; a dropped callback left the cycle unanswered).
+        int fx = finBody.IndexOf("_saveGate.Exit(token)", StringComparison.Ordinal);
+        int fr = finBody.IndexOf("int ft = _saveGate.TryEnter(", StringComparison.Ordinal);
+        int fc = finBody.IndexOf("RunSaveRoundTrip(followUp, ft);", StringComparison.Ordinal);
+        Ok("the follow-up runs inline under a token reserved right after the release", fx >= 0 && fr > fx && fc > fr &&
+            finBody.IndexOf("BeginInvoke", StringComparison.Ordinal) < 0 && view.IndexOf("PostFollowUpSave(", StringComparison.Ordinal) < 0);
+        Ok("a live save-and-exit deferred to a follow-up still closes the tab (Ctrl+Q on a live tab)",
+            view.Contains("if (live && ok && newerPending) _closeAfterFollowUp = true;") &&
+            view.Contains("if (exitNow && !newerPending) { _closeAfterFollowUp = false; PostCloseTab();"));
         // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
         int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
         int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);

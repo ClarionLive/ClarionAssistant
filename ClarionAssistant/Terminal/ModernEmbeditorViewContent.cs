@@ -1414,6 +1414,7 @@ namespace ClarionAssistant.Terminal
         private List<string> _nativeSyncedSlots;
         // One save at a time per surface (pipeline Run 1): a save arriving while one runs joins it. See EmbedSaveGate.
         private readonly Services.EmbedSaveGate _saveGate = new Services.EmbedSaveGate();
+        private bool _closeAfterFollowUp;   // a live save-and-exit deferred to the follow-up carrying newer text
         private List<string> _lastRecoverySlots;   // what WriteRecoveryFile last wrote, so a teardown doesn't write it twice
         private string _lastRecoveryFile;
 
@@ -2508,11 +2509,12 @@ namespace ClarionAssistant.Terminal
             // text to the running save as the pending request instead (it is then saved, or reported, once).
             if (!_saveGate.Start(token))
             {
-                // Superseded. If the save that took over has already finished, nobody would pick this text up as a
-                // follow-up — so run it now under a fresh token rather than leave it (and a waiter) stranded.
-                int fresh = _saveGate.TryEnter(DateTime.UtcNow);
-                if (fresh == 0 || !_saveGate.Start(fresh)) { JoinRunningSave(current); return; }
-                token = fresh;
+                // Superseded: this queued callback went stale and a NEWER save took the gate. Its text is older than
+                // that save's by construction, so it must never be saved — not now, not as a follow-up — or it would
+                // land on top of the newer text (pipeline Run 3, Codex security). The newer save's cycle has raised,
+                // or will raise, the event for this procedure.
+                MonacoSpikeLog.Write("[save-timing] a superseded (stale) save callback ran late — discarded, a newer save covered it");
+                return;
             }
 
             // Every exit raises EmbedSaveFinished exactly once per save CYCLE, including an unexpected throw: either
@@ -2534,10 +2536,15 @@ namespace ClarionAssistant.Terminal
                 var followUp = _saveGate.TakeFollowUp(current);
                 if (followUp != null && intact && _panel != null)
                 {
-                    // Newer text was requested during this save and the surface is still here: save it now. Its
-                    // result and its EmbedSaveFinished answer every request of this cycle (pipeline Run 2).
-                    MonacoSpikeLog.Write("[save-timing] newer text was requested during the save — running it as a follow-up");
-                    PostFollowUpSave(followUp);
+                    // Newer text was requested during this save and the surface is still here: save it NOW, inline,
+                    // under a token reserved in the same breath as the release (pipeline Run 3). Deferring it opened
+                    // a gap where a later save could take the gate and the older follow-up would then be saved after
+                    // it, and a dropped deferred callback left the cycle with no result or event at all. Inline, the
+                    // follow-up's result and its EmbedSaveFinished answer every request of this cycle; we are already
+                    // on a settled UI turn (never the web-message stack), as the first save was.
+                    MonacoSpikeLog.Write("[save-timing] newer text was requested during the save — saving it now as a follow-up");
+                    int ft = _saveGate.TryEnter(DateTime.UtcNow);   // just released, so this always succeeds
+                    RunSaveRoundTrip(followUp, ft);
                 }
                 else
                 {
@@ -2554,24 +2561,6 @@ namespace ClarionAssistant.Terminal
         {
             _saveGate.Join(slots);
             try { MonacoSpikeLog.Write("[save-timing] save requested while one is in flight — pending (slots=" + (slots != null ? slots.Count : 0) + ")"); } catch { }
-        }
-
-        /// <summary>Run the pending request as its own save, off this stack. Busy again (another cycle took the
-        /// gate first)? It stays pending for that one.</summary>
-        private void PostFollowUpSave(List<string> slots)
-        {
-            Action run = () =>
-            {
-                int t = _saveGate.TryEnter(DateTime.UtcNow);
-                if (t == 0) { JoinRunningSave(slots); return; }
-                RunSaveRoundTrip(slots, t);
-            };
-            try
-            {
-                if (_panel != null && _panel.IsHandleCreated) { _panel.BeginInvoke(run); return; }
-            }
-            catch (Exception ex) { MonacoSpikeLog.Write("[save-timing] follow-up BeginInvoke failed, running inline: " + ex.Message); }
-            run();
         }
 
         /// <summary>Text requested during a save that closed the CA Embeditor: recovery file + notice. Returns the
@@ -2743,7 +2732,14 @@ namespace ClarionAssistant.Terminal
             // result and the close stack is clean.
             // Not while newer text waits: the tab (now a snapshot — the live embed just closed) stays for the follow-up,
             // which saves through the re-open path.
-            if (live && ok && !newerPending) { PostCloseTab(); editorIntact = false; }
+            //
+            // The SAVE-AND-EXIT intent belongs to the live save, though, so carry it to the follow-up: once the newer
+            // text is saved (and nothing newer waits) the tab closes as the live save would have (pipeline Run 3: a
+            // Ctrl+Q "Yes" on a live tab mid-save saved the text but left the tab open). A failed save drops it.
+            if (live && ok && newerPending) _closeAfterFollowUp = true;
+            bool exitNow = (live && ok) || (ok && _closeAfterFollowUp);
+            if (!ok) _closeAfterFollowUp = false;
+            if (exitNow && !newerPending) { _closeAfterFollowUp = false; PostCloseTab(); editorIntact = false; }
         }
 
         /// <summary>True if THIS tab is still the live one AND its native embed is still open (GetEmbedInfo). A tab
