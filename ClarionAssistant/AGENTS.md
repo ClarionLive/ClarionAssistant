@@ -56,6 +56,8 @@ When a procedure is open in the embeditor, these tools let you read and write em
 - `get_embeditor_source` — Returns the full annotated source with `«E:N/»` (empty) and `«E:N»...«/E:N»` (filled) markers. Only use when you need the complete picture — prefer `search_embeditor_source` for targeted work.
 - `write_embed_content` — Write code into an embed slot. Pass `line_number=N` (the N from the `«E:N»` token). Response reports line delta — if non-zero, any cached line numbers are stale; re-search before writing subsequent embeds.
 
+**With the procedure open in the CA Embeditor** (the Monaco embeditor), the embed tools above read and write ITS text: what the developer sees, unsaved edits included. Every answer then starts with a `lineBase: ca-embeditor` line: `«E:N»` numbers are the CA Embeditor's, so read them with `search_embeditor_source` while it is open and never reuse numbers read before it opened. `write_embed_content` puts the code into the CA Embeditor (visible at once, one undo step, unsaved until saved); `save_and_close_embeditor` runs the CA Embeditor's own save (save-and-exit, like the developer's Save button). `cancel_embeditor` and `close_file` are REFUSED there (discarding the developer's edits is their call), and `apply_embed_edits` refuses too: use `write_embed_content`. If the CA Embeditor is still loading or does not answer, the tool returns an error and changes nothing; it never writes the hidden native embeditor underneath.
+
 ### File System
 - `read_file` -Read file content from disk (into your context, NOT the editor). Supports `start_line` and `end_line` parameters to read a specific line range with line numbers.
 - `write_file` -Write content to a file on disk
