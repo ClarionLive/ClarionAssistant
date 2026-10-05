@@ -69,6 +69,15 @@ Check ($null -ne $of -and $of.Contains('EditorRouter.OpenAndWait(path') -and $of
        $of.Contains('RequiresUiThread = false')) 'open_file waits (off the UI thread) until the file is active, selecting its tab'
 Check ($auto.Contains('EditorToolRouter.OverlayExpectedFor = ') -and $auto.Contains('CaEditorSettings.SourceAppliesTo(path)')) `
     'open_file knows when to wait for a CA Editor page too (OverlayExpectedFor at startup)'
+# Live (combined-1005c): from the .app view, SelectWindow alone displayed the tab but left the .app the active window.
+$svcPath = Join-Path $Root 'Services\EditorService.cs'
+$svc = if (Test-Path $svcPath) { [System.IO.File]::ReadAllText($svcPath) } else { '' }
+Check ($svc.Contains('return EditorToolRouter.ActivateTab(') -and $auto.Contains('EditorToolRouter.FocusTab = MonacoClarionEditor.FocusTabFor')) `
+    'open_file activates an open tab at both levels (select, then keyboard focus)'
+$g = $svc.IndexOf('public List<string> GetOpenFiles()')
+$gof = if ($g -ge 0) { $svc.Substring($g, [Math]::Min(2500, $svc.Length - $g)) } else { '' }
+Check ($gof.Contains('"ToolTipText"') -and $gof.IndexOf('"ToolTipText"') -lt $gof.IndexOf('"TitleName"')) `
+    'get_open_files gives full paths (the window tooltip) before the bare tab title'
 foreach ($t in @('insert_text_at_cursor', 'replace_text', 'replace_range', 'delete_range', 'toggle_comment', 'undo', 'redo',
                  'save_file', 'close_file')) {
     $b = Block $t

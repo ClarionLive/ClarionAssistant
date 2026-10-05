@@ -615,10 +615,8 @@ namespace ClarionAssistant.Services
                 var fileServiceType = sharpDevelopAsm?.GetType("ICSharpCode.SharpDevelop.FileService");
                 var getOpenFile = fileServiceType?.GetMethod("GetOpenFile",
                     BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string) }, null);
-                var window = getOpenFile?.Invoke(null, new object[] { filePath });
-                if (window == null) return false;
-                window.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(window, null);
-                return true;
+                // Select it AND focus its editor: selecting alone left the .app window active (EditorToolRouter.ActivateTab).
+                return EditorToolRouter.ActivateTab(getOpenFile?.Invoke(null, new object[] { filePath }), filePath);
             }
             catch { return false; }
         }
@@ -897,6 +895,18 @@ namespace ClarionAssistant.Services
                         path = fn?.ToString();
                     }
                     catch { /* ClarionEditor throws on FileName - fall through */ }
+
+                    // fc420c30: the full path, as for the .app and as get_active_file gives it (the window's tooltip),
+                    // not the bare tab title.
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        try
+                        {
+                            var tip = GetProperty(GetProperty(vc, "WorkbenchWindow"), "ToolTipText") as string;
+                            if (!string.IsNullOrEmpty(tip) && tip.Contains("\\") && tip.Contains(".")) path = tip;
+                        }
+                        catch { }
+                    }
 
                     if (string.IsNullOrEmpty(path))
                         path = GetProperty(vc, "TitleName") as string;

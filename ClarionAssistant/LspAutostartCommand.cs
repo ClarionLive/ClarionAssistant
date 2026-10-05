@@ -97,6 +97,8 @@ namespace ClarionAssistant
                 EditorToolRouter.Log = MonacoSpikeLog.Write;
                 // open_file waits for the CA Editor's page too when one will take the file (the overlay's own rule).
                 EditorToolRouter.OverlayExpectedFor = path => MonacoSourceOverlay.Enabled && CaEditorSettings.SourceAppliesTo(path);
+                // ...and activates an already-open tab at both levels: select it, then focus its editor.
+                EditorToolRouter.FocusTab = MonacoClarionEditor.FocusTabFor;
 
                 // 73bd1f03 fix (2): the embed tools reach the CA Embeditor's Monaco buffer while it holds the procedure.
                 EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel;

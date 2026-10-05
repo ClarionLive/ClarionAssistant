@@ -1888,6 +1888,40 @@ namespace ClarionAssistant
         /// <summary>fc420c30: is <paramref name="path"/> open in a source tab showing the NATIVE Clarion editor?</summary>
         internal static bool IsOpenInNativeEditor(string path) { return OpenTabHasOverlay(path) == false; }
 
+        /// <summary>
+        /// fc420c30, EditorToolRouter.FocusTab: give <paramref name="path"/>'s tab keyboard focus (UI thread), so the IDE
+        /// makes it the ActiveWorkbenchWindow; SelectWindow alone only displays it. The CA Editor when it is up (both
+        /// levels: the WebView2 and Monaco), else the native text area. False when no source tab holds the path.
+        /// </summary>
+        internal static bool FocusTabFor(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(inst._filePath) || !PathsEqual(inst._filePath, path)) continue;
+                    if (inst._editor != null)
+                    {
+                        ClarionAssistant.Services.CaFindBroker.NotifyActivity(inst);
+                        inst._editor.FocusEditor();
+                        inst._editor.PostJson("{\"type\":\"focusEditor\"}");
+                    }
+                    else if (inst._hostEditor != null)
+                    {
+                        var area = inst._hostEditor.ActiveTextAreaControl;
+                        if (area != null && area.TextArea != null) area.TextArea.Focus(); else inst._hostEditor.Focus();
+                    }
+                    MonacoSpikeLog.Write("[editor-route] focus tab for open_file: " + Path.GetFileName(path) + (inst._editor != null ? " (CA Editor)" : " (native)"));
+                    return true;
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[editor-route] focus tab failed: " + ex.Message); }
+            }
+            return false;
+        }
+
         // null = no source tab on that path; else whether its CA Editor overlay is up.
         private static bool? OpenTabHasOverlay(string path)
         {
