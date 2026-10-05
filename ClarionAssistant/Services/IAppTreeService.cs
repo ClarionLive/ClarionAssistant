@@ -60,6 +60,9 @@ namespace ClarionAssistant.Services
         string OpenProcedureEmbed(string procedureName);
         string OpenProcedureEmbed(string procedureName, int charDelayMs);
         Dictionary<string, object> GetEmbedInfo();
+        /// <summary>The open embeditor's procedure name, focused or not; null when none is open or it can't be
+        /// read (ticket a964cde3: get_embed_info had no procedure name).</summary>
+        string GetOpenEmbeditorProcedureName();
         string SaveAndCloseEmbeditor();
         string CancelEmbeditor();
 

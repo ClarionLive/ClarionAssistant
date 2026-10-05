@@ -11,13 +11,13 @@ namespace ClarionAssistant.Services
     /// <summary>
     /// Path B multi-editor: open a procedure's embed source in a Monaco view via the mirror+snapshot
     /// model. Clarion's native generator allows only ONE embeditor at a time, so for each procedure we:
-    ///   1. OpenProcedureEmbed(name)  — native generation + Clarion's embeditor (transient)
+    ///   1. OpenProcedureEmbedChecked — native generation + Clarion's embeditor (transient), verified (a964cde3)
     ///   2. mirror the live buffer (source + editable-region map)
     ///   3. CancelEmbeditor()         — discard/close to release the native single-embeditor lock
     ///   4. ShowView(new ModernEmbeditorViewContent)
     /// The snapshot lives in our own tab, so any number of procedures can be open at once.
     ///
-    /// MUST run on the UI thread (OpenProcedureEmbed drives native focus + Application.DoEvents).
+    /// MUST run on the UI thread (the open drives native focus + Application.DoEvents).
     /// Snapshots are read-only-of-truth for now; the save round-trip (re-open → write → save → close)
     /// is M2. If the .app is regenerated underneath, an open snapshot can go stale (reload to refresh).
     /// </summary>
@@ -362,41 +362,27 @@ namespace ClarionAssistant.Services
             EnterBusy();
             try
             {
-            for (int attempt = 0; attempt < CharDelaysMs.Length; attempt++)
+            if (!WaitForEmbedClosed(appTree, 3000))
+            { error = "An embeditor is still open; close it and try again."; return false; }
+
+            // a964cde3: the verified open. It brings the app tree forward (so it works while a Modern
+            // Embeditor or CA Editor tab is the active document), types the name at a quick speed then a slower
+            // one, checks the tree selection before clicking and the opened procedure's NAME after: a wrong
+            // procedure is cancelled without saving. This replaced a "the source mentions the name" check that
+            // a procedure merely CALLING the target passed.
+            var opened = appTree.OpenProcedureEmbedChecked(procName, CharDelaysMs);
+            if (!opened.Ok) { error = opened.Message; return false; }
+
+            string title, ferr;
+            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
             {
-                if (!WaitForEmbedClosed(appTree, 3000))
-                { error = "An embeditor is still open; close it and try again."; return false; }
-
-                // Bring the app tree to the front so the native automation works even when a Modern
-                // Embeditor tab is the active document.
-                appTree.ActivateAppView();
-                appTree.OpenProcedureEmbed(procName, CharDelaysMs[attempt]);
-
-                // First open loads the ABC libraries and can take many seconds; wait generously.
-                if (!WaitForEmbedOpen(appTree, 45000))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Embeditor did not open for '" + procName + "' within 45s.";
-                    continue;
-                }
-
-                string title, ferr;
-                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Could not read embed source for '" + procName + "': " + ferr;
-                    continue;
-                }
-
-                if (SourceMentionsProcedure(source, procName))
-                    return true; // correct procedure — leave the embeditor open
-
-                // Wrong procedure: keystrokes were dropped at this speed. Close and retry slower.
                 try { appTree.CancelEmbeditor(); } catch { }
-                error = "Opened a different procedure than '" + procName + "' — the locator search missed.";
+                WaitForEmbedClosed(appTree, 3000);
+                error = "Could not read embed source for '" + procName + "': " + ferr;
                 source = null; ranges = null;
+                return false;
             }
-            return false;
+            return true; // correct procedure — leave the embeditor open
             }
             finally { LeaveBusy(); }
         }
@@ -407,12 +393,10 @@ namespace ClarionAssistant.Services
         /// open is unreliable, so the developer-opened editor is often the only handle that worked — refusing
         /// it makes the round-trip unusable in the case that needs it most.
         ///
-        /// The identity check here is deliberately STRICTER than the post-open sanity check in
-        /// <see cref="OpenAndMirror"/>. That one only asks whether the name appears anywhere in the source,
-        /// which is sound after WE typed the name into the locator (a mis-select is the unlikely branch).
-        /// Here the editor was opened by someone else, so a bare mention could just as well be a CALL to the
-        /// target from an unrelated procedure. We therefore take the column-0 declaration via
-        /// <see cref="ProcNameFromSource"/> and require an exact name match.
+        /// The identity check here requires an exact name, like the one <see cref="OpenAndMirror"/> gets from
+        /// ProcedureOpenFlow (a964cde3; it used to accept any mention of the name in the source). A bare mention
+        /// could just as well be a CALL to the target from an unrelated procedure, so we take the column-0
+        /// declaration via <see cref="ProcNameFromSource"/> and require an exact name match.
         ///
         /// It is also refused - see <see cref="EmbedAdoptPolicy"/>, which makes the decision - when the CA
         /// Embeditor (Monaco overlay or live tab) holds the embed, or when the native buffer has unsaved changes
@@ -527,23 +511,6 @@ namespace ClarionAssistant.Services
             foreach (var n in names)
                 if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
-        }
-
-        /// <summary>
-        /// Sanity check that the assembled embed source belongs to the procedure: its own name appears in
-        /// its generated source (e.g. "Name PROCEDURE"), so if it's absent we almost certainly opened the
-        /// wrong procedure.
-        /// </summary>
-        private static bool SourceMentionsProcedure(string source, string procName)
-        {
-            if (string.IsNullOrEmpty(source) || string.IsNullOrWhiteSpace(procName)) return false;
-            try
-            {
-                return System.Text.RegularExpressions.Regex.IsMatch(
-                    source, @"\b" + System.Text.RegularExpressions.Regex.Escape(procName) + @"\b",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            catch { return source.IndexOf(procName, StringComparison.OrdinalIgnoreCase) >= 0; }
         }
 
         // The native embed/ABC open + close are driven by the UI-thread MESSAGE LOOP. The old coarse
