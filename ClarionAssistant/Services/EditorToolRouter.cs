@@ -186,7 +186,9 @@ namespace ClarionAssistant.Services
             var s = result as string;
             if (!opts.IsWrite || s == null || s.StartsWith("Error") || s.StartsWith("Nothing")) return result;
             var labeler = ch as IOverlayWriteLabel;
-            string own = labeler != null ? labeler.WriteLabel(line) : null;
+            // The edit has ALREADY landed: a throwing label must not turn it into "nothing was done" in Run's catch.
+            string own = null;
+            try { own = labeler != null ? labeler.WriteLabel(line) : null; } catch { }
             if (!string.IsNullOrEmpty(own)) return s + " — " + own;
             if (string.IsNullOrEmpty(path)) return result;
             return s + " — " + System.IO.Path.GetFileName(path) + (line > 0 ? ":" + line : "") + " (" + path + ")";
