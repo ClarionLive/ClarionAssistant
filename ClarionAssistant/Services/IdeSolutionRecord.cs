@@ -35,6 +35,21 @@ namespace ClarionAssistant.Services
 
         private static readonly object _lock = new object();
         private static string _lastPublished;   // what this process last wrote ("" = removed)
+        private static string _lastSolution;    // the solution in it, for Republish
+
+        /// <summary>
+        /// 0ce0b5e2: addin side, the IDE's live Build &gt; Set Clarion Version choice ("Current" for the running
+        /// version), or null when it can't be read. Published with the solution, because the IDE restores that
+        /// choice from the solution's own preferences when it opens it - so it is the solution's Clarion, which
+        /// the standalone cannot read for itself. A hook (set by the addin) rather than a direct call, so the
+        /// files that compile this one alone need nothing new.
+        /// </summary>
+        public static Func<string> VersionChoiceProvider { get; set; }
+
+        /// <summary>0ce0b5e2: addin side, the IDE's configuration directory (its ClarionProperties.xml and
+        /// preferences\ folder), or null. Lets the standalone read the solution's saved choice from the IDE's
+        /// own preferences when the live choice is unavailable.</summary>
+        public static Func<string> ConfigDirProvider { get; set; }
 
         public static string DirectoryPath
         {
@@ -69,9 +84,14 @@ namespace ClarionAssistant.Services
             {
                 string value = (!string.IsNullOrEmpty(solutionPath) && File.Exists(solutionPath))
                     ? solutionPath : "";
+                string version = value.Length == 0 ? null : Ask(VersionChoiceProvider);
+                string configDir = value.Length == 0 ? null : Ask(ConfigDirProvider);
+                // The change key covers the version too: a Set Clarion Version switch with the same solution
+                // open must reach the standalone (0ce0b5e2).
+                string key = value.Length == 0 ? "" : value + "|" + version + "|" + configDir;
                 lock (_lock)
                 {
-                    if (_lastPublished != null && string.Equals(_lastPublished, value, StringComparison.OrdinalIgnoreCase))
+                    if (_lastPublished != null && string.Equals(_lastPublished, key, StringComparison.OrdinalIgnoreCase))
                         return;
 
                     int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -89,19 +109,44 @@ namespace ClarionAssistant.Services
                             { "pid", pid },
                             { "writtenAt", DateTime.Now.ToString("o") }
                         };
+                        if (version != null) rec["clarionVersion"] = version;
+                        if (configDir != null) rec["configDir"] = configDir;
                         // Write-then-copy so a reader never sees a half-written file.
                         string tmp = file + ".tmp";
                         File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(rec), EncodingHelper.Utf8NoBom);
                         File.Copy(tmp, file, true);
                         File.Delete(tmp);
                     }
-                    _lastPublished = value;
+                    _lastPublished = key;
+                    _lastSolution = value;
                 }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("[IdeSolutionRecord] Publish: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Addin side, 0ce0b5e2: publish again for the solution last published, so a Build &gt; Set Clarion
+        /// Version switch reaches the standalone at once rather than on the next solution poll. No-op when
+        /// nothing was published.
+        /// </summary>
+        public static void Republish()
+        {
+            string sln;
+            lock (_lock) { sln = _lastSolution; }
+            if (!string.IsNullOrEmpty(sln)) Publish(sln);
+        }
+
+        private static string Ask(Func<string> provider)
+        {
+            try
+            {
+                string s = provider != null ? provider() : null;
+                return string.IsNullOrEmpty(s) ? null : s;
+            }
+            catch { return null; }
         }
 
         /// <summary>
@@ -123,6 +168,27 @@ namespace ClarionAssistant.Services
         /// Every other null (no record, IDE gone, pid mismatch, .sln gone) is DEFINITE.
         /// </summary>
         public static string Read(int idePid, out string note, out bool transient)
+        {
+            var d = ReadDetails(idePid, out note, out transient);
+            return d != null ? d.Solution : null;
+        }
+
+        /// <summary>What a record carries beyond the solution (0ce0b5e2).</summary>
+        public sealed class Details
+        {
+            /// <summary>The IDE's open solution.</summary>
+            public string Solution { get; internal set; }
+            /// <summary>The IDE's live Build &gt; Set Clarion Version choice ("Current" = the running version), or
+            /// null when the record does not carry one (an addin from before 0ce0b5e2).</summary>
+            public string VersionChoice { get; internal set; }
+            /// <summary>The IDE's configuration directory, or null.</summary>
+            public string ConfigDir { get; internal set; }
+            /// <summary>The publishing IDE's process id.</summary>
+            public int Pid { get; internal set; }
+        }
+
+        /// <summary>As <see cref="Read(int, out string, out bool)"/>, with everything the record carries.</summary>
+        public static Details ReadDetails(int idePid, out string note, out bool transient)
         {
             note = null;
             transient = false;
@@ -176,7 +242,13 @@ namespace ClarionAssistant.Services
                     return null;
                 }
                 note = "the IDE's open solution (pid " + idePid + ")";
-                return sln;
+                return new Details
+                {
+                    Solution = sln,
+                    VersionChoice = rec.TryGetValue("clarionVersion", out v) ? v as string : null,
+                    ConfigDir = rec.TryGetValue("configDir", out v) ? v as string : null,
+                    Pid = pid
+                };
             }
             catch (Exception ex)
             {
@@ -199,7 +271,8 @@ namespace ClarionAssistant.Services
         private static int _cachePid;
         private static long _cacheStamp = -1;      // mtime ticks ^ length of the file last parsed; 0 = absent
         private static DateTime _cacheCheckedAt;
-        private static string _cacheValue, _cacheNote;
+        private static string _cacheNote;
+        private static Details _cacheValue;
 
         /// <summary>
         /// <see cref="Read"/> for a caller that asks on EVERY lsp_* call (LspService's followed
@@ -209,6 +282,13 @@ namespace ClarionAssistant.Services
         /// TRANSIENT failure returns the last definite answer (see Read's transient overload).
         /// </summary>
         public static string ReadCached(int idePid, out string note)
+        {
+            var d = ReadDetailsCached(idePid, out note);
+            return d != null ? d.Solution : null;
+        }
+
+        /// <summary>As <see cref="ReadCached"/>, with everything the record carries (0ce0b5e2).</summary>
+        public static Details ReadDetailsCached(int idePid, out string note)
         {
             long stamp = 0;
             try
@@ -226,7 +306,7 @@ namespace ClarionAssistant.Services
                 {
                     string readNote = null;
                     bool transient = false;
-                    string value = stamp == -2 ? null : Read(idePid, out readNote, out transient);
+                    Details value = stamp == -2 ? null : ReadDetails(idePid, out readNote, out transient);
                     if (stamp == -2) { transient = true; readNote = "the IDE's solution record could not be examined right now"; }
                     if (transient && _cachePid == idePid)
                     {

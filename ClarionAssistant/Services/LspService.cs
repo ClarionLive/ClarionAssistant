@@ -42,6 +42,23 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static System.Func<ClarionVersionConfig> VersionConfigProvider;
 
+        /// <summary>
+        /// 0ce0b5e2: the Clarion version for a GIVEN solution, and the sentence saying what chose it. Wins over
+        /// <see cref="VersionConfigProvider"/>. Set by the standalone server, whose answer depends on the solution
+        /// (the IDE's own choice for it) and can change while the server runs - so it is re-asked on every
+        /// EnsureRunning, and a different answer restarts the server: it takes its .red and library paths only
+        /// at start. Must be cheap. The addin leaves it unset (its restart comes from RestartIfVersionChanged).
+        /// </summary>
+        public static System.Func<string, SolutionVersionChoice> SolutionVersionProvider;
+
+        /// <summary>Which version the running server was given and what chose it, for every answer that depends on
+        /// it (lsp_diagnostics). Null when nothing is running.</summary>
+        public static string RunningVersionName { get { return RunningSolutionPath != null ? _runningVersionName : null; } }
+        public static string RunningVersionNote { get { return RunningSolutionPath != null ? _runningVersionNote : null; } }
+        /// <summary>SolutionVersionResolver.ProjectVersionWarning for the running solution and version, or null.</summary>
+        public static string RunningVersionWarning { get { return RunningSolutionPath != null ? _runningVersionWarning : null; } }
+        private static string _runningVersionNote, _runningVersionWarning;
+
         private static readonly object _lock = new object();
         // Single-flight background start + a restart request that is never lost (16d140e9).
         private static readonly LspStartGate _startGate = new LspStartGate();
@@ -138,6 +155,8 @@ namespace ClarionAssistant.Services
             _runningSolutionPath = null;
             _runningFromFollowed = false;
             _runningVersionName = null;
+            _runningVersionNote = null;
+            _runningVersionWarning = null;
         }
 
         /// <summary>The Clarion version name the running client was given in clarion/updatePaths, or null.</summary>
@@ -192,6 +211,29 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// True when <see cref="SolutionVersionProvider"/> now names a different Clarion for the running solution than
+        /// the one the server was started with (0ce0b5e2). Caller holds _lock. Never throws; false without a provider.
+        /// </summary>
+        private static bool VersionMovedLocked()
+        {
+            var provider = SolutionVersionProvider;
+            if (provider == null || string.IsNullOrEmpty(_runningSolutionPath)) return false;
+            SolutionVersionChoice choice;
+            try { choice = provider(_runningSolutionPath); }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[LspService] version re-check failed: " + ex.Message);
+                return false;
+            }
+            string want = choice != null && choice.Config != null ? choice.Config.Name : null;
+            if (string.Equals(want, _runningVersionName, StringComparison.OrdinalIgnoreCase)) return false;
+            LspTrace.Write("[LspService] Clarion version for " + _runningSolutionPath + " changed: "
+                + (_runningVersionName ?? "(none)") + " -> " + (want ?? "(none)") + " ("
+                + (choice != null ? choice.Note : "") + "); restarting the language server.");
+            return true;
+        }
+
         private static LspStartResult AlreadyRunning()
         {
             return new LspStartResult(LspStartOutcome.AlreadyRunning, "already running",
@@ -217,7 +259,7 @@ namespace ClarionAssistant.Services
                 // Fast pre-check against the process-wide Active client (set by LspClient.Start) -
                 // but NOT while following a solution that may have changed, and not for an explicit
                 // request: both must reach the comparison below.
-                if (string.IsNullOrEmpty(explicitSolutionPath) && !_runningFromFollowed
+                if (string.IsNullOrEmpty(explicitSolutionPath) && !_runningFromFollowed && SolutionVersionProvider == null
                     && LspClient.Active != null && LspClient.Active.IsRunning) return AlreadyRunning();
 
                 lock (_lock)
@@ -234,19 +276,40 @@ namespace ClarionAssistant.Services
                             && FollowedSolutionProvider != null)
                         {
                             string now = FollowedSolutionProvider();
-                            if (SamePath(now, _runningSolutionPath)) return AlreadyRunning();
-
-                            string was = _runningSolutionPath;
-                            LspTrace.Write("[LspService] followed solution changed: " + was + " -> "
-                                + (now ?? "(none)") + "; stopping the server.");
+                            if (SamePath(now, _runningSolutionPath))
+                            {
+                                if (!VersionMovedLocked()) return AlreadyRunning();
+                                // Same solution, different Clarion (0ce0b5e2): restart on it.
+                                StopClientLocked();
+                                slnPath = now;
+                                slnSource = "the IDE's open solution (restarted: its Clarion version changed)";
+                                fromFollowed = true;
+                            }
+                            else
+                            {
+                                string was = _runningSolutionPath;
+                                LspTrace.Write("[LspService] followed solution changed: " + was + " -> "
+                                    + (now ?? "(none)") + "; stopping the server.");
+                                StopClientLocked();
+                                if (string.IsNullOrEmpty(now))
+                                    return LspStartResult.Of(LspStartOutcome.NoSolution,
+                                        "The IDE no longer has a solution open (was " + was + "), so the language "
+                                        + "server was stopped. " + LspStartResult.NoSolutionMessage);
+                                slnPath = now;
+                                slnSource = "the IDE's open solution";
+                                fromFollowed = true;
+                            }
+                        }
+                        else if (VersionMovedLocked())
+                        {
+                            // The solution's Clarion changed under the running server (0ce0b5e2): it takes its .red
+                            // and library paths only at start, so restart it on the same solution.
+                            string same = _runningSolutionPath;
+                            bool wasFollowed = _runningFromFollowed;
                             StopClientLocked();
-                            if (string.IsNullOrEmpty(now))
-                                return LspStartResult.Of(LspStartOutcome.NoSolution,
-                                    "The IDE no longer has a solution open (was " + was + "), so the language "
-                                    + "server was stopped. " + LspStartResult.NoSolutionMessage);
-                            slnPath = now;
-                            slnSource = "the IDE's open solution";
-                            fromFollowed = true;
+                            slnPath = same;
+                            slnSource = "restarted: the solution's Clarion version changed";
+                            fromFollowed = wasFollowed;
                         }
                         else
                         {
@@ -322,30 +385,45 @@ namespace ClarionAssistant.Services
                     // Either may be null — the LSP still starts and still loads the solution; only
                     // library (redirection) lookups degrade.
                     ClarionVersionConfig versionConfig = null;
+                    string versionNote = null;
                     try
                     {
-                        // ASK THE HOST FIRST, if it has an opinion. Without this hook the LSP ran
-                        // its OWN ClarionVersionService.Detect() and reached its own conclusion, so
-                        // a standalone server told which Clarion to use — by --clarion-version or by
-                        // the solution's committed clarion-assistant.json — still handed the language
-                        // server a DIFFERENT one's redirection file and library paths. Measured on a
-                        // machine with 27 configured versions, where the two disagreed by two major
-                        // releases (d051fbd1 item 5). The addin leaves this unset and keeps resolving
-                        // for itself, which is right: there the IDE's own selection is authoritative.
-                        if (VersionConfigProvider != null)
+                        // The SOLUTION's version, when the host can say (0ce0b5e2): the standalone asks the IDE's
+                        // own choice for this solution before falling back to the Clarion it is installed under.
+                        if (SolutionVersionProvider != null)
                         {
-                            versionConfig = VersionConfigProvider();
-                            LspTrace.Write("[LspService] version from host: "
-                                + (versionConfig != null ? versionConfig.Name : "none - library (redirection) lookups will degrade"));
+                            var choice = SolutionVersionProvider(slnPath);
+                            versionConfig = choice != null ? choice.Config : null;
+                            versionNote = choice != null ? choice.Note : null;
+                            LspTrace.Write("[LspService] version for " + slnPath + ": " + (versionNote ?? "(none)"));
                         }
-                        if (versionConfig == null)
+                        else
                         {
-                            // The SAME resolution the Assistant panel, CodeGraph indexer and library graph
-                            // use: the IDE's Build > Set Clarion Version (16d140e9; the only source since
-                            // 286f2e57). Traced with the tier that decided it.
-                            var sel = EffectiveClarionVersion.Resolve();
-                            versionConfig = sel.Config;
-                            LspTrace.Write("[LspService] " + sel.Describe());
+                            // ASK THE HOST FIRST, if it has an opinion. Without this hook the LSP ran
+                            // its OWN ClarionVersionService.Detect() and reached its own conclusion, so
+                            // a standalone server told which Clarion to use — by --clarion-version or by
+                            // the solution's committed clarion-assistant.json — still handed the language
+                            // server a DIFFERENT one's redirection file and library paths. Measured on a
+                            // machine with 27 configured versions, where the two disagreed by two major
+                            // releases (d051fbd1 item 5). The addin leaves this unset and keeps resolving
+                            // for itself, which is right: there the IDE's own selection is authoritative.
+                            if (VersionConfigProvider != null)
+                            {
+                                versionConfig = VersionConfigProvider();
+                                versionNote = versionConfig != null ? "Clarion version " + versionConfig.Name + " [chosen by: the host]" : null;
+                                LspTrace.Write("[LspService] version from host: "
+                                    + (versionConfig != null ? versionConfig.Name : "none - library (redirection) lookups will degrade"));
+                            }
+                            if (versionConfig == null)
+                            {
+                                // The SAME resolution the Assistant panel, CodeGraph indexer and library graph
+                                // use: the IDE's Build > Set Clarion Version (16d140e9; the only source since
+                                // 286f2e57). Traced with the tier that decided it.
+                                var sel = EffectiveClarionVersion.Resolve();
+                                versionConfig = sel.Config;
+                                versionNote = sel.Describe();
+                                LspTrace.Write("[LspService] " + versionNote);
+                            }
                         }
                     }
                     catch (Exception ex)
@@ -430,6 +508,8 @@ namespace ClarionAssistant.Services
                     _runningSolutionPath = slnPath;
                     _runningFromFollowed = fromFollowed;
                     _runningVersionName = versionConfig != null ? versionConfig.Name : null;
+                    _runningVersionNote = versionNote;
+                    _runningVersionWarning = SolutionVersionResolver.ProjectVersionWarning(slnPath, versionConfig);
                     bool started = _client.Start(serverJs, wsUri, wsName); // Start sets LspClient.Active itself
                     if (started && _client.IsRunning)
                     {

@@ -2301,10 +2301,14 @@ COMMON QUERIES:
 
                     // Which tier chose the version, or why there is none (GH #247) — read after CurrentVersionConfig,
                     // which is what fills it in.
+                    // 0ce0b5e2: the addin says it too - there the IDE's own Build > Set Clarion Version decides.
                     var noteSource = _workspace as IVersionNoteSource;
-                    string versionNote = noteSource != null ? noteSource.VersionNote : null;
+                    string versionNote = noteSource != null ? noteSource.VersionNote : VersionNoteForAddin(vConfig);
                     if (!string.IsNullOrEmpty(versionNote))
                         result["versionNote"] = versionNote;
+                    string versionWarning = SolutionVersionResolver.ProjectVersionWarning(slnPath, vConfig);
+                    if (versionWarning != null)
+                        result["versionWarning"] = versionWarning;
 
                     if (vConfig != null)
                     {
@@ -2368,14 +2372,14 @@ COMMON QUERIES:
                             if (!string.IsNullOrEmpty(resolvedPath))
                             {
                                 object src; hit.TryGetValue("source", out src);
-                                return new Dictionary<string, object>
+                                return WithVersion(new Dictionary<string, object>
                                 {
                                     { "filename", fileName },
                                     { "resolvedPath", resolvedPath },
                                     { "found", true },
                                     { "source", (src as string) ?? "lsp" },
                                     { "resolver", "lsp" }
-                                };
+                                }, true);
                             }
                         }
                     }
@@ -2388,24 +2392,24 @@ COMMON QUERIES:
                     string section = McpJsonRpc.GetString(args, "section", "Common");
                     string resolved = red.Resolve(fileName, section);
                     if (resolved != null)
-                        return new Dictionary<string, object>
+                        return WithVersion(new Dictionary<string, object>
                         {
                             { "filename", fileName },
                             { "resolvedPath", resolved },
                             { "found", true },
                             { "resolver", "redfile-fallback" }
-                        };
+                        }, false);
 
                     // Not found - return the search paths so the user knows where we looked
                     string ext = System.IO.Path.GetExtension(fileName);
                     var searchPaths = red.GetSearchPaths(ext, section);
-                    return new Dictionary<string, object>
+                    return WithVersion(new Dictionary<string, object>
                     {
                         { "filename", fileName },
                         { "found", false },
                         { "searchedPaths", searchPaths },
                         { "resolver", "redfile-fallback" }
-                    };
+                    }, false);
                 }
             });
 
@@ -2445,13 +2449,13 @@ COMMON QUERIES:
                             string normalizedExt = ext.StartsWith(".") ? ext : "." + ext;
                             var serverPaths = _lspClient.GetServerSearchPaths(projectName, normalizedExt);
                             if (serverPaths != null && serverPaths.Count > 0)
-                                return new Dictionary<string, object>
+                                return WithVersion(new Dictionary<string, object>
                                 {
                                     { "extension", ext },
                                     { "projectName", projectName },
                                     { "searchPaths", serverPaths },
                                     { "resolver", "lsp" }
-                                };
+                                }, true);
                         }
                     }
 
@@ -2461,14 +2465,14 @@ COMMON QUERIES:
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
                     string section = McpJsonRpc.GetString(args, "section", "Common");
-                    return new Dictionary<string, object>
+                    return WithVersion(new Dictionary<string, object>
                     {
                         { "extension", ext },
                         { "section", section },
                         { "searchPaths", red.GetSearchPaths(ext, section) },
                         { "redFile", red.RedFilePath },
                         { "resolver", "redfile-fallback" }
-                    };
+                    }, false);
                 }
             });
 
@@ -2932,6 +2936,7 @@ COMMON QUERIES:
                         diagList.Add(d);
                     }
                     response["diagnostics"] = diagList;
+                    WithVersion(response, true);   // 0ce0b5e2: which Clarion's paths the server resolves with
 
                     return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(response);
                 }
@@ -5279,6 +5284,54 @@ IdeOnly = true,
             int ms = McpJsonRpc.GetInt(args, "timeout_ms", LspDiagnosticsDefaultTimeoutMs);
             if (ms < 1) return LspDiagnosticsDefaultTimeoutMs;
             return Math.Min(ms, LspDiagnosticsMaxTimeoutMs);
+        }
+
+        /// <summary>
+        /// 0ce0b5e2: every answer that depends on the Clarion version says which one and what chose it - an INCLUDE
+        /// "not found" means nothing until you know which Clarion's paths were searched. <paramref name="fromLsp"/>:
+        /// the language server's version (what it was started with); else this host's version for the solution.
+        /// </summary>
+        private Dictionary<string, object> WithVersion(Dictionary<string, object> result, bool fromLsp)
+        {
+            try
+            {
+                string name, note, warning;
+                if (fromLsp)
+                {
+                    name = LspService.RunningVersionName;
+                    note = LspService.RunningVersionNote;
+                    warning = LspService.RunningVersionWarning;
+                }
+                else
+                {
+                    var cfg = _workspace != null ? _workspace.CurrentVersionConfig : null;
+                    var noteSource = _workspace as IVersionNoteSource;
+                    name = cfg != null ? cfg.Name : null;
+                    note = noteSource != null ? noteSource.VersionNote : VersionNoteForAddin(cfg);
+                    warning = null;   // get_solution_info carries it; not re-read on every lookup
+                }
+                if (name == null && note == null) return result;
+                result["clarionVersion"] = name ?? "(none)";
+                if (!string.IsNullOrEmpty(note)) result["clarionVersionChosenBy"] = note;
+                if (!string.IsNullOrEmpty(warning)) result["clarionVersionWarning"] = warning;
+            }
+            catch { }
+            return result;
+        }
+
+        /// <summary>The addin's account of its version: the IDE's own Build &gt; Set Clarion Version, which the IDE
+        /// restores from the solution's saved choice when it opens it (0ce0b5e2).</summary>
+        private static string VersionNoteForAddin(ClarionVersionConfig shown)
+        {
+            try
+            {
+                var sel = EffectiveClarionVersion.Resolve();
+                string line = sel.Describe();
+                if (shown != null && sel.Config != null && !string.Equals(shown.Name, sel.Config.Name, StringComparison.Ordinal))
+                    line += " (NOTE: this pane shows " + shown.Name + ")";
+                return line;
+            }
+            catch { return null; }
         }
 
         /// <summary>

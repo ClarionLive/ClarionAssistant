@@ -136,6 +136,15 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "IdeSolutionRecord.Test"
                Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # 0ce0b5e2: a solution's Clarion version - pins, then the IDE's own choice for it (live record, then its
+            # saved preferences file, chosen by content with the name hash only as a tiebreak), then the host
+            # install. x86 like the IDE, so the hash tiebreak is checked as the IDE computes it.
+            @{ Name = "SolutionVersionResolver.Test"
+               Sources = @("tests\SolutionVersionResolver.Test.cs", "Services\SolutionVersionResolver.cs",
+                           "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs",
+                           "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Platform = "x86" }
             # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
             # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
             @{ Name = "ClarionVersionService.ExeMatchTest"
