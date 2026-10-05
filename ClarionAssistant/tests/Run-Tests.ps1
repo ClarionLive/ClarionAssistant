@@ -215,11 +215,38 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedAdoptPolicy.Test"
                Sources = @("tests\EmbedAdoptPolicy.Test.cs", "Services\EmbedAdoptPolicy.cs")
                Refs = @("System.dll") }
+            # 73bd1f03: no embed/editor tool writes the native embed document hidden behind the CA Embeditor.
+            @{ Name = "EmbedOverlayGuard.Test"
+               Sources = @("tests\EmbedOverlayGuard.Test.cs", "Services\EmbedOverlayGuard.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
+            # 73bd1f03 fix (2): the embed tools routed to the CA Embeditor's Monaco buffer — formats identical to the
+            # native tools; reads/writes in the CA Embeditor's line space; native column by NATIVE line; fail closed.
+            @{ Name = "EmbedSlotText.Test"
+               Sources = @("tests\EmbedSlotText.Test.cs", "Services\EmbedSlotText.cs")
+               Refs = @("System.dll") }
+            @{ Name = "EmbedToolRouter.Test"
+               Sources = @("tests\EmbedToolRouter.Test.cs", "Services\EmbedToolRouter.cs", "Services\EmbedSlotText.cs",
+                           "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs", "Services\EditorTextOps.cs",
+                           "Services\IUiDispatcher.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # PR #198 pipeline round: apply_embed_edits' write/commit/save half - an abandoned call rolls
             # back instead of saving; a failed save or unconfirmed close discards our writes.
             @{ Name = "EmbedApplyFlow.Test"
                Sources = @("tests\EmbedApplyFlow.Test.cs", "Services\EmbedApplyFlow.cs", "Services\McpCallContext.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 1565ef7b: a CA Embeditor save that can't go through never loses the developer's text - slots are
+            # matched by read-only skeleton (a drift elsewhere re-maps), the save decides BEFORE the overlay
+            # detaches and never cancels, recovery files are BOM-free and atomic, the stash restores per slot.
+            @{ Name = "EmbedSaveFlow.Test"
+               Sources = @("tests\EmbedSaveFlow.Test.cs", "Services\EmbedSaveFlow.cs", "Services\EmbedRecovery.cs",
+                           "Services\TextLines.cs")
+               Refs = @("System.dll", "System.Core.dll") }
+            # ... and the ordering in the IDE-coupled callers that the harness above can't reach (red on 3904549).
+            @{ Name = "EmbedSaveOrder.SourceScan"
+               Sources = @("tests\EmbedSaveOrder.SourceScan.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             # 16d140e9: the Monaco buffer crosses to the host once per content version - the per-surface
             # cache/accessor MonacoEditorControl uses, the sync-message parser, and the newest-wins lane.
             @{ Name = "MonacoBufferSync.Test"
@@ -245,6 +272,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\incremental-sync\fake-lsp.js")) }
+            # fc420c30: the MCP editor tools against the CA Editor (Monaco) — reads and writes hit its text, never the
+            # native document under it; save keeps the edit; a dirty close is refused; fail closed; native unchanged.
+            @{ Name = "EditorToolRouter.Test"
+               Sources = @("tests\EditorToolRouter.Test.cs", "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs",
+                           "Services\EditorTextOps.cs", "Services\IUiDispatcher.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             @{ Name = "LspClient.Robustness.Test"
                Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }

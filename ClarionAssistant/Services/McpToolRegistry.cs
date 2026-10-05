@@ -24,6 +24,14 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread { get; set; }
 
         /// <summary>
+        /// 73bd1f03 fix (2): asked per call; true = run THIS call off the UI thread even though the tool
+        /// RequiresUiThread. For a tool whose native path must stay on the UI thread (dispatcher timeout and
+        /// abandon-before-save token) but whose CA Embeditor route has to wait on the page, which a UI-thread wait
+        /// would deadlock. A throwing predicate = false (the native, UI-thread path).
+        /// </summary>
+        public Func<bool> OffUiWhen { get; set; }
+
+        /// <summary>
         /// Minimum seconds this tool needs on the UI thread before McpDispatcher may abandon
         /// the call as timed out (resolved by McpUiTimeoutPolicy). 0 (default) = take the
         /// configured budget. Only set it where the handler's OWN internal waits already exceed
@@ -93,6 +101,18 @@ namespace ClarionAssistant.Services
         // Null in a standalone host, where the tools needing them are not registered.
         private IWorkspaceContext _workspace;
         private IUiDispatcher _ui;
+        // fc420c30: the editor tools go to the CA Editor (Monaco) when one holds the active file, else the native editor.
+        private EditorToolRouter _editorRouterField;
+        // fc420c30 safety: a write names the file it changed; with file_path it is refused unless that file is active.
+        private static EditorToolRouter.RouteOptions WriteOpts(Dictionary<string, object> args, int nativeLine = 0)
+        {
+            return new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = McpJsonRpc.GetString(args, "file_path"), NativeLine = nativeLine };
+        }
+        private const string WriteFilePathHelp = "Optional. Absolute path of the file you mean to change: refused (nothing changed) unless it is the active editor. Pass it after open_file.";
+        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui, () => _editorService.GetActiveDocumentPath())); } }
+        // 73bd1f03 fix (2): the embed tools, routed to the CA Embeditor's Monaco buffer while it holds the procedure.
+        private EmbedToolRouter _embedRouterField;
+        private EmbedToolRouter EmbedRouter { get { return _embedRouterField ?? (_embedRouterField = new EmbedToolRouter(() => _ui)); } }
         private LspClient _lspClient;
 
         /// <summary>
@@ -131,6 +151,28 @@ namespace ClarionAssistant.Services
         /// IDE-coupled and cannot be linked into the standalone build).
         /// </summary>
         public static Action<string> DiagnosticLog;
+
+        /// <summary>
+        /// Supplied by the addin (left null by a standalone host, which registers no embed or editor tools):
+        /// true while the CA Embeditor (Monaco overlay or live tab) holds the native embeditor open. Read on
+        /// the UI thread, by <see cref="ExecuteTool"/>, for the tools <see cref="EmbedOverlayGuard"/> covers.
+        /// </summary>
+        public static Func<bool> CaEmbeditorLiveProbe;
+
+        /// <summary>
+        /// Supplied by the addin: true when the ACTIVE editor's text area is the native embed document hidden
+        /// under the CA Embeditor overlay, i.e. where the editor tools would land. See
+        /// <see cref="EmbedOverlayGuard"/>. Both probes must be callable from ANY thread: a tool flagged
+        /// RequiresUiThread=false reaches ExecuteTool off the UI thread, so the addin's implementation does
+        /// its own bounded UI marshal, and a timeout throws (refused, fail closed).
+        /// </summary>
+        public static Func<bool> ActiveEditorCoveredProbe;
+
+        /// <summary>
+        /// 73bd1f03 fix (2), supplied by the addin: the CA Embeditor's page is ready, so the embed and editor tools are
+        /// ROUTED to its Monaco buffer instead of refused. Any thread. Null or throwing = not routable (refused).
+        /// </summary>
+        public static Func<bool> EmbedRoutableProbe;
 
         /// <summary>
         /// True when the editor-agnostic tools are served by a SEPARATE process and this registry
@@ -204,7 +246,22 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread(string toolName)
         {
             McpTool tool;
-            return _tools.TryGetValue(toolName, out tool) && tool.RequiresUiThread;
+            if (!_tools.TryGetValue(toolName, out tool) || !tool.RequiresUiThread) return false;
+            if (tool.OffUiWhen == null) return true;
+            try { return !tool.OffUiWhen(); }
+            catch { return true; }
+        }
+
+        /// <summary>73bd1f03 fix (2): the CA Embeditor holds a procedure and its page answers, so the embed tools are
+        /// routed to it. False when either probe is unset or throws.</summary>
+        private static bool CaEmbeditorRoutable()
+        {
+            try
+            {
+                return CaEmbeditorLiveProbe != null && CaEmbeditorLiveProbe()
+                    && EmbedRoutableProbe != null && EmbedRoutableProbe();
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -223,7 +280,9 @@ namespace ClarionAssistant.Services
             if (!_tools.TryGetValue(name, out tool))
                 throw new ArgumentException("Unknown tool: " + name);
 
-            return tool.Handler(arguments ?? new Dictionary<string, object>());
+            // 73bd1f03: never write the native embed document from behind the CA Embeditor.
+            return EmbedOverlayGuard.Run(name, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe, EmbedRoutableProbe,
+                () => tool.Handler(arguments ?? new Dictionary<string, object>()), DiagnosticLog);
         }
 
         /// <summary>True when the tool has a streaming variant (progressToken-aware clients).</summary>
@@ -268,8 +327,8 @@ namespace ClarionAssistant.Services
 IdeOnly = true,
                 Description = "Get the path and full content of the file currently open in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_active_file", () =>
                 {
                     string path = _editorService.GetActiveDocumentPath();
                     string content = _editorService.GetActiveDocumentContent();
@@ -278,7 +337,7 @@ IdeOnly = true,
                         { "path", path ?? "(no file open)" },
                         { "content", content ?? "(unable to read)" }
                     };
-                }
+                }, ov => ov.GetActiveFile())
             });
 
             Register(new McpTool
@@ -287,11 +346,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the currently selected text in the Clarion IDE editor. Returns null if nothing selected.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    return _editorService.GetSelectedText() ?? "(no selection)";
-                }
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_selected_text",
+                    () => _editorService.GetSelectedText() ?? "(no selection)",
+                    ov => ov.GetSelectedText())
             });
 
             Register(new McpTool
@@ -324,11 +382,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the word at the current cursor position in the editor. Useful for identifying what symbol the developer is looking at.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    return _editorService.GetWordUnderCursor() ?? "(no word at cursor)";
-                }
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_word_under_cursor",
+                    () => _editorService.GetWordUnderCursor() ?? "(no word at cursor)",
+                    ov => ov.GetWordUnderCursor())
             });
 
             Register(new McpTool
@@ -337,8 +394,8 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the current cursor position (line and column, 1-based) and total line count in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_cursor_position", () =>
                 {
                     var pos = _editorService.GetCursorPosition();
                     int lineCount = _editorService.GetLineCount();
@@ -350,7 +407,7 @@ IdeOnly = true,
                         { "column", pos[1] },
                         { "totalLines", lineCount }
                     };
-                }
+                }, ov => ov.GetCursorPosition())
             });
 
             // === Editor Operation Tools ===
@@ -363,13 +420,16 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number to go to (1-based)" } },
                     new[] { "line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    if (_editorService.GoToLine(line))
-                        return "Moved to line " + line;
-                    return "Error: could not navigate to line " + line;
+                    return EditorRouter.Run("go_to_line", () =>
+                    {
+                        if (_editorService.GoToLine(line))
+                            return "Moved to line " + line;
+                        return "Error: could not navigate to line " + line;
+                    }, ov => ov.GoToLine(line));
                 }
             });
 
@@ -379,16 +439,19 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Insert text at the current cursor position in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string> { { "text", "The text to insert" } },
+                    new Dictionary<string, string> { { "text", "The text to insert" }, { "file_path", WriteFilePathHelp } },
                     new[] { "text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string text = McpJsonRpc.GetString(args, "text");
                     if (string.IsNullOrEmpty(text))
                         return "Error: text parameter is required";
-                    var result = _editorService.InsertTextAtCaret(text);
-                    return result.Success ? "Text inserted successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("insert_text_at_cursor", () =>
+                    {
+                        var result = _editorService.InsertTextAtCaret(text);
+                        return result.Success ? "Text inserted successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.InsertTextAtCursor(text), WriteOpts(args));
                 }
             });
 
@@ -401,18 +464,22 @@ IdeOnly = true,
                     new Dictionary<string, string>
                     {
                         { "old_text", "The exact text to find and replace" },
-                        { "new_text", "The replacement text" }
+                        { "new_text", "The replacement text" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "old_text", "new_text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string oldText = McpJsonRpc.GetString(args, "old_text");
                     string newText = McpJsonRpc.GetString(args, "new_text", "");
                     if (string.IsNullOrEmpty(oldText))
                         return "Error: old_text is required";
-                    var result = _editorService.ReplaceText(oldText, newText);
-                    return result.Success ? "Text replaced successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("replace_text", () =>
+                    {
+                        var result = _editorService.ReplaceText(oldText, newText);
+                        return result.Success ? "Text replaced successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ReplaceText(oldText, newText), WriteOpts(args));
                 }
             });
 
@@ -428,10 +495,11 @@ IdeOnly = true,
                         { "start_col", "Start column (1-based)" },
                         { "end_line", "End line (1-based)" },
                         { "end_col", "End column (1-based)" },
-                        { "new_text", "Replacement text (empty string to delete)" }
+                        { "new_text", "Replacement text (empty string to delete)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line", "new_text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
@@ -439,8 +507,11 @@ IdeOnly = true,
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
                     string newText = McpJsonRpc.GetString(args, "new_text", "");
-                    var result = _editorService.ReplaceRange(startLine, startCol, endLine, endCol, newText);
-                    return result.Success ? "Range replaced successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("replace_range", () =>
+                    {
+                        var result = _editorService.ReplaceRange(startLine, startCol, endLine, endCol, newText);
+                        return result.Success ? "Range replaced successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ReplaceRange(startLine, startCol, endLine, endCol, newText), WriteOpts(args, startLine));
                 }
             });
 
@@ -458,15 +529,18 @@ IdeOnly = true,
                         { "end_col", "End column (1-based)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int startCol = McpJsonRpc.GetInt(args, "start_col", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
-                    var result = _editorService.SelectRange(startLine, startCol, endLine, endCol);
-                    return result.Success ? "Text selected" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("select_range", () =>
+                    {
+                        var result = _editorService.SelectRange(startLine, startCol, endLine, endCol);
+                        return result.Success ? "Text selected" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.SelectRange(startLine, startCol, endLine, endCol));
                 }
             });
 
@@ -481,18 +555,22 @@ IdeOnly = true,
                         { "start_line", "Start line (1-based)" },
                         { "start_col", "Start column (1-based)" },
                         { "end_line", "End line (1-based)" },
-                        { "end_col", "End column (1-based)" }
+                        { "end_col", "End column (1-based)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int startCol = McpJsonRpc.GetInt(args, "start_col", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
-                    var result = _editorService.DeleteRange(startLine, startCol, endLine, endCol);
-                    return result.Success ? "Text deleted" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("delete_range", () =>
+                    {
+                        var result = _editorService.DeleteRange(startLine, startCol, endLine, endCol);
+                        return result.Success ? "Text deleted" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.DeleteRange(startLine, startCol, endLine, endCol), WriteOpts(args, startLine));
                 }
             });
 
@@ -501,9 +579,11 @@ IdeOnly = true,
                 Name = "undo",
 IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.Undo() ? "Undo successful" : "Nothing to undo"
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("undo",
+                    () => _editorService.Undo() ? "Undo successful" : "Nothing to undo",
+                    ov => ov.Undo(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -511,9 +591,11 @@ IdeOnly = true,
                 Name = "redo",
 IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.Redo() ? "Redo successful" : "Nothing to redo"
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("redo",
+                    () => _editorService.Redo() ? "Redo successful" : "Nothing to redo",
+                    ov => ov.Redo(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -521,9 +603,13 @@ IdeOnly = true,
                 Name = "save_file",
 IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.SaveActiveDocument() ? "File saved" : "Error: could not save"
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                // fc420c30: with a CA Editor up this saves ITS text through its own save path. It used to Save() the
+                // native shell, which the overlay keeps clean: the developer's unsaved edits were not saved at all.
+                Handler = args => EditorRouter.Run("save_file",
+                    () => _editorService.SaveActiveDocument() ? "File saved" : "Error: could not save",
+                    ov => ov.Save(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -531,9 +617,13 @@ IdeOnly = true,
                 Name = "close_file",
 IdeOnly = true,
                 Description = "Close the currently active editor tab.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close"
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                // fc420c30: a CA Editor with unsaved edits is NOT closed (John, 2026-10-05). CloseWindow(true) skips the
+                // closing prompt, and the overlay's Dispose fallback would then write the edits silently.
+                Handler = args => EditorRouter.Run("close_file",
+                    () => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close",
+                    ov => ov.Close(), WriteOpts(args))
             });
 
             Register(new McpTool
@@ -546,6 +636,9 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     var files = _editorService.GetOpenFiles();
+                    // fc420c30: a CA Editor tab's native shell stays clean by design; mark it from the overlay's own flag.
+                    var adjust = EditorToolRouter.OpenFilesAdjuster;
+                    if (adjust != null) files = adjust(files) ?? files;
                     return files.Count > 0 ? string.Join("\n", files) : "(no files open)";
                 }
             });
@@ -558,12 +651,15 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number (1-based)" } },
                     new[] { "line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    string text = _editorService.GetLineText(line);
-                    return text ?? "Error: could not read line " + line;
+                    return EditorRouter.Run("get_line_text", () =>
+                    {
+                        string text = _editorService.GetLineText(line);
+                        return text ?? "Error: could not read line " + line;
+                    }, ov => ov.GetLineText(line));
                 }
             });
 
@@ -579,13 +675,16 @@ IdeOnly = true,
                         { "end_line", "Last line to read (1-based, inclusive)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line", startLine);
-                    string result = _editorService.GetLinesRange(startLine, endLine);
-                    return result ?? "Error: could not read lines " + startLine + "-" + endLine;
+                    return EditorRouter.Run("get_lines_range", () =>
+                    {
+                        string result = _editorService.GetLinesRange(startLine, endLine);
+                        return result ?? "Error: could not read lines " + startLine + "-" + endLine;
+                    }, ov => ov.GetLinesRange(startLine, endLine));
                 }
             });
 
@@ -601,7 +700,7 @@ IdeOnly = true,
                         { "case_sensitive", "true for case-sensitive search (default: false)" }
                     },
                     new[] { "search" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string search = McpJsonRpc.GetString(args, "search");
@@ -609,7 +708,11 @@ IdeOnly = true,
                     bool caseSensitive = McpJsonRpc.GetString(args, "case_sensitive", "false")
                         .Equals("true", StringComparison.OrdinalIgnoreCase);
 
-                    var results = _editorService.FindInFile(search, caseSensitive);
+                    var found = EditorRouter.Run("find_in_file",
+                        () => _editorService.FindInFile(search, caseSensitive),
+                        ov => ov.FindInFile(search, caseSensitive));
+                    var results = found as List<int[]>;
+                    if (results == null) return found;   // an error string
                     if (results.Count == 0) return "No matches found for: " + search;
 
                     var sb = new StringBuilder();
@@ -626,8 +729,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Check if the active file has unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.IsModified() ? "Yes - file has unsaved changes" : "No - file is saved"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("is_modified",
+                    () => _editorService.IsModified() ? "Yes - file has unsaved changes" : "No - file is saved",
+                    ov => ov.IsModified())
             });
 
             Register(new McpTool
@@ -639,16 +744,20 @@ IdeOnly = true,
                     new Dictionary<string, string>
                     {
                         { "start_line", "First line to toggle (1-based)" },
-                        { "end_line", "Last line to toggle (1-based, inclusive)" }
+                        { "end_line", "Last line to toggle (1-based, inclusive)" },
+                        { "file_path", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
-                    var result = _editorService.ToggleComment(startLine, endLine);
-                    return result.Success ? "Comment toggled on lines " + startLine + "-" + endLine : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("toggle_comment", () =>
+                    {
+                        var result = _editorService.ToggleComment(startLine, endLine);
+                        return result.Success ? "Comment toggled on lines " + startLine + "-" + endLine : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ToggleComment(startLine, endLine), WriteOpts(args, startLine));
                 }
             });
 
@@ -954,18 +1063,37 @@ IdeOnly = true,
             {
                 Name = "save_and_close_embeditor",
 IdeOnly = true,
-                Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
+                Description = "Save changes and close the currently open embeditor. Use this when done editing embed code. " +
+                    "While the CA Embeditor is open on the procedure this runs ITS save (save-and-exit, like the " +
+                    "developer's Save button), so their unsaved edits and yours are saved together.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
+                // 73bd1f03 fix (2): the CA Embeditor route waits on the page and on EmbedSaveFinished, raised on the
+                // UI thread, so that call must run off it. The native path below keeps the UI thread, its timeout
+                // and the abandon-before-save token, unchanged.
+                OffUiWhen = CaEmbeditorRoutable,
                 // The native save regenerates the module; on a large procedure that outruns
                 // the 30s default — see EmbedRoundTripTimeoutSeconds.
                 UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
-                // Claim the save first (PR #198 review): a call McpDispatcher already abandoned on timeout
-                // must not save behind the caller's back. The buffer is left open and unchanged.
-                Handler = args => McpCallContext.TryCommit()
-                    ? _appTree.SaveAndCloseEmbeditor()
-                    : "Error: cancelled - the MCP call timed out before saving; nothing was saved and the " +
-                      "embeditor is still open. Check it in the IDE before retrying."
+                Handler = args =>
+                {
+                    if (System.Threading.Thread.CurrentThread.ManagedThreadId != EditorToolRouter.UiThreadId && EmbedToolRouter.Wired)
+                    {
+                        // Off the UI thread = OffUiWhen saw a routable CA Embeditor. Never the native save from
+                        // here (it would run without the dispatcher's abandon token): if the CA Embeditor went away
+                        // in between, say so and let the caller retry, which then takes the native path.
+                        return EmbedRouter.Run("save_and_close_embeditor",
+                            () => "Error: the CA Embeditor closed while the save was starting; nothing was saved. " +
+                                  "Check the embeditor in the IDE, then retry.",
+                            ov => ov.SaveAndClose());
+                    }
+                    // Claim the save first (PR #198 review): a call McpDispatcher already abandoned on timeout
+                    // must not save behind the caller's back. The buffer is left open and unchanged.
+                    return McpCallContext.TryCommit()
+                        ? _appTree.SaveAndCloseEmbeditor()
+                        : "Error: cancelled - the MCP call timed out before saving; nothing was saved and the " +
+                          "embeditor is still open. Check it in the IDE before retrying.";
+                }
             });
 
             Register(new McpTool
@@ -1208,14 +1336,14 @@ IdeOnly = true,
                     "Editable embed slots are marked «E:N/» (empty) or «E:N»...«/E:N» (filled). " +
                     "N is the 1-based line number — use it directly as line_number in write_embed_content. " +
                     "Generated code passes through as context; noise lines (! Start of, ! End of, ! [Priority N], !!!) are stripped. " +
-                    "Use search_embeditor_source for targeted searches to avoid large output.",
+                    "Use search_embeditor_source for targeted searches to avoid large output. " + EmbedSlotText.NumberingRule,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
+                Handler = args => EmbedRouter.Run("get_embeditor_source", () =>
                 {
                     var result = _appTree.GetEmbeditorSource();
                     return result ?? "Error: No PWEE embeditor is currently open.";
-                }
+                }, ov => ov.GetEmbeditorSource())
             });
 
             Register(new McpTool
@@ -1226,20 +1354,23 @@ IdeOnly = true,
                     "Returns only the matching lines and surrounding context — much faster than get_embeditor_source " +
                     "for finding a specific embed point. Use SPECIFIC patterns (e.g. 'AddCard', 'OPEN.Window') — " +
                     "broad terms may match too many lines and truncate output. " +
-                    "Overlapping match windows are automatically merged. Output is capped at ~6 KB.",
+                    "Overlapping match windows are automatically merged. Output is capped at ~6 KB. " + EmbedSlotText.NumberingRule,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "pattern",       "Regex pattern to search for (case-insensitive). Use specific terms to avoid truncation." },
                     { "context_lines", "Lines of context around each match (default 5)" }
                 }, new[] { "pattern" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     string pattern = McpJsonRpc.GetString(args, "pattern");
                     if (string.IsNullOrEmpty(pattern)) return "Error: pattern is required.";
                     int ctx = McpJsonRpc.GetInt(args, "context_lines", 5);
-                    var result = _appTree.SearchEmbeditorSource(pattern, ctx);
-                    return result ?? "Error: No PWEE embeditor is currently open.";
+                    return EmbedRouter.Run("search_embeditor_source", () =>
+                    {
+                        var result = _appTree.SearchEmbeditorSource(pattern, ctx);
+                        return result ?? "Error: No PWEE embeditor is currently open.";
+                    }, ov => ov.SearchEmbeditorSource(pattern, ctx));
                 }
             });
 
@@ -1255,12 +1386,13 @@ IdeOnly = true,
                 {
                     { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" }
                 }, new[] { "line_number" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line_number", 0);
                     if (line <= 0) return "Error: line_number is required and must be > 0.";
-                    return _appTree.GetEmbedContent(line);
+                    return EmbedRouter.Run("get_embed_content", () => _appTree.GetEmbedContent(line),
+                        ov => ov.GetEmbedContent(line));
                 }
             });
 
@@ -1277,19 +1409,26 @@ IdeOnly = true,
                     "user-deletable. When rewriting multiple embeds in one pass, write the HIGHEST line " +
                     "number first and work downward so earlier «E:N» tokens stay valid. " +
                     "Response reports the line delta: if non-zero, all «E:N» tokens after this line are stale — " +
-                    "call search_embeditor_source or get_embeditor_source again before writing to later embeds.",
+                    "call search_embeditor_source or get_embeditor_source again before writing to later embeds. " +
+                    "While the CA Embeditor is open on the procedure the code goes into ITS buffer (visible to the " +
+                    "developer, saved by their save) and line numbers are the CA Embeditor's: read them with " +
+                    "get_embeditor_source/search_embeditor_source while it is open. If it is still loading, the call is " +
+                    "refused and nothing is written.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" },
-                    { "code",        "Complete replacement Clarion code for the embed. Include a trailing newline so Ctrl-X can delete every code line. Indentation is applied automatically." }
+                    { "code",      "Complete replacement Clarion code for the embed. Include a trailing newline so Ctrl-X can delete every code line. Indentation is applied automatically." }
                 }, new[] { "line_number", "code" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line_number", 0);
                     if (line <= 0) return "Error: line_number is required and must be > 0.";
                     string code = McpJsonRpc.GetString(args, "code") ?? string.Empty;
-                    return _appTree.WriteEmbedContentByLine(line, code);
+                    return EmbedRouter.Run("write_embed_content",
+                        () => EmbedToolRouter.Named(_appTree.WriteEmbedContentByLine(line, code),
+                                                    EmbedToolRouter.NativeProcedureName(), line, "native embeditor"),
+                        ov => ov.WriteEmbedContent(line, code));
                 }
             });
 
@@ -1465,7 +1604,10 @@ IdeOnly = true,
                         { "line", "Line number to navigate to (optional, 1-based). Omit to leave the IDE's remembered last position untouched." }
                     },
                     new[] { "path" }),
-                RequiresUiThread = true,
+                // fc420c30 safety: off the UI thread so it can wait (bounded) until the file IS the active editor and its
+                // CA Editor is ready. It used to return "Opened" while the previous file was still active, and the next
+                // write would have landed in that file (live, combined-1005b).
+                RequiresUiThread = false,
                 Handler = args =>
                 {
                     string path = McpJsonRpc.GetString(args, "path");
@@ -1473,15 +1615,17 @@ IdeOnly = true,
                         return "Error: file not found: " + path;
 
                     bool lineProvided = args != null && args.ContainsKey("line") && args["line"] != null;
-                    if (!lineProvided)
-                    {
-                        _editorService.OpenFileOnly(path);
-                        return "Opened " + path;
-                    }
-
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    _editorService.NavigateToFileAndLine(path, line);
-                    return "Opened " + path + " at line " + line;
+                    return EditorRouter.OpenAndWait(path, () =>
+                    {
+                        if (!lineProvided)
+                        {
+                            _editorService.OpenFileOnly(path);
+                            return "Opened " + path;
+                        }
+                        _editorService.NavigateToFileAndLine(path, line);
+                        return "Opened " + path + " at line " + line;
+                    }, () => _editorService.ActivateOpenFile(path));
                 }
             });
 
@@ -2688,9 +2832,16 @@ COMMON QUERIES:
                 Name = "lsp_diagnostics",
                 Description = "Get current errors and warnings for a Clarion source file from the language server. " +
                     "Call this after writing code to verify the edit is syntactically valid — it's Claude's feedback loop " +
-                    "for self-correcting typos, missing imports, and other errors before save. Triggers a fresh analysis " +
-                    "(didChange if the file was already open) so results reflect the current on-disk content.\n" +
-                    "Returns: { pending: false, partial: false, count: N, diagnostics: [{severity, line, character, message, source}] } " +
+                    "for self-correcting typos, missing imports, and other errors before save.\n" +
+                    "WHICH TEXT: when the file is open in an editor, its CURRENT text is checked, unsaved edits included; " +
+                    "otherwise the file on disk. For a generated module whose procedure is open in the embeditor, that is the " +
+                    "embeditor's document, so write_embed_content edits can be checked BEFORE save_and_close_embeditor. " +
+                    "'analysed' says which text was checked (disk | ca-editor-buffer | embeditor-file-buffer | " +
+                    "embeditor-document) and 'lineBase' which line numbers are used (file | embeditor-document). With " +
+                    "lineBase embeditor-document, lineNumber is the embeditor line: the same N as «E:N» and the line_number " +
+                    "of get_embed_content/write_embed_content, NOT a line of the .clw file. 'source' forces the choice.\n" +
+                    "Returns: { pending: false, partial: false, count: N, analysed, lineBase, diagnostics: [{severity, lineNumber (1-based), " +
+                    "line (0-based), character, message, source, inEmbed?}] } " +
                     "when analysis finished (N may be 0 for a clean file). If the timeout runs out first, pending is true: " +
                     "treat that as 'still analyzing', NOT as 'no errors'. With pending: true, partial: true means the diagnostics " +
                     "are what the server has found SO FAR for the current text (real problems, but not all of them); " +
@@ -2700,7 +2851,8 @@ COMMON QUERIES:
                     new Dictionary<string, string>
                     {
                         { "file_path", "Absolute path to the .clw or .inc file to check" },
-                        { "timeout_ms", "Optional. How long to wait for the analysis to finish, in milliseconds. Default 3000, max " + LspDiagnosticsMaxTimeoutMs + "." }
+                        { "timeout_ms", "Optional. How long to wait for the analysis to finish, in milliseconds. Default 3000, max " + LspDiagnosticsMaxTimeoutMs + "." },
+                        { "source", "Optional. \"auto\" (default: the open editor's text if any, else disk), \"disk\" (the saved file), or \"buffer\" (the open editor's text; an error if none is open)." }
                     },
                     new[] { "file_path" }),
                 RequiresUiThread = false,
@@ -2717,7 +2869,14 @@ COMMON QUERIES:
                         return "Error: File not found: " + filePath;
 
                     int timeoutMs = LspDiagnosticsTimeoutMs(args);
-                    var result = SharedLspBridge.GetDiagnostics(filePath, timeoutMs);
+                    string source = McpJsonRpc.GetString(args, "source", "auto");
+                    if (source != "auto" && source != "disk" && source != "buffer")
+                        return "Error: source must be \"auto\", \"disk\" or \"buffer\".";
+
+                    // 44a1b10c: the open editor's text when there is one, else the disk.
+                    var tool = SharedLspBridge.GetDiagnosticsForTool(filePath, timeoutMs, source);
+                    if (tool.Error != null) return "Error: " + tool.Error;
+                    var result = tool.Result;
 
                     // Counted after CA's 'not declared' filter: a partial list it emptied is "nothing yet", not partial.
                     bool partial = result.Pending && result.Partial && result.Entries.Count > 0;
@@ -2725,8 +2884,18 @@ COMMON QUERIES:
                     {
                         { "pending", result.Pending },
                         { "partial", partial },
-                        { "count", result.Entries.Count }
+                        { "count", result.Entries.Count },
+                        { "analysed", tool.Analysed },
+                        { "lineBase", tool.LineBase }
                     };
+                    if (tool.FallbackReason != null)
+                        response["analysedReason"] = "No open editor's text was used (" + tool.FallbackReason
+                            + "), so the file on DISK was checked: unsaved edits, if any, are not included.";
+                    if (!string.IsNullOrEmpty(tool.Procedure)) response["procedure"] = tool.Procedure;
+                    if (tool.LineBase == "embeditor-document")
+                        response["lineNote"] = "lineNumber is the EMBEDITOR line (the N of «E:N», the line_number of "
+                            + "get_embed_content/write_embed_content) of procedure " + (tool.Procedure ?? "(unknown)")
+                            + ", NOT a line of the .clw module.";
 
                     if (result.Pending)
                     {
@@ -2740,26 +2909,75 @@ COMMON QUERIES:
                     }
 
                     var diagList = new List<Dictionary<string, object>>();
-                    foreach (var e in result.Entries)
+                    for (int i = 0; i < result.Entries.Count; i++)
                     {
+                        var e = result.Entries[i];
                         string sevLabel = e.Severity == 1 ? "error"
                                         : e.Severity == 2 ? "warning"
                                         : e.Severity == 3 ? "information"
                                         : e.Severity == 4 ? "hint"
                                         : "unknown";
-                        diagList.Add(new Dictionary<string, object>
+                        var d = new Dictionary<string, object>
                         {
                             { "severity", e.Severity },
                             { "severityLabel", sevLabel },
+                            { "lineNumber", e.Line + 1 },
                             { "line", e.Line },
                             { "character", e.Character },
                             { "message", e.Message ?? "" },
                             { "source", e.Source ?? "" }
-                        });
+                        };
+                        if (tool.InEmbed != null && i < tool.InEmbed.Count && tool.InEmbed[i].HasValue)
+                            d["inEmbed"] = tool.InEmbed[i].Value;
+                        diagList.Add(d);
                     }
                     response["diagnostics"] = diagList;
 
                     return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(response);
+                }
+            });
+
+            // 44a1b10c: the IDE half of "lsp_diagnostics checks the open editor's text". lsp_diagnostics is served by the
+            // standalone clarion-mcp-server (not IdeOnly), which has no editors, so it calls THIS over the pane's HTTP
+            // endpoint (IdeLiveTextClient). IdeOnly: only the IDE can answer it. The UI read inside is bounded (Post +
+            // 2 s wait, never Invoke), so this tool is not RequiresUiThread.
+            Register(new McpTool
+            {
+                Name = "get_live_text",
+                IdeOnly = true,
+                Description = "Return the CURRENT text an open IDE editor holds for a file (unsaved edits included), for the " +
+                    "standalone lsp_diagnostics. Returns { found, text, origin (ca-editor-buffer | embeditor-file-buffer | " +
+                    "embeditor-document), lineOffset, procedure, reason }. found:false means no editor has it open (or the IDE " +
+                    "could not be read in time; reason says which).",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string> { { "file_path", "Absolute path of the .clw/.inc file" } },
+                    new[] { "file_path" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string filePath = McpJsonRpc.GetString(args, "file_path");
+                    if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    var provider = SharedLspBridge.LiveTextProvider;
+                    SharedLspBridge.LiveText live = null;
+                    if (provider != null)
+                    {
+                        try { live = provider(filePath); }
+                        catch (Exception ex) { live = new SharedLspBridge.LiveText { Reason = "the editor lookup failed: " + ex.Message }; }
+                    }
+                    var answer = new Dictionary<string, object>();
+                    if (live == null || live.Text == null)
+                    {
+                        answer["found"] = false;
+                        answer["reason"] = provider == null ? "the IDE's editor lookup is not registered"
+                            : live != null && live.Reason != null ? live.Reason : "no editor has this file open";
+                        return answer;
+                    }
+                    answer["found"] = true;
+                    answer["text"] = live.Text;
+                    answer["origin"] = live.Origin;
+                    answer["lineOffset"] = live.LineOffset;
+                    if (!string.IsNullOrEmpty(live.Procedure)) answer["procedure"] = live.Procedure;
+                    return answer;
                 }
             });
 

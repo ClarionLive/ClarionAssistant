@@ -139,6 +139,9 @@
     <Compile Include="Services\ExecutionLineGate.cs" />
     <Compile Include="Services\ActiveProcedureContext.cs" />
     <Compile Include="Services\EditorService.cs" />
+    <Compile Include="Services\EditorTextOps.cs" />
+    <Compile Include="Services\EditorToolRouter.cs" />
+    <Compile Include="Services\HostRequestBroker.cs" />
     <Compile Include="Services\ClarionSourceText.cs" />
     <Compile Include="Services\SettingsService.cs" />
     <Compile Include="Services\CaEditorSettings.cs" />
@@ -177,6 +180,7 @@
     <Compile Include="Services\LspService.cs" />
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
+    <Compile Include="Services\IdeEndpointRecord.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\ColonQualifierScope.cs" />
     <Compile Include="Services\LocalScopeIndex.cs" />
@@ -191,6 +195,7 @@
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
+    <Compile Include="EditorLiveTextProvider.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
     <Compile Include="ActiveDocumentRestoreCommand.cs" />
     <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />
@@ -207,7 +212,12 @@
     <Compile Include="Services\ModernEmbeditorLauncher.cs" />
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\EmbedAdoptPolicy.cs" />
+    <Compile Include="Services\EmbedOverlayGuard.cs" />
+    <Compile Include="Services\EmbedToolRouter.cs" />
+    <Compile Include="Services\EmbedSlotText.cs" />
     <Compile Include="Services\EmbedApplyFlow.cs" />
+    <Compile Include="Services\EmbedSaveFlow.cs" />
+    <Compile Include="Services\EmbedRecovery.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\LocalLayerHandlers.cs" />
     <Compile Include="Services\WebMessageGuard.cs" />

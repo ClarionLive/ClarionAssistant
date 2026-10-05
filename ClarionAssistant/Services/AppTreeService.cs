@@ -679,6 +679,25 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>44a1b10c: as GetFocusedNativeEmbeditorProcName but for the OPEN embeditor, focused or not (the tool
+        /// asking is in a terminal, so the embeditor never has focus then). The header title first, else the procedure
+        /// line in the embeditor's own document. UI thread only.</summary>
+        public string GetOpenNativeEmbeditorProcName()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                if (editor == null || GetOpenPweeDetails() == null) return null;
+                var known = GetProcedureNames();
+                string fromHeader = ProcFromHeaderTitle(
+                    (GetProp(editor, "HeaderTitle") ?? GetProp(editor, "TitleName") ?? GetProp(editor, "TabPageText")) as string);
+                if (!string.IsNullOrEmpty(fromHeader) && (known.Count == 0 || ContainsIgnoreCase(known, fromHeader)))
+                    return fromHeader;
+                return ModernEmbeditorLauncher.ProcNameFromSource(GetEmbeditorDocumentText(), known);
+            }
+            catch { return null; }
+        }
+
         // "Main - Embeditor - (clbrws002.clw)" -> "Main". Null if the " - Embeditor" marker is absent.
         private static string ProcFromHeaderTitle(string header)
         {
@@ -1576,25 +1595,50 @@ namespace ClarionAssistant.Services
         /// Metadata noise (! Start of, ! End of, ! [Priority N], !!!) is stripped.
         /// Returns null if no active PWEE editor is open.
         /// </summary>
-        public string GetEmbeditorSource()
+        /// <summary>44a1b10c: the open native embeditor's whole document text, unsaved edits (write_embed_content
+        /// included), or null when no embed is open. Its line N is the «E:N» of GetEmbeditorSource. UI thread only.</summary>
+        public string GetEmbeditorDocumentText()
         {
             var editor = GetClaGenEditor();
             if (editor == null) return null;
+            var textControl = GetProp(editor, "TextEditorControl");
+            var document = textControl != null ? GetProp(textControl, "Document") : null;
+            return document != null ? GetProp(document, "TextContent") as string : null;
+        }
+
+        public string GetEmbeditorSource()
+        {
+            string text;
+            List<int[]> ranges;
+            if (!TryGetNativeEmbedSlots(out text, out ranges)) return null;
+            // 73bd1f03: one builder for both editors (the CA Embeditor route uses it too), so the «E:N» annotation and
+            // its per-line buffer numbers cannot drift between them.
+            return EmbedSlotText.Annotate(text, ranges);
+        }
+
+        /// <summary>73bd1f03: the open native embeditor's text and its editable embed-point slots (1-based inclusive
+        /// [start,end], document order): the CustomLines that are not ReadOnly and are IPweeEmbedPoint parts. False when
+        /// no PWEE embeditor is open. UI thread only.</summary>
+        private bool TryGetNativeEmbedSlots(out string text, out List<int[]> ranges)
+        {
+            text = null; ranges = null;
+            var editor = GetClaGenEditor();
+            if (editor == null) return false;
 
             var textControl = GetProp(editor, "TextEditorControl");
-            if (textControl == null) return null;
+            if (textControl == null) return false;
 
             var document = GetProp(textControl, "Document");
-            if (document == null) return null;
+            if (document == null) return false;
 
             var lineManager = GetProp(document, "CustomLineManager");
-            if (lineManager == null || !lineManager.GetType().Name.Contains("Pwee")) return null;
+            if (lineManager == null || !lineManager.GetType().Name.Contains("Pwee")) return false;
 
             var customLines = GetProp(lineManager, "CustomLines") as System.Collections.IEnumerable;
-            if (customLines == null) return null;
+            if (customLines == null) return false;
 
-            // Build startLine0 → endLine0 map for editable embed points only
-            var lineMap = new Dictionary<int, int>();
+            // Editable embed points only: startLine0 -> endLine0
+            var lineMap = new SortedDictionary<int, int>();
             foreach (var cl in customLines)
             {
                 if (cl == null) continue;
@@ -1610,75 +1654,12 @@ namespace ClarionAssistant.Services
                 lineMap[(int)startNr] = (int)endNr;
             }
 
-            var totalLinesObj = GetProp(document, "TotalNumberOfLines");
-            if (totalLinesObj == null) return null;
-            int total = (int)totalLinesObj;
-
-            var getSegMethod  = document.GetType().GetMethod("GetLineSegment", AllInstance);
-            var getTextMethod = document.GetType().GetMethod("GetText", AllInstance, null,
-                new[] { typeof(int), typeof(int) }, null);
-            if (getSegMethod == null || getTextMethod == null) return null;
-
-            var sb = new StringBuilder();
-            int lineIdx = 0;
-            while (lineIdx < total)
-            {
-                if (lineMap.TryGetValue(lineIdx, out int endLine))
-                {
-                    // Decide empty vs filled from the actual buffer content rather than
-                    // from (endLine > lineIdx): PWEE does not refresh CustomLine metadata
-                    // after our Document.Insert calls, so a freshly written 1-line slot
-                    // still reports endLine == lineIdx even though the buffer has text.
-                    int embedEnd = Math.Max(endLine, lineIdx);
-                    var embedLines = new List<string>();
-                    bool hasContent = false;
-                    for (int j = lineIdx; j <= embedEnd && j < total; j++)
-                    {
-                        var seg    = getSegMethod.Invoke(document, new object[] { j });
-                        int offset = (int)GetProp(seg, "Offset");
-                        int length = (int)GetProp(seg, "Length");
-                        string line = (string)getTextMethod.Invoke(document, new object[] { offset, length });
-                        embedLines.Add(line);
-                        if (line.Trim().Length > 0) hasContent = true;
-                    }
-
-                    if (hasContent)
-                    {
-                        sb.AppendLine("\u00ABE:" + (lineIdx + 1) + "\u00BB");
-                        foreach (var line in embedLines)
-                            sb.AppendLine(line);
-                        sb.AppendLine("\u00AB/E:" + (lineIdx + 1) + "\u00BB");
-                    }
-                    else
-                    {
-                        sb.AppendLine("\u00ABE:" + (lineIdx + 1) + "/\u00BB");
-                    }
-                    lineIdx = embedEnd + 1;
-                }
-                else
-                {
-                    var seg    = getSegMethod.Invoke(document, new object[] { lineIdx });
-                    int offset = (int)GetProp(seg, "Offset");
-                    int length = (int)GetProp(seg, "Length");
-                    string text = (string)getTextMethod.Invoke(document, new object[] { offset, length });
-                    string trimmed = text.Trim();
-
-                    if (trimmed.Length == 0                 ||
-                        trimmed.StartsWith("! Start of ")  ||
-                        trimmed.StartsWith("! End of ")    ||
-                        trimmed.StartsWith("! [Priority ") ||
-                        trimmed.StartsWith("!!!"))
-                    {
-                        lineIdx++;
-                        continue;
-                    }
-
-                    sb.AppendLine(text);
-                    lineIdx++;
-                }
-            }
-
-            return sb.ToString();
+            text = GetProp(document, "TextContent") as string;
+            if (text == null) return false;
+            ranges = new List<int[]>();
+            foreach (var kv in lineMap)
+                ranges.Add(new[] { kv.Key + 1, Math.Max(kv.Key, kv.Value) + 1 });
+            return true;
         }
 
         /// <summary>
@@ -1867,59 +1848,40 @@ namespace ClarionAssistant.Services
         /// </summary>
         public string SearchEmbeditorSource(string pattern, int contextLines = 5)
         {
-            var source = GetEmbeditorSource();
-            if (source == null) return null;
+            string text;
+            List<int[]> ranges;
+            if (!TryGetNativeEmbedSlots(out text, out ranges)) return null;
+            // 73bd1f03: shared with the CA Embeditor route, so both answer in the same shape.
+            return EmbedSlotText.Search(text, ranges, pattern, contextLines);
+        }
 
-            var lines = source.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-            Regex rx;
-            try { rx = new Regex(pattern, RegexOptions.IgnoreCase); }
-            catch (Exception ex) { return "Error: invalid pattern — " + ex.Message; }
-
-            // Collect [start, end] ranges for each match (with context), then merge overlaps
-            var ranges = new List<int[]>();
-            for (int i = 0; i < lines.Length; i++)
+        /// <summary>73bd1f03 fix (2): the column of the embed point whose slot starts at 1-based
+        /// <paramref name="lineNumber"/> of the native embeditor document (what WriteEmbedContentByLine indents
+        /// to), or 0 when no embed point starts there. UI thread only.</summary>
+        public int GetEmbedColumn(int lineNumber)
+        {
+            try
             {
-                if (rx.IsMatch(lines[i]))
+                var editor = GetClaGenEditor();
+                var textControl = editor != null ? GetProp(editor, "TextEditorControl") : null;
+                var document = textControl != null ? GetProp(textControl, "Document") : null;
+                var lineManager = document != null ? GetProp(document, "CustomLineManager") : null;
+                var customLines = lineManager != null ? GetProp(lineManager, "CustomLines") as System.Collections.IEnumerable : null;
+                if (customLines == null) return 0;
+                foreach (var cl in customLines)
                 {
-                    int from = Math.Max(0, i - contextLines);
-                    int to   = Math.Min(lines.Length - 1, i + contextLines);
-                    ranges.Add(new[] { from, to });
+                    if (cl == null) continue;
+                    var startNr = GetProp(cl, "StartLineNr");
+                    if (startNr == null || (int)startNr != lineNumber - 1) continue;
+                    var pweePart = GetProp(cl, "PweePart");
+                    if (pweePart == null || pweePart.GetType().GetInterface("SoftVelocity.Generator.PWEE.IPweeEmbedPoint") == null)
+                        return 0;
+                    var textSection = GetProp(pweePart, "Text");
+                    return textSection != null ? Convert.ToInt32(GetProp(textSection, "Column") ?? 1) : 1;
                 }
             }
-
-            if (ranges.Count == 0)
-                return "No matches for: " + pattern;
-
-            // Merge overlapping/adjacent ranges
-            var merged = new List<int[]> { ranges[0] };
-            foreach (var r in ranges)
-            {
-                var last = merged[merged.Count - 1];
-                if (r[0] <= last[1] + 1) last[1] = Math.Max(last[1], r[1]);
-                else merged.Add(new[] { r[0], r[1] });
-            }
-
-            const int MaxOutputChars = 6000;
-            var sb = new StringBuilder();
-            sb.AppendLine("Matches for: " + pattern);
-            int blocksEmitted = 0;
-            foreach (var m in merged)
-            {
-                var block = new StringBuilder();
-                block.AppendLine("--- lines " + (m[0] + 1) + "–" + (m[1] + 1) + " ---");
-                for (int i = m[0]; i <= m[1]; i++)
-                    block.AppendLine(lines[i]);
-
-                if (sb.Length + block.Length > MaxOutputChars)
-                {
-                    int remaining = merged.Count - blocksEmitted;
-                    sb.AppendLine("... [" + remaining + " more block(s) truncated — use a more specific pattern]");
-                    break;
-                }
-                sb.Append(block);
-                blocksEmitted++;
-            }
-            return sb.ToString().TrimEnd();
+            catch { }
+            return 0;
         }
 
         /// <summary>

@@ -78,6 +78,45 @@ namespace ClarionAssistant
                 LspService.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
             LspService.StartLog = MonacoSpikeLog.Write;   // [lsp-autostart] start|skip reason=
 
+            // 44a1b10c: lsp_diagnostics checks an open editor's text, not the disk. Here, not in the chat panel, so it
+            // works with no chat tab (the chat-only-initialization trap); Run() is on the UI thread, whose context the
+            // provider posts its embeditor reads to.
+            try { EditorLiveTextProvider.Register(); }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] live-text provider failed: " + ex.Message); }
+
+            // fc420c30: the MCP editor tools reach the CA Editor (Monaco) instead of the native document hidden under it.
+            // At addin start, on the UI thread, so it works with no chat tab and the router knows the UI thread.
+            try
+            {
+                EditorToolRouter.UiThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                // 73bd1f03 fix (2): composed, not replaced. The CA Editor of the active view first; else the CA
+                // Embeditor overlay when the active view is the native embeditor it covers.
+                EditorToolRouter.ActiveOverlayResolver = () =>
+                    MonacoClarionEditor.ResolveActiveOverlay() ?? Terminal.ModernEmbeditorViewContent.ResolveCoveredEmbedOverlay();
+                EditorToolRouter.OpenFilesAdjuster = MonacoClarionEditor.MarkOverlayDirty;
+                EditorToolRouter.Log = MonacoSpikeLog.Write;
+                // open_file waits for the CA Editor's page too when one will take the file (the overlay's own rule).
+                EditorToolRouter.OverlayExpectedFor = path => MonacoSourceOverlay.Enabled && CaEditorSettings.SourceAppliesTo(path);
+                // ...and activates an already-open tab at both levels: select it, then focus its editor.
+                EditorToolRouter.FocusTab = MonacoClarionEditor.FocusTabFor;
+
+                // 73bd1f03 fix (2): the embed tools reach the CA Embeditor's Monaco buffer while it holds the procedure.
+                EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel;
+                EmbedToolRouter.NativeEmbedColumn = line => new AppTreeService().GetEmbedColumn(line);
+                EmbedToolRouter.Log = MonacoSpikeLog.Write;
+                // A native write names its procedure: the col-0 PROCEDURE of the open embeditor's own buffer
+                // (the same source-derived name the CA Embeditor uses; never the temp pwee file name).
+                EmbedToolRouter.NativeEmbedProcedure = () =>
+                {
+                    string title, source, error;
+                    System.Collections.Generic.List<int[]> ranges;
+                    return EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out error)
+                        ? ModernEmbeditorLauncher.ProcNameFromSource(source, null) : null;
+                };
+                McpToolRegistry.EmbedRoutableProbe = () => Terminal.ModernEmbeditorViewContent.EmbedRoutingReady;
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] editor router failed: " + ex.Message); }
+
             try
             {
                 // (e) Seed and subscribe BEFORE any start below (pipeline run 1): a seed taken after a start

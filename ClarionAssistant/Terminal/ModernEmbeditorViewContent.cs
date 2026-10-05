@@ -60,11 +60,183 @@ namespace ClarionAssistant.Terminal
         // native embed the instant it opened — demoting the very first save off the live fast path (no save-and-
         // exit). Gate the release on this flag so open-time churn can't drop the embed. (a5bbf005 probe fix)
         private bool _liveActivatedOnce;
-        private static ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
+        // volatile: HasLiveOverlay is read off the UI thread by the MCP tool guard (73bd1f03); writes stay UI-only.
+        private static volatile ModernEmbeditorViewContent _liveInstance;   // the ONE tab currently holding an open native embed, or null
         /// <summary>True while any CA embeditor overlay/tab holds the native embed open — the state whose
         /// teardown by Clarion's error navigation is disruptive. Read by ErrorPadNavigationInterceptor's
         /// dispatch rule (d3ab083a).</summary>
         internal static bool HasLiveOverlay { get { return _liveInstance != null; } }
+
+        /// <summary>
+        /// True when the ACTIVE workbench view is the native ClaGenEditor that the live overlay covers, i.e.
+        /// when EditorService's text-area tools (insert_text_at_cursor, replace_range, ...) would edit the
+        /// hidden native embed document instead of Monaco (73bd1f03, read through McpToolRegistry's
+        /// ActiveEditorCoveredProbe). Resolves the active view the way EditorService.GetActiveTextArea does:
+        /// the window's ViewContent, or one of its SecondaryViewContents.
+        ///
+        /// SAFE FROM ANY THREAD. Today the tools that ask run on the UI thread, but fc420c30 moves the routed
+        /// editor tools off it (they wait on a Monaco page reply, which a UI-thread wait would deadlock). Off
+        /// the UI thread the workbench read is marshalled over with a bounded wait; a timeout or a missing
+        /// main form THROWS, which McpToolRegistry's probe treats as "covered" (fail closed). Never Invoke():
+        /// an unbounded wait on a busy UI thread would hang the tool call.
+        /// </summary>
+        internal static bool ActiveEditorIsCoveredByOverlay()
+        {
+            var form = WorkbenchSingleton.MainForm;
+            if (form == null || form.IsDisposed) throw new InvalidOperationException("no workbench main form");
+            if (!form.InvokeRequired) return ActiveEditorIsCoveredByOverlayOnUi();
+
+            bool result = false;
+            Exception error = null;
+            var ar = form.BeginInvoke((Action)(() =>
+            {
+                try { result = ActiveEditorIsCoveredByOverlayOnUi(); }
+                catch (Exception ex) { error = ex; }
+            }));
+            if (!ar.AsyncWaitHandle.WaitOne(CoveredProbeTimeoutMs))
+                throw new TimeoutException("UI thread did not answer the CA Embeditor probe within " + CoveredProbeTimeoutMs + " ms");
+            if (error != null) throw error;
+            return result;
+        }
+
+        private const int CoveredProbeTimeoutMs = 2000;
+
+        // ── 73bd1f03 fix (2): Claude's embed and editor tools routed to this CA Embeditor's Monaco buffer ─────────
+
+        /// <summary>The CA Embeditor as the tool routers see it: the procedure, readiness, its open-time (native) slot
+        /// ranges, and requests to the page over fc420c30's host-request channel. Serves both EmbedToolRouter (embed
+        /// tools) and EditorToolRouter (editor tools on the covered view).</summary>
+        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel, IOverlayWriteLabel
+        {
+            /// <summary>An editor-tool write in the CA Embeditor names the procedure and buffer line, matching
+            /// write_embed_content's "— BrowseDepartment «E:N» (CA Embeditor)", not the .app the native path reports.</summary>
+            public string WriteLabel(int line)
+            {
+                return ProcedureName + (line > 0 ? " line " + line : "") + " (CA Embeditor)";
+            }
+
+            private readonly ModernEmbeditorViewContent _v;
+            private readonly List<int[]> _native;
+            private readonly string _path;
+            /// <param name="activePath">For the covered-view channel (EditorToolRouter): the path the NATIVE editor
+            /// reports for this view, so fc420c30's file_path check and its "— file:line (path)" naming behave exactly as
+            /// they do with the CA Embeditor off. Null = describe the CA Embeditor instead.</param>
+            public EmbedChannel(ModernEmbeditorViewContent v, string activePath = null)
+            {
+                _v = v;
+                _path = activePath;
+                _native = new List<int[]>();
+                if (v._editableRanges != null)
+                    foreach (var r in v._editableRanges) if (r != null) _native.Add(new[] { r[0], r[1] });
+            }
+            public string ProcedureName { get { return _v._procedureName ?? "embeditor"; } }
+            public string FilePath { get { return _path ?? ("the CA Embeditor ('" + ProcedureName + "')"); } }
+            public bool PageReady { get { return _v._panel != null && _v._isInitialized; } }
+            public IList<int[]> NativeRanges { get { return _native; } }
+            public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
+            {
+                var p = _v._panel;
+                if (p == null) throw new TimeoutException("the CA Embeditor for '" + ProcedureName + "' closed");
+                // "save" (save_and_close_embeditor, and save_file on the covered view through EditorToolRouter): the
+                // page cannot answer a successful overlay save (it is disposed first), so the outcome comes from
+                // 1565ef7b's EmbedSaveFinished. Answers in the shape both callers read: { saved, message, editorIntact }.
+                if (action == "save")
+                {
+                    // A save regenerates the module: never less than the embed save budget, whoever asks.
+                    int budget = Math.Max(timeoutMs, EmbedOverlayOps.SaveTimeoutMs);
+                    return EmbedSaveWait.Run(ProcedureName,
+                        h => EmbedSaveFinished += h, h => EmbedSaveFinished -= h,
+                        () => p.Request("save", args, budget), budget);
+                }
+                return p.Request(action, args, timeoutMs);
+            }
+        }
+
+        private static ModernEmbeditorViewContent LiveEmbedView()
+        {
+            var live = _liveInstance;
+            return (live != null && !live._fileMode && live._liveLinked) ? live : null;
+        }
+
+        /// <summary>EmbedToolRouter.LiveEmbedResolver: the CA Embeditor (overlay or live tab) holding the native embed,
+        /// or null (then the embed tools use the native embeditor, as before). UI thread.</summary>
+        internal static IEmbedOverlayChannel ResolveLiveEmbedChannel()
+        {
+            var v = LiveEmbedView();
+            return v == null ? null : new EmbedChannel(v);
+        }
+
+        /// <summary>Composed after MonacoClarionEditor.ResolveActiveOverlay into EditorToolRouter.ActiveOverlayResolver:
+        /// the CA Embeditor overlay when the ACTIVE view is the native ClaGenEditor it covers, else null. UI thread.</summary>
+        internal static IEditorOverlayChannel ResolveCoveredEmbedOverlay()
+        {
+            var v = LiveEmbedView();
+            if (v == null || !v._embedOverlay) return null;
+            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v, NativeActivePath()) : null;
+        }
+
+        /// <summary>The active document path as EditorService.GetActiveDocumentPath derives it (the window's ToolTipText
+        /// when it is a path, else the view's FileName), for the covered-view channel. UI thread; null when unknown.</summary>
+        private static string NativeActivePath()
+        {
+            try
+            {
+                const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public |
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                Func<object, string, object> prop = (o, n) =>
+                {
+                    if (o == null) return null;
+                    var p = o.GetType().GetProperty(n, all);
+                    try { return p == null ? null : p.GetValue(o, null); } catch { return null; }
+                };
+                var window = prop(WorkbenchSingleton.Workbench, "ActiveWorkbenchWindow");
+                var tip = prop(window, "ToolTipText") as string;
+                if (!string.IsNullOrEmpty(tip) && tip.Contains("\\") && tip.Contains(".")) return tip;
+                var view = prop(window, "ViewContent") ?? prop(window, "ActiveViewContent");
+                var name = prop(view, "FileName") as string;
+                return string.IsNullOrEmpty(name) ? null : name;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>True when Claude's tools can be routed to the CA Embeditor's page (it has loaded). Read off the UI
+        /// thread by EmbedOverlayGuard: while false, the tools stay refused rather than going native.</summary>
+        internal static bool EmbedRoutingReady
+        {
+            get
+            {
+                var v = LiveEmbedView();
+                return v != null && v._panel != null && v._isInitialized;
+            }
+        }
+
+        private static bool ActiveEditorIsCoveredByOverlayOnUi()
+        {
+            var live = LiveOverlayInstance;
+            if (live == null) return false;
+            var genEditor = live._overlayGenEditor;
+            if (genEditor == null) return true;   // overlay up but its editor unknown: fail closed
+
+            const System.Reflection.BindingFlags all = System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            Func<object, string, object> prop = (o, n) =>
+            {
+                if (o == null) return null;
+                var p = o.GetType().GetProperty(n, all);
+                return p == null ? null : p.GetValue(o, null);
+            };
+
+            var wb = WorkbenchSingleton.Workbench;
+            var window = prop(wb, "ActiveWorkbenchWindow") ?? prop(wb, "ActiveContent");
+            if (window == null) return false;
+            var view = prop(window, "ViewContent") ?? prop(window, "ActiveViewContent") ?? window;
+            if (ReferenceEquals(view, genEditor)) return true;
+            var secondary = prop(view, "SecondaryViewContents") as System.Collections.IEnumerable;
+            if (secondary != null)
+                foreach (var sv in secondary)
+                    if (ReferenceEquals(sv, genEditor)) return true;
+            return false;
+        }
 
         /// <summary>
         /// The CA Embeditor OVERLAY instance currently covering the open native embeditor, or null when
@@ -1405,8 +1577,68 @@ namespace ClarionAssistant.Terminal
             public string Proc;
             public List<string> Original;        // the torn-down overlay's slot BASELINE (validation key)
             public List<string> Edited;          // its unsaved edited slot texts
+            public string RecoveryFile;          // the disk copy WriteRecoveryFile made of them (path, "!error" or null)
         }
-        private static EmbedEditStash _editStash;   // single-slot: at most one live overlay exists (a5bbf005)
+        // PER PROCEDURE (1565ef7b final run, Codex adversary): it used to be one static slot, so saving procedure B
+        // cleared — and a teardown of B overwrote — procedure A's unrestored edits, which can be their only copy when
+        // the recovery file could not be written. UI thread only.
+        private static readonly Dictionary<string, EmbedEditStash> _editStashes =
+            new Dictionary<string, EmbedEditStash>(StringComparer.OrdinalIgnoreCase);
+        private static void PutStash(EmbedEditStash s) { if (s != null && !string.IsNullOrEmpty(s.Proc)) _editStashes[s.Proc] = s; }
+        private static void DropStash(string proc) { if (!string.IsNullOrEmpty(proc)) _editStashes.Remove(proc); }
+        private static EmbedEditStash PeekStash(string proc)
+        {
+            EmbedEditStash s;
+            return !string.IsNullOrEmpty(proc) && _editStashes.TryGetValue(proc, out s) ? s : null;
+        }
+        // The slot texts the last successful close-gesture SyncLive pushed into the NATIVE buffer (bcba6efb). If
+        // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
+        // not the open-time text; the save planner accepts it as ours instead of calling it a conflict. (1565ef7b)
+        private List<string> _nativeSyncedSlots;
+        // One save at a time per surface (pipeline Runs 1-3): a save arriving while one runs is refused. See EmbedSaveGate.
+        private readonly Services.EmbedSaveGate _saveGate = new Services.EmbedSaveGate();
+        private List<string> _lastRecoverySlots;   // what WriteRecoveryFile last wrote, so a teardown doesn't write it twice
+        private string _lastRecoveryFile;
+
+        /// <summary>Write the developer's changed slots to a recovery file (<see cref="Services.EmbedRecovery"/>).
+        /// Returns the path, null when nothing differed from the baseline, or "!" + the error when the write
+        /// failed — never throws (it runs on failure paths).</summary>
+        private string WriteRecoveryFile(string reason, IList<string> editedSlots)
+        {
+            try
+            {
+                string path = Services.EmbedRecovery.Write(_procedureName, reason, _editableRanges, _originalSlotTexts, editedSlots);
+                MonacoSpikeLog.Write("[recovery] " + (path ?? "nothing to recover") + " — " + reason);
+                _lastRecoverySlots = editedSlots != null ? new List<string>(editedSlots) : null;
+                _lastRecoveryFile = path;
+                return path;
+            }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("[recovery] write FAILED: " + ex.Message);
+                return "!" + ex.Message;
+            }
+        }
+
+        /// <summary>Slots a failed save or sync DID write now hold the developer's text natively. Record them in
+        /// <see cref="_nativeSyncedSlots"/> so the planner accepts them as ours on the next attempt, even after more
+        /// typing (pipeline Run 1, debugger: otherwise every later save was refused as an outside change).</summary>
+        private void RecordNativeWrites(IList<string> slotsWritten, List<int> written)
+        {
+            if (written == null || written.Count == 0) return;
+            var rec = Services.EmbedSavePlanner.RecordWrites(_nativeSyncedSlots, _originalSlotTexts, slotsWritten, written);
+            if (rec != null) _nativeSyncedSlots = rec;
+        }
+
+        /// <summary>The sentence that tells the developer where their text went (folder AND file).</summary>
+        private static string RecoveryNote(string recoveryResult)
+        {
+            if (recoveryResult == null) return "";
+            if (recoveryResult.StartsWith("!"))
+                return " A recovery copy could NOT be written (" + recoveryResult.Substring(1) + ").";
+            return " Your edits were saved to a recovery file in " + Path.GetDirectoryName(recoveryResult) + ":\r\n" +
+                   Path.GetFileName(recoveryResult);
+        }
 
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
             string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
@@ -1522,6 +1754,18 @@ namespace ClarionAssistant.Terminal
         /// Either match reuses the existing tab. This covers the realistic cases, NOT every possible one: a reopen
         /// that changes BOTH the path alias AND the file ID at once (external replace + reopen via a different
         /// alias) still escapes dedup — tracked as follow-up 8348435a. (pipeline item 3 + Run-6/7 adversary)</summary>
+        /// <summary>44a1b10c: the live text of a FILE-mode CA Embeditor tab on <paramref name="path"/> (unsaved edits
+        /// included), or null. Safe off the UI thread: a reference read of a field each edit replaces whole.</summary>
+        internal static string TryGetFileModeLiveText(string path)
+        {
+            try
+            {
+                var inst = FindByFilePath(path);
+                return inst != null && !inst._disposed ? inst._fileLiveText : null;
+            }
+            catch { return null; }
+        }
+
         public static ModernEmbeditorViewContent FindByFilePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
@@ -1739,22 +1983,38 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var stash = _editStash;
-                if (stash == null || _panel == null) return;
-                if (!string.Equals(stash.Proc, _procedureName, StringComparison.OrdinalIgnoreCase)) return;   // another proc's stash — leave it for its own re-open
-                _editStash = null;   // single-shot: consumed (or invalidated) by this attach
-                bool baselineMatches = _originalSlotTexts != null && stash.Original.Count == _originalSlotTexts.Count;
-                if (baselineMatches)
-                    for (int i = 0; i < stash.Original.Count; i++)
-                        if (!string.Equals(stash.Original[i], _originalSlotTexts[i], StringComparison.Ordinal)) { baselineMatches = false; break; }
-                if (!baselineMatches)
+                if (_panel == null) return;
+                // Only THIS procedure's stash; others wait for their own re-open. PEEK, don't take: it may be the only
+                // copy (a failed recovery write), so it is removed only once the restore has been DELIVERED — a throw
+                // anywhere below keeps it for the next open (1565ef7b final run, Codex adversary).
+                var stash = PeekStash(_procedureName);
+                if (stash == null) return;
+                // Per slot, not all-or-nothing (1565ef7b): a slot changed elsewhere since the teardown (e.g. Clarion's
+                // own "Save changes?" Yes) no longer blocks restoring the slots the developer actually edited.
+                var restored = Services.EmbedSavePlanner.MergeStash(stash.Original, stash.Edited, _originalSlotTexts);
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                if (restored == null)
                 {
-                    try { _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}"); } catch { }
+                    // Say where the text is: the recovery file written at teardown (1565ef7b).
+                    string where = stash.RecoveryFile != null && !stash.RecoveryFile.StartsWith("!")
+                        ? " They were saved to " + stash.RecoveryFile + "." : "";
+                    try
+                    {
+                        if (where.Length > 0)
+                            _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(
+                                "Your unsaved edits from the interrupted embeditor session could not be restored (the generated " +
+                                "source changed underneath them)." + where) + "}");
+                        else _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}");
+                    }
+                    catch { }
+                    // Drop it only when a disk copy exists; without one, memory is the last copy — keep it (it costs
+                    // little, and the edits stay retrievable in this IDE session rather than silently discarded).
+                    if (where.Length > 0) DropStash(_procedureName);
                     ClarionAssistant.MonacoSpikeLog.Write("stashed unsaved edits NOT restored — baseline changed (" + _procedureName + ")");
                     return;
                 }
-                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(stash.Edited) + "}");
+                _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(restored) + "}");
+                DropStash(_procedureName);   // delivered — single-shot
                 ClarionAssistant.MonacoSpikeLog.Write("restored stashed unsaved edits into re-opened embed (" + _procedureName + ")");
             }
             catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("TryRestoreStashedEdits error: " + ex.Message); }
@@ -1821,7 +2081,9 @@ namespace ClarionAssistant.Terminal
 
             if (!_saveEnabled || string.IsNullOrWhiteSpace(_procedureName))
             {
-                PostSaveResult(false, "Save isn't available — this tab was opened in mirror mode, not from the procedure picker.");
+                const string noSave = "Save isn't available — this tab was opened in mirror mode, not from the procedure picker.";
+                PostSaveResult(false, noSave);
+                RaiseEmbedSaveFinished(false, noSave, true);
                 return;
             }
 
@@ -1831,12 +2093,20 @@ namespace ClarionAssistant.Terminal
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 var data = ser.DeserializeObject(json) as Dictionary<string, object>;
                 var arr = (data != null && data.ContainsKey("slots")) ? data["slots"] as object[] : null;
-                if (arr == null) { PostSaveResult(false, "Save failed: malformed payload (no slots)."); return; }
+                if (arr == null)
+                {
+                    const string noSlots = "Save failed: malformed payload (no slots).";
+                    PostSaveResult(false, noSlots);
+                    RaiseEmbedSaveFinished(false, noSlots, true);
+                    return;
+                }
                 current = arr.Select(o => o == null ? "" : o.ToString()).ToList();
             }
             catch (Exception ex)
             {
-                PostSaveResult(false, "Save failed parsing the editor payload: " + ex.Message);
+                string bad = "Save failed parsing the editor payload: " + ex.Message;
+                PostSaveResult(false, bad);
+                RaiseEmbedSaveFinished(false, bad, true);
                 return;
             }
 
@@ -1845,16 +2115,38 @@ namespace ClarionAssistant.Terminal
             // re-opens the native embeditor and drives it with nested Application.DoEvents() pumps; on this
             // reentrant stack that deadlocks the IDE — the same failure mode the deferred ShowView fixed on
             // open. Post it so this handler returns and the round-trip runs on a settled UI turn.
+            // ONE SAVE AT A TIME (pipeline Runs 1-3: Codex security HIGH). The round-trip pumps DoEvents, so a second
+            // Ctrl+S, Ctrl+Q or routed save could otherwise re-enter it and plan/write/close against the same native
+            // embed. A save arriving while one runs is REFUSED on the spot with its own answer: the editor stays open
+            // with the text, the page toasts why (and drops any Ctrl+Q exit — a failed save never closes), and its own
+            // EmbedSaveFinished lets a routed save return at once. The running save reports separately when it ends.
+            int token = _saveGate.TryEnter(DateTime.UtcNow);
+            if (token == 0)
+            {
+                MonacoSpikeLog.Write("[save-timing] save refused — one is already in progress (slots=" + current.Count + ")");
+                PostSaveResult(false, Services.EmbedSaveGate.BusyMessage);
+                RaiseEmbedSaveFinished(false, Services.EmbedSaveGate.BusyMessage, true);
+                return;
+            }
             var captured = current;
             // DIAGNOSTIC (e1162adf): log the handoff, so the gap between THIS line and "[save-timing] enter"
             // in the log measures how long the BeginInvoke sat queued. A large gap here means the UI thread
             // was already blocked before the save even started — a completely different fault than a slow
             // save round-trip, and worth being able to tell apart.
             try { MonacoSpikeLog.Write("[save-timing] posted to UI thread (slots=" + captured.Count + ")"); } catch { }
-            if (_panel != null && _panel.IsHandleCreated)
-                _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured)));
-            else
-                RunSaveRoundTrip(captured);
+            bool posted = false;
+            try
+            {
+                if (_panel != null && _panel.IsHandleCreated)
+                {
+                    _panel.BeginInvoke((Action)(() => RunSaveRoundTrip(captured, token)));
+                    posted = true;
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-timing] BeginInvoke failed, saving inline: " + ex.Message); }
+            // Inline when the hand-off isn't possible: RunSaveRoundTrip always raises EmbedSaveFinished, which a
+            // routed save waits on — a dropped hand-off would leave it waiting with nothing saved.
+            if (!posted) RunSaveRoundTrip(captured, token);
         }
 
         /// <summary>Cancel/Discard from our toolbar (replaces the hidden native red-X). Overlay mode: detach the
@@ -1938,11 +2230,43 @@ namespace ClarionAssistant.Terminal
                     MonacoSpikeLog.Write("[native-dirty] nothing to sync (dirty=" + _mirroredDirty + ")");
                     return;
                 }
+                // Not mid-save (pipeline Run 2): SyncLive would write into the native embed while the save is writing
+                // or closing it. Clarion's close can't be vetoed from here, so keep the text on disk and say where.
+                if (_saveGate.Busy(DateTime.UtcNow))
+                {
+                    string rec = WriteRecoveryFile("Ctrl+F4 was pressed while a save was in progress", _mirroredSlots);
+                    MonacoSpikeLog.Write("[native-dirty] sync skipped — a save is in progress");
+                    try
+                    {
+                        CaNotice.Post("embed-sync-busy", "CA Embeditor: closed during a save",
+                            "A save of " + _procedureName + " was still running when the editor was closed, so the latest " +
+                            "edits may not be in it." + RecoveryNote(rec));
+                    }
+                    catch { }
+                    return;
+                }
 
                 bool ok;
-                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _editableRanges,
-                    _originalSlotTexts, _mirroredSlots, out ok);
+                var written = new List<int>();
+                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, _mirroredSlots, _nativeSyncedSlots, written, out ok);
                 MonacoSpikeLog.Write("[native-dirty] SyncLive ok=" + ok + " — " + msg);
+                if (ok) _nativeSyncedSlots = new List<string>(_mirroredSlots);
+                else
+                {
+                    RecordNativeWrites(_mirroredSlots, written);   // slots written before the failure are ours
+                    // Clarion's prompt is about to appear, and its Yes saves the NATIVE buffer, which does not have
+                    // these edits. Put them on disk and say where BEFORE the prompt, so neither answer loses them.
+                    // (1565ef7b: this was the second route to the same loss.)
+                    string rec = WriteRecoveryFile("Ctrl+F4 could not copy them into Clarion's embed buffer (" + msg + ")", _mirroredSlots);
+                    try
+                    {
+                        CaNotice.Post("embed-sync-failed", "CA Embeditor: edits not in Clarion's buffer",
+                            "Your CA Embeditor edits to " + _procedureName + " could not be copied into Clarion's embed " +
+                            "buffer, so Clarion's \"Save changes?\" will NOT include them (" + msg + ")." + RecoveryNote(rec));
+                    }
+                    catch { }
+                }
 
                 // Set the flag even if the sync failed: a prompt on stale content is bad, but closing with NO
                 // prompt loses the edits outright. The user still gets asked, and the log names the failure.
@@ -2030,6 +2354,14 @@ namespace ClarionAssistant.Terminal
         {
             Action work = () =>
             {
+                // Not mid-save (pipeline Run 2): a cancel would CancelEmbeditor / close under a save that is writing or
+                // closing the same native embed. The developer can cancel again once the save has reported.
+                if (_saveGate.Busy(DateTime.UtcNow))
+                {
+                    MonacoSpikeLog.Write("[save-timing] cancel ignored — a save is in progress");
+                    try { _panel?.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":\"A save is in progress, so Cancel was ignored. Try again when it finishes.\"}"); } catch { }
+                    return;
+                }
                 if (_embedOverlay)
                 {
                     // Controlled discard: detach the overlay (dispose the WebView2 on THIS settled turn) BEFORE
@@ -2049,6 +2381,7 @@ namespace ClarionAssistant.Terminal
                     catch { }
                     return;
                 }
+                _teardownIntentional = true;   // the developer chose to discard — Dispose must not keep a recovery copy
                 PostCloseTab();   // tab / snapshot / file mode: discard by closing the tab
             };
             try
@@ -2350,11 +2683,103 @@ namespace ClarionAssistant.Terminal
             }
         }
 
+        /// <summary>Raised on the UI thread when an embed save round-trip ends, whichever branch it took:
+        /// (procedureName, ok, message, editorIntact). editorIntact is true when the CA Embeditor surface is
+        /// still open afterwards, so the developer's text is still in it (a refused or failed save, or a snapshot
+        /// tab that stays open after saving). On a successful OVERLAY save the page is already disposed by the
+        /// time the outcome is known, so it cannot answer its own save request; this event is the authoritative
+        /// outcome (EmbedSave's routed save_and_close_embeditor waits on it, 73bd1f03). Subscriber exceptions
+        /// are swallowed so they can never break the save.</summary>
+        public static event Action<string, bool, string, bool> EmbedSaveFinished;
+
+        private void RaiseEmbedSaveFinished(bool ok, string message, bool editorIntact)
+        {
+            var handlers = EmbedSaveFinished;
+            if (handlers == null) return;
+            foreach (Action<string, bool, string, bool> h in handlers.GetInvocationList())
+            {
+                try { h(_procedureName, ok, message, editorIntact); }
+                catch (Exception ex) { MonacoSpikeLog.Write("EmbedSaveFinished subscriber threw: " + ex.Message); }
+            }
+        }
+
         // The actual save round-trip — re-open native embed, write slots, save+close. Runs deferred (off the
         // WebView2 web-message handler) on a settled UI turn so its nested DoEvents pumps don't reenter the
         // WebView2 message loop and deadlock the IDE.
-        private void RunSaveRoundTrip(List<string> current)
+        private void RunSaveRoundTrip(List<string> current, int token)
         {
+            if (!_saveGate.Start(token))
+            {
+                // Superseded: this queued callback went stale (its hand-off sat for StaleAfter) and a NEWER save took
+                // the gate. Its text is older than that save's by construction, so it must never be saved (pipeline
+                // Run 3, Codex security). It still gets its own answer, as a refusal.
+                const string superseded = "Save skipped: a newer save replaced this one.";
+                MonacoSpikeLog.Write("[save-timing] a superseded (stale) save callback ran late — refused");
+                try { if (_panel != null) PostSaveResult(false, superseded); } catch { }   // its own page answer too
+                RaiseEmbedSaveFinished(false, superseded, _panel != null);
+                return;
+            }
+
+            // Every exit raises EmbedSaveFinished exactly once, including an unexpected throw.
+            bool ok = false, intact = true;
+            string msg = "Save error: the save round-trip did not complete.";
+            try { RunSaveRoundTripCore(current, out ok, out msg, out intact); }
+            catch (Exception ex)
+            {
+                msg = "Save error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+                MonacoSpikeLog.Write("RunSaveRoundTrip threw: " + ex);
+                ok = false;
+                intact = _panel != null;   // the surface is gone only if the overlay already detached
+                try { PostSaveResult(false, msg); } catch { }
+            }
+            finally
+            {
+                _saveGate.Exit(token);   // before the event, so a subscriber reacting to it can save again
+                RaiseEmbedSaveFinished(ok, msg, intact);
+            }
+        }
+
+        /// <summary>
+        /// A save-and-exit (overlay, or a live tab) closes the editor with the snapshot it captured when it began. Text
+        /// typed while it ran — including a Ctrl+Q whose own save was refused as "already in progress" — is newer
+        /// than that snapshot and would vanish with the editor. Keep it: recovery file + notice. Returns the sentence
+        /// for the result message, or "" when nothing newer was typed. (Charlie: Ctrl+Q during a save must never
+        /// close with lost edits.)
+        /// </summary>
+        private string KeepTypedDuringSave(List<string> saved, bool surfaceGone)
+        {
+            var latest = _mirroredSlots;
+            if (!_mirroredDirty || latest == null || Services.EmbedSavePlanner.SameSlots(latest, saved)) return "";
+            string rec = WriteRecoveryFile("you typed more while a save was closing the CA Embeditor", latest);
+            string note = RecoveryNote(rec);
+            if (surfaceGone && !string.IsNullOrEmpty(_procedureName) && latest.Count == saved.Count)
+            {
+                // The overlay is gone, so the disk copy must not be the ONLY copy: a full disk or a denied folder
+                // would lose the text (final run, Codex adversary HIGH). Stash it in memory too, against the baseline
+                // that was just SAVED — reopening the procedure in the CA Embeditor restores it (TryRestoreStashedEdits).
+                PutStash(new EmbedEditStash
+                {
+                    Proc = _procedureName,
+                    Original = new List<string>(saved),
+                    Edited = new List<string>(latest),
+                    RecoveryFile = rec
+                });
+                note += " Reopen " + _procedureName + " in the CA Embeditor to get them back.";
+            }
+            if (note.Length > 0)
+                try
+                {
+                    CaNotice.Post("embed-typed-during-save", "CA Embeditor: later edits kept",
+                        "You edited " + _procedureName + " while it was being saved and closed, so those later edits were " +
+                        "not in the save." + note);
+                }
+                catch { }
+            return note.Length > 0 ? " Edits made during the save were not in it." + note : "";
+        }
+
+        private void RunSaveRoundTripCore(List<string> current, out bool ok, out string msg, out bool editorIntact)
+        {
+            editorIntact = true;
             // DIAGNOSTIC (ticket e1162adf): the FIRST embed save after a fresh Clarion start blocks ~60s
             // before the embeditor closes; later saves in the same session take seconds. The page posts its
             // "Saving…" toast and hands off immediately, so the stall is somewhere below this line — but
@@ -2374,8 +2799,6 @@ namespace ClarionAssistant.Terminal
             };
 
             mark("enter");
-            bool ok;
-            string msg;
             // LIVE fast-path (ticket a5bbf005): if THIS tab still holds its native embed open, write straight back
             // into it (no re-open, no locator re-type). Otherwise — a demoted/background tab — fall back to the
             // proven re-open Save. Both share the same per-slot write + SaveAndClose tail.
@@ -2384,24 +2807,57 @@ namespace ClarionAssistant.Terminal
             // own right for a first-call cost, so it gets its own mark rather than being folded into "enter".
             mark("liveCheck(live=" + live + ",overlay=" + _embedOverlay + ",slots=" + current.Count + ")");
 
-            // OVERLAY save-and-exit (a5bbf005): tear the Monaco surface OFF the embed host BEFORE SaveLive closes the
-            // native embed. Closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
-            // our WebView2 child on the native close stack (the documented freeze). We already captured `current`, so
-            // the surface isn't needed for the write; and SaveLive discards-on-failure (cancels the embed either
-            // way), so detaching first is consistent with both outcomes. DetachOverlay disposes the WebView2 on THIS
-            // settled turn — well before SaveAndCloseEmbeditor's native-close DoEvents pump.
+            // OVERLAY save-and-exit (a5bbf005). The Monaco surface must come OFF the embed host BEFORE the native
+            // embed closes: closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
+            // our WebView2 child on the native close stack (the documented freeze).
+            //
+            // BUT ONLY ONCE THE SAVE IS GOING THROUGH (1565ef7b). This used to detach first and save second; when
+            // the save then refused (any line-count drift in the native buffer) and cancelled the embed, the
+            // developer's text was gone with the surface. SaveLive now plans and writes with the overlay still
+            // attached and calls the detach (beforeClose) only immediately before SaveAndCloseEmbeditor. A refusal
+            // or a failed write returns with the editor untouched, and the page shows why.
             if (_embedOverlay && live)
             {
-                _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
-                DetachOverlay();
-                mark("detachOverlay");
-                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
-                mark("SaveLive(overlay) ok=" + ok);
-                if (ok) _editStash = null;     // saved — any stash for this proc is now stale
+                var o = ModernEmbeditorSaver.SaveLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, current, _nativeSyncedSlots, () =>
+                    {
+                        _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
+                        DetachOverlay();               // still on this settled turn, before the native-close DoEvents pump
+                        mark("detachOverlay");
+                    });
+                ok = o.Ok;
+                msg = o.Message;
+                editorIntact = o.EditorIntact;
+                mark("SaveLive(overlay) ok=" + ok + " intact=" + editorIntact);
+                if (ok)
+                {
+                    DropStash(_procedureName); _nativeSyncedSlots = null;   // saved — THIS proc's stash is now stale
+                    // John's D1: slots changed outside the CA Embeditor were saved too. The page is gone, so say
+                    // it in a notice rather than let it pass unmentioned.
+                    if (o.Plan != null && o.Plan.Foreign > 0)
+                        try { CaNotice.Post("embed-save-foreign", "CA Embeditor saved", msg); } catch { }
+                    // The overlay is gone now; anything typed while it saved was not in the save. Keep it on disk.
+                    msg += KeepTypedDuringSave(current, true);
+                }
+                else if (editorIntact)
+                    RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
+                else
+                {
+                    // Past the point of no return: the surface is gone and the native save failed. The text must
+                    // not exist only in this method's locals.
+                    msg += RecoveryNote(WriteRecoveryFile("the save failed after the CA Embeditor had closed", current));
+                }
                 try
                 {
                     if (ok) RefreshPadSources();
-                    else MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    else
+                    {
+                        // Both, deliberately: the toast clears the page's "Saving…" state (and answers a routed save's
+                        // page request); the MessageBox is the overlay's established failure UX — a refused save is
+                        // the one moment the developer must not miss.
+                        if (editorIntact) PostSaveResult(false, msg);   // the page is still there: toast it
+                        MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
                 }
                 catch { }
                 mark("refreshPadSources(overlay) — DONE");
@@ -2409,9 +2865,24 @@ namespace ClarionAssistant.Terminal
             }
 
             if (live)
-                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+            {
+                // Tab mode keeps its surface regardless; no beforeClose. NotLive = the embed closed in the razor-thin
+                // window since IsStillLive: fall straight through to the re-open save rather than fail.
+                var o = ModernEmbeditorSaver.SaveLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, current, _nativeSyncedSlots, null);
+                if (o.NotLive)
+                {
+                    live = false;
+                    msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
+                }
+                else
+                {
+                    ok = o.Ok; msg = o.Message;
+                    if (!ok) RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
+                }
+            }
             else
-                msg = ModernEmbeditorSaver.Save(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+                msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
             // The prime suspect: Save() RE-OPENS the native embeditor and pumps DoEvents, which is where a
             // one-time-per-session lazy ABC class load would be paid (see the warmup_abc tool).
             mark((live ? "SaveLive" : "Save(re-open)") + " ok=" + ok);
@@ -2426,20 +2897,36 @@ namespace ClarionAssistant.Terminal
 
             // On success, the saved content is the new baseline so a follow-up save sees no changes.
             if (ok && current.Count == _originalSlotTexts.Count) _originalSlotTexts = current;
-            if (ok) { _mirroredDirty = false; _editStash = null; }   // persisted — mirror clean, stash stale (d19c036d)
+            if (ok)
+            {
+                // Persisted — stash stale (d19c036d). Clean only if nothing was typed while the save pumped
+                // DoEvents: those keystrokes' embedState push is newer than `current` and still unsaved, and a
+                // false clean would skip Dispose's recovery copy for them (pipeline Run 1, debugger).
+                if (_mirroredSlots == null || _mirroredSlots.SequenceEqual(current)) _mirroredDirty = false;
+                DropStash(_procedureName); _nativeSyncedSlots = null;   // only this procedure's stash
+            }
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
             mark("bringToFront");
             // Refresh the pad's IDE-sourced caches (UI thread) so Local/Global Data + Other Files reflect the save.
             if (ok) RefreshPadSources();
             mark("refreshPadSources");
-            PostSaveResult(ok, msg);
+            // Typed while the save ran (e.g. a Ctrl+Q refused as "already in progress")? The page marks itself clean
+            // on this success although its text is newer, so put the newer text on disk now, whatever happens next.
+            bool typedDuring = ok && _mirroredDirty && _mirroredSlots != null &&
+                !Services.EmbedSavePlanner.SameSlots(_mirroredSlots, current);
+            if (typedDuring) msg += KeepTypedDuringSave(current, false);   // the tab stays open with the text
+            // savedSeq -1 when newer text was typed: the page clears its ● only when the echoed sequence matches its
+            // own (always 0 in embed mode), so -1 keeps it dirty — a later Ctrl+Q then asks instead of closing on a
+            // false "clean" (final run, debugger).
+            PostSaveResult(ok, msg, typedDuring ? -1 : 0);
             mark("postSaveResult — DONE");
 
             // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
             // tab — mirroring native Clarion embed editing. Deferred so it runs after the WebView2 gets its save
-            // result and the close stack is clean.
-            if (live && ok) PostCloseTab();
+            // result and the close stack is clean. NOT when newer text was typed during the save: the tab (now a
+            // snapshot — the live embed just closed) stays open with that text, never a close with lost edits.
+            if (live && ok && !typedDuring) { PostCloseTab(); editorIntact = false; }
         }
 
         /// <summary>True if THIS tab is still the live one AND its native embed is still open (GetEmbedInfo). A tab
@@ -3213,14 +3700,22 @@ namespace ClarionAssistant.Terminal
                 _originalSlotTexts != null && _mirroredSlots.Count == _originalSlotTexts.Count &&
                 !string.IsNullOrEmpty(_procedureName))
             {
-                _editStash = new EmbedEditStash
+                var stash = new EmbedEditStash
                 {
                     Proc = _procedureName,
                     Original = new List<string>(_originalSlotTexts),
                     Edited = new List<string>(_mirroredSlots)
                 };
+                PutStash(stash);
                 ClarionAssistant.MonacoSpikeLog.Write("embed overlay torn down DIRTY — stashed " + _mirroredSlots.Count +
                     " slot(s) of unsaved edits for " + _procedureName);
+                // The in-memory stash only survives until the next attach, and that attach refuses it if the
+                // procedure was regenerated meanwhile. Keep a disk copy too (1565ef7b), unless the Ctrl+F4 sync
+                // failure just wrote this exact text.
+                if (_lastRecoverySlots == null || !_lastRecoverySlots.SequenceEqual(_mirroredSlots))
+                    stash.RecoveryFile = WriteRecoveryFile("the CA Embeditor was closed from outside with unsaved edits", _mirroredSlots);
+                else
+                    stash.RecoveryFile = _lastRecoveryFile;
             }
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
@@ -4436,7 +4931,23 @@ namespace ClarionAssistant.Terminal
             // so the save is a synchronous file write — no async round-trip. Dispose the WebView2 FIRST so the
             // confirm MessageBox can't get stuck behind the live WebView2 (the documented native<->WebView2 deadlock).
             bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
+            // EMBED tab closed with unsaved Monaco edits by anything but our own Save/Cancel — the tab's X, a
+            // workbench close-all, IDE shutdown. Nothing prompts for an embed tab, so the text used to vanish.
+            // Keep a recovery copy (1565ef7b); no modal, for the same modal-storm reason as file mode at shutdown.
+            bool keepEmbedEdits = !_fileMode && !_disposed && !_teardownIntentional && _mirroredDirty &&
+                _mirroredSlots != null && !string.IsNullOrEmpty(_procedureName);
             _disposed = true;
+            if (keepEmbedEdits)
+            {
+                string rec = WriteRecoveryFile("its CA Embeditor tab was closed with unsaved edits", _mirroredSlots);
+                if (rec != null && !_shuttingDown)
+                    try
+                    {
+                        CaNotice.Post("embed-tab-closed-dirty", "CA Embeditor: unsaved edits kept",
+                            "The " + _procedureName + " tab closed without saving." + RecoveryNote(rec));
+                    }
+                    catch { }
+            }
 
             // Shared session teardown (broker unregister, LSP shadow revert, instance list) — one path
             // with DetachOverlay so the two lists can't drift again. (#119)

@@ -28,11 +28,9 @@ namespace ClarionAssistant.Services
         /// expects \r\n — bare \n in the buffer causes parse errors when the designer
         /// reads the buffer without a disk reload.
         /// </summary>
-        private static string NormalizeCrLf(string text)
-        {
-            if (text == null) return text;
-            return text.Replace("\r\n", "\n").Replace("\n", "\r\n");
-        }
+        // fc420c30: the text rules live in EditorTextOps, shared with the CA Editor (Monaco) path, so a tool answers the
+        // same whichever editor holds the file.
+        private static string NormalizeCrLf(string text) { return EditorTextOps.NormalizeCrLf(text); }
 
         public bool HasActiveTextEditor()
         {
@@ -315,16 +313,8 @@ namespace ClarionAssistant.Services
                 if (!content.Contains(oldText))
                     return InsertResult.Failed("Text not found in document");
 
-                // Find all occurrence offsets
-                var offsets = new List<int>();
-                int searchFrom = 0;
-                while (searchFrom < content.Length)
-                {
-                    int idx = content.IndexOf(oldText, searchFrom, StringComparison.Ordinal);
-                    if (idx < 0) break;
-                    offsets.Add(idx);
-                    searchFrom = idx + oldText.Length;
-                }
+                // Find all occurrence offsets (the rule shared with the CA Editor path)
+                var offsets = EditorTextOps.ReplaceOffsets(content, oldText);
 
                 // Use Document.Replace(offset, length, text) to surgically replace each occurrence.
                 // Replace from end to start to preserve earlier offsets.
@@ -613,6 +603,25 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// fc420c30: bring an already-open file's tab to the front (FileService.GetOpenFile + SelectWindow). OpenFile alone
+        /// left the previous tab active when the file was already open (live, a native-mode tab), so open_file selects it
+        /// explicitly. Returns false when the file is not open.
+        /// </summary>
+        public bool ActivateOpenFile(string filePath)
+        {
+            try
+            {
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                var fileServiceType = sharpDevelopAsm?.GetType("ICSharpCode.SharpDevelop.FileService");
+                var getOpenFile = fileServiceType?.GetMethod("GetOpenFile",
+                    BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string) }, null);
+                // Select it AND focus its editor: selecting alone left the .app window active (EditorToolRouter.ActivateTab).
+                return EditorToolRouter.ActivateTab(getOpenFile?.Invoke(null, new object[] { filePath }), filePath);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Scroll a SPECIFIC text area so the given 0-based line sits roughly centered in the
         /// viewport, instead of pinned to the very top. Computes the target first-visible line
         /// from TextView.VisibleLineCount, but always applies it via the TextArea's own ScrollTo
@@ -887,6 +896,18 @@ namespace ClarionAssistant.Services
                     }
                     catch { /* ClarionEditor throws on FileName - fall through */ }
 
+                    // fc420c30: the full path, as for the .app and as get_active_file gives it (the window's tooltip),
+                    // not the bare tab title.
+                    if (string.IsNullOrEmpty(path))
+                    {
+                        try
+                        {
+                            var tip = GetProperty(GetProperty(vc, "WorkbenchWindow"), "ToolTipText") as string;
+                            if (!string.IsNullOrEmpty(tip) && tip.Contains("\\") && tip.Contains(".")) path = tip;
+                        }
+                        catch { }
+                    }
+
                     if (string.IsNullOrEmpty(path))
                         path = GetProperty(vc, "TitleName") as string;
 
@@ -1002,29 +1023,7 @@ namespace ClarionAssistant.Services
 
                 string content = (GetProperty(document, "TextContent") ?? GetProperty(document, "Text")) as string;
                 if (string.IsNullOrEmpty(content)) return results;
-
-                var comparison = caseSensitive
-                    ? StringComparison.Ordinal
-                    : StringComparison.OrdinalIgnoreCase;
-
-                int pos = 0;
-                while (pos < content.Length)
-                {
-                    int idx = content.IndexOf(searchText, pos, comparison);
-                    if (idx < 0) break;
-
-                    // Convert offset to line/col
-                    int line = 1;
-                    int lastLineStart = 0;
-                    for (int i = 0; i < idx; i++)
-                    {
-                        if (content[i] == '\n') { line++; lastLineStart = i + 1; }
-                    }
-                    int col = idx - lastLineStart + 1;
-                    results.Add(new[] { line, col });
-
-                    pos = idx + 1;
-                }
+                results = EditorTextOps.FindAll(content, searchText, caseSensitive);   // shared with the CA Editor path
             }
             catch { }
             return results;
@@ -1071,43 +1070,10 @@ namespace ClarionAssistant.Services
                 string content = (GetProperty(document, "TextContent") ?? GetProperty(document, "Text")) as string;
                 if (content == null) return InsertResult.Failed("Cannot read document");
 
-                var lines = content.Split('\n');
-                if (startLine < 1 || endLine > lines.Length)
-                    return InsertResult.Failed("Line range out of bounds");
-
-                // Check if all lines in range are already commented
-                bool allCommented = true;
-                for (int i = startLine - 1; i < endLine; i++)
-                {
-                    string trimmed = lines[i].TrimStart();
-                    if (!string.IsNullOrEmpty(trimmed) && !trimmed.StartsWith("!"))
-                    {
-                        allCommented = false;
-                        break;
-                    }
-                }
-
-                // Toggle
-                for (int i = startLine - 1; i < endLine; i++)
-                {
-                    if (allCommented)
-                    {
-                        // Uncomment: remove first !
-                        int bangIdx = lines[i].IndexOf('!');
-                        if (bangIdx >= 0)
-                            lines[i] = lines[i].Substring(0, bangIdx) + lines[i].Substring(bangIdx + 1);
-                    }
-                    else
-                    {
-                        // Comment: add ! at start of content
-                        int firstNonSpace = 0;
-                        while (firstNonSpace < lines[i].Length && lines[i][firstNonSpace] == ' ')
-                            firstNonSpace++;
-                        lines[i] = lines[i].Substring(0, firstNonSpace) + "!" + lines[i].Substring(firstNonSpace);
-                    }
-                }
-
-                string updated = string.Join("\n", lines);
+                // The toggle rule, shared with the CA Editor path.
+                string toggleError;
+                string updated = EditorTextOps.ToggleComment(content, startLine, endLine, out toggleError);
+                if (updated == null) return InsertResult.Failed(toggleError);
                 var textProp = document.GetType().GetProperty("TextContent", BindingFlags.Public | BindingFlags.Instance);
                 if (textProp != null && textProp.CanWrite)
                     textProp.SetValue(document, updated, null);
@@ -1391,10 +1357,7 @@ namespace ClarionAssistant.Services
             return sb.ToString();
         }
 
-        private static bool IsWordChar(char c)
-        {
-            return char.IsLetterOrDigit(c) || c == '_' || c == ':';
-        }
+        private static bool IsWordChar(char c) { return EditorTextOps.IsWordChar(c); }
 
         private object GetActiveTextArea()
         {

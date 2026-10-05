@@ -928,6 +928,22 @@ namespace ClarionAssistant.Services
         /// </summary>
         public DiagnosticWaitResult GetDiagnostics(string filePath, int timeoutMs = 3000)
         {
+            return GetDiagnosticsCore(filePath, null, timeoutMs);
+        }
+
+        /// <summary>
+        /// 44a1b10c: as GetDiagnostics, but for <paramref name="text"/> (an open editor's buffer) instead of the disk
+        /// file. The disk is never read or re-sent, so an editor's synced text is not replaced by the file. Sent only
+        /// when it differs from what the server holds (the same hash gate as EnsureBufferSynced); when it doesn't,
+        /// the wait is for the held version and a `complete` already recorded for it answers (as in GetDiagnostics).
+        /// </summary>
+        public DiagnosticWaitResult GetDiagnosticsForText(string filePath, string text, int timeoutMs = 3000)
+        {
+            return GetDiagnosticsCore(filePath, text, timeoutMs);   // null text = the disk path
+        }
+
+        private DiagnosticWaitResult GetDiagnosticsCore(string filePath, string text, int timeoutMs)
+        {
             var result = new DiagnosticWaitResult { Entries = new List<DiagnosticEntry>(), Pending = true };
             if (!IsRunning || string.IsNullOrEmpty(filePath)) return result;
             TrackRequest("diagnostics", filePath);
@@ -948,7 +964,9 @@ namespace ClarionAssistant.Services
             bool sentNewVersion = true;
             try
             {
-                if (_openDocuments.ContainsKey(filePath))
+                if (text != null)
+                    sentNewVersion = EnsureDocumentOpenWithText(filePath, text);   // 44a1b10c: the editor's text
+                else if (_openDocuments.ContainsKey(filePath))
                     sentNewVersion = SendDidChangeFromDisk(filePath);
                 else
                     EnsureDocumentOpen(filePath);
@@ -1645,7 +1663,9 @@ namespace ClarionAssistant.Services
             RecordServerText_NoLock(filePath, text);
         }
 
-        private void EnsureDocumentOpenWithText(string filePath, string text)
+        /// <returns>True when a new version went to the server (a didOpen or a change); false when the server
+        /// already holds exactly <paramref name="text"/> and nothing was sent.</returns>
+        private bool EnsureDocumentOpenWithText(string filePath, string text)
         {
             lock (_docSyncLock)
             {
@@ -1654,14 +1674,15 @@ namespace ClarionAssistant.Services
                 int currentVersion;
                 if (_openDocuments.TryGetValue(filePath, out currentVersion))
                 {
-                    // Unchanged since last sync → nothing to send (avoids needless re-tokenize).
+                    // Unchanged since last sync → nothing to send (avoids needless re-tokenize; the server would skip
+                    // an identical-content change anyway, #359).
                     int lastHash;
                     if (_lastSyncedHash.TryGetValue(filePath, out lastHash) && lastHash == hash)
-                        return;
+                        return false;
 
                     SendDidChange_NoLock(filePath, uri, currentVersion + 1, text);   // ranged when the server allows
                     _lastSyncedHash[filePath] = hash;
-                    return;
+                    return true;
                 }
 
                 var openDoc = new Dictionary<string, object>
@@ -1676,6 +1697,7 @@ namespace ClarionAssistant.Services
                 _openDocuments[filePath] = 1; NoteSentVersion(filePath, 1);
                 _lastSyncedHash[filePath] = hash;
                 RecordServerText_NoLock(filePath, text);
+                return true;
             }
         }
 

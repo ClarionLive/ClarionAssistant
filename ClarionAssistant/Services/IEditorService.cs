@@ -57,6 +57,7 @@ namespace ClarionAssistant.Services
         bool GoToLine(int lineNumber);
         void NavigateToFileAndLine(string filePath, int lineNumber);
         void OpenFileOnly(string filePath);
+        bool ActivateOpenFile(string filePath);
         bool SaveActiveDocument();
         bool CloseActiveDocument();
     }

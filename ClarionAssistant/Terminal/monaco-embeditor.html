@@ -1006,6 +1006,18 @@
         isDirty = d;
         renderTitle();
     }
+    // fc420c30: the model's alternative version id as of the last load or successful save. Monaco gives an undo back
+    // to a state the SAME alternative version id it had, so comparing against it makes "undo back to the saved text"
+    // read clean, where "any edit since the save" stayed dirty forever (live: Ctrl+Z removed the only edit, the text
+    // equalled the disk, and the ●, is_modified and get_open_files all still said modified).
+    var savedAltVersion = null;
+    function markSavedState() {
+        try { savedAltVersion = editor.getModel().getAlternativeVersionId(); } catch (e) { savedAltVersion = null; }
+    }
+    function dirtyFromModel() {
+        try { return savedAltVersion === null || editor.getModel().getAlternativeVersionId() !== savedAltVersion; }
+        catch (e) { return true; }
+    }
     // File mode only: mirror the live buffer + dirty flag to the host so a tab close can save from the host's
     // copy WITHOUT an async round-trip into this page. (pipeline CRITICAL — data loss on close)
     // This is SYNCHRONOUS on every legal edit (NOT debounced): Run-2 found a debounce left _fileLiveText/_fileDirty
@@ -1021,6 +1033,144 @@
         postBufferCopy({ action: 'fileState', dirty: isDirty, seq: editSeq, v: ++bufSyncSeq }, 'text', model);
         bufSyncedKey = bufferKey(model);
     }
+    // ----- fc420c30: host requests (the MCP editor tools routed to this CA Editor) -----
+    // The host posts {type:'hostRequest', reqId, action, args} and waits (off its UI thread) for
+    // {action:'hostReply', reqId, ok, data|error}. Edits go through executeEdits, NOT the guarded path, so the
+    // read-only guard's content listener treats them exactly like typing: setDirty, editSeq++, pushFileState —
+    // which is what puts Claude's edit in the host's live-text mirror (and so in lsp_diagnostics).
+    var hostSaveReqId = null;   // the save_file request waiting for the host's saveResult
+
+    function replyToHost(reqId, ok, data, error) {
+        var r = { action: 'hostReply', reqId: reqId, ok: !!ok };
+        if (ok) r.data = data || {}; else r.error = error || 'error';
+        postToHost(r);
+    }
+
+    function hostState(withText) {
+        var ed = activeEd();
+        var model = editor.getModel();
+        var pos = ed.getPosition() || { lineNumber: 1, column: 1 };
+        var sel = ed.getSelection();
+        var s = {
+            versionId: model.getVersionId(), dirty: isDirty, seq: editSeq, lineCount: model.getLineCount(),
+            cursor: { line: pos.lineNumber, column: pos.column }
+        };
+        if (sel) s.selection = {
+            startLine: sel.startLineNumber, startCol: sel.startColumn, endLine: sel.endLineNumber, endCol: sel.endColumn,
+            text: sel.isEmpty() ? '' : model.getValueInRange(sel)
+        };
+        if (withText) s.text = model.getValue();
+        return s;
+    }
+
+    function isReadOnlyNow() {
+        try { return !!editor.getOption(monaco.editor.EditorOption.readOnly); } catch (e) { return false; }
+    }
+
+    function hostApplyEdits(args) {
+        var model = editor.getModel();
+        if (args.expectedVersionId != null && model.getVersionId() !== args.expectedVersionId) return 'stale';
+        if (isReadOnlyNow()) return 'readOnly';
+        var eol = model.getEOL();
+        var edits = (args.edits || []).map(function (e) {
+            return {
+                range: model.validateRange(new monaco.Range(e.startLine, e.startCol, e.endLine, e.endCol)),
+                text: String(e.text || '').replace(/\r\n/g, '\n').replace(/\n/g, eol),
+                forceMoveMarkers: true
+            };
+        });
+        if (!fileMode) {
+            for (var i = 0; i < edits.length; i++) if (!isEditableRange(edits[i].range)) return 'notEditable';
+        }
+        var ed = activeEd();
+        var endOffset = -1;
+        if (args.caretAtEnd && edits.length === 1)
+            endOffset = model.getOffsetAt(edits[0].range.getStartPosition()) + edits[0].text.length;
+        ed.pushUndoStop();
+        ed.executeEdits('mcp-tool', edits);   // ONE batch = one undo step; the content listener marks dirty + mirrors
+        ed.pushUndoStop();
+        if (endOffset >= 0) {
+            var p = model.getPositionAt(endOffset);
+            ed.setPosition(p);
+            ed.revealPositionInCenterIfOutsideViewport(p);
+        }
+        return null;
+    }
+
+    function handleHostRequest(msg) {
+        var id = msg.reqId, a = msg.args || {};
+        try {
+            if (!editor || !editor.getModel()) { replyToHost(id, false, null, 'notReady'); return; }
+            switch (msg.action) {
+                case 'getState':
+                    replyToHost(id, true, hostState(!!a.withText));
+                    return;
+                case 'applyEdits': {
+                    var err = hostApplyEdits(a);
+                    if (err) replyToHost(id, false, null, err); else replyToHost(id, true, hostState(false));
+                    return;
+                }
+                case 'setSelection': {
+                    var m = editor.getModel();
+                    var r = m.validateRange(new monaco.Range(a.startLine, a.startCol, a.endLine, a.endCol));
+                    activeEd().setSelection(r);
+                    activeEd().revealRangeInCenterIfOutsideViewport(r);
+                    replyToHost(id, true, {});
+                    return;
+                }
+                case 'reveal':
+                    revealLineFromHost({ line: a.line, column: 1 });
+                    replyToHost(id, true, {});
+                    return;
+                case 'undo':
+                case 'redo': {
+                    // The MODEL's own undo/redo, not editor.trigger(..., 'undo'): Monaco's undo command acts on the
+                    // FOCUSED editor, and while the developer's focus is in the terminal that call is a silent no-op
+                    // (live on PRM002130: "Undo successful", nothing changed, Ctrl+Z in Monaco then undid it).
+                    // TextModel.undo/redo/canUndo/canRedo are runtime methods (not in the 0.52 public d.ts).
+                    // `done` is what HAPPENED (the version moved), never what canUndo promised.
+                    var model = editor.getModel();
+                    var isUndo = msg.action === 'undo';
+                    var can = isUndo ? model.canUndo() : model.canRedo();
+                    if (!can) { replyToHost(id, true, { done: false }); return; }
+                    if (typeof (isUndo ? model.undo : model.redo) !== 'function') { replyToHost(id, false, null, msg.action + 'Unavailable'); return; }
+                    var before = model.getVersionId();
+                    var settle = function () {
+                        if (model.getVersionId() !== before) replyToHost(id, true, { done: true });
+                        else replyToHost(id, false, null, msg.action + 'DidNothing');
+                    };
+                    var r = isUndo ? model.undo() : model.redo();
+                    if (r && typeof r.then === 'function') r.then(settle, function (e) { replyToHost(id, false, null, 'exception: ' + (e && e.message ? e.message : e)); });
+                    else settle();
+                    return;
+                }
+                case 'save':
+                    if (!saveEnabled) { replyToHost(id, false, null, 'saveDisabled'); return; }
+                    if (isReadOnlyNow()) { replyToHost(id, false, null, 'readOnly'); return; }
+                    if (hostSaveReqId != null) replyToHost(hostSaveReqId, false, null, 'superseded');
+                    hostSaveReqId = id;   // answered from the saveResult branch, after the host has written the file
+                    doSave();
+                    return;
+                case 'getSlots': {   // 73bd1f03 fix (2): the embed tools (get/search/write embed) routed here
+                    if (fileMode) { replyToHost(id, false, null, 'notEmbed'); return; }
+                    var sm = editor.getModel();
+                    var slotState = {
+                        versionId: sm.getVersionId(), dirty: isDirty, lineCount: sm.getLineCount(),
+                        ranges: embedRanges.map(function (r) { return [r[0], r[1]]; })   // live: the guard keeps them current
+                    };
+                    if (a.withText) slotState.text = sm.getValue();
+                    replyToHost(id, true, slotState);
+                    return;
+                }
+                default:
+                    replyToHost(id, false, null, 'unknownAction:' + msg.action);
+            }
+        } catch (e) {
+            if (hostSaveReqId === id) hostSaveReqId = null;   // answered here: a later saveResult must not answer it again
+            replyToHost(id, false, null, 'exception: ' + (e && e.message ? e.message : e));
+        }
+    }
+
     // Unsaved edits stashed by the host from an externally torn-down overlay, waiting for the async
     // source fetch to populate the model before they can be re-applied (task d19c036d).
     var pendingRestoreSlots = null;
@@ -1036,7 +1186,9 @@
             for (var i = embedRanges.length - 1; i >= 0; i--) {
                 var r = embedRanges[i];
                 var range = new monaco.Range(r[0], 1, r[1], model.getLineMaxColumn(r[1]));
-                if (model.getValueInRange(range) === slots[i]) continue;
+                // EOL-insensitive: the host's slot text is "\n"-joined while the model may hold CRLF, and an exact
+                // compare rewrote every unedited multi-line slot with identical text (1565ef7b pipeline Run 1).
+                if (String(model.getValueInRange(range)).replace(/\r\n?/g, '\n') === String(slots[i]).replace(/\r\n?/g, '\n')) continue;
                 applyGuardedEdits([{ range: range, text: slots[i] }]);
                 changed = true;
             }
@@ -1642,6 +1794,7 @@
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
                 resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
                 resetLocalFirstState();     // ...and the old procedure's cached completion must not leak in (1c685f2e)
+                markSavedState();           // fc420c30: the loaded text is the clean state an undo can return to
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
@@ -1968,7 +2121,14 @@
     }
 
     function doSave() {
-        if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
+        // Mirror mode can't save, but the HOST still has to hear about the attempt: it answers with the refusal
+        // and raises EmbedSaveFinished, which a routed save (73bd1f03) waits on. Returning here without a word
+        // to the host left that caller waiting out its whole budget. (1565ef7b)
+        if (!saveEnabled) {
+            if (fileMode) showToast('Save not available (mirror mode)', false);
+            else postToHost({ action: 'save', slots: [] });   // the host's saveResult toasts the reason
+            return;
+        }
         if (_snippetTabState) clearSnippetTabState();   // converge any in-progress mirrored stops before persisting (adversary FAILURE 2)
         // Drop any caret-behind-EOL padding BEFORE the cursor is captured, so we neither save the spaces
         // (file mode reads getValue() directly, bypassing gatherSlots) nor persist a caret sitting in
@@ -5023,7 +5183,7 @@
                 }
                 guarding = false;
                 if (legal.length) {
-                    setDirty(true);
+                    setDirty(dirtyFromModel());
                     if (fileMode) { editSeq++; pushFileState(); } else pushEmbedState();
                     if (bookmarkDecos.length) scheduleBookmarkPersist();
                     scheduleDiagnostics();
@@ -5032,7 +5192,8 @@
             }
             // A legal user edit happened (this handler returned early for programmatic loads via
             // `guarding` and for reverted illegal edits) — mark the buffer dirty for the ● indicator.
-            setDirty(true);
+            // fc420c30: dirty = "differs from the last load/save", so an undo back to the saved text reads clean.
+            setDirty(dirtyFromModel());
             // File mode: advance the edit sequence (lets saveResult detect edits-during-save) and mirror the
             // live buffer to the host (debounced) so a close can save it. (pipeline items 1 + 6)
             if (fileMode) { editSeq++; pushFileState(); }   // synchronous mirror — no debounce (close-safety, Run-2)
@@ -9288,10 +9449,14 @@
                 // closesSurface), so Clarion raises its own prompt.
             } else if (msg.type === 'saveResult') {
                 if (saveSafetyTimer) { clearTimeout(saveSafetyTimer); saveSafetyTimer = null; }
+                if (hostSaveReqId != null) {   // fc420c30: answer the save_file request with the outcome
+                    var sreq = hostSaveReqId; hostSaveReqId = null;
+                    replyToHost(sreq, true, { saved: !!msg.ok, message: String(msg.message || ''), savedSeq: msg.savedSeq });
+                }
                 if (msg.ok) {
                     // Clear the ● ONLY if the buffer hasn't changed since the snapshot we saved — otherwise edits
                     // made during the save round-trip would be falsely marked clean. (pipeline item 6)
-                    if (msg.savedSeq == null || msg.savedSeq === editSeq) setDirty(false);
+                    if (msg.savedSeq == null || msg.savedSeq === editSeq) { setDirty(false); markSavedState(); }
                     if (fileMode) pushFileState();   // keep the host's mirror in sync with the post-save dirty state
                 } else {
                     _exitAfterSave = false;   // failed save never auto-closes
@@ -9307,6 +9472,8 @@
                 }
             } else if (msg.type === 'response' && msg.reqId != null) {
                 deliverHostReply(msg.reqId, msg.data);
+            } else if (msg.type === 'hostRequest' && msg.reqId != null) {
+                handleHostRequest(msg);   // fc420c30: the MCP editor tools, routed to this CA Editor
             } else if (msg.type === 'bufferResync') {
                 resetBufferSync();   // the host has no copy of the version we stamped — resend with the next request (16d140e9)
             } else if (msg.type === 'spanMap') {
