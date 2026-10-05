@@ -118,7 +118,7 @@ function makeWorld(text, opts) {
         postToHost: m => W.posted.push(m),
         revealLineFromHost: m => { W.pos = { lineNumber: m.line, column: m.column || 1 }; W.revealed = m.line; },
         isEditableRange: r => !opts.slots || opts.slots.some(s => r.startLineNumber >= s[0] && r.endLineNumber <= s[1]),
-        doSave: () => { W.saves++; },
+        doSave: () => { if (opts.throwOnSave) throw new Error('save failed'); W.saves++; },
         fileMode: opts.fileMode !== false,
         saveEnabled: opts.saveEnabled !== false
     };
@@ -214,6 +214,18 @@ console.log('\nsave');
     const env = makeWorld(SEED, { saveEnabled: false });
     env.api.handle({ type: 'hostRequest', reqId: 21, action: 'save', args: {} });
     check('a tab that cannot save → refused "saveDisabled"', env.last().ok === false && env.last().error === 'saveDisabled' && env.W.saves === 0);
+}
+
+{
+    // EmbedSave's review: a doSave that throws is answered by the catch, and must not leave the request pending for
+    // the NEXT saveResult (the developer's own Ctrl+S) to answer a second time.
+    const env = makeWorld(SEED, { throwOnSave: true });
+    env.api.handle({ type: 'hostRequest', reqId: 22, action: 'save', args: {} });
+    check('a doSave that throws → answered with an exception error', env.last().reqId === 22 && env.last().ok === false && /exception/.test(env.last().error));
+    check('...and the request is no longer pending', env.api.pendingSave() === null);
+    const before = env.W.posted.length;
+    env.api.saveResult({ type: 'saveResult', ok: true, message: 'Saved', savedSeq: 0 });
+    check('...so a later saveResult (the developer\'s Ctrl+S) answers nothing', env.W.posted.length === before);
 }
 
 console.log('\nrefusals');

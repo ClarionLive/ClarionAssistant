@@ -1140,6 +1140,7 @@
                     replyToHost(id, false, null, 'unknownAction:' + msg.action);
             }
         } catch (e) {
+            if (hostSaveReqId === id) hostSaveReqId = null;   // answered here: a later saveResult must not answer it again
             replyToHost(id, false, null, 'exception: ' + (e && e.message ? e.message : e));
         }
     }
