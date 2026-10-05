@@ -230,6 +230,17 @@ namespace ClarionAssistant.Services
             return true;
         }
 
+        /// <summary>Whether two slot lists hold the same text (line endings ignored). Used to tell whether the
+        /// developer typed while a save that closes the editor was running: the saved snapshot then differs from the
+        /// page's latest mirror, and those keystrokes must not vanish with the editor.</summary>
+        public static bool SameSlots(IList<string> a, IList<string> b)
+        {
+            if (a == null || b == null) return a == b;
+            if (a.Count != b.Count) return false;
+            for (int i = 0; i < a.Count; i++) if (!NLEqual(a[i], b[i])) return false;
+            return true;
+        }
+
         internal static bool NLEqual(string x, string y)
         {
             return string.Equals((x ?? "").Replace("\r\n", "\n").Replace("\r", "\n"),
@@ -277,11 +288,9 @@ namespace ClarionAssistant.Services
     /// queued entry can go stale (its callback was dropped with a destroyed handle) — a RUNNING save never
     /// expires, however long the IDE stalls inside it, because expiring it is exactly the overlap this prevents.
     ///
-    /// NEWER TEXT IS NEVER DROPPED (pipeline Run 2, debugger + adversary). A save requested while one runs is
-    /// kept as the pending request (latest wins, <see cref="Join"/>). When the running save ends,
-    /// <see cref="TakeFollowUp"/> returns it if it differs from what was just saved, and the caller runs it as
-    /// one follow-up save whose outcome answers both requests. A duplicate (same text) simply shares the
-    /// running save's outcome.
+    /// A SECOND SAVE IS REFUSED, not queued or merged (Charlie's scope cut after pipeline Run 3: three runs of
+    /// findings all lived in follow-up/replay machinery). The caller answers a request it can't enter with its own
+    /// immediate refusal — editor intact — and the developer saves again once the running save has reported.
     /// </summary>
     public sealed class EmbedSaveGate
     {
@@ -289,7 +298,6 @@ namespace ClarionAssistant.Services
         private int _gen, _owner;
         private bool _running;
         private DateTime _queuedUtc;
-        private List<string> _pending;
 
         /// <summary>A token (&gt; 0) when this caller may run a save, else 0 (one is queued or running).</summary>
         public int TryEnter(DateTime nowUtc)
@@ -321,34 +329,8 @@ namespace ClarionAssistant.Services
             return _owner != 0 && (_running || nowUtc - _queuedUtc < StaleAfter);
         }
 
-        /// <summary>A save requested while the gate was held: remember it (the latest request wins).</summary>
-        public void Join(List<string> slots) { if (slots != null) _pending = slots; }
-
-        /// <summary>The pending request to run as a follow-up after saving <paramref name="justSaved"/>, or null
-        /// when there is none or it carries the same text (it is then answered by the save that just ran).</summary>
-        public List<string> TakeFollowUp(IList<string> justSaved)
-        {
-            var p = _pending;
-            _pending = null;
-            if (p == null) return null;
-            if (justSaved != null && p.Count == justSaved.Count)
-            {
-                bool same = true;
-                for (int i = 0; i < p.Count && same; i++) same = EmbedSavePlanner.NLEqual(p[i], justSaved[i]);
-                if (same) return null;
-            }
-            return p;
-        }
-
-        /// <summary>Whether a follow-up with newer text is waiting (without consuming it).</summary>
-        public bool HasNewerPending(IList<string> justSaved)
-        {
-            var p = _pending;
-            if (p == null) return false;
-            if (justSaved == null || p.Count != justSaved.Count) return true;
-            for (int i = 0; i < p.Count; i++) if (!EmbedSavePlanner.NLEqual(p[i], justSaved[i])) return true;
-            return false;
-        }
+        /// <summary>The message a refused second save gets (page toast + its own EmbedSaveFinished).</summary>
+        public const string BusyMessage = "A save is already in progress; try again in a moment.";
     }
 
     /// <summary>

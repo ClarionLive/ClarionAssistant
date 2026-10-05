@@ -294,19 +294,15 @@ static class EmbedSaveFlowTest
             gate.Exit(c);
         }
         {
-            // Pipeline Run 2 (debugger + adversary): newer text requested mid-save is never dropped.
-            var gate = new EmbedSaveGate();
-            var saving = new List<string> { "  x = 1", O1, O2 };
-            Ok("follow-up: none pending", gate.TakeFollowUp(saving) == null && !gate.HasNewerPending(saving));
-            gate.Join(new List<string> { "  x = 1", O1, O2 });
-            Ok("follow-up: a duplicate (same text) shares the running save", !gate.HasNewerPending(saving) && gate.TakeFollowUp(saving) == null);
-            gate.Join(new List<string> { "  x = 2", O1, O2 });
-            gate.Join(new List<string> { "  x = 3", O1, O2 });
-            Ok("follow-up: newer text is pending", gate.HasNewerPending(saving));
-            var f = gate.TakeFollowUp(saving);
-            Ok("follow-up: the LATEST request wins and is taken once", f != null && f[0] == "  x = 3" && gate.TakeFollowUp(saving) == null);
-            gate.Join(new List<string> { "  x = 1\r\n", O1, O2 });
-            Ok("follow-up: CRLF-only difference is the same text", gate.TakeFollowUp(new List<string> { "  x = 1\n", O1, O2 }) == null);
+            // Charlie's scope cut: a second save while one runs is REFUSED (its own answer), never queued or merged.
+            Ok("busy refusal message says to try again", EmbedSaveGate.BusyMessage.Contains("already in progress") &&
+                EmbedSaveGate.BusyMessage.Contains("try again"));
+            // SameSlots decides whether text typed during a save-and-exit must be kept (tab stays open; recovery copy).
+            var saved = new List<string> { "  x = 1", O1, O2 };
+            Ok("typed-during-save: identical text is not 'newer'", EmbedSavePlanner.SameSlots(saved, new List<string> { "  x = 1", O1, O2 }));
+            Ok("typed-during-save: CRLF-only difference is not 'newer'", EmbedSavePlanner.SameSlots(saved, new List<string> { "  x = 1", O1, O2.Replace("\n", "\r\n") }));
+            Ok("typed-during-save: a changed slot IS newer", !EmbedSavePlanner.SameSlots(saved, new List<string> { "  x = 2", O1, O2 }));
+            Ok("typed-during-save: a different slot count IS newer", !EmbedSavePlanner.SameSlots(saved, new List<string> { "  x = 1", O1 }));
         }
 
         // ---------------- MergeStash ----------------
