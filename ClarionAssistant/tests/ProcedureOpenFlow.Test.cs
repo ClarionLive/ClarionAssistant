@@ -333,8 +333,48 @@ static class ProcedureOpenFlowTest
             Ok("identity: requested module unknown -> name agreement decides", st && n == "CheckComma", n);
         }
 
+        // 14. ModuleNameOf: App.Procedures[i].Module is a Clarion.GEN.Module OBJECT (live run on f7a637f: every correct
+        //     open was refused "in module PRM002081.clw, not Clarion.GEN.Module" because the module was ToString()ed).
+        //     The fake below has the real type's shape (Name property, no ToString override), checked with reflection
+        //     against C:\Clarion12\...\ClarionBinding\Common\clarion.gen.dll.
+        {
+            var mod = new Clarion.GEN.Module { Name = "PRM002081.clw" };
+            var proc = new Clarion.GEN.Procedure { Name = "CheckComma", Module = mod };
+            Ok("control: the real type's ToString() is its type name (the leak this guards)", proc.Module.ToString() == "Clarion.GEN.Module", proc.Module.ToString());
+            Ok("module object -> its Name", ProcedureOpenFlow.ModuleNameOf(proc.Module) == "PRM002081.clw", ProcedureOpenFlow.ModuleNameOf(proc.Module));
+            Ok("module string (PweeEditorDetails.Module) -> itself, trimmed", ProcedureOpenFlow.ModuleNameOf(" PRM002081.clw ") == "PRM002081.clw", null);
+            Ok("null -> null", ProcedureOpenFlow.ModuleNameOf(null) == null, null);
+            Ok("object with no name property -> null, never its type name", ProcedureOpenFlow.ModuleNameOf(new object()) == null, ProcedureOpenFlow.ModuleNameOf(new object()));
+            Ok("module object with an empty Name -> null", ProcedureOpenFlow.ModuleNameOf(new Clarion.GEN.Module { Name = "" }) == null, null);
+
+            // End to end as the IDE side composes it: expected module from the app model (object), this open's from Pwee (string).
+            bool st;
+            string n = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", "PRM002081.clw", ProcedureOpenFlow.ModuleNameOf(proc.Module), false, out st);
+            Ok("live case: right procedure, module object vs module string -> settled on CheckComma", st && n == "CheckComma", n);
+            string leaked = ProcedureOpenFlow.DecideOpenedName("CheckComma", "CheckComma", "PRM002081.clw", (proc.Module ?? (object)"").ToString(), false, out st);
+            Ok("control: the f7a637f expression (ToString) reproduces the live refusal", leaked != null && leaked.Contains("not Clarion.GEN.Module"), leaked);
+        }
+
         Console.WriteLine();
         Console.WriteLine(pass + " passed, " + fail + " failed");
         return fail == 0 ? 0 : 1;
+    }
+}
+
+// Test doubles with the REAL app-model shape (reflected from Clarion 12's clarion.gen.dll, Clarion.GEN namespace):
+// Module { string Name; string Language; Procedure[] Procedures } and Procedure { string Name; Module Module; ... }.
+// Neither overrides ToString(), so ToString() is the type name - exactly what leaked into the live module check.
+namespace Clarion.GEN
+{
+    public class Module
+    {
+        public string Name { get; set; }
+        public string Language { get; set; }
+    }
+
+    public class Procedure
+    {
+        public string Name { get; set; }
+        public Module Module { get; set; }
     }
 }

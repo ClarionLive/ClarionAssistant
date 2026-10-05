@@ -209,6 +209,31 @@ namespace ClarionAssistant.Services
             return header ?? document;
         }
 
+        /// <summary>
+        /// The module NAME behind an app-model module value, or null. App.Procedures[i].Module is a Clarion.GEN.Module
+        /// OBJECT (its file name is its Name property: "PRM002081.clw"), while PweeEditorDetails.Module is already a
+        /// string. Never ToString() an unknown object: Clarion.GEN.Module doesn't override it, so that yields the type
+        /// name "Clarion.GEN.Module" - which is how CA1's live test saw every correct open refused as "in module
+        /// PRM002081.clw, not Clarion.GEN.Module" (a964cde3, live run on f7a637f).
+        /// </summary>
+        public static string ModuleNameOf(object module)
+        {
+            if (module == null) return null;
+            var s = module as string;
+            if (s != null) return Clean(s);
+            foreach (var prop in new[] { "Name", "FileName", "ModuleName" })
+            {
+                try
+                {
+                    var pi = module.GetType().GetProperty(prop, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    var v = pi == null ? null : pi.GetValue(module, null) as string;
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+                }
+                catch { }
+            }
+            return null;
+        }
+
         private static string Clean(string s) { return string.IsNullOrWhiteSpace(s) ? null : s.Trim(); }
 
         // "C:\App\PRM002022.clw" / "prm002022.CLW" / "PRM002022" -> "PRM002022": the comparison is on the module's

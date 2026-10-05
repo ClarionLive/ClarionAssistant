@@ -499,7 +499,8 @@ namespace ClarionAssistant.Services
                     {
                         { "name", (GetProp(proc, "Name") ?? GetProp(proc, "ProcedureName") ?? "").ToString() },
                         { "prototype", (GetProp(proc, "Prototype") ?? "").ToString() },
-                        { "module", (GetProp(proc, "Module") ?? "").ToString() },
+                        // Module is a Clarion.GEN.Module OBJECT: its name, never its ToString() (= the type name).
+                        { "module", ProcedureOpenFlow.ModuleNameOf(GetProp(proc, "Module")) ?? "" },
                         { "parent", (GetProp(proc, "Parent") ?? "").ToString() },
                         { "from", (GetProp(proc, "From") ?? "").ToString() }
                     };
@@ -1117,7 +1118,7 @@ namespace ClarionAssistant.Services
         // while an embed is open, so it belongs to this open, not a previous one), or null.
         private string ReadOpenEmbedModule()
         {
-            try { return GetProp(GetOpenPweeDetails(), "Module") as string; }
+            try { return ProcedureOpenFlow.ModuleNameOf(GetProp(GetOpenPweeDetails(), "Module")); }
             catch { return null; }
         }
 

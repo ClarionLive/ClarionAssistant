@@ -17,6 +17,9 @@
 #     (pipeline run 1: the reused ClaGenEditor can still describe the previous open). GetOpenEmbeditorProcedureName
 #     (get_embed_info) uses GetOpenNativeEmbeditorProcName (non-focus; 44a1b10c).
 # W6  ProcedureOpenFlow.cs is compiled into the addin and its test is registered in Run-Tests.ps1.
+# W8  The app model's procedure Module is a Clarion.GEN.Module OBJECT: GetProcedureDetails (and so the open's
+#     expected module) reads its name via ProcedureOpenFlow.ModuleNameOf, never ToString() - which yields the type
+#     name and made the live run refuse every correct open (f7a637f).
 # W7  OpenProcedureEmbedChecked and SelectProcedure hold ModernEmbeditorLauncher's busy flag for the whole flow
 #     (taken before it, released in a finally), so the CA overlay monitor can't attach Monaco to an open that is
 #     still being verified - and then cancel under a live WebView2 (pipeline run 1, debugger finding).
@@ -141,7 +144,14 @@ function Invoke-Scan($p) {
         }
     }
     $modRead = Get-Body $at 'private string ReadOpenEmbedModule()'
-    if (-not $modRead -or -not $modRead.Contains('GetProp(GetOpenPweeDetails(), "Module")')) { $fails.Add('W5 ReadOpenEmbedModule does not read the OPEN embed''s PweeEditorDetails.Module') }
+    if (-not $modRead -or -not $modRead.Contains('ProcedureOpenFlow.ModuleNameOf(GetProp(GetOpenPweeDetails(), "Module"))')) { $fails.Add('W5 ReadOpenEmbedModule does not read the OPEN embed''s PweeEditorDetails.Module through ModuleNameOf') }
+    # W8 the app model's Module is an OBJECT (Clarion.GEN.Module): read its name, never ToString() it (live run on f7a637f).
+    $details = Get-Body $at 'public List<Dictionary<string, object>> GetProcedureDetails()'
+    if (-not $details) { $fails.Add('W8 GetProcedureDetails not found') }
+    else {
+        if (-not $details.Contains('{ "module", ProcedureOpenFlow.ModuleNameOf(GetProp(proc, "Module")) ?? "" }')) { $fails.Add('W8 GetProcedureDetails does not read the module through ModuleNameOf') }
+        if ($details -match 'GetProp\(proc, "Module"\)[^;\r\n]*\.ToString\(\)') { $fails.Add('W8 GetProcedureDetails ToString()s the Module object (yields "Clarion.GEN.Module")') }
+    }
     $named = Get-Body $at 'public string GetOpenEmbeditorProcedureName()'
     if (-not $named -or -not $named.Contains('GetOpenNativeEmbeditorProcName()')) { $fails.Add('W5 GetOpenEmbeditorProcedureName does not use GetOpenNativeEmbeditorProcName') }
     if (-not (Get-Body $at 'public string GetOpenNativeEmbeditorProcName()')) { $fails.Add('W5 GetOpenNativeEmbeditorProcName is missing') }
@@ -183,7 +193,8 @@ $mutations = @(
     @{ Name = 'mirror uses the raw open';       Key = 'Launcher'; From = 'var opened = appTree.OpenProcedureEmbedChecked(procName, CharDelaysMs);'; To = 'appTree.OpenProcedureEmbed(procName, 70); var opened = new ProcedureOpenResult { Ok = true };' }
     @{ Name = 'SwitchView ungated';             Key = 'AppTree';  From = 'if (active != null && !ReferenceEquals(active, vc))'; To = 'if (window != null)' }
     @{ Name = 'identity ignores this open''s module'; Key = 'AppTree'; From = '_t.ReadOpenEmbedModule(), expectedModule, false, out settled)'; To = 'null, null, false, out settled)' }
-    @{ Name = 'module read from a stale source'; Key = 'AppTree';  From = 'try { return GetProp(GetOpenPweeDetails(), "Module") as string; }'; To = 'try { return GetProp(GetClaGenEditor(), "Module") as string; }' }
+    @{ Name = 'module read from a stale source'; Key = 'AppTree';  From = 'try { return ProcedureOpenFlow.ModuleNameOf(GetProp(GetOpenPweeDetails(), "Module")); }'; To = 'try { return ProcedureOpenFlow.ModuleNameOf(GetProp(GetClaGenEditor(), "Module")); }' }
+    @{ Name = 'module object ToString()ed (f7a637f)'; Key = 'AppTree'; From = '{ "module", ProcedureOpenFlow.ModuleNameOf(GetProp(proc, "Module")) ?? "" }'; To = '{ "module", (GetProp(proc, "Module") ?? "").ToString() }' }
     @{ Name = 'open not busy-guarded';          Key = 'AppTree';  From = "ModernEmbeditorLauncher.EnterBusy();`n            try { return ProcedureOpenFlow.Open("; To = "try { return ProcedureOpenFlow.Open(" }
     @{ Name = 'select releases busy early';     Key = 'AppTree';  From = 'try { return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message; }'; To = 'ModernEmbeditorLauncher.LeaveBusy(); try { return ProcedureOpenFlow.Select(new ProcedureOpenOps(this), procedureName, ToolCharDelaysMs).Message; } finally { }' }
     @{ Name = 'flow not compiled';              Key = 'Project';  From = '<Compile Include="Services\ProcedureOpenFlow.cs" />'; To = '' }
