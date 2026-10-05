@@ -363,6 +363,17 @@ namespace ClarionAssistant.Services
         /// <summary>Test hook: wait up to <paramref name="ms"/> for the load; true when it has finished.</summary>
         internal static bool WaitForLoad(int ms) { Preload(); return _loaded.WaitOne(ms); }
 
+        /// <summary>Bench/test hook: how many loaded entries carry a description, once the load has finished
+        /// (waits up to <paramref name="ms"/>). 0 means keyword cards are name + category only.</summary>
+        internal static int DescribedCount(int ms)
+        {
+            if (!WaitForLoad(ms)) return 0;
+            var d = _docs;
+            int n = 0;
+            if (d != null) foreach (var doc in d.Values) if (doc != null && !string.IsNullOrEmpty(doc.Description)) n++;
+            return n;
+        }
+
         /// <summary>Test hook: forget the loaded data so the next use loads again.</summary>
         internal static void ResetForTest()
         {

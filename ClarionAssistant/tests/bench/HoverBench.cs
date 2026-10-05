@@ -51,6 +51,10 @@ static class HoverBench
     sealed class LocalAnswer { public bool Any, Auth, Fallback; public string Kind, Symbol, Card; public double Ms; }
     // monaco-embeditor.html's FALLBACK_LSP_DEADLINE_MS: past it the page shows a fallback card instead of the server's.
     const double FallbackDeadlineMs = 300;
+    // Described keyword entries loaded for the local layer; 0 = the run does not model the IDE's keyword cards.
+    static int KeywordDataCount;
+    const string KeywordDataMissing = "  !!!!! KEYWORD DATA NOT LOADED: keyword cards are name + category only, so the local-layer "
+        + "keyword numbers below are NOT what the IDE does. Do not compare this run. !!!!!";
     sealed class LspAnswer { public bool Any, TimedOut; public string Symbol, Card; public double Ms; }
 
     // LspClient.GetHover gives the server 1500 ms (SendRequest's deadline) and returns null when it passes. A null
@@ -87,6 +91,16 @@ static class HoverBench
         Console.WriteLine("  project DB: " + (File.Exists(o.ProjectDb) ? o.ProjectDb : "(none - the local layer has no project index)"));
         Console.WriteLine("  library DB: " + (o.LibraryDb != null && File.Exists(o.LibraryDb) ? o.LibraryDb : "(none)"));
         Console.WriteLine("  edits: " + (o.EditMode == "near" ? "near (same procedure, cumulative)" : "end of file"));
+        // The keyword cards' language data. The addin loads it from lsp-server\out\server\src\data beside its DLL;
+        // this exe runs from %TEMP%, where there is none, so every keyword card used to be name + category only and
+        // never final - not what the IDE does (GH #250). The data ships beside server.js; the local layer runs
+        // once, so it takes the FIRST server's data.
+        ClarionKeywordIndex.DataDirOverride = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(o.Servers[0].Value)), "data");
+        KeywordDataCount = ClarionKeywordIndex.DescribedCount(10000);
+        if (KeywordDataCount > 0)
+            Console.WriteLine("  keyword data: " + ClarionKeywordIndex.DataDirOverride + "  (" + KeywordDataCount + " described entries)");
+        else
+            Console.WriteLine(KeywordDataMissing + "  (looked in " + ClarionKeywordIndex.DataDirOverride + ")");
         var texts = new Dictionary<string, string>();
         var samples = new List<Sample>();
         foreach (var f in o.Files)
@@ -301,6 +315,7 @@ static class HoverBench
             : "  ok:   local layer is faster by " + gap.ToString("0") + " ms at p95 (margin " + o.MarginMs + " ms).");
         if (coversMore) Console.WriteLine("  FLAG: the server answers more hovers than the local layer (" + pct(lspAny) + " vs " + pct(localAny) + ").");
         if (hiddenDisagree > 0) Console.WriteLine("  FLAG: " + hiddenDisagree + " authoritative local card(s) name a different symbol than the server.");
+        if (KeywordDataCount == 0) Console.WriteLine(KeywordDataMissing);
 
         var ser = new JavaScriptSerializer();
         if (!string.IsNullOrEmpty(o.DumpPath))
@@ -330,6 +345,7 @@ static class HoverBench
             { "editMode", o.EditMode }, { "sync", SyncMode }, { "rangedChanges", RangedSent }, { "fullChanges", FullSent },
             { "sendP95", Math.Round(P(SendMs, 95), 1) }, { "nextHoverP95", Math.Round(P(NextHoverMs, 95), 1) },
             { "localFallback", localFallback }, { "fallbackServerWon", fallbackServerWon }, { "fallbackLate", fallbackLate },
+            { "keywordDataEntries", KeywordDataCount },   // 0: this line does not model the IDE's keyword cards
             { "serverTimeouts", timeouts }, { "serverEditedTimeouts", lspEditedTimeouts },{ "localCardChars", P(localLen, 50) }, { "serverCardChars", P(serverLen, 50) }, { "flagFastEnough", fastEnough }, { "flagCoversMore", coversMore }
         });
     }
