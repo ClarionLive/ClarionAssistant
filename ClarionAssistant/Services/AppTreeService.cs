@@ -679,6 +679,25 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>44a1b10c: as GetFocusedNativeEmbeditorProcName but for the OPEN embeditor, focused or not (the tool
+        /// asking is in a terminal, so the embeditor never has focus then). The header title first, else the procedure
+        /// line in the embeditor's own document. UI thread only.</summary>
+        public string GetOpenNativeEmbeditorProcName()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                if (editor == null || GetOpenPweeDetails() == null) return null;
+                var known = GetProcedureNames();
+                string fromHeader = ProcFromHeaderTitle(
+                    (GetProp(editor, "HeaderTitle") ?? GetProp(editor, "TitleName") ?? GetProp(editor, "TabPageText")) as string);
+                if (!string.IsNullOrEmpty(fromHeader) && (known.Count == 0 || ContainsIgnoreCase(known, fromHeader)))
+                    return fromHeader;
+                return ModernEmbeditorLauncher.ProcNameFromSource(GetEmbeditorDocumentText(), known);
+            }
+            catch { return null; }
+        }
+
         // "Main - Embeditor - (clbrws002.clw)" -> "Main". Null if the " - Embeditor" marker is absent.
         private static string ProcFromHeaderTitle(string header)
         {

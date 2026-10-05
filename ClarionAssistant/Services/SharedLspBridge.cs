@@ -804,6 +804,8 @@ namespace ClarionAssistant.Services
             public List<int[]> EmbedRanges;
             /// <summary>Why there is no text (e.g. "the IDE did not answer within 2 s"); shown as the fallback reason.</summary>
             public string Reason;
+            /// <summary>embeditor-document: the procedure open in the embeditor (get_embed_info does not name it).</summary>
+            public string Procedure;
         }
 
         /// <summary>
@@ -829,6 +831,8 @@ namespace ClarionAssistant.Services
             public List<bool?> InEmbed;
             /// <summary>Set when the call was refused (source "buffer" with no open editor).</summary>
             public string Error;
+            /// <summary>embeditor-document: the procedure whose embeditor document was checked.</summary>
+            public string Procedure;
         }
 
         /// <summary>
@@ -868,6 +872,7 @@ namespace ClarionAssistant.Services
             }
 
             answer.Analysed = string.IsNullOrEmpty(live.Origin) ? "ca-editor-buffer" : live.Origin;
+            answer.Procedure = live.Procedure;
             answer.Result = DropUndeclaredWeCanResolve(DiagnosticsForText(filePath, live.Text, timeoutMs), filePath);
 
             if (answer.Analysed == "embeditor-document")

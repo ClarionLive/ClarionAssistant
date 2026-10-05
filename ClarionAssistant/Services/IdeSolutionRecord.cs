@@ -41,6 +41,11 @@ namespace ClarionAssistant.Services
             get
             {
                 if (!string.IsNullOrEmpty(RootOverride)) return RootOverride;
+                // 44a1b10c: a cross-PROCESS test override (RootOverride is in-process only), shared with
+                // IdeEndpointRecord (its RecordDirEnv), so a harness can point a real standalone exe at a temp
+                // directory. A literal here so the files that compile this one alone need nothing new.
+                string env = Environment.GetEnvironmentVariable("CA_IDE_RECORD_DIR");
+                if (!string.IsNullOrEmpty(env)) return Path.Combine(env, "ide-solution");
                 return Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                     "ClarionAssistant", "ide-solution");

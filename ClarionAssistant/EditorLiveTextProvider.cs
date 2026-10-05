@@ -42,7 +42,20 @@ namespace ClarionAssistant
         internal static SharedLspBridge.LiveText Get(string path)
         {
             if (string.IsNullOrEmpty(path)) return null;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var answer = Lookup(path);
+            // One line per lookup, so a live run says which branch answered and why (44a1b10c).
+            MonacoSpikeLog.Write("[live-text] path=" + path
+                + (answer != null && answer.Text != null
+                    ? " hit branch=" + answer.Origin + " chars=" + answer.Text.Length
+                      + (answer.Procedure != null ? " procedure=" + answer.Procedure : "")
+                    : " miss reason=" + (answer != null && answer.Reason != null ? answer.Reason : "no editor has it open"))
+                + " ms=" + sw.ElapsedMilliseconds);
+            return answer;
+        }
 
+        private static SharedLspBridge.LiveText Lookup(string path)
+        {
             var embed = ReadEmbeditorDocument(path);
             if (embed != null && embed.Text != null) return embed;
 
@@ -103,7 +116,8 @@ namespace ClarionAssistant
             {
                 Text = ctx.WrapBuffer(doc),
                 Origin = "embeditor-document",
-                LineOffset = ctx.LineOffsetFor(doc)
+                LineOffset = ctx.LineOffsetFor(doc),
+                Procedure = appTree.GetOpenNativeEmbeditorProcName()
                 // EmbedRanges deliberately unset: PWEE does not refresh its slot line ranges after write_embed_content
                 // inserts (AppTreeService.GetEmbeditorSource), so inEmbed would be wrong exactly after an edit.
             };

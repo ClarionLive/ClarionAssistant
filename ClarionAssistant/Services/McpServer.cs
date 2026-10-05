@@ -123,6 +123,10 @@ namespace ClarionAssistant.Services
                     };
                     _listenerThread.Start();
 
+                    // 44a1b10c: let the standalone clarion-mcp-server find this pane, to ask it for an open editor's
+                    // text (get_live_text). Removed in Stop.
+                    IdeEndpointRecord.Publish(port, _sessionToken);
+
                     RaiseStatusChanged(true, port);
                     return true;
                 }
@@ -258,8 +262,10 @@ namespace ClarionAssistant.Services
 
         public void Stop()
         {
+            bool wasRunning = _running;
             _running = false;
             _sessionToken = null;
+            if (wasRunning) IdeEndpointRecord.Remove(_port);   // 44a1b10c: withdraw the endpoint before the port closes
 
             // Close all SSE connections
             foreach (var kvp in _sseClients)
@@ -396,8 +402,9 @@ namespace ClarionAssistant.Services
             }
 
             // The editor-agnostic half, served by clarion-mcp-server.exe as its own stdio process
-            // (ticket d051fbd1). Together with the entry above this partitions all 115 tools:
-            // clarion-assistant keeps the 56 that drive the IDE, clarion-tools serves the other 59.
+            // (ticket d051fbd1). Together with the entry above this partitions all the tools (119 as of 44a1b10c;
+            // clarion-mcp-server --selftest prints the live split): clarion-assistant keeps the 58 that drive the
+            // IDE, including get_live_text, which the standalone's lsp_diagnostics calls back; clarion-tools serves the other 61.
             //
             // --strict-mcp-config means the plugin's own clarion-tools entry never reaches this
             // pane, so declaring it here is not a duplicate - it is the ONLY way those tools arrive

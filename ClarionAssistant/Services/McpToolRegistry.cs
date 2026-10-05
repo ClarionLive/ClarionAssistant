@@ -2745,11 +2745,13 @@ COMMON QUERIES:
                         { "lineBase", tool.LineBase }
                     };
                     if (tool.FallbackReason != null)
-                        response["analysedReason"] = "The file is open in an editor, but its text could not be read ("
-                            + tool.FallbackReason + "), so the file on DISK was checked: unsaved edits are not included.";
+                        response["analysedReason"] = "No open editor's text was used (" + tool.FallbackReason
+                            + "), so the file on DISK was checked: unsaved edits, if any, are not included.";
+                    if (!string.IsNullOrEmpty(tool.Procedure)) response["procedure"] = tool.Procedure;
                     if (tool.LineBase == "embeditor-document")
                         response["lineNote"] = "lineNumber is the EMBEDITOR line (the N of «E:N», the line_number of "
-                            + "get_embed_content/write_embed_content), NOT a line of the .clw module.";
+                            + "get_embed_content/write_embed_content) of procedure " + (tool.Procedure ?? "(unknown)")
+                            + ", NOT a line of the .clw module.";
 
                     if (result.Pending)
                     {
@@ -2788,6 +2790,50 @@ COMMON QUERIES:
                     response["diagnostics"] = diagList;
 
                     return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(response);
+                }
+            });
+
+            // 44a1b10c: the IDE half of "lsp_diagnostics checks the open editor's text". lsp_diagnostics is served by the
+            // standalone clarion-mcp-server (not IdeOnly), which has no editors, so it calls THIS over the pane's HTTP
+            // endpoint (IdeLiveTextClient). IdeOnly: only the IDE can answer it. The UI read inside is bounded (Post +
+            // 2 s wait, never Invoke), so this tool is not RequiresUiThread.
+            Register(new McpTool
+            {
+                Name = "get_live_text",
+                IdeOnly = true,
+                Description = "Return the CURRENT text an open IDE editor holds for a file (unsaved edits included), for the " +
+                    "standalone lsp_diagnostics. Returns { found, text, origin (ca-editor-buffer | embeditor-file-buffer | " +
+                    "embeditor-document), lineOffset, procedure, reason }. found:false means no editor has it open (or the IDE " +
+                    "could not be read in time; reason says which).",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string> { { "file_path", "Absolute path of the .clw/.inc file" } },
+                    new[] { "file_path" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string filePath = McpJsonRpc.GetString(args, "file_path");
+                    if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    var provider = SharedLspBridge.LiveTextProvider;
+                    SharedLspBridge.LiveText live = null;
+                    if (provider != null)
+                    {
+                        try { live = provider(filePath); }
+                        catch (Exception ex) { live = new SharedLspBridge.LiveText { Reason = "the editor lookup failed: " + ex.Message }; }
+                    }
+                    var answer = new Dictionary<string, object>();
+                    if (live == null || live.Text == null)
+                    {
+                        answer["found"] = false;
+                        answer["reason"] = provider == null ? "the IDE's editor lookup is not registered"
+                            : live != null && live.Reason != null ? live.Reason : "no editor has this file open";
+                        return answer;
+                    }
+                    answer["found"] = true;
+                    answer["text"] = live.Text;
+                    answer["origin"] = live.Origin;
+                    answer["lineOffset"] = live.LineOffset;
+                    if (!string.IsNullOrEmpty(live.Procedure)) answer["procedure"] = live.Procedure;
+                    return answer;
                 }
             });
 

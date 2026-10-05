@@ -8,7 +8,7 @@ namespace ClarionAssistant.McpServer
     /// clarion-mcp-server — standalone host for the editor-agnostic half of Clarion Assistant's
     /// MCP tools, over stdio, with no Clarion IDE running (ticket d051fbd1).
     ///
-    /// Serves 57 of the addin's 115 tools. The other 58 drive the IDE itself and are withheld by
+    /// Serves 61 of the addin's 119 tools (as of 44a1b10c; --selftest prints the live split). The other 58 drive the IDE itself and are withheld by
     /// McpTool.IdeOnly — an MCP client reads the tool list as a contract, so a tool that can only
     /// throw is worse than an absent one.
     ///
@@ -438,6 +438,21 @@ namespace ClarionAssistant.McpServer
                         return ideSln;
                     };
                 }
+
+                // 44a1b10c: lsp_diagnostics is served HERE, with no editors, so it asks the IDE that has this solution
+                // open for an open editor's text (get_live_text over the pane's MCP endpoint), else checks the disk and
+                // says why. The solution matched is the one this server's LSP uses: --solution, else the followed one.
+                ClarionAssistant.Services.IdeLiveTextClient.SolutionProvider = () =>
+                {
+                    string s = workspace.CurrentSolutionPath;
+                    if (!string.IsNullOrEmpty(s)) return s;
+                    if (!launchingIde.HasValue) return null;
+                    string note;
+                    return ClarionAssistant.Services.IdeSolutionRecord.ReadCached(launchingIde.Value, out note);
+                };
+                ClarionAssistant.Services.IdeLiveTextClient.PreferredIdePid = launchingIde;
+                ClarionAssistant.Services.IdeLiveTextClient.Log = ClarionAssistant.Services.LspTrace.Write;
+                ClarionAssistant.Services.SharedLspBridge.LiveTextProvider = ClarionAssistant.Services.IdeLiveTextClient.Get;
 
                 // And WHICH CLARION, for the same reason. Without this the LSP resolved its own
                 // version independently, so --clarion-version and the solution's committed
