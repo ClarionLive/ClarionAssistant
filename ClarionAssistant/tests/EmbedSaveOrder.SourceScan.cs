@@ -120,8 +120,14 @@ static class EmbedSaveOrderSourceScan
         int ktEnd = kt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", kt, StringComparison.Ordinal) : -1;
         string ktBody = kt >= 0 && ktEnd > kt ? view.Substring(kt, ktEnd - kt) : "";
         Ok("text typed during an overlay save-and-exit is also stashed in memory (not only a recovery file)",
-            ktBody.Contains("if (surfaceGone") && ktBody.Contains("_editStash = new EmbedEditStash") &&
+            ktBody.Contains("if (surfaceGone") && ktBody.Contains("PutStash(new EmbedEditStash") &&
             ktBody.Contains("Original = new List<string>(saved)"));
+        // ...and that stash is PER PROCEDURE: saving or tearing down procedure B must never discard procedure A's
+        // unrestored edits (final-run delta, Codex adversary HIGH). No single static slot remains.
+        Ok("the edit stash is per procedure; a save drops only its own procedure's entry",
+            !view.Contains("EmbedEditStash _editStash;") && !view.Contains("_editStash = ") &&
+            view.Contains("Dictionary<string, EmbedEditStash>") &&
+            Count(view, "DropStash(_procedureName)") == 2 && !view.Contains("_editStashes.Clear("));
         // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
         int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
         int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);

@@ -1407,7 +1407,20 @@ namespace ClarionAssistant.Terminal
             public List<string> Edited;          // its unsaved edited slot texts
             public string RecoveryFile;          // the disk copy WriteRecoveryFile made of them (path, "!error" or null)
         }
-        private static EmbedEditStash _editStash;   // single-slot: at most one live overlay exists (a5bbf005)
+        // PER PROCEDURE (1565ef7b final run, Codex adversary): it used to be one static slot, so saving procedure B
+        // cleared — and a teardown of B overwrote — procedure A's unrestored edits, which can be their only copy when
+        // the recovery file could not be written. UI thread only.
+        private static readonly Dictionary<string, EmbedEditStash> _editStashes =
+            new Dictionary<string, EmbedEditStash>(StringComparer.OrdinalIgnoreCase);
+        private static void PutStash(EmbedEditStash s) { if (s != null && !string.IsNullOrEmpty(s.Proc)) _editStashes[s.Proc] = s; }
+        private static void DropStash(string proc) { if (!string.IsNullOrEmpty(proc)) _editStashes.Remove(proc); }
+        private static EmbedEditStash TakeStash(string proc)
+        {
+            EmbedEditStash s;
+            if (string.IsNullOrEmpty(proc) || !_editStashes.TryGetValue(proc, out s)) return null;
+            _editStashes.Remove(proc);
+            return s;
+        }
         // The slot texts the last successful close-gesture SyncLive pushed into the NATIVE buffer (bcba6efb). If
         // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
         // not the open-time text; the save planner accepts it as ours instead of calling it a conflict. (1565ef7b)
@@ -1788,10 +1801,9 @@ namespace ClarionAssistant.Terminal
         {
             try
             {
-                var stash = _editStash;
-                if (stash == null || _panel == null) return;
-                if (!string.Equals(stash.Proc, _procedureName, StringComparison.OrdinalIgnoreCase)) return;   // another proc's stash — leave it for its own re-open
-                _editStash = null;   // single-shot: consumed (or invalidated) by this attach
+                if (_panel == null) return;
+                var stash = TakeStash(_procedureName);   // only THIS procedure's; others wait for their own re-open
+                if (stash == null) return;               // single-shot: consumed (or invalidated) by this attach
                 // Per slot, not all-or-nothing (1565ef7b): a slot changed elsewhere since the teardown (e.g. Clarion's
                 // own "Save changes?" Yes) no longer blocks restoring the slots the developer actually edited.
                 var restored = Services.EmbedSavePlanner.MergeStash(stash.Original, stash.Edited, _originalSlotTexts);
@@ -2556,13 +2568,13 @@ namespace ClarionAssistant.Terminal
                 // The overlay is gone, so the disk copy must not be the ONLY copy: a full disk or a denied folder
                 // would lose the text (final run, Codex adversary HIGH). Stash it in memory too, against the baseline
                 // that was just SAVED — reopening the procedure in the CA Embeditor restores it (TryRestoreStashedEdits).
-                _editStash = new EmbedEditStash
+                PutStash(new EmbedEditStash
                 {
                     Proc = _procedureName,
                     Original = new List<string>(saved),
                     Edited = new List<string>(latest),
                     RecoveryFile = rec
-                };
+                });
                 note += " Reopen " + _procedureName + " in the CA Embeditor to get them back.";
             }
             if (note.Length > 0)
@@ -2630,7 +2642,7 @@ namespace ClarionAssistant.Terminal
                 mark("SaveLive(overlay) ok=" + ok + " intact=" + editorIntact);
                 if (ok)
                 {
-                    _editStash = null; _nativeSyncedSlots = null;   // saved — any stash for this proc is now stale
+                    DropStash(_procedureName); _nativeSyncedSlots = null;   // saved — THIS proc's stash is now stale
                     // John's D1: slots changed outside the CA Embeditor were saved too. The page is gone, so say
                     // it in a notice rather than let it pass unmentioned.
                     if (o.Plan != null && o.Plan.Foreign > 0)
@@ -2702,7 +2714,7 @@ namespace ClarionAssistant.Terminal
                 // DoEvents: those keystrokes' embedState push is newer than `current` and still unsaved, and a
                 // false clean would skip Dispose's recovery copy for them (pipeline Run 1, debugger).
                 if (_mirroredSlots == null || _mirroredSlots.SequenceEqual(current)) _mirroredDirty = false;
-                _editStash = null; _nativeSyncedSlots = null;
+                DropStash(_procedureName); _nativeSyncedSlots = null;   // only this procedure's stash
             }
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
@@ -3499,21 +3511,22 @@ namespace ClarionAssistant.Terminal
                 _originalSlotTexts != null && _mirroredSlots.Count == _originalSlotTexts.Count &&
                 !string.IsNullOrEmpty(_procedureName))
             {
-                _editStash = new EmbedEditStash
+                var stash = new EmbedEditStash
                 {
                     Proc = _procedureName,
                     Original = new List<string>(_originalSlotTexts),
                     Edited = new List<string>(_mirroredSlots)
                 };
+                PutStash(stash);
                 ClarionAssistant.MonacoSpikeLog.Write("embed overlay torn down DIRTY — stashed " + _mirroredSlots.Count +
                     " slot(s) of unsaved edits for " + _procedureName);
                 // The in-memory stash only survives until the next attach, and that attach refuses it if the
                 // procedure was regenerated meanwhile. Keep a disk copy too (1565ef7b), unless the Ctrl+F4 sync
                 // failure just wrote this exact text.
                 if (_lastRecoverySlots == null || !_lastRecoverySlots.SequenceEqual(_mirroredSlots))
-                    _editStash.RecoveryFile = WriteRecoveryFile("the CA Embeditor was closed from outside with unsaved edits", _mirroredSlots);
+                    stash.RecoveryFile = WriteRecoveryFile("the CA Embeditor was closed from outside with unsaved edits", _mirroredSlots);
                 else
-                    _editStash.RecoveryFile = _lastRecoveryFile;
+                    stash.RecoveryFile = _lastRecoveryFile;
             }
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
