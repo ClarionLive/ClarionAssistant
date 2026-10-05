@@ -59,7 +59,7 @@ static class EmbedOverlayGuardTest
 
         // --- editor writes: refused only when the active editor IS the covered native document ---
         foreach (var tool in new[] { "insert_text_at_cursor", "replace_text", "replace_range", "delete_range",
-                                     "toggle_comment", "undo", "redo", "save_file" })
+                                     "toggle_comment", "undo", "redo", "save_file", "close_file" })
         {
             mk("ok");
             r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), handler, null) as string;
@@ -73,8 +73,52 @@ static class EmbedOverlayGuardTest
         }
 
         mk("ok");
-        r = EmbedOverlayGuard.Run("replace_range", Const(false), () => { throw new Exception("probe"); }, handler, null) as string;
+        r = EmbedOverlayGuard.Run("replace_range", Const(true), () => { throw new Exception("probe"); }, handler, null) as string;
         Ok("covered probe throws -> editor write refused (fail closed)", ran == 0 && r != null && r.StartsWith("Error"), r);
+
+        // No CA Embeditor live -> nothing can be covered, so the active-view probe (a UI round-trip once
+        // fc420c30 moves these tools off the UI thread) is not even asked.
+        int coveredCalls = 0;
+        mk("ok");
+        r = EmbedOverlayGuard.Run("replace_range", Const(false), () => { coveredCalls++; return true; }, handler, null) as string;
+        Ok("no CA Embeditor -> editor write runs without asking the active-view probe",
+            ran == 1 && r == "ok" && coveredCalls == 0, coveredCalls + " probe call(s), " + r);
+
+        // --- native embeditor save/cancel: refused while the CA Embeditor holds the embed ---
+        foreach (var tool in new[] { "save_and_close_embeditor", "cancel_embeditor" })
+        {
+            mk("Embeditor closed.");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(false), handler, null) as string;
+            Ok(tool + " + CA Embeditor live -> refused, handler not run",
+                ran == 0 && r != null && r.StartsWith("Error") && r.Contains("CA Embeditor") && r.Contains("Nothing was done"), r);
+            Ok(tool + " refusal tells Claude to ask the developer",
+                r != null && r.Contains("Ask the developer to save or close the CA Embeditor"), r);
+
+            mk("Embeditor closed.");
+            r = EmbedOverlayGuard.Run(tool, Const(false), Const(false), handler, null) as string;
+            Ok(tool + ", no CA Embeditor -> runs unchanged", ran == 1 && r == "Embeditor closed.", r);
+        }
+        mk("x");
+        r = EmbedOverlayGuard.Run("save_and_close_embeditor", Const(true), Const(false), handler, null) as string;
+        Ok("save refusal says the native save would lack the developer's edits", r != null && r.Contains("WITHOUT"), r);
+
+        // --- editor reads: allowed, with a note only when they read the covered native document ---
+        foreach (var tool in new[] { "get_active_file", "get_selected_text", "get_word_under_cursor", "get_cursor_position",
+                                     "get_line_text", "get_lines_range", "find_in_file", "is_modified" })
+        {
+            mk("line text");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), handler, null) as string;
+            Ok(tool + " on the covered native document -> runs, with the note first",
+                ran == 1 && r != null && r.StartsWith("NOTE: the active editor is the CA Embeditor") && r.EndsWith("line text"), r);
+
+            mk("line text");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(false), handler, null) as string;
+            Ok(tool + " in another editor while a CA Embeditor is open -> no note", r == "line text", r);
+
+            mk("line text");
+            r = EmbedOverlayGuard.Run(tool, Const(false), Const(true), handler, null) as string;
+            Ok(tool + ", no CA Embeditor -> no note", r == "line text", r);
+        }
 
         // --- embed reads: allowed, but say they lack the developer's unsaved Monaco edits ---
         foreach (var tool in new[] { "get_embeditor_source", "search_embeditor_source", "get_embed_content" })
