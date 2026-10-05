@@ -94,6 +94,7 @@ static class EmbedSaveOrderSourceScan
         // saves — it is refused (its own event) and nothing else.
         Ok("a superseded queued save never saves; it is refused with its own event",
             startBlock.Length > 0 && startBlock.Contains("return;") && startBlock.Contains("RaiseEmbedSaveFinished(false,") &&
+            startBlock.Contains("PostSaveResult(false, superseded)") &&   // final run, Codex adversary: its own page answer
             !startBlock.Contains("TryEnter("));
         int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
@@ -110,8 +111,32 @@ static class EmbedSaveOrderSourceScan
         // was typed during it, and that text also goes to disk (the page marks itself clean on the older save).
         Ok("a save-and-exit keeps text typed during the save (tab stays open; recovery copy)",
             view.Contains("if (live && ok && !typedDuring) { PostCloseTab(); editorIntact = false; }") &&
-            view.Contains("if (typedDuring) msg += KeepTypedDuringSave(current);") &&
-            Count(view, "KeepTypedDuringSave(current)") >= 2);   // the tab path and the overlay's success path
+            view.Contains("if (typedDuring) msg += KeepTypedDuringSave(current, false);") &&
+            view.Contains("PostSaveResult(ok, msg, typedDuring ? -1 : 0);") &&   // the page keeps its unsaved marker
+            view.Contains("msg += KeepTypedDuringSave(current, true);"));        // the overlay's success path
+        // Final run (Codex adversary HIGH): with the overlay gone, the recovery FILE must not be the only copy — a full
+        // disk would lose the text. KeepTypedDuringSave also stashes it in memory for the next CA Embeditor open.
+        int kt = view.IndexOf("private string KeepTypedDuringSave(", StringComparison.Ordinal);
+        int ktEnd = kt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", kt, StringComparison.Ordinal) : -1;
+        string ktBody = kt >= 0 && ktEnd > kt ? view.Substring(kt, ktEnd - kt) : "";
+        Ok("text typed during an overlay save-and-exit is also stashed in memory (not only a recovery file)",
+            ktBody.Contains("if (surfaceGone") && ktBody.Contains("PutStash(new EmbedEditStash") &&
+            ktBody.Contains("Original = new List<string>(saved)"));
+        // ...and that stash is PER PROCEDURE: saving or tearing down procedure B must never discard procedure A's
+        // unrestored edits (final-run delta, Codex adversary HIGH). No single static slot remains.
+        Ok("the edit stash is per procedure; a save drops only its own procedure's entry",
+            !view.Contains("EmbedEditStash _editStash;") && !view.Contains("_editStash = ") &&
+            view.Contains("Dictionary<string, EmbedEditStash>") &&
+            !view.Contains("_editStashes.Clear(") && !view.Contains("TakeStash("));
+        // ...and a restore removes the stash only AFTER delivering it: it may be the last copy (re-check, Codex adversary).
+        int tre = view.IndexOf("private void TryRestoreStashedEdits()", StringComparison.Ordinal);
+        int treEnd = tre >= 0 ? view.IndexOf("private void FocusIfActiveTab()", tre, StringComparison.Ordinal) : -1;
+        string treBody = tre >= 0 && treEnd > tre ? view.Substring(tre, treEnd - tre) : "";
+        int peek = treBody.IndexOf("PeekStash(_procedureName)", StringComparison.Ordinal);
+        int post = treBody.IndexOf("\\\"restoreSlots\\\",\\\"slots\\\"", StringComparison.Ordinal);
+        int drop = post >= 0 ? treBody.IndexOf("DropStash(_procedureName);", post, StringComparison.Ordinal) : -1;
+        Ok("a restore peeks the stash and drops it only after delivering it", peek >= 0 && post > peek && drop > post,
+            "peek@" + peek + " post@" + post + " drop@" + drop);
         // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
         int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
         int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);
