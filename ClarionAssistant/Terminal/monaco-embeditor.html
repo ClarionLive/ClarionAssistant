@@ -1006,6 +1006,18 @@
         isDirty = d;
         renderTitle();
     }
+    // fc420c30: the model's alternative version id as of the last load or successful save. Monaco gives an undo back
+    // to a state the SAME alternative version id it had, so comparing against it makes "undo back to the saved text"
+    // read clean, where "any edit since the save" stayed dirty forever (live: Ctrl+Z removed the only edit, the text
+    // equalled the disk, and the ●, is_modified and get_open_files all still said modified).
+    var savedAltVersion = null;
+    function markSavedState() {
+        try { savedAltVersion = editor.getModel().getAlternativeVersionId(); } catch (e) { savedAltVersion = null; }
+    }
+    function dirtyFromModel() {
+        try { return savedAltVersion === null || editor.getModel().getAlternativeVersionId() !== savedAltVersion; }
+        catch (e) { return true; }
+    }
     // File mode only: mirror the live buffer + dirty flag to the host so a tab close can save from the host's
     // copy WITHOUT an async round-trip into this page. (pipeline CRITICAL — data loss on close)
     // This is SYNCHRONOUS on every legal edit (NOT debounced): Run-2 found a debounce left _fileLiveText/_fileDirty
@@ -1766,6 +1778,7 @@
                 var model = editor.getModel();
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
+                markSavedState();           // fc420c30: this text is the clean state an undo can return to
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
                 resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
                 resetLocalFirstState();     // ...and the old procedure's cached completion must not leak in (1c685f2e)
@@ -5150,7 +5163,7 @@
                 }
                 guarding = false;
                 if (legal.length) {
-                    setDirty(true);
+                    setDirty(dirtyFromModel());
                     if (fileMode) { editSeq++; pushFileState(); } else pushEmbedState();
                     if (bookmarkDecos.length) scheduleBookmarkPersist();
                     scheduleDiagnostics();
@@ -5159,7 +5172,8 @@
             }
             // A legal user edit happened (this handler returned early for programmatic loads via
             // `guarding` and for reverted illegal edits) — mark the buffer dirty for the ● indicator.
-            setDirty(true);
+            // fc420c30: dirty = "differs from the last load/save", so an undo back to the saved text reads clean.
+            setDirty(dirtyFromModel());
             // File mode: advance the edit sequence (lets saveResult detect edits-during-save) and mirror the
             // live buffer to the host (debounced) so a close can save it. (pipeline items 1 + 6)
             if (fileMode) { editSeq++; pushFileState(); }   // synchronous mirror — no debounce (close-safety, Run-2)
@@ -9422,7 +9436,7 @@
                 if (msg.ok) {
                     // Clear the ● ONLY if the buffer hasn't changed since the snapshot we saved — otherwise edits
                     // made during the save round-trip would be falsely marked clean. (pipeline item 6)
-                    if (msg.savedSeq == null || msg.savedSeq === editSeq) setDirty(false);
+                    if (msg.savedSeq == null || msg.savedSeq === editSeq) { setDirty(false); markSavedState(); }
                     if (fileMode) pushFileState();   // keep the host's mirror in sync with the post-save dirty state
                 } else {
                     _exitAfterSave = false;   // failed save never auto-closes
