@@ -142,7 +142,9 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Supplied by the addin: true when the ACTIVE editor's text area is the native embed document hidden
         /// under the CA Embeditor overlay, i.e. where the editor tools would land. See
-        /// <see cref="EmbedOverlayGuard"/>.
+        /// <see cref="EmbedOverlayGuard"/>. Both probes must be callable from ANY thread: a tool flagged
+        /// RequiresUiThread=false reaches ExecuteTool off the UI thread, so the addin's implementation does
+        /// its own bounded UI marshal, and a timeout throws (refused, fail closed).
         /// </summary>
         public static Func<bool> ActiveEditorCoveredProbe;
 

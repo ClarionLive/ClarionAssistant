@@ -134,6 +134,22 @@ static class EmbedOverlayGuardTest
                     src.Contains("ModernEmbeditorViewContent.ActiveEditorIsCoveredByOverlay()"), null);
             }
 
+            // fc420c30 moves the routed editor tools off the UI thread, so the covered probe must marshal
+            // itself, with a BOUNDED wait (an unbounded Invoke on a busy UI thread hangs the tool call).
+            string mevc = File.ReadAllText(Path.Combine(dir, @"Terminal\ModernEmbeditorViewContent.cs"));
+            var pm = Regex.Match(mevc, @"internal static bool ActiveEditorIsCoveredByOverlay\(\)\s*\{(.*?)\n        \}",
+                RegexOptions.Singleline);
+            string probeBody = pm.Success ? pm.Groups[1].Value : "";
+            Ok("covered probe marshals to the UI thread when called off it",
+                probeBody.Contains("InvokeRequired") && probeBody.Contains("BeginInvoke("), probeBody.Trim());
+            Ok("covered probe waits with a timeout and throws on expiry (fail closed)",
+                Regex.IsMatch(probeBody, @"WaitOne\(\s*CoveredProbeTimeoutMs\s*\)") && probeBody.Contains("throw new TimeoutException"),
+                probeBody.Trim());
+            Ok("covered probe never uses an unbounded Invoke",
+                !Regex.IsMatch(probeBody, @"(?<!Begin)Invoke\("), probeBody.Trim());
+            Ok("_liveInstance is volatile (HasLiveOverlay is read off the UI thread)",
+                Regex.IsMatch(mevc, @"private static volatile ModernEmbeditorViewContent _liveInstance;"), null);
+
             Ok("addin project compiles the guard",
                 File.ReadAllText(Path.Combine(dir, "ClarionAssistant.csproj")).Contains(@"Services\EmbedOverlayGuard.cs"), null);
             Ok("standalone server compiles the guard (it shares McpToolRegistry.cs)",
