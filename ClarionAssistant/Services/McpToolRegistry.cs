@@ -24,6 +24,14 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread { get; set; }
 
         /// <summary>
+        /// 73bd1f03 fix (2): asked per call; true = run THIS call off the UI thread even though the tool
+        /// RequiresUiThread. For a tool whose native path must stay on the UI thread (dispatcher timeout and
+        /// abandon-before-save token) but whose CA Embeditor route has to wait on the page, which a UI-thread wait
+        /// would deadlock. A throwing predicate = false (the native, UI-thread path).
+        /// </summary>
+        public Func<bool> OffUiWhen { get; set; }
+
+        /// <summary>
         /// Minimum seconds this tool needs on the UI thread before McpDispatcher may abandon
         /// the call as timed out (resolved by McpUiTimeoutPolicy). 0 (default) = take the
         /// configured budget. Only set it where the handler's OWN internal waits already exceed
@@ -232,7 +240,22 @@ namespace ClarionAssistant.Services
         public bool RequiresUiThread(string toolName)
         {
             McpTool tool;
-            return _tools.TryGetValue(toolName, out tool) && tool.RequiresUiThread;
+            if (!_tools.TryGetValue(toolName, out tool) || !tool.RequiresUiThread) return false;
+            if (tool.OffUiWhen == null) return true;
+            try { return !tool.OffUiWhen(); }
+            catch { return true; }
+        }
+
+        /// <summary>73bd1f03 fix (2): the CA Embeditor holds a procedure and its page answers, so the embed tools are
+        /// routed to it. False when either probe is unset or throws.</summary>
+        private static bool CaEmbeditorRoutable()
+        {
+            try
+            {
+                return CaEmbeditorLiveProbe != null && CaEmbeditorLiveProbe()
+                    && EmbedRoutableProbe != null && EmbedRoutableProbe();
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -1030,18 +1053,37 @@ IdeOnly = true,
             {
                 Name = "save_and_close_embeditor",
 IdeOnly = true,
-                Description = "Save changes and close the currently open embeditor. Use this when done editing embed code.",
+                Description = "Save changes and close the currently open embeditor. Use this when done editing embed code. " +
+                    "While the CA Embeditor is open on the procedure this runs ITS save (save-and-exit, like the " +
+                    "developer's Save button), so their unsaved edits and yours are saved together.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
+                // 73bd1f03 fix (2): the CA Embeditor route waits on the page and on EmbedSaveFinished, raised on the
+                // UI thread, so that call must run off it. The native path below keeps the UI thread, its timeout
+                // and the abandon-before-save token, unchanged.
+                OffUiWhen = CaEmbeditorRoutable,
                 // The native save regenerates the module; on a large procedure that outruns
                 // the 30s default — see EmbedRoundTripTimeoutSeconds.
                 UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
-                // Claim the save first (PR #198 review): a call McpDispatcher already abandoned on timeout
-                // must not save behind the caller's back. The buffer is left open and unchanged.
-                Handler = args => McpCallContext.TryCommit()
-                    ? _appTree.SaveAndCloseEmbeditor()
-                    : "Error: cancelled - the MCP call timed out before saving; nothing was saved and the " +
-                      "embeditor is still open. Check it in the IDE before retrying."
+                Handler = args =>
+                {
+                    if (System.Threading.Thread.CurrentThread.ManagedThreadId != EditorToolRouter.UiThreadId && EmbedToolRouter.Wired)
+                    {
+                        // Off the UI thread = OffUiWhen saw a routable CA Embeditor. Never the native save from
+                        // here (it would run without the dispatcher's abandon token): if the CA Embeditor went away
+                        // in between, say so and let the caller retry, which then takes the native path.
+                        return EmbedRouter.Run("save_and_close_embeditor",
+                            () => "Error: the CA Embeditor closed while the save was starting; nothing was saved. " +
+                                  "Check the embeditor in the IDE, then retry.",
+                            ov => ov.SaveAndClose());
+                    }
+                    // Claim the save first (PR #198 review): a call McpDispatcher already abandoned on timeout
+                    // must not save behind the caller's back. The buffer is left open and unchanged.
+                    return McpCallContext.TryCommit()
+                        ? _appTree.SaveAndCloseEmbeditor()
+                        : "Error: cancelled - the MCP call timed out before saving; nothing was saved and the " +
+                          "embeditor is still open. Check it in the IDE before retrying.";
+                }
             });
 
             Register(new McpTool

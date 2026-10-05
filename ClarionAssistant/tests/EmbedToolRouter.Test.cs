@@ -55,6 +55,7 @@ static class EmbedToolRouterTest
         public readonly List<string> Calls = new List<string>();
         public bool AnyRequestOnUi;
         public Dictionary<string, object> LastApply;
+        public Dictionary<string, object> SaveReply;
 
         public string ProcedureName { get { return "UpdateCust"; } }
         public bool PageReady { get { return Ready; } }
@@ -71,6 +72,11 @@ static class EmbedToolRouterTest
                 foreach (var r in Ranges) rs.Add(new object[] { r[0], r[1] });
                 return new Dictionary<string, object> { { "text", Text }, { "versionId", Version }, { "ranges", rs.ToArray() } };
             }
+            if (action == "save")
+            {
+                if (SaveReply == null) throw new TimeoutException("the CA Embeditor's save did not report back within 180 s; check the IDE before retrying");
+                return SaveReply;
+            }
             if (action == "applyEdits")
             {
                 if (StaleTimes > 0) { StaleTimes--; Version++; throw new HostRequestBroker.RefusedException("stale"); }
@@ -81,6 +87,11 @@ static class EmbedToolRouterTest
             }
             throw new HostRequestBroker.RefusedException("unknownAction:" + action);
         }
+    }
+
+    static Dictionary<string, object> Try(Func<Dictionary<string, object>> f)
+    {
+        try { return f(); } catch (Exception ex) { Console.WriteLine("         (threw " + ex.GetType().Name + ": " + ex.Message + ")"); return null; }
     }
 
     static int Count(List<string> l, string s) { int n = 0; foreach (var x in l) if (x == s) n++; return n; }
@@ -199,6 +210,64 @@ static class EmbedToolRouterTest
         r = router.Run("write_embed_content", native, ov => ov.WriteEmbedContent(9, "z = 1"));
         Ok("CA Embeditor slots no longer match the native ones -> Error, nothing written",
             (r as string ?? "").StartsWith("Error: the CA Embeditor's embed slots no longer match") && p.LastApply == null, r as string);
+
+        // --- routed save: save_and_close_embeditor through the CA Embeditor's own save ---
+        p = page(); p.SaveReply = new Dictionary<string, object> { { "saved", true }, { "message", "Saved 1 embed slot(s) to 'UpdateCust'." }, { "editorIntact", false } };
+        EmbedToolRouter.LiveEmbedResolver = () => p;
+        nativeRan = false;
+        r = router.Run("save_and_close_embeditor", native, ov => ov.SaveAndClose());
+        Ok("save ok -> 'Saved and closed the CA Embeditor', with the save's message, native never runs",
+            (r as string) == "Saved and closed the CA Embeditor on 'UpdateCust': Saved 1 embed slot(s) to 'UpdateCust'." && !nativeRan, r as string);
+        p = page(); p.SaveReply = new Dictionary<string, object> { { "saved", false }, { "message", "embed structure changed" }, { "editorIntact", true } };
+        EmbedToolRouter.LiveEmbedResolver = () => p;
+        r = router.Run("save_and_close_embeditor", native, ov => ov.SaveAndClose());
+        Ok("save failed, editor intact -> Error that says the edits are still open",
+            (r as string ?? "").StartsWith("Error: the CA Embeditor's save failed: embed structure changed.") && (r as string).Contains("still open"), r as string);
+        p = page(); p.SaveReply = new Dictionary<string, object> { { "saved", false }, { "message", "x" }, { "editorIntact", false } };
+        EmbedToolRouter.LiveEmbedResolver = () => p;
+        r = router.Run("save_and_close_embeditor", native, ov => ov.SaveAndClose());
+        Ok("save failed, editor gone -> Error that says so", (r as string ?? "").Contains("The CA Embeditor closed"), r as string);
+        p = page(); p.SaveReply = null;
+        EmbedToolRouter.LiveEmbedResolver = () => p;
+        r = router.Run("save_and_close_embeditor", native, ov => ov.SaveAndClose());
+        Ok("save times out -> Error that says NOT to retry (it may still complete)",
+            (r as string ?? "").Contains("do NOT retry") && !(r as string).Contains("Try again"), r as string);
+
+        // --- EmbedSaveWait: the outcome comes from EmbedSaveFinished, not the page's reply ---
+        Action<string, bool, string, bool> evt = null;
+        Action<Action<string, bool, string, bool>> sub = h => evt += h;
+        Action<Action<string, bool, string, bool>> unsub = h => evt -= h;
+        Func<Action<string, bool, string, bool>> current = () => evt;
+        Dictionary<string, object> d;
+        // A successful overlay save: the page is disposed, its request never answers - only the event does.
+        d = Try(() => EmbedSaveWait.Run("UpdateCust", sub, unsub, () =>
+        {
+            var e = current(); if (e != null) e("updatecust", true, "Saved 2 embed slot(s).", false);
+            throw new TimeoutException("page gone");
+        }, 5000));
+        Ok("event (proc matched case-insensitively) is the answer, even though the page never replies",
+            d != null && (bool)d["saved"] && (string)d["message"] == "Saved 2 embed slot(s)." && !(bool)d["editorIntact"], null);
+        Ok("unsubscribed afterwards", evt == null, null);
+
+        d = Try(() => EmbedSaveWait.Run("UpdateCust", sub, unsub, () =>
+        {
+            var e = current();
+            if (e != null) { e("OtherProc", true, "not ours", false); e("UpdateCust", false, "refused: mirror mode", true); }
+            return new Dictionary<string, object>();
+        }, 5000));
+        Ok("another procedure's save is ignored; ours (a failure) is reported with editorIntact",
+            d != null && !(bool)d["saved"] && (string)d["message"] == "refused: mirror mode" && (bool)d["editorIntact"], null);
+
+        string refusedCode = null;
+        try { EmbedSaveWait.Run("UpdateCust", sub, unsub, () => { throw new HostRequestBroker.RefusedException("saveDisabled"); }, 5000); }
+        catch (HostRequestBroker.RefusedException ex) { refusedCode = ex.Code; }
+        Ok("the page refuses to start the save (no event will come) -> RefusedException, not a long wait", refusedCode == "saveDisabled", refusedCode);
+
+        bool timedOut = false;
+        var swt = System.Diagnostics.Stopwatch.StartNew();
+        try { EmbedSaveWait.Run("UpdateCust", sub, unsub, () => { Thread.Sleep(2000); return null; }, 300); }
+        catch (TimeoutException) { timedOut = true; }
+        Ok("no outcome in time -> TimeoutException, bounded", timedOut && swt.ElapsedMilliseconds < 1500 && evt == null, swt.ElapsedMilliseconds + " ms");
 
         // --- a blocked UI thread: bounded, says so, touches nothing ---
         p = page();

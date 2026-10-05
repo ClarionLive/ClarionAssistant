@@ -125,6 +125,17 @@ namespace ClarionAssistant.Terminal
             {
                 var p = _v._panel;
                 if (p == null) throw new TimeoutException("the CA Embeditor for '" + ProcedureName + "' closed");
+                // "save" (save_and_close_embeditor, and save_file on the covered view through EditorToolRouter): the
+                // page cannot answer a successful overlay save (it is disposed first), so the outcome comes from
+                // 1565ef7b's EmbedSaveFinished. Answers in the shape both callers read: { saved, message, editorIntact }.
+                if (action == "save")
+                {
+                    // A save regenerates the module: never less than the embed save budget, whoever asks.
+                    int budget = Math.Max(timeoutMs, EmbedOverlayOps.SaveTimeoutMs);
+                    return EmbedSaveWait.Run(ProcedureName,
+                        h => EmbedSaveFinished += h, h => EmbedSaveFinished -= h,
+                        () => p.Request("save", args, budget), budget);
+                }
                 return p.Request(action, args, timeoutMs);
             }
         }

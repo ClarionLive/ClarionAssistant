@@ -168,11 +168,20 @@ static class EmbedOverlayGuardTest
             r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(true), handler, null) as string;
             Ok("routable: " + tool + " on the covered view passes to its (routed) handler", ran == 1 && r == "ok", r);
         }
-        foreach (var tool in new[] { "save_file", "close_file", "save_and_close_embeditor", "cancel_embeditor" })
+        foreach (var tool in new[] { "save_file", "save_and_close_embeditor" })
+        {
+            mk("saved");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(true), handler, null) as string;
+            Ok("routable: " + tool + " passes to its (routed) save", ran == 1 && r == "saved", r);
+            mk("saved");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(false), handler, null) as string;
+            Ok("NOT routable: " + tool + " is still refused (fail closed)", ran == 0 && r != null && r.StartsWith("Error"), r);
+        }
+        foreach (var tool in new[] { "close_file", "cancel_embeditor" })
         {
             mk("ok");
             r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(true), handler, null) as string;
-            Ok("routable: " + tool + " is STILL refused (routing does not serve it)", ran == 0 && r != null && r.StartsWith("Error"), r);
+            Ok("routable: " + tool + " is STILL refused (discarding is the developer's call)", ran == 0 && r != null && r.StartsWith("Error"), r);
         }
         mk("line text");
         r = EmbedOverlayGuard.Run("get_lines_range", Const(true), Const(true), Const(true), handler, null) as string;
@@ -242,6 +251,20 @@ static class EmbedOverlayGuardTest
                 lsp.Contains("EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel") &&
                 lsp.Contains("EmbedToolRouter.NativeEmbedColumn = ") &&
                 lsp.Contains("McpToolRegistry.EmbedRoutableProbe = () => Terminal.ModernEmbeditorViewContent.EmbedRoutingReady"), null);
+            // routed save: off the UI thread only when routable; the native path keeps its UI thread and token
+            var sm = Regex.Match(reg, "Name = \"save_and_close_embeditor\",(.*?)\\n            \\}\\);", RegexOptions.Singleline);
+            string sb2 = sm.Success ? sm.Groups[1].Value : "";
+            Ok("save_and_close_embeditor: UI-bound, off it only when the CA Embeditor is routable",
+                Regex.IsMatch(sb2, @"RequiresUiThread\s*=\s*true") && sb2.Contains("OffUiWhen = CaEmbeditorRoutable"), null);
+            Ok("save_and_close_embeditor: routed via EmbedRouter (never the native save off the UI thread), native keeps TryCommit",
+                sb2.Contains("EmbedRouter.Run(\"save_and_close_embeditor\"") && sb2.Contains("ov => ov.SaveAndClose()")
+                && sb2.Contains("McpCallContext.TryCommit()") && sb2.Contains("nothing was saved"), null);
+            Ok("RequiresUiThread(name) honours OffUiWhen per call",
+                Regex.IsMatch(reg, @"if \(tool\.OffUiWhen == null\) return true;\s*try \{ return !tool\.OffUiWhen\(\); \}\s*catch \{ return true; \}"), null);
+            Ok("the CA Embeditor channel's save waits on EmbedSaveFinished (the page cannot answer a successful save)",
+                Regex.IsMatch(mevc, @"if \(action == ""save""\)") && mevc.Contains("EmbedSaveWait.Run(ProcedureName")
+                && mevc.Contains("h => EmbedSaveFinished += h, h => EmbedSaveFinished -= h"), null);
+
             string ats = File.ReadAllText(Path.Combine(dir, @"Services\AppTreeService.cs"));
             Ok("native search_embeditor_source shares EmbedSlotText.Search (one format for both editors)",
                 ats.Contains("return EmbedSlotText.Search(source, pattern, contextLines);"), null);

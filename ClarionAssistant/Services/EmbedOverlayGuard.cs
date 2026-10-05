@@ -19,9 +19,10 @@ namespace ClarionAssistant.Services
     /// to EmbedToolRouter and the editor tools to fc420c30's EditorToolRouter, both acting on Monaco's buffer.
     /// The refusals and notes below are then the FALLBACK: while the page is not ready (loading, an old page),
     /// writes are refused and reads say they came from the native buffer, exactly as fix (1) did, and nothing
-    /// ever goes to the native document behind the CA Embeditor. Tools routing cannot serve stay refused:
-    /// native save/cancel (closing the embed under the CA Embeditor), save_file and close_file on the covered
-    /// view (the CA Embeditor's own save is the developer's, until 1565ef7b exposes it).
+    /// ever goes to the native document behind the CA Embeditor. Saving is routed too (save_and_close_embeditor,
+    /// and save_file on the covered view, run the CA Embeditor's own save and wait for 1565ef7b's
+    /// EmbedSaveFinished). Discarding stays refused: cancel_embeditor, and close_file on the covered view, would
+    /// throw away the developer's edits, which is their click to make, not Claude's.
     ///
     /// Pure: the facts come from the addin (McpToolRegistry's probe hooks), so tests\EmbedOverlayGuard.Test.cs
     /// can pin every branch without an IDE.
@@ -66,7 +67,10 @@ namespace ClarionAssistant.Services
         public static bool IsEmbedLifecycleTool(string tool) { return In(tool, EmbedLifecycleTools); }
         public static bool IsEditorWriteTool(string tool) { return In(tool, EditorWriteTools); }
         /// <summary>Editor writes routing does not take over on the covered view: always refused there.</summary>
-        public static bool IsNeverRoutedEditorTool(string tool) { return tool == "save_file" || tool == "close_file"; }
+        public static bool IsNeverRoutedEditorTool(string tool) { return tool == "close_file"; }
+
+        /// <summary>The native embeditor lifecycle tool that routing serves (through the CA Embeditor's own save).</summary>
+        private static bool IsRoutedLifecycleTool(string tool) { return tool == "save_and_close_embeditor"; }
         public static bool IsEmbedReadTool(string tool) { return In(tool, EmbedReadTools); }
         public static bool IsEditorReadTool(string tool) { return In(tool, EditorReadTools); }
 
@@ -96,7 +100,7 @@ namespace ClarionAssistant.Services
                        "Show the developer the code and ask them to paste it in the CA Embeditor, or ask them to save " +
                        "and close the CA Embeditor, then use apply_embed_edits.";
 
-            if (IsEmbedLifecycleTool(tool) && caEmbeditorLive)
+            if (IsEmbedLifecycleTool(tool) && caEmbeditorLive && !(routable && IsRoutedLifecycleTool(tool)))
                 return "Error: the CA Embeditor is open on this procedure. " + tool + " would close the native " +
                        "embeditor hidden behind it" + (tool == "save_and_close_embeditor"
                            ? ", saving that buffer WITHOUT the developer's unsaved CA Embeditor edits"

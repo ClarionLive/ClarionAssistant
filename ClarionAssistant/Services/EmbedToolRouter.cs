@@ -162,6 +162,62 @@ namespace ClarionAssistant.Services
         }
     }
 
+    /// <summary>
+    /// 73bd1f03 fix (2): ask the CA Embeditor to save, and wait for 1565ef7b's EmbedSaveFinished for the outcome.
+    ///
+    /// The page's own reply cannot be the answer: a SUCCESSFUL overlay save disposes the page before the save runs
+    /// (the freeze rule), so that reply never comes. EmbedSaveFinished is raised exactly once per save on every
+    /// branch, refusals included. The save request is therefore posted from a worker thread and its reply only
+    /// matters when it is a refusal (the page never started a save, so no event will follow).
+    /// </summary>
+    public static class EmbedSaveWait
+    {
+        /// <returns>{ saved, message, editorIntact }.</returns>
+        /// <exception cref="TimeoutException">No outcome within <paramref name="timeoutMs"/>.</exception>
+        /// <exception cref="HostRequestBroker.RefusedException">The page refused to start the save.</exception>
+        public static Dictionary<string, object> Run(string procedure,
+            Action<Action<string, bool, string, bool>> subscribe, Action<Action<string, bool, string, bool>> unsubscribe,
+            Func<Dictionary<string, object>> requestSave, int timeoutMs)
+        {
+            var gate = new object();
+            var done = new ManualResetEventSlim(false);
+            bool ok = false, intact = false;
+            string message = null, refused = null;
+            Action<string, bool, string, bool> handler = (proc, o, m, i) =>
+            {
+                if (!string.Equals(proc, procedure, StringComparison.OrdinalIgnoreCase)) return;
+                lock (gate)
+                {
+                    if (done.IsSet) return;
+                    ok = o; message = m; intact = i;
+                    done.Set();
+                }
+            };
+            subscribe(handler);   // before the request: the outcome cannot slip past us
+            try
+            {
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try { requestSave(); }
+                    catch (HostRequestBroker.RefusedException ex)
+                    {
+                        lock (gate) { if (!done.IsSet) { refused = ex.Code; done.Set(); } }
+                    }
+                    catch { }   // no reply (the page closed on a successful save): the event is the answer
+                });
+                if (!done.Wait(timeoutMs))
+                    throw new TimeoutException("the CA Embeditor's save did not report back within " + (timeoutMs / 1000)
+                        + " s; check the IDE before retrying");
+                lock (gate)
+                {
+                    if (refused != null) throw new HostRequestBroker.RefusedException(refused);
+                    return new Dictionary<string, object> { { "saved", ok }, { "message", message }, { "editorIntact", intact } };
+                }
+            }
+            finally { unsubscribe(handler); }
+        }
+    }
+
     /// <summary>73bd1f03 fix (2): the embed tools against the CA Embeditor's Monaco buffer. Answers use
     /// <see cref="EmbedSlotText"/>, so they read exactly like the native tools, prefixed with
     /// <see cref="EmbedSlotText.LineBaseNote"/>.</summary>
@@ -169,6 +225,8 @@ namespace ClarionAssistant.Services
     {
         public const int StateTimeoutMs = 15000;   // getSlots carries the whole buffer
         public const int EditTimeoutMs = 15000;
+        /// <summary>A save regenerates the module: the native save_and_close_embeditor's 180 s budget.</summary>
+        public const int SaveTimeoutMs = 180000;
 
         private readonly IEmbedOverlayChannel _ch;
         private readonly Func<int, int> _nativeColumn;
@@ -230,6 +288,31 @@ namespace ClarionAssistant.Services
             var s = GetSlots();
             string r = EmbedSlotText.SlotContent(s.Text, s.Ranges, line);
             return r.StartsWith("Error") ? r : Noted(r);
+        }
+
+        /// <summary>save_and_close_embeditor through the CA Embeditor's own save (save-and-exit, as the developer's
+        /// Save button): its text, its structure checks, its error handling. The channel's "save" request waits
+        /// for EmbedSaveFinished (see <see cref="EmbedSaveWait"/>).</summary>
+        public object SaveAndClose()
+        {
+            Dictionary<string, object> d;
+            try { d = _ch.Request("save", null, SaveTimeoutMs); }
+            catch (TimeoutException ex)
+            {
+                // Not the router's generic "try again": the save may still be running and may still succeed.
+                return "Error: " + ex.Message + ". The save may still complete - do NOT retry until the developer " +
+                       "confirms what happened.";
+            }
+            object v;
+            bool saved = d.TryGetValue("saved", out v) && v is bool && (bool)v;
+            bool intact = d.TryGetValue("editorIntact", out v) && v is bool && (bool)v;
+            string msg = d.TryGetValue("message", out v) ? v as string : null;
+            if (saved)
+                return "Saved and closed the CA Embeditor on '" + _ch.ProcedureName + "'" +
+                       (string.IsNullOrEmpty(msg) ? "." : ": " + msg);
+            return "Error: the CA Embeditor's save failed" + (string.IsNullOrEmpty(msg) ? "" : ": " + msg) + ". " +
+                   (intact ? "The developer's edits are still open in the CA Embeditor; nothing was lost."
+                           : "The CA Embeditor closed. Ask the developer to check the procedure.");
         }
 
         /// <summary>write_embed_content into the CA Embeditor: one applyEdits batch (one undo step) guarded by the
