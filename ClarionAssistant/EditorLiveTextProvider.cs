@@ -66,7 +66,14 @@ namespace ClarionAssistant
             text = ModernEmbeditorViewContent.TryGetFileModeLiveText(path);
             if (text != null) return new SharedLspBridge.LiveText { Text = text, Origin = "embeditor-file-buffer" };
 
-            return embed;   // null (nothing open), or why an open embeditor could not be checked
+            if (embed != null) return embed;   // why an open embeditor could not be checked
+
+            // fc420c30 (Charlie): a CA Editor tab that is OPEN but has no edits yet holds the file as it is on disk; its
+            // live text is only mirrored from the first edit on. Say that, truthfully: the disk IS its text. Never
+            // label disk text as the editor's (the disk can change after the tab opened).
+            if (MonacoClarionEditor.IsOpenInOverlay(path))
+                return new SharedLspBridge.LiveText { Reason = "open in the CA Editor with no unsaved edits (the file on disk is current)" };
+            return null;   // nothing has it open
         }
 
         // (1): null when no embed of this module is open; a LiveText with Text, or with only a Reason on a timeout.

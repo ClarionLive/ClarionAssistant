@@ -31,6 +31,8 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 - `is_modified` -Check if the active file has unsaved changes.
 - `toggle_comment` -Toggle Clarion line comments (!) on a range of lines.
 
+**With the file open in the CA Editor** (the Monaco editor over a source tab), every tool above reads and edits THAT text: the text the developer sees, unsaved edits included. Your edits appear in the CA Editor, `undo`/`redo` use its undo stack, and `is_modified` reports its unsaved changes. `save_file` saves the CA Editor's text. `close_file` REFUSES while the CA Editor has unsaved changes: run `save_file` first, or ask the developer. If the CA Editor is still loading or does not answer, the tool returns an error and changes nothing; it never edits the hidden native editor underneath instead.
+
 ### Application Tree (Clarion .app files)
 - `open_app` -Open a .app file in the IDE. Must load before listing procedures.
 - `get_app_info` -Get info about the currently open app (name, file, target type).

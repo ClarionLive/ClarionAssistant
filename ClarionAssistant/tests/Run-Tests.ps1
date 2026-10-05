@@ -245,6 +245,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @((Join-Path $TestDir "fixtures\incremental-sync\fake-lsp.js")) }
+            # fc420c30: the MCP editor tools against the CA Editor (Monaco) — reads and writes hit its text, never the
+            # native document under it; save keeps the edit; a dirty close is refused; fail closed; native unchanged.
+            @{ Name = "EditorToolRouter.Test"
+               Sources = @("tests\EditorToolRouter.Test.cs", "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs",
+                           "Services\EditorTextOps.cs", "Services\IUiDispatcher.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             @{ Name = "LspClient.Robustness.Test"
                Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }

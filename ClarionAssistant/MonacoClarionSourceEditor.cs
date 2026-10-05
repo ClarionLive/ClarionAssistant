@@ -1816,6 +1816,77 @@ namespace ClarionAssistant
         /// Callers want this in preference to CaEditorSettings.MonacoThemeDark, which records only
         /// whichever page posted last and so drifts from the active editor as soon as two disagree.
         /// </summary>
+        // ── fc420c30: the MCP editor tools routed to this CA Editor ────────────────────────────────
+
+        /// <summary>The overlay as EditorToolRouter sees it: the file, readiness, and requests to the page.</summary>
+        private sealed class OverlayChannel : Services.IEditorOverlayChannel
+        {
+            private readonly MonacoClarionEditor _me;
+            public OverlayChannel(MonacoClarionEditor me) { _me = me; }
+            public string FilePath { get { return _me._filePath; } }
+            public bool PageReady { get { return _me._editor != null && _me._pageReady; } }
+            public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
+            {
+                var ed = _me._editor;
+                if (ed == null) throw new TimeoutException("the CA Editor for " + _me._filePath + " closed");
+                return ed.Request(action, args, timeoutMs);
+            }
+        }
+
+        /// <summary>
+        /// EditorToolRouter.ActiveOverlayResolver: the CA Editor of the ACTIVE workbench view, or null when the active
+        /// view has no overlay (the native editor answers then). UI thread. Same lookup as ActiveEditorIsDark.
+        /// </summary>
+        internal static Services.IEditorOverlayChannel ResolveActiveOverlay()
+        {
+            try
+            {
+                var wb = ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench;
+                if (wb == null) return null;
+                var aw = ReflectProp(wb, "ActiveWorkbenchWindow");
+                if (aw == null) return null;
+                var vc = ReflectProp(aw, "ActiveViewContent") ?? ReflectProp(aw, "ViewContent");
+                var me = vc as MonacoClarionEditor;
+                if (me == null || me._editor == null) return null;
+                return new OverlayChannel(me);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// get_open_files: mark tabs whose CA Editor holds unsaved edits ("* path"). The native shell of an overlay tab
+        /// stays clean by design, so the native list called them saved. UI thread.
+        /// </summary>
+        internal static List<string> MarkOverlayDirty(List<string> files)
+        {
+            if (files == null) return files;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (inst._editor == null || !inst._overlayDirty || string.IsNullOrEmpty(inst._filePath)) continue;
+                    string full = inst._filePath, name = Path.GetFileName(full);
+                    for (int i = 0; i < files.Count; i++)
+                    {
+                        string f = files[i];
+                        if (f.StartsWith("* ")) continue;
+                        if (PathsEqual(f, full) || string.Equals(f, name, StringComparison.OrdinalIgnoreCase)) files[i] = "* " + f;
+                    }
+                }
+                catch { }
+            }
+            return files;
+        }
+
+        /// <summary>44a1b10c / fc420c30: is a CA Editor tab open on <paramref name="path"/> (with or without edits)?</summary>
+        internal static bool IsOpenInOverlay(string path)
+        {
+            bool dirty;
+            return TryGetLiveTabState(path, out dirty);
+        }
+
         public static bool? ActiveEditorIsDark()
         {
             try

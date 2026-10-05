@@ -139,6 +139,9 @@
     <Compile Include="Services\ExecutionLineGate.cs" />
     <Compile Include="Services\ActiveProcedureContext.cs" />
     <Compile Include="Services\EditorService.cs" />
+    <Compile Include="Services\EditorTextOps.cs" />
+    <Compile Include="Services\EditorToolRouter.cs" />
+    <Compile Include="Services\HostRequestBroker.cs" />
     <Compile Include="Services\ClarionSourceText.cs" />
     <Compile Include="Services\SettingsService.cs" />
     <Compile Include="Services\CaEditorSettings.cs" />

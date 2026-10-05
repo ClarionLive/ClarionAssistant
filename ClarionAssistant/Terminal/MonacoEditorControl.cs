@@ -247,6 +247,16 @@ namespace ClarionAssistant.Terminal
         // changed; requests carry `v`. ONE cached copy per surface, replaced on every sync. See
         // MonacoBufferSync.cs for why (a 3.2 MB buffer per request crashed a 32-bit Clarion.exe).
         private readonly MonacoBufferCache _bufferCache = new MonacoBufferCache();
+
+        // fc420c30: host -> page requests that wait for the page's answer (the MCP editor tools routed to the CA Editor).
+        private readonly Services.HostRequestBroker _hostRequests;
+
+        /// <summary>fc420c30: ask the page and wait for its answer. NEVER on the UI thread (the answer arrives there);
+        /// see HostRequestBroker for the wire shape and the exceptions.</summary>
+        public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
+        {
+            return _hostRequests.Request(action, args, timeoutMs);
+        }
         private readonly LaneSet _lanes = new LaneSet();   // RunLatest lanes, see MonacoBufferSync.cs
         private readonly Debouncer _fileStateSpanMap = new Debouncer(400);   // F7: one span map per pause in file mode
 
@@ -423,6 +433,11 @@ namespace ClarionAssistant.Terminal
                                    string virtualHost = "clarion-embeditor-data")
         {
             _host = host;
+            // fc420c30: the control is built on the UI thread; the page's replies arrive there, so the broker refuses
+            // to wait on it.
+            int uiThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+            _hostRequests = new Services.HostRequestBroker(PostJson,
+                () => System.Threading.Thread.CurrentThread.ManagedThreadId == uiThreadId);
             _htmlFileName = string.IsNullOrEmpty(htmlFileName) ? "monaco-embeditor.html" : htmlFileName;
             _virtualHost = string.IsNullOrEmpty(virtualHost) ? "clarion-embeditor-data" : virtualHost;
 
@@ -613,6 +628,11 @@ namespace ClarionAssistant.Terminal
                                 ? Convert.ToString(hh, System.Globalization.CultureInfo.InvariantCulture) : null;
                             Services.LocalLayerHandlers.AcceptHeader(hash, htext, MonacoSpikeLog.Write);
                         }
+                        return;
+                    case "hostReply":
+                        // fc420c30: the page's answer to a host request (HostRequestBroker). Host-agnostic: the waiter
+                        // is on another thread, and a late answer (its waiter gave up) is dropped.
+                        _hostRequests.Complete(json);
                         return;
                     case "log":
                         // 1c685f2e item 0: a line the page wrote ([local-rt] ...), cleaned + capped, else verbatim.

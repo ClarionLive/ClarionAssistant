@@ -93,6 +93,9 @@ namespace ClarionAssistant.Services
         // Null in a standalone host, where the tools needing them are not registered.
         private IWorkspaceContext _workspace;
         private IUiDispatcher _ui;
+        // fc420c30: the editor tools go to the CA Editor (Monaco) when one holds the active file, else the native editor.
+        private EditorToolRouter _editorRouterField;
+        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui)); } }
         private LspClient _lspClient;
 
         /// <summary>
@@ -268,8 +271,8 @@ namespace ClarionAssistant.Services
 IdeOnly = true,
                 Description = "Get the path and full content of the file currently open in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_active_file", () =>
                 {
                     string path = _editorService.GetActiveDocumentPath();
                     string content = _editorService.GetActiveDocumentContent();
@@ -278,7 +281,7 @@ IdeOnly = true,
                         { "path", path ?? "(no file open)" },
                         { "content", content ?? "(unable to read)" }
                     };
-                }
+                }, ov => ov.GetActiveFile())
             });
 
             Register(new McpTool
@@ -287,11 +290,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the currently selected text in the Clarion IDE editor. Returns null if nothing selected.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    return _editorService.GetSelectedText() ?? "(no selection)";
-                }
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_selected_text",
+                    () => _editorService.GetSelectedText() ?? "(no selection)",
+                    ov => ov.GetSelectedText())
             });
 
             Register(new McpTool
@@ -324,11 +326,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the word at the current cursor position in the editor. Useful for identifying what symbol the developer is looking at.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
-                {
-                    return _editorService.GetWordUnderCursor() ?? "(no word at cursor)";
-                }
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_word_under_cursor",
+                    () => _editorService.GetWordUnderCursor() ?? "(no word at cursor)",
+                    ov => ov.GetWordUnderCursor())
             });
 
             Register(new McpTool
@@ -337,8 +338,8 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Get the current cursor position (line and column, 1-based) and total line count in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("get_cursor_position", () =>
                 {
                     var pos = _editorService.GetCursorPosition();
                     int lineCount = _editorService.GetLineCount();
@@ -350,7 +351,7 @@ IdeOnly = true,
                         { "column", pos[1] },
                         { "totalLines", lineCount }
                     };
-                }
+                }, ov => ov.GetCursorPosition())
             });
 
             // === Editor Operation Tools ===
@@ -363,13 +364,16 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number to go to (1-based)" } },
                     new[] { "line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    if (_editorService.GoToLine(line))
-                        return "Moved to line " + line;
-                    return "Error: could not navigate to line " + line;
+                    return EditorRouter.Run("go_to_line", () =>
+                    {
+                        if (_editorService.GoToLine(line))
+                            return "Moved to line " + line;
+                        return "Error: could not navigate to line " + line;
+                    }, ov => ov.GoToLine(line));
                 }
             });
 
@@ -381,14 +385,17 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "text", "The text to insert" } },
                     new[] { "text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string text = McpJsonRpc.GetString(args, "text");
                     if (string.IsNullOrEmpty(text))
                         return "Error: text parameter is required";
-                    var result = _editorService.InsertTextAtCaret(text);
-                    return result.Success ? "Text inserted successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("insert_text_at_cursor", () =>
+                    {
+                        var result = _editorService.InsertTextAtCaret(text);
+                        return result.Success ? "Text inserted successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.InsertTextAtCursor(text));
                 }
             });
 
@@ -404,15 +411,18 @@ IdeOnly = true,
                         { "new_text", "The replacement text" }
                     },
                     new[] { "old_text", "new_text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string oldText = McpJsonRpc.GetString(args, "old_text");
                     string newText = McpJsonRpc.GetString(args, "new_text", "");
                     if (string.IsNullOrEmpty(oldText))
                         return "Error: old_text is required";
-                    var result = _editorService.ReplaceText(oldText, newText);
-                    return result.Success ? "Text replaced successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("replace_text", () =>
+                    {
+                        var result = _editorService.ReplaceText(oldText, newText);
+                        return result.Success ? "Text replaced successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ReplaceText(oldText, newText));
                 }
             });
 
@@ -431,7 +441,7 @@ IdeOnly = true,
                         { "new_text", "Replacement text (empty string to delete)" }
                     },
                     new[] { "start_line", "end_line", "new_text" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
@@ -439,8 +449,11 @@ IdeOnly = true,
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
                     string newText = McpJsonRpc.GetString(args, "new_text", "");
-                    var result = _editorService.ReplaceRange(startLine, startCol, endLine, endCol, newText);
-                    return result.Success ? "Range replaced successfully" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("replace_range", () =>
+                    {
+                        var result = _editorService.ReplaceRange(startLine, startCol, endLine, endCol, newText);
+                        return result.Success ? "Range replaced successfully" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ReplaceRange(startLine, startCol, endLine, endCol, newText));
                 }
             });
 
@@ -458,15 +471,18 @@ IdeOnly = true,
                         { "end_col", "End column (1-based)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int startCol = McpJsonRpc.GetInt(args, "start_col", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
-                    var result = _editorService.SelectRange(startLine, startCol, endLine, endCol);
-                    return result.Success ? "Text selected" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("select_range", () =>
+                    {
+                        var result = _editorService.SelectRange(startLine, startCol, endLine, endCol);
+                        return result.Success ? "Text selected" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.SelectRange(startLine, startCol, endLine, endCol));
                 }
             });
 
@@ -484,15 +500,18 @@ IdeOnly = true,
                         { "end_col", "End column (1-based)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int startCol = McpJsonRpc.GetInt(args, "start_col", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
                     int endCol = McpJsonRpc.GetInt(args, "end_col", 999);
-                    var result = _editorService.DeleteRange(startLine, startCol, endLine, endCol);
-                    return result.Success ? "Text deleted" : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("delete_range", () =>
+                    {
+                        var result = _editorService.DeleteRange(startLine, startCol, endLine, endCol);
+                        return result.Success ? "Text deleted" : "Error: " + result.ErrorMessage;
+                    }, ov => ov.DeleteRange(startLine, startCol, endLine, endCol));
                 }
             });
 
@@ -502,8 +521,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.Undo() ? "Undo successful" : "Nothing to undo"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("undo",
+                    () => _editorService.Undo() ? "Undo successful" : "Nothing to undo",
+                    ov => ov.Undo())
             });
 
             Register(new McpTool
@@ -512,8 +533,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.Redo() ? "Redo successful" : "Nothing to redo"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("redo",
+                    () => _editorService.Redo() ? "Redo successful" : "Nothing to redo",
+                    ov => ov.Redo())
             });
 
             Register(new McpTool
@@ -522,8 +545,12 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.SaveActiveDocument() ? "File saved" : "Error: could not save"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                // fc420c30: with a CA Editor up this saves ITS text through its own save path. It used to Save() the
+                // native shell, which the overlay keeps clean: the developer's unsaved edits were not saved at all.
+                Handler = args => EditorRouter.Run("save_file",
+                    () => _editorService.SaveActiveDocument() ? "File saved" : "Error: could not save",
+                    ov => ov.Save())
             });
 
             Register(new McpTool
@@ -532,8 +559,12 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Close the currently active editor tab.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                // fc420c30: a CA Editor with unsaved edits is NOT closed (John, 2026-10-05). CloseWindow(true) skips the
+                // closing prompt, and the overlay's Dispose fallback would then write the edits silently.
+                Handler = args => EditorRouter.Run("close_file",
+                    () => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close",
+                    ov => ov.Close())
             });
 
             Register(new McpTool
@@ -546,6 +577,9 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     var files = _editorService.GetOpenFiles();
+                    // fc420c30: a CA Editor tab's native shell stays clean by design; mark it from the overlay's own flag.
+                    var adjust = EditorToolRouter.OpenFilesAdjuster;
+                    if (adjust != null) files = adjust(files) ?? files;
                     return files.Count > 0 ? string.Join("\n", files) : "(no files open)";
                 }
             });
@@ -558,12 +592,15 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "line", "Line number (1-based)" } },
                     new[] { "line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line", 1);
-                    string text = _editorService.GetLineText(line);
-                    return text ?? "Error: could not read line " + line;
+                    return EditorRouter.Run("get_line_text", () =>
+                    {
+                        string text = _editorService.GetLineText(line);
+                        return text ?? "Error: could not read line " + line;
+                    }, ov => ov.GetLineText(line));
                 }
             });
 
@@ -579,13 +616,16 @@ IdeOnly = true,
                         { "end_line", "Last line to read (1-based, inclusive)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line", 1);
                     int endLine = McpJsonRpc.GetInt(args, "end_line", startLine);
-                    string result = _editorService.GetLinesRange(startLine, endLine);
-                    return result ?? "Error: could not read lines " + startLine + "-" + endLine;
+                    return EditorRouter.Run("get_lines_range", () =>
+                    {
+                        string result = _editorService.GetLinesRange(startLine, endLine);
+                        return result ?? "Error: could not read lines " + startLine + "-" + endLine;
+                    }, ov => ov.GetLinesRange(startLine, endLine));
                 }
             });
 
@@ -601,7 +641,7 @@ IdeOnly = true,
                         { "case_sensitive", "true for case-sensitive search (default: false)" }
                     },
                     new[] { "search" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     string search = McpJsonRpc.GetString(args, "search");
@@ -609,7 +649,11 @@ IdeOnly = true,
                     bool caseSensitive = McpJsonRpc.GetString(args, "case_sensitive", "false")
                         .Equals("true", StringComparison.OrdinalIgnoreCase);
 
-                    var results = _editorService.FindInFile(search, caseSensitive);
+                    var found = EditorRouter.Run("find_in_file",
+                        () => _editorService.FindInFile(search, caseSensitive),
+                        ov => ov.FindInFile(search, caseSensitive));
+                    var results = found as List<int[]>;
+                    if (results == null) return found;   // an error string
                     if (results.Count == 0) return "No matches found for: " + search;
 
                     var sb = new StringBuilder();
@@ -626,8 +670,10 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Check if the active file has unsaved changes.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args => _editorService.IsModified() ? "Yes - file has unsaved changes" : "No - file is saved"
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
+                Handler = args => EditorRouter.Run("is_modified",
+                    () => _editorService.IsModified() ? "Yes - file has unsaved changes" : "No - file is saved",
+                    ov => ov.IsModified())
             });
 
             Register(new McpTool
@@ -642,13 +688,16 @@ IdeOnly = true,
                         { "end_line", "Last line to toggle (1-based, inclusive)" }
                     },
                     new[] { "start_line", "end_line" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
                 {
                     int startLine = McpJsonRpc.GetInt(args, "start_line");
                     int endLine = McpJsonRpc.GetInt(args, "end_line");
-                    var result = _editorService.ToggleComment(startLine, endLine);
-                    return result.Success ? "Comment toggled on lines " + startLine + "-" + endLine : "Error: " + result.ErrorMessage;
+                    return EditorRouter.Run("toggle_comment", () =>
+                    {
+                        var result = _editorService.ToggleComment(startLine, endLine);
+                        return result.Success ? "Comment toggled on lines " + startLine + "-" + endLine : "Error: " + result.ErrorMessage;
+                    }, ov => ov.ToggleComment(startLine, endLine));
                 }
             });
 

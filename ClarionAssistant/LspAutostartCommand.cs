@@ -84,6 +84,17 @@ namespace ClarionAssistant
             try { EditorLiveTextProvider.Register(); }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] live-text provider failed: " + ex.Message); }
 
+            // fc420c30: the MCP editor tools reach the CA Editor (Monaco) instead of the native document hidden under it.
+            // At addin start, on the UI thread, so it works with no chat tab and the router knows the UI thread.
+            try
+            {
+                EditorToolRouter.UiThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+                EditorToolRouter.ActiveOverlayResolver = MonacoClarionEditor.ResolveActiveOverlay;
+                EditorToolRouter.OpenFilesAdjuster = MonacoClarionEditor.MarkOverlayDirty;
+                EditorToolRouter.Log = MonacoSpikeLog.Write;
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] editor router failed: " + ex.Message); }
+
             try
             {
                 // (e) Seed and subscribe BEFORE any start below (pipeline run 1): a seed taken after a start

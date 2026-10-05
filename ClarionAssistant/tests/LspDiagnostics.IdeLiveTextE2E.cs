@@ -268,6 +268,15 @@ static class IdeLiveTextE2E
             Check(S(r3, "error") == null && S(r3, "analysed") == "disk" && (S(r3, "analysedReason") ?? "").Contains("no editor has this file open"),
                 "3: expected disk with the IDE's reason (not an error); got " + Show(r3));
 
+            // 3b fc420c30: open in the CA Editor but not edited yet — a different, TRUE reason (the disk is its text)
+            _answer = p => new Dictionary<string, object> { { "found", false }, { "reason", "open in the CA Editor with no unsaved edits (the file on disk is current)" } };
+            var r3b = Call(F("notopen.clw"), null, out ms, out raw); outputs.AppendLine(raw);
+            Console.WriteLine("3b clean   " + Show(r3b));
+            Check(S(r3b, "error") == null && S(r3b, "analysed") == "disk"
+                  && (S(r3b, "analysedReason") ?? "").Contains("open in the CA Editor with no unsaved edits")
+                  && !(S(r3b, "analysedReason") ?? "").Contains("no editor has this file open"),
+                "3b: an open, unedited CA Editor tab must say so (not 'no editor has this file open'); got " + Show(r3b));
+
             // 4 no IDE at all
             ClearRecords();
             var r4 = Call(F("noide.clw"), null, out ms, out raw); outputs.AppendLine(raw);
