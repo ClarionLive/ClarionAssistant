@@ -121,6 +121,10 @@ namespace ClarionAssistant.Services
                 case "readOnly": return "the file is read-only in the CA Editor; nothing was changed.";
                 case "notEditable": return "that range is not editable in the CA Editor; nothing was changed.";
                 case "saveDisabled": return "this CA Editor tab cannot save.";
+                case "undoDidNothing": return "the CA Editor had something to undo, but the undo changed nothing; the text is as it was.";
+                case "redoDidNothing": return "the CA Editor had something to redo, but the redo changed nothing; the text is as it was.";
+                case "undoUnavailable":
+                case "redoUnavailable": return "this CA Editor cannot " + code.Replace("Unavailable", "") + " from a tool; ask the developer to press Ctrl+Z / Ctrl+Y.";
                 default: return "the CA Editor refused (" + code + "); nothing was changed.";
             }
         }
