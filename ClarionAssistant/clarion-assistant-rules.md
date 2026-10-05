@@ -110,7 +110,7 @@ The LSP provides real-time analysis of the actual source code. Use it for:
 - "Are there errors in this file?" / "Did my edit compile?" - lsp_diagnostics
 - "Rename this procedure to Y" - lsp_rename, then present edits for approval, then apply
 
-**Self-correcting edits**: after writing code into an embeditor, call `lsp_diagnostics` to verify the edit is syntactically valid. If new errors appear, fix them before calling `save_and_close_embeditor`. `lsp_diagnostics` returns `{pending, count, diagnostics}` — if `pending: true`, treat as "still analyzing", not "no errors".
+**Self-correcting edits**: after writing code into an embeditor, call `lsp_diagnostics` to verify the edit is syntactically valid. If new errors appear, fix them before calling `save_and_close_embeditor`. `lsp_diagnostics` returns `{pending, partial, count, diagnostics}` — if `pending: true`, treat as "still analyzing", not "no errors"; with `partial: true` the diagnostics are real but only those found so far. For very large modules (60k+ lines) pass `timeout_ms` (e.g. 45000).
 
 **Rename approval**: `lsp_rename` returns the edit list but does NOT apply it. Per rule #10, you must show the list to the developer in chat, wait for explicit approval, then apply using `write_embed_content` / `replace_range` / `write_file`. If rename returns `{error: ...}`, the symbol can't be renamed — explain to the user.
 

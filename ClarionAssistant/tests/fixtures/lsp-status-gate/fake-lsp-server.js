@@ -28,8 +28,9 @@ function send(msg) {
 
 function notify(method, params) { send({ jsonrpc: '2.0', method, params }); }
 
-function publish(uri, messages) {
-    notify('textDocument/publishDiagnostics', {
+// version: optional; the real server sends it from v1.0.8 (#619), 1.0.5 never did.
+function publish(uri, messages, version) {
+    const p = {
         uri,
         diagnostics: messages.map((m, i) => ({
             range: { start: { line: i, character: 0 }, end: { line: i, character: 5 } },
@@ -37,7 +38,9 @@ function publish(uri, messages) {
             source: 'fake-lsp',
             message: m
         }))
-    });
+    };
+    if (version !== undefined) p.version = version;
+    notify('textDocument/publishDiagnostics', p);
 }
 
 // firstcall-server.js swaps this for the real server's spelling of the sender (LspClient's start-time probe).
@@ -121,6 +124,30 @@ function analyse(uri, version) {
                 publish(uri, ['SYNC-PARTIAL', 'SEMANTIC-FULL']);
                 status(uri, version, 'complete');
             });
+            break;
+
+        case 'partial.clw':
+            // 92d06c29: the v1.0.8 shape on a huge module. A versioned sync-pass publish at once, the complete
+            // answer long after a 3 s budget. The budget expires on a publish for the current text: partial.
+            publish(uri, ['PARTIAL-SO-FAR'], version);
+            later(6000, () => {
+                publish(uri, ['PARTIAL-SO-FAR', 'PARTIAL-REST'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'slow.clw':
+            // 92d06c29: completes at 5 s. Pending at the 3 s default; complete with timeout_ms 10000.
+            publish(uri, ['SLOW-SYNC'], version);
+            later(5000, () => {
+                publish(uri, ['SLOW-SYNC', 'SLOW-FULL'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'stalepub.clw':
+            // 92d06c29: the only publish describes an OLDER text. Never served, not even as partial.
+            publish(uri, ['OLD-TEXT'], version - 1);
             break;
 
         default:

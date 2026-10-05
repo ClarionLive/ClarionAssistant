@@ -29,6 +29,11 @@
 #   server does, so LspClient.Start finds the sender in the script):
 #     firstcall.clw  partial publish, NO status; full publish + complete 1500ms later. The first call of
 #                    the session, so no status has been seen on the wire yet -> pending:false, 2
+#   partial run (92d06c29; same server.js as firstcall, publishes carry `version` as v1.0.8's do):
+#     partial.clw    versioned partial publish, complete only at 6 s          -> pending:true, partial:true, 1
+#     slow.clw       completes at 5 s: at the default 3 s                     -> pending:true, partial:true
+#     slow.clw|10000 the same with timeout_ms 10000                           -> pending:false, 2
+#     stalepub.clw   the only publish is for an OLDER version                 -> pending:true, partial:false, 0
 #
 # firstcall goes red on the pre-c7878eba LspClient (it settled on SYNC-PARTIAL after 400ms, pending:false,
 # count 1: the false 'complete' a 62k-line module showed on the first call of a session).
@@ -96,7 +101,8 @@ New-Item -ItemType Directory -Force $extFirst | Out-Null
 Copy-Item $firstJs (Join-Path $extFirst 'server.js') -Force
 Copy-Item $fakeJs (Join-Path $extFirst 'fake-lsp-server.js') -Force
 
-$docs = @('deferred.clw', 'wronguri.clw', 'stalever.clw', 'superseded.clw', 'clean.clw', 'twopass.clw', 'plain.clw', 'firstcall.clw')
+$docs = @('deferred.clw', 'wronguri.clw', 'stalever.clw', 'superseded.clw', 'clean.clw', 'twopass.clw', 'plain.clw', 'firstcall.clw',
+          'partial.clw', 'slow.clw', 'stalepub.clw')
 foreach ($d in $docs) {
     [System.IO.File]::WriteAllText((Join-Path $src $d), "  MEMBER()`r`n", (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -107,7 +113,10 @@ function Invoke-Server([string]$mode, [string[]]$files, [string]$extRoot = (Join
     $requests.Add('{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}')
     $id = 2
     foreach ($f in $files) {
-        $requests.Add('{"jsonrpc":"2.0","id":' + $id + ',"method":"tools/call","params":{"name":"lsp_diagnostics","arguments":{"file_path":' + (ConvertTo-Json (Join-Path $src $f)) + '}}}')
+        # "name.clw|10000" passes timeout_ms 10000 (92d06c29); results stay keyed by the whole entry.
+        $parts = $f -split '\|'
+        $extra = if ($parts.Count -gt 1) { ',"timeout_ms":' + $parts[1] } else { '' }
+        $requests.Add('{"jsonrpc":"2.0","id":' + $id + ',"method":"tools/call","params":{"name":"lsp_diagnostics","arguments":{"file_path":' + (ConvertTo-Json (Join-Path $src $parts[0])) + $extra + '}}}')
         $id++
     }
 
@@ -163,9 +172,9 @@ function Invoke-Server([string]$mode, [string[]]$files, [string]$extRoot = (Join
 }
 
 function Show([string]$f, $r) {
-    if ($null -eq $r) { Write-Host ("  {0,-15} (no parseable result)" -f $f); return }
+    if ($null -eq $r) { Write-Host ("  {0,-18} (no parseable result)" -f $f); return }
     $msgs = @(); if ($r.diagnostics) { $msgs = @($r.diagnostics | ForEach-Object { $_.message }) }
-    Write-Host ("  {0,-15} pending={1} count={2} {3}" -f $f, $r.pending, $r.count, ($msgs -join ' | '))
+    Write-Host ("  {0,-18} pending={1} partial={2} count={3} {4}" -f $f, $r.pending, $r.partial, $r.count, ($msgs -join ' | '))
 }
 
 function Has([object]$r, [string]$text) {
@@ -233,6 +242,30 @@ try {
     # 10. mechanism: the start-time probe found the sender (not the wire switching over by luck).
     Assert-That ($run.Stderr -match 'server\.js sends clarion/diagnosticsStatus') `
         "firstcall run: LspClient.Start did not report finding the diagnosticsStatus sender in server.js"
+
+    # ------------------------------------------------------------ partial run (92d06c29)
+    # Through the firstcall root, so status mode is on from the start, as with the shipped server.
+    $partialFiles = @('partial.clw', 'slow.clw', 'slow.clw|10000', 'stalepub.clw')
+    $run = Invoke-Server 'status' $partialFiles (Join-Path $work 'ext-first')
+    $r = $run.Results
+    Write-Host "partial run:"
+    foreach ($f in $partialFiles) { Show $f $r[$f] }
+
+    # 11. budget expires on a publish for the current text: pending, flagged partial, its entries returned.
+    Assert-That ($null -ne $r['partial.clw'] -and $r['partial.clw'].pending -eq $true -and $r['partial.clw'].partial -eq $true -and [int]$r['partial.clw'].count -eq 1 -and (Has $r['partial.clw'] 'PARTIAL-SO-FAR')) `
+        "partial.clw: expected pending:true partial:true count:1 with PARTIAL-SO-FAR (the entries received before the budget ran out)"
+
+    # 12. default budget (3 s) on a file that completes at 5 s: still pending (partial), NOT complete.
+    Assert-That ($null -ne $r['slow.clw'] -and $r['slow.clw'].pending -eq $true -and $r['slow.clw'].partial -eq $true -and -not (Has $r['slow.clw'] 'SLOW-FULL')) `
+        "slow.clw at the default timeout: expected pending:true partial:true without SLOW-FULL"
+
+    # 13. timeout_ms 10000 waits for the complete answer.
+    Assert-That ($null -ne $r['slow.clw|10000'] -and $r['slow.clw|10000'].pending -eq $false -and $r['slow.clw|10000'].partial -eq $false -and [int]$r['slow.clw|10000'].count -eq 2 -and (Has $r['slow.clw|10000'] 'SLOW-FULL')) `
+        "slow.clw with timeout_ms 10000: expected pending:false partial:false count:2 with SLOW-FULL - timeout_ms was not honoured"
+
+    # 14. a publish for an OLDER text is never served, not even as partial.
+    Assert-That ($null -ne $r['stalepub.clw'] -and $r['stalepub.clw'].pending -eq $true -and $r['stalepub.clw'].partial -eq $false -and [int]$r['stalepub.clw'].count -eq 0) `
+        "stalepub.clw: expected pending:true partial:false count:0 - a publish for an older version leaked out as the answer"
 }
 finally {
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }

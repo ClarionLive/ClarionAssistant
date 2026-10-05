@@ -38,7 +38,7 @@ For each source file returned by `get_project_source_files`:
 
 1. Call `lsp_diagnostics` with the file's absolute path
 2. Collect the results:
-   - If `pending: true` — the server timed out on this file. Mark it as "pending" and move on
+   - If `pending: true` — the server timed out on this file. Mark it as "pending" and move on. If `partial: true`, collect the diagnostics it did return (they are real) but still mark the file pending: the list is incomplete. A file over ~60k lines can be retried once with `timeout_ms: 45000`
    - If `count: 0` — file is clean, no issues
    - If `count > 0` — collect all diagnostics with severity, line, character, and message
 

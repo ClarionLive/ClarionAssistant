@@ -985,6 +985,12 @@ namespace ClarionAssistant.Services
         /// c7878eba: true when the server script itself sends clarion/diagnosticsStatus, so status mode can be on
         /// before the first status arrives. The server does not advertise it in initialize. False when the script
         /// cannot be read: wire detection then switches it on as before.
+        ///
+        /// Deliberately NOT a version gate (do not "simplify" it into one): the server's initialize result carries
+        /// no serverInfo (v1.0.8 returns capabilities only), and only the bundled server has a pinned version
+        /// (lsp-snapshot.json). The other two paths LspService starts, Lsp.ServerPath (manual) and the VS Code
+        /// extension fallback, have no version, or only a folder name. The scan tests the exact property on
+        /// whichever script actually runs.
         /// </summary>
         internal static bool ServerScriptSendsDiagnosticsStatus(string serverJsPath)
         {
@@ -1320,6 +1326,7 @@ namespace ClarionAssistant.Services
             //   none           -> the budget expired mid-analysis. NOT complete, and saying "clean"
             //                     here is the defect this method exists to prevent.
             string lastState = null;
+            bool currentPublish = false;
             lock (_diagnosticsLock)
             {
                 if (_diagnostics.TryGetValue(key, out set))
@@ -1329,17 +1336,27 @@ namespace ClarionAssistant.Services
                     if (!statusMode)
                         sawSemantic = sawSemantic || set.SemanticPassPublished;
                     lastState = set.LastStatusState;
+                    currentPublish = set.WasPublished && !IsStale_NoLock(set, key);
                 }
             }
             result.Pending = !(sawComplete || (!statusMode && (sawSemantic || streamSettled)));
 
+            // 92d06c29: on a pending answer, entries go back only as a flagged partial, and only when they
+            // describe the text we sent. A publish for an older text (or one a status has not yet confirmed,
+            // from a server whose publishes carry no version) would put its problems on the wrong lines.
             if (result.Pending)
+            {
+                result.Partial = currentPublish;
+                if (!currentPublish) result.Entries = new List<DiagnosticEntry>();
+
                 LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for " + key
                     + (statusMode
                         ? " without diagnosticsStatus 'complete' for version " + expectedVersion
                           + " (last state: " + (lastState ?? "none") + ")"
                         : " with only the partial (pre-semantic) publish")
-                    + " — reporting pending, NOT clean.");
+                    + " — reporting pending, NOT clean"
+                    + (currentPublish ? "; " + result.Entries.Count + " entries so far as partial." : "; nothing current to show."));
+            }
 
             return result;
         }
@@ -2418,6 +2435,10 @@ namespace ClarionAssistant.Services
         {
             public List<DiagnosticEntry> Entries;
             public bool Pending;
+            /// <summary>92d06c29: Pending, but Entries are a publish for the text CA sent, received before the
+            /// analysis finished (a 62k-line module's sync pass lands ~2 s in, the complete answer ~17 s). What
+            /// the server has found so far, never "all there is". Always false when Pending is false.</summary>
+            public bool Partial;
         }
 
         #endregion

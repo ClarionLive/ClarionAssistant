@@ -143,7 +143,7 @@ NOTE: LSP uses 0-based line numbers. The IDE tools (open_file, go_to_line) use 1
 
 After you write code into the embeditor (via `write_embed_content`, `replace_range`, `insert_text_at_cursor`), call `lsp_diagnostics` on the file to verify the edit is syntactically valid. If new errors appear, fix them before calling `save_and_close_embeditor`. This is your feedback loop — don't declare work done without checking.
 
-`lsp_diagnostics` returns `{pending, count, diagnostics}`. If `pending: true`, the server didn't respond in 3 seconds — treat that as "still analyzing", NOT as "no errors". Retry once or tell the developer you couldn't verify.
+`lsp_diagnostics` returns `{pending, partial, count, diagnostics}`. `pending: false` is the complete answer (count 0 = clean). `pending: true` means analysis did not finish within the timeout (default 3 s) — treat it as "still analyzing", NOT as "no errors". With `pending: true`, `partial: true` means the diagnostics listed are what the server found SO FAR for the current text: real problems you can act on, but not all of them; `partial: false` means nothing yet. Very large generated modules (60k+ lines) take 20-40 s, so pass `timeout_ms` (e.g. 45000) for those. If it is still pending, tell the developer you couldn't fully verify.
 
 #### Rename via lsp_rename — approval is required
 
