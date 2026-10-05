@@ -34,6 +34,10 @@
 #     slow.clw       completes at 5 s: at the default 3 s                     -> pending:true, partial:true
 #     slow.clw|10000 the same with timeout_ms 10000                           -> pending:false, 2
 #     stalepub.clw   the only publish is for an OLDER version                 -> pending:true, partial:false, 0
+#     emptypartial.clw  a current publish with no entries, complete at 6 s    -> pending:true, partial:false, 0
+#     settled.clw    complete at once; asked AGAIN with the disk text unchanged -> both pending:false. The fake skips
+#                    an identical-content change as the real server does (#359), so re-sending the text as a new
+#                    version and waiting for its status hung for the budget (John's live run, 60 s).
 #
 # firstcall goes red on the pre-c7878eba LspClient (it settled on SYNC-PARTIAL after 400ms, pending:false,
 # count 1: the false 'complete' a 62k-line module showed on the first call of a session).
@@ -102,7 +106,7 @@ Copy-Item $firstJs (Join-Path $extFirst 'server.js') -Force
 Copy-Item $fakeJs (Join-Path $extFirst 'fake-lsp-server.js') -Force
 
 $docs = @('deferred.clw', 'wronguri.clw', 'stalever.clw', 'superseded.clw', 'clean.clw', 'twopass.clw', 'plain.clw', 'firstcall.clw',
-          'partial.clw', 'slow.clw', 'stalepub.clw')
+          'partial.clw', 'slow.clw', 'stalepub.clw', 'emptypartial.clw', 'settled.clw')
 foreach ($d in $docs) {
     [System.IO.File]::WriteAllText((Join-Path $src $d), "  MEMBER()`r`n", (New-Object System.Text.UTF8Encoding($false)))
 }
@@ -245,7 +249,7 @@ try {
 
     # ------------------------------------------------------------ partial run (92d06c29)
     # Through the firstcall root, so status mode is on from the start, as with the shipped server.
-    $partialFiles = @('partial.clw', 'slow.clw', 'slow.clw|10000', 'stalepub.clw')
+    $partialFiles = @('partial.clw', 'slow.clw', 'slow.clw|10000', 'stalepub.clw', 'emptypartial.clw', 'settled.clw', 'settled.clw|4000')
     $run = Invoke-Server 'status' $partialFiles (Join-Path $work 'ext-first')
     $r = $run.Results
     Write-Host "partial run:"
@@ -266,6 +270,23 @@ try {
     # 14. a publish for an OLDER text is never served, not even as partial.
     Assert-That ($null -ne $r['stalepub.clw'] -and $r['stalepub.clw'].pending -eq $true -and $r['stalepub.clw'].partial -eq $false -and [int]$r['stalepub.clw'].count -eq 0) `
         "stalepub.clw: expected pending:true partial:false count:0 - a publish for an older version leaked out as the answer"
+
+    # 15. (b) a current publish with NO entries is pending, not partial: partial is only ever true with entries.
+    Assert-That ($null -ne $r['emptypartial.clw'] -and $r['emptypartial.clw'].pending -eq $true -and $r['emptypartial.clw'].partial -eq $false -and [int]$r['emptypartial.clw'].count -eq 0) `
+        "emptypartial.clw: expected pending:true partial:false count:0 - partial:true was sent with an empty list"
+
+    # 16. control for 17: the first call on settled.clw completes.
+    Assert-That ($null -ne $r['settled.clw'] -and $r['settled.clw'].pending -eq $false -and (Has $r['settled.clw'] 'SETTLED-ONE')) `
+        "settled.clw (first call): expected pending:false with SETTLED-ONE"
+
+    # 17. the same file again, disk text unchanged: answered from the recorded complete. The server skips an
+    #     identical-content change (#359), so a re-sent version would never be answered and this hung for the budget.
+    Assert-That ($null -ne $r['settled.clw|4000'] -and $r['settled.clw|4000'].pending -eq $false -and (Has $r['settled.clw|4000'] 'SETTLED-ONE')) `
+        "settled.clw (second call, unchanged): expected pending:false with SETTLED-ONE - the call re-sent identical text as a new version and waited for a status the server never sends"
+
+    # 18. mechanism: the second call sent nothing for the server to skip.
+    Assert-That ($run.Stderr -notmatch '#359 skipping identical-content change') `
+        "lsp_diagnostics re-sent text the server already holds (the fake logged a #359 skip)"
 }
 finally {
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }

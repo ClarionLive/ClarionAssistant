@@ -938,13 +938,18 @@ namespace ClarionAssistant.Services
             int statusBaseline = GetStatusSeq(filePath);
             int sentVersion = -1;
 
-            // Trigger server analysis before waiting. We always force a new publish
-            // so Claude sees the state of the file as of this call — stale cached
-            // diagnostics from before the last edit are not good enough.
+            // Bring the server to the file's disk text before waiting, so the answer describes the file as of
+            // this call. When the server ALREADY holds that text, nothing is sent (92d06c29): the server skips an
+            // identical-content change (#359 ContentChangeGuard: "Skipping identical-content change event"),
+            // so a re-sent version is never analysed, published or given a status, and waiting for its
+            // `complete` hung for the whole budget (John's second call on PRM002023: 60 s, nothing). Instead
+            // the wait is for the version the server holds, and a `complete` already recorded for it answers
+            // at once (the baseline below drops to 0); one still being analysed is waited for.
+            bool sentNewVersion = true;
             try
             {
                 if (_openDocuments.ContainsKey(filePath))
-                    SendDidChangeFromDisk(filePath);
+                    sentNewVersion = SendDidChangeFromDisk(filePath);
                 else
                     EnsureDocumentOpen(filePath);
 
@@ -959,6 +964,11 @@ namespace ClarionAssistant.Services
                 LspTrace.Write("[LSP] GetDiagnostics trigger failed: " + ex.Message);
                 return result;
             }
+
+            // Nothing sent: a `complete` recorded before this call is still the answer, as long as it names a
+            // version (IsCompleteFor then requires it to be the held version or newer). An unversioned one could
+            // be about an older text, so for those the baseline stays and only a fresh status counts.
+            if (!sentNewVersion && CompleteStatusCarriesVersion(filePath)) statusBaseline = 0;
 
             // waitForSemanticPass: this is the one-shot tool answer (lsp_diagnostics). It gets no
             // second frame in which to correct itself, so it must not settle for the server's
@@ -999,6 +1009,16 @@ namespace ClarionAssistant.Services
             {
                 LspTrace.Write("[LSP] could not read server.js for the diagnosticsStatus probe: " + ex.Message);
                 return false;
+            }
+        }
+
+        private bool CompleteStatusCarriesVersion(string filePath)
+        {
+            string key = FilePathToUri(filePath);
+            lock (_diagnosticsLock)
+            {
+                DiagnosticSet set;
+                return _diagnostics.TryGetValue(key, out set) && set.LastCompleteStatusSeq > 0 && set.LastCompleteVersion >= 0;
             }
         }
 
@@ -1346,8 +1366,10 @@ namespace ClarionAssistant.Services
             // from a server whose publishes carry no version) would put its problems on the wrong lines.
             if (result.Pending)
             {
-                result.Partial = currentPublish;
                 if (!currentPublish) result.Entries = new List<DiagnosticEntry>();
+                // Partial only with something in it: pending with no entries already says "nothing yet" (Charlie,
+                // 2026-10-04), so partial:true with count 0 is never sent.
+                result.Partial = currentPublish && result.Entries.Count > 0;
 
                 LspTrace.Write("[LSP] WaitForDiagnostics: " + timeoutMs + "ms budget expired for " + key
                     + (statusMode
@@ -1583,14 +1605,12 @@ namespace ClarionAssistant.Services
             if (baseKnown)
             {
                 delta = LspTextDiff.Compute(serverText, text);
-                // The server already holds exactly this text. Still send a change, an EMPTY one (nothing replaced at
-                // 0:0), rather than nothing or the whole text. Nothing would starve a caller that sent this to make
-                // the server re-analyse: GetDiagnostics -> SendDidChangeFromDisk waits for a NEW publish and
-                // diagnosticsStatus `complete` for the version it sent, and the server only re-validates on a change,
-                // so skipping it would leave lsp_diagnostics pending for its whole budget whenever the file on disk
-                // matches what the server holds (the usual case). It also keeps one rule for versions: every call
-                // bumps the version by one, as every call did before ranges. The whole text would do the same, at
-                // the full-text cost this path exists to avoid.
+                // The server already holds exactly this text: send an EMPTY change (nothing replaced at 0:0) rather
+                // than the whole text, so every call still bumps the version by one at no full-text cost.
+                // Note (92d06c29): this does NOT make the server re-analyse. It skips identical content (#359
+                // ContentChangeGuard), so the new version gets no publish and no status. That is why
+                // SendDidChangeFromDisk no longer gets here with unchanged text, and why no caller may wait for an
+                // answer to a change that changed nothing.
                 if (delta == null)
                     delta = new LspTextChange { Text = "" };   // StartLine = StartCharacter = EndLine = EndCharacter = 0
             }
@@ -1676,9 +1696,12 @@ namespace ClarionAssistant.Services
         /// after it may have changed (e.g., after write_embed_content or an external edit).
         /// If the file hasn't been opened yet, falls through to EnsureDocumentOpen instead.
         /// </summary>
-        private void SendDidChangeFromDisk(string filePath)
+        /// <returns>True when a new version went to the server (a didOpen or a real change). False when the
+        /// server already holds exactly the disk text: nothing is sent, because the server skips an
+        /// identical-content change without analysing it (#359), so the new version would never be answered.</returns>
+        private bool SendDidChangeFromDisk(string filePath)
         {
-            if (!File.Exists(filePath)) return;
+            if (!File.Exists(filePath)) return false;
 
             lock (_docSyncLock) // reentrant: EnsureDocumentOpen also takes _docSyncLock
             {
@@ -1686,15 +1709,20 @@ namespace ClarionAssistant.Services
                 if (!_openDocuments.TryGetValue(filePath, out currentVersion))
                 {
                     EnsureDocumentOpen(filePath);
-                    return;
+                    return true;
                 }
 
                 string uri = FilePathToUri(filePath);
                 string content = EncodingHelper.ReadAllText(filePath, out _);
+                int hash = TextHash(content);
+                int held;
+                if (_lastSyncedHash.TryGetValue(filePath, out held) && held == hash) return false;
+
                 SendDidChange_NoLock(filePath, uri, currentVersion + 1, content);
                 // The server now holds the DISK text, so the buffer hash must say so too. It used to keep the last
                 // buffer's hash: a buffer matching it afterwards was skipped as "unchanged" while the server held disk.
-                _lastSyncedHash[filePath] = TextHash(content);
+                _lastSyncedHash[filePath] = hash;
+                return true;
             }
         }
 
@@ -2437,7 +2465,8 @@ namespace ClarionAssistant.Services
             public bool Pending;
             /// <summary>92d06c29: Pending, but Entries are a publish for the text CA sent, received before the
             /// analysis finished (a 62k-line module's sync pass lands ~2 s in, the complete answer ~17 s). What
-            /// the server has found so far, never "all there is". Always false when Pending is false.</summary>
+            /// the server has found so far, never "all there is". Always false when Pending is false, and when Entries
+            /// is empty (pending with nothing = "nothing yet").</summary>
             public bool Partial;
         }
 

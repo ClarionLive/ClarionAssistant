@@ -2694,7 +2694,7 @@ COMMON QUERIES:
                     "when analysis finished (N may be 0 for a clean file). If the timeout runs out first, pending is true: " +
                     "treat that as 'still analyzing', NOT as 'no errors'. With pending: true, partial: true means the diagnostics " +
                     "are what the server has found SO FAR for the current text (real problems, but not all of them); " +
-                    "partial: false means nothing yet. Very large generated modules (60k+ lines) can take 20-40 s to finish: " +
+                    "partial: false (always with count 0) means nothing found yet. Very large generated modules (60k+ lines) can take 20-40 s to finish: " +
                     "pass timeout_ms (e.g. 45000) to wait for the complete answer. Severity: 1=error, 2=warning, 3=info, 4=hint.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
@@ -2719,16 +2719,18 @@ COMMON QUERIES:
                     int timeoutMs = LspDiagnosticsTimeoutMs(args);
                     var result = SharedLspBridge.GetDiagnostics(filePath, timeoutMs);
 
+                    // Counted after CA's 'not declared' filter: a partial list it emptied is "nothing yet", not partial.
+                    bool partial = result.Pending && result.Partial && result.Entries.Count > 0;
                     var response = new Dictionary<string, object>
                     {
                         { "pending", result.Pending },
-                        { "partial", result.Pending && result.Partial },
+                        { "partial", partial },
                         { "count", result.Entries.Count }
                     };
 
                     if (result.Pending)
                     {
-                        response["note"] = result.Partial
+                        response["note"] = partial
                             ? "Analysis did not finish within " + timeoutMs + " ms. These are the problems found SO FAR "
                               + "for the current text: real, but not all of them. Call again with a larger timeout_ms "
                               + "(e.g. 45000 for a very large module) for the complete answer."

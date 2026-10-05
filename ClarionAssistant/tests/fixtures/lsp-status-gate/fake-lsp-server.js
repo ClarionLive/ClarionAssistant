@@ -19,6 +19,7 @@
 const MODE = process.env.FAKE_LSP_MODE || 'status';
 
 let buffer = Buffer.alloc(0);
+const texts = new Map();   // uri -> the last text accepted (the #359 guard's snapshot)
 
 function send(msg) {
     const body = Buffer.from(JSON.stringify(msg), 'utf8');
@@ -145,6 +146,23 @@ function analyse(uri, version) {
             });
             break;
 
+        case 'emptypartial.clw':
+            // 92d06c29 (b): a current-version publish with NOTHING in it, the complete much later. Pending,
+            // and NOT partial: partial is only ever true with entries.
+            publish(uri, [], version);
+            later(6000, () => {
+                publish(uri, ['EMPTYPARTIAL-LATE'], version);
+                status(uri, version, 'complete');
+            });
+            break;
+
+        case 'settled.clw':
+            // 92d06c29: analysed and complete at once. Asked about again with the disk text unchanged, the
+            // second call must answer from that complete; a re-sent identical version is skipped (#359).
+            publish(uri, ['SETTLED-ONE'], version);
+            status(uri, version, 'complete');
+            break;
+
         case 'stalepub.clw':
             // 92d06c29: the only publish describes an OLDER text. Never served, not even as partial.
             publish(uri, ['OLD-TEXT'], version - 1);
@@ -172,9 +190,22 @@ function handle(msg) {
     }
     if (msg.method === 'textDocument/didOpen') {
         const td = msg.params.textDocument;
+        texts.set(td.uri, td.text);
         analyse(td.uri, td.version);
     } else if (msg.method === 'textDocument/didChange') {
         const td = msg.params.textDocument;
+        // The real server's #359 ContentChangeGuard: a change whose text is identical to the last accepted text
+        // is skipped. No analysis, no publish, no status, ever, for that version (92d06c29). This server
+        // advertises full sync, so the last change carries the whole text.
+        const changes = msg.params.contentChanges || [];
+        const last = changes.length ? changes[changes.length - 1] : null;
+        if (last && !last.range && typeof last.text === 'string') {
+            if (texts.get(td.uri) === last.text) {
+                process.stderr.write('[fake-lsp] #359 skipping identical-content change v' + td.version + '\n');
+                return;
+            }
+            texts.set(td.uri, last.text);
+        }
         analyse(td.uri, td.version);
     } else if (msg.method === 'exit') {
         process.exit(0);

@@ -20,8 +20,9 @@ using ClarionAssistant.Services;
 //   * the server's LINE TABLE stays right, not just its text: the stand-in keeps documents as the real server does
 //     (vscode-languageserver-textdocument, whose update() patches line offsets incrementally) and counts every change
 //     after which the patched document disagrees with one created fresh from the same text (`drift`);
-//   * a resync of text the server already holds still sends a change (an empty one), so GetDiagnostics' wait for a
-//     fresh publish is not starved; and a document opened from disk is not re-sent when the buffer equals the file;
+//   * a disk resync of text the server already holds sends nothing (the server skips identical content, #359, so a
+//     bumped version would never be answered); and a document opened from disk is not re-sent when the buffer equals
+//     the file;
 //   * the retained server texts are bounded (LspClient.MaxRetainedServerChars), and an evicted document's next change
 //     goes as full text and lands exactly;
 //   * the sync kind is read from either form of the initialize reply: a bare number or { change: N }.
@@ -127,15 +128,15 @@ static class LspClientIncrementalSyncTest
             st = ServerState(c, doc);
             Ok("... and syncing back and forth stays exact", st != null && (string)st["text"] == afterDisk);
 
-            // A disk resync of text the server ALREADY holds (the file equals the server's copy) must still send a
-            // change: GetDiagnostics waits for a fresh publish, which the server only makes after a change. It goes
-            // as an empty range, not as the whole text, and bumps the version by one.
+            // A disk resync of text the server ALREADY holds (the file equals the server's copy) sends NOTHING
+            // (92d06c29). The real server skips an identical-content change (#359 ContentChangeGuard): the new
+            // version would get no publish and no status, and GetDiagnostics waited for them for its whole budget.
             File.WriteAllText(doc, afterDisk);
             var before = ServerState(c, doc);
             c.GetDiagnostics(doc, 200);
             st = ServerState(c, doc);
-            Ok("a resync of text the server already holds still sends a change, as an empty range",
-               st != null && Int(st, "version") == Int(before, "version") + 1 && Int(st, "ranged") == Int(before, "ranged") + 1
+            Ok("a resync of text the server already holds sends nothing (no version bump, no change)",
+               st != null && Int(st, "version") == Int(before, "version") && Int(st, "ranged") == Int(before, "ranged")
                && Int(st, "full") == Int(before, "full") && (string)st["text"] == afterDisk && Int(st, "drift") == 0,
                "version " + Int(before, "version") + " -> " + Int(st, "version") + ", ranged " + Int(before, "ranged") + " -> "
                + Int(st, "ranged") + ", full " + Int(before, "full") + " -> " + Int(st, "full"));
