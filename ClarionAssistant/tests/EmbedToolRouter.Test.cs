@@ -164,6 +164,11 @@ static class EmbedToolRouterTest
         s = r as string ?? "";
         Ok("write ok, noted, the native tool's report", s.StartsWith("lineBase:") && s.Contains("Wrote to embed at line 5.")
             && s.Contains("Line count changed by +2") && s.Contains("CA Embeditor (unsaved)"), s);
+        Ok("the write result names the procedure and slot (fc420c30 style)", s.EndsWith(" — UpdateCust «E:5» (CA Embeditor)"), s);
+        Ok("Named: errors pass through unnamed", EmbedToolRouter.Named("Error: x", "P", 3, "native embeditor") == "Error: x", null);
+        Ok("Named: native write, procedure unknown, still names the slot",
+            EmbedToolRouter.Named("Wrote to embed at line 3.", null, 3, "native embeditor")
+                == "Wrote to embed at line 3. — (procedure unknown) «E:3» (native embeditor)", null);
         Ok("the column is looked up by the slot's NATIVE start line (3, not 5), on the UI thread",
             colAsked.Count == 1 && colAsked[0] == 3 && colOnUi, string.Join(",", colAsked));
         var edits = p.LastApply != null ? p.LastApply["edits"] as List<Dictionary<string, object>> : null;

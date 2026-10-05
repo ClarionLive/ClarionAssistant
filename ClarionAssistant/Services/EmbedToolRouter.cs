@@ -44,6 +44,27 @@ namespace ClarionAssistant.Services
         public static Func<int, int> NativeEmbedColumn;
         /// <summary>[embed-route] log sink.</summary>
         public static Action<string> Log;
+        /// <summary>The procedure the NATIVE embeditor has open, for naming a native write's result, or null. UI thread.
+        /// Set by the addin.</summary>
+        public static Func<string> NativeEmbedProcedure;
+
+        /// <summary>
+        /// A successful embed write names the procedure and slot it changed, in fc420c30's style for file writes
+        /// ("... — file:line (path)"), so a write that landed in the wrong procedure shows at once. Errors pass through.
+        /// </summary>
+        public static string Named(string result, string procedure, int line, string where)
+        {
+            if (result == null || result.StartsWith("Error", StringComparison.OrdinalIgnoreCase)) return result;
+            return result + " — " + (string.IsNullOrEmpty(procedure) ? "(procedure unknown)" : procedure)
+                + " «E:" + line + "» (" + where + ")";
+        }
+
+        /// <summary><see cref="NativeEmbedProcedure"/>, or null when unset or it fails. UI thread.</summary>
+        public static string NativeProcedureName()
+        {
+            try { return NativeEmbedProcedure != null ? NativeEmbedProcedure() : null; }
+            catch { return null; }
+        }
 
         public const int ResolveTimeoutMs = 3000;
         public const int NativeTimeoutMs = 30000;
@@ -380,8 +401,9 @@ namespace ClarionAssistant.Services
                             } },
                         { "caretAtEnd", false }
                     }, EditTimeoutMs);
-                    return Noted(EmbedSlotText.WriteReport(line, plan.LineDelta) +
-                        "\nThe code is in the CA Embeditor (unsaved); the developer's save persists it.");
+                    return Noted(EmbedToolRouter.Named(EmbedSlotText.WriteReport(line, plan.LineDelta) +
+                        "\nThe code is in the CA Embeditor (unsaved); the developer's save persists it.",
+                        _ch.ProcedureName, line, "CA Embeditor"));
                 }
                 catch (HostRequestBroker.RefusedException ex)
                 {

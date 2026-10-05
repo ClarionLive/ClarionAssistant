@@ -100,6 +100,15 @@ namespace ClarionAssistant
                 EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel;
                 EmbedToolRouter.NativeEmbedColumn = line => new AppTreeService().GetEmbedColumn(line);
                 EmbedToolRouter.Log = MonacoSpikeLog.Write;
+                // A native write names its procedure: the col-0 PROCEDURE of the open embeditor's own buffer
+                // (the same source-derived name the CA Embeditor uses; never the temp pwee file name).
+                EmbedToolRouter.NativeEmbedProcedure = () =>
+                {
+                    string title, source, error;
+                    System.Collections.Generic.List<int[]> ranges;
+                    return EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out error)
+                        ? ModernEmbeditorLauncher.ProcNameFromSource(source, null) : null;
+                };
                 McpToolRegistry.EmbedRoutableProbe = () => Terminal.ModernEmbeditorViewContent.EmbedRoutingReady;
             }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] editor router failed: " + ex.Message); }

@@ -1415,7 +1415,9 @@ IdeOnly = true,
                     int line = McpJsonRpc.GetInt(args, "line_number", 0);
                     if (line <= 0) return "Error: line_number is required and must be > 0.";
                     string code = McpJsonRpc.GetString(args, "code") ?? string.Empty;
-                    return EmbedRouter.Run("write_embed_content", () => _appTree.WriteEmbedContentByLine(line, code),
+                    return EmbedRouter.Run("write_embed_content",
+                        () => EmbedToolRouter.Named(_appTree.WriteEmbedContentByLine(line, code),
+                                                    EmbedToolRouter.NativeProcedureName(), line, "native embeditor"),
                         ov => ov.WriteEmbedContent(line, code));
                 }
             });

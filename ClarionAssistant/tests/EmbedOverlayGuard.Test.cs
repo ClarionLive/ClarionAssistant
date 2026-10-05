@@ -247,6 +247,9 @@ static class EmbedOverlayGuardTest
             string lsp = File.ReadAllText(Path.Combine(dir, "LspAutostartCommand.cs"));
             Ok("the editor router's resolver is COMPOSED: CA Editor first, then the covered CA Embeditor",
                 Regex.IsMatch(lsp, @"ActiveOverlayResolver\s*=\s*\(\)\s*=>\s*MonacoClarionEditor\.ResolveActiveOverlay\(\)\s*\?\?\s*Terminal\.ModernEmbeditorViewContent\.ResolveCoveredEmbedOverlay\(\)"), null);
+            Ok("a native write_embed_content result names its procedure (NativeEmbedProcedure wired, the handler uses Named)",
+                lsp.Contains("EmbedToolRouter.NativeEmbedProcedure = ") && lsp.Contains("ModernEmbeditorLauncher.ProcNameFromSource(source, null)")
+                && reg.Contains("EmbedToolRouter.Named(_appTree.WriteEmbedContentByLine(line, code)"), null);
             Ok("the embed router's resolver, column lookup and the routable probe are wired at addin start",
                 lsp.Contains("EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel") &&
                 lsp.Contains("EmbedToolRouter.NativeEmbedColumn = ") &&
