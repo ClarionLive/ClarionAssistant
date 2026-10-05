@@ -225,8 +225,10 @@ namespace ClarionAssistant.Services
     {
         public const int StateTimeoutMs = 15000;   // getSlots carries the whole buffer
         public const int EditTimeoutMs = 15000;
-        /// <summary>A save regenerates the module: the native save_and_close_embeditor's 180 s budget.</summary>
-        public const int SaveTimeoutMs = 180000;
+        /// <summary>A save regenerates the module (the native save_and_close_embeditor allows 180 s), and since
+        /// 1565ef7b's 9531c6c one save cycle can be TWO round-trips: a save that arrives mid-save with newer text runs
+        /// as a follow-up, and only that one raises the event. So twice the native budget.</summary>
+        public const int SaveTimeoutMs = 360000;
 
         private readonly IEmbedOverlayChannel _ch;
         private readonly Func<int, int> _nativeColumn;
