@@ -362,41 +362,27 @@ namespace ClarionAssistant.Services
             EnterBusy();
             try
             {
-            for (int attempt = 0; attempt < CharDelaysMs.Length; attempt++)
+            if (!WaitForEmbedClosed(appTree, 3000))
+            { error = "An embeditor is still open; close it and try again."; return false; }
+
+            // a964cde3: the verified open. It brings the app tree forward (so it works while a Modern
+            // Embeditor or CA Editor tab is the active document), types the name at a quick speed then a slower
+            // one, checks the tree selection before clicking and the opened procedure's NAME after: a wrong
+            // procedure is cancelled without saving. This replaced a "the source mentions the name" check that
+            // a procedure merely CALLING the target passed.
+            var opened = appTree.OpenProcedureEmbedChecked(procName, CharDelaysMs);
+            if (!opened.Ok) { error = opened.Message; return false; }
+
+            string title, ferr;
+            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
             {
-                if (!WaitForEmbedClosed(appTree, 3000))
-                { error = "An embeditor is still open; close it and try again."; return false; }
-
-                // Bring the app tree to the front so the native automation works even when a Modern
-                // Embeditor tab is the active document.
-                appTree.ActivateAppView();
-                appTree.OpenProcedureEmbed(procName, CharDelaysMs[attempt]);
-
-                // First open loads the ABC libraries and can take many seconds; wait generously.
-                if (!WaitForEmbedOpen(appTree, 45000))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Embeditor did not open for '" + procName + "' within 45s.";
-                    continue;
-                }
-
-                string title, ferr;
-                if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out ferr))
-                {
-                    try { appTree.CancelEmbeditor(); } catch { }
-                    error = "Could not read embed source for '" + procName + "': " + ferr;
-                    continue;
-                }
-
-                if (SourceMentionsProcedure(source, procName))
-                    return true; // correct procedure — leave the embeditor open
-
-                // Wrong procedure: keystrokes were dropped at this speed. Close and retry slower.
                 try { appTree.CancelEmbeditor(); } catch { }
-                error = "Opened a different procedure than '" + procName + "' — the locator search missed.";
+                WaitForEmbedClosed(appTree, 3000);
+                error = "Could not read embed source for '" + procName + "': " + ferr;
                 source = null; ranges = null;
+                return false;
             }
-            return false;
+            return true; // correct procedure — leave the embeditor open
             }
             finally { LeaveBusy(); }
         }
@@ -527,23 +513,6 @@ namespace ClarionAssistant.Services
             foreach (var n in names)
                 if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
-        }
-
-        /// <summary>
-        /// Sanity check that the assembled embed source belongs to the procedure: its own name appears in
-        /// its generated source (e.g. "Name PROCEDURE"), so if it's absent we almost certainly opened the
-        /// wrong procedure.
-        /// </summary>
-        private static bool SourceMentionsProcedure(string source, string procName)
-        {
-            if (string.IsNullOrEmpty(source) || string.IsNullOrWhiteSpace(procName)) return false;
-            try
-            {
-                return System.Text.RegularExpressions.Regex.IsMatch(
-                    source, @"\b" + System.Text.RegularExpressions.Regex.Escape(procName) + @"\b",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            }
-            catch { return source.IndexOf(procName, StringComparison.OrdinalIgnoreCase) >= 0; }
         }
 
         // The native embed/ABC open + close are driven by the UI-thread MESSAGE LOOP. The old coarse

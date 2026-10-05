@@ -208,6 +208,7 @@
     <Compile Include="Services\ModernEmbeditorSaver.cs" />
     <Compile Include="Services\EmbedAdoptPolicy.cs" />
     <Compile Include="Services\EmbedApplyFlow.cs" />
+    <Compile Include="Services\ProcedureOpenFlow.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\LocalLayerHandlers.cs" />
     <Compile Include="Services\WebMessageGuard.cs" />

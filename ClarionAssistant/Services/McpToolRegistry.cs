@@ -871,12 +871,15 @@ IdeOnly = true,
             {
                 Name = "open_procedure_embed",
 IdeOnly = true,
-                Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first. Automatically checks for conflicts with other IDE instances.",
+                Description = "Open the embeditor for a specific procedure in the currently open Clarion app. The app must be loaded first. " +
+                    "Brings the app tree forward itself, so it works whatever tab is active. The name must be an exact procedure of the app. " +
+                    "Verified: it reports which procedure opened, and if a different procedure opened it is cancelled without saving and an error is returned. " +
+                    "While the IDE is still loading the app it returns a retryable 'still loading' error. Automatically checks for conflicts with other IDE instances.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to open" } },
                     new[] { "procedure_name" }),
                 RequiresUiThread = true,
-                // Handler itself waits up to 45s for the open — see EmbedRoundTripTimeoutSeconds.
+                // The verified open waits up to 45s per attempt, two attempts - see EmbedRoundTripTimeoutSeconds.
                 UiTimeoutSeconds = EmbedRoundTripTimeoutSeconds,
                 Handler = args =>
                 {
@@ -884,6 +887,7 @@ IdeOnly = true,
                     if (string.IsNullOrEmpty(name)) return "Error: procedure_name required";
 
                     // Auto-check for conflicts with other IDE instances
+                    string warning = null;
                     if (_instanceCoord != null)
                     {
                         try
@@ -895,27 +899,18 @@ IdeOnly = true,
 
                             var conflict = _instanceCoord.CheckProcedureConflict(appFile, name);
                             if (conflict != null)
-                            {
-                                string warning = string.Format(
+                                warning = string.Format(
                                     "WARNING: Another IDE instance (PID {0}) has procedure '{1}' open in {2}. " +
                                     "Editing here may cause save conflicts. Proceeding anyway.",
                                     conflict.Pid, name, Path.GetFileName(conflict.AppFile ?? ""));
-                                string result = _appTree.OpenProcedureEmbed(name);
-                                // OpenProcedureEmbed no longer sleeps after BM_CLICK (the embed open is async);
-                                // wait for the embed to actually open before returning, else the tool reports
-                                // success before the editor is ready.
-                                _appTree.WaitForEmbedOpen(45000);
-                                return warning + "\n\n" + result;
-                            }
                         }
                         catch { /* conflict check failed — proceed anyway */ }
                     }
 
+                    // a964cde3: the verified open (ProcedureOpenFlow) - it brings the app tree forward, waits for
+                    // the open, and cancels a wrong procedure without saving. Its message says which happened.
                     string openResult = _appTree.OpenProcedureEmbed(name);
-                    // OpenProcedureEmbed no longer sleeps after BM_CLICK (async open); wait for the embed to
-                    // actually open before returning so this tool doesn't report success prematurely.
-                    _appTree.WaitForEmbedOpen(45000);
-                    return openResult;
+                    return warning != null ? warning + "\n\n" + openResult : openResult;
                 }
             });
 
@@ -923,7 +918,7 @@ IdeOnly = true,
             {
                 Name = "select_procedure",
 IdeOnly = true,
-                Description = "Select a procedure in the ClaList without opening the embeditor. For testing procedure selection.",
+                Description = "Select a procedure in the app tree without opening the embeditor. Brings the app tree forward itself; the name must be an exact procedure of the app, and the selection is read back and reported.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string> { { "procedure_name", "Name of the procedure to select" } },
                     new[] { "procedure_name" }),
@@ -940,13 +935,16 @@ IdeOnly = true,
             {
                 Name = "get_embed_info",
 IdeOnly = true,
-                Description = "Get info about the currently active embeditor - app name, file, embed position.",
+                Description = "Get info about the currently open embeditor - procedure name, app name, file, embed position.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
                 Handler = args =>
                 {
                     var info = _appTree.GetEmbedInfo();
-                    return info != null ? (object)info : "No embeditor active";
+                    if (info == null) return "No embeditor active";
+                    // a964cde3: which procedure is open (null when it can't be read).
+                    info["procedureName"] = _appTree.GetOpenEmbeditorProcedureName();
+                    return info;
                 }
             });
 

@@ -220,6 +220,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedApplyFlow.Test"
                Sources = @("tests\EmbedApplyFlow.Test.cs", "Services\EmbedApplyFlow.cs", "Services\McpCallContext.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # a964cde3: open_procedure_embed / select_procedure refuse rather than guess - loading and exact-name
+            # gates, app tree brought forward first, no click on a wrong selection, a wrong open cancelled unsaved.
+            @{ Name = "ProcedureOpenFlow.Test"
+               Sources = @("tests\ProcedureOpenFlow.Test.cs", "Services\ProcedureOpenFlow.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # 16d140e9: the Monaco buffer crosses to the host once per content version - the per-surface
             # cache/accessor MonacoEditorControl uses, the sync-message parser, and the newest-wins lane.
             @{ Name = "MonacoBufferSync.Test"
