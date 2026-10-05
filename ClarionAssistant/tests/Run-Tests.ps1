@@ -220,6 +220,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedOverlayGuard.Test.cs", "Services\EmbedOverlayGuard.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # 73bd1f03 fix (2): the embed tools routed to the CA Embeditor's Monaco buffer — formats identical to the
+            # native tools; reads/writes in the CA Embeditor's line space; native column by NATIVE line; fail closed.
+            @{ Name = "EmbedSlotText.Test"
+               Sources = @("tests\EmbedSlotText.Test.cs", "Services\EmbedSlotText.cs")
+               Refs = @("System.dll") }
+            @{ Name = "EmbedToolRouter.Test"
+               Sources = @("tests\EmbedToolRouter.Test.cs", "Services\EmbedToolRouter.cs", "Services\EmbedSlotText.cs",
+                           "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs", "Services\EditorTextOps.cs",
+                           "Services\IUiDispatcher.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # PR #198 pipeline round: apply_embed_edits' write/commit/save half - an abandoned call rolls
             # back instead of saving; a failed save or unconfirmed close discards our writes.
             @{ Name = "EmbedApplyFlow.Test"

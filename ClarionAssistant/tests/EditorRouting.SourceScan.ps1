@@ -52,7 +52,9 @@ $open = Block 'get_open_files'
 Check ($null -ne $open -and $open.Contains('EditorToolRouter.OpenFilesAdjuster')) 'get_open_files marks dirty CA Editor tabs'
 
 $auto = [System.IO.File]::ReadAllText($autostart)
-Check ($auto.Contains('EditorToolRouter.ActiveOverlayResolver = MonacoClarionEditor.ResolveActiveOverlay') -and
+# 73bd1f03 fix (2) composes the resolver (the CA Editor first, then the covered CA Embeditor): accept either form, as
+# long as the CA Editor's resolver is the one asked first.
+Check (($auto -match 'EditorToolRouter\.ActiveOverlayResolver\s*=\s*(\(\)\s*=>\s*)?MonacoClarionEditor\.ResolveActiveOverlay') -and
        $auto.Contains('EditorToolRouter.UiThreadId')) 'the resolver is registered at addin startup (LspAutostartCommand)'
 
 $prov = if (Test-Path $provider) { [System.IO.File]::ReadAllText($provider) } else { '' }

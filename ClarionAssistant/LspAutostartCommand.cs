@@ -89,9 +89,18 @@ namespace ClarionAssistant
             try
             {
                 EditorToolRouter.UiThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
-                EditorToolRouter.ActiveOverlayResolver = MonacoClarionEditor.ResolveActiveOverlay;
+                // 73bd1f03 fix (2): composed, not replaced. The CA Editor of the active view first; else the CA
+                // Embeditor overlay when the active view is the native embeditor it covers.
+                EditorToolRouter.ActiveOverlayResolver = () =>
+                    MonacoClarionEditor.ResolveActiveOverlay() ?? Terminal.ModernEmbeditorViewContent.ResolveCoveredEmbedOverlay();
                 EditorToolRouter.OpenFilesAdjuster = MonacoClarionEditor.MarkOverlayDirty;
                 EditorToolRouter.Log = MonacoSpikeLog.Write;
+
+                // 73bd1f03 fix (2): the embed tools reach the CA Embeditor's Monaco buffer while it holds the procedure.
+                EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel;
+                EmbedToolRouter.NativeEmbedColumn = line => new AppTreeService().GetEmbedColumn(line);
+                EmbedToolRouter.Log = MonacoSpikeLog.Write;
+                McpToolRegistry.EmbedRoutableProbe = () => Terminal.ModernEmbeditorViewContent.EmbedRoutingReady;
             }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] editor router failed: " + ex.Message); }
 

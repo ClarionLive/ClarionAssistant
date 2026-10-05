@@ -1899,57 +1899,37 @@ namespace ClarionAssistant.Services
         {
             var source = GetEmbeditorSource();
             if (source == null) return null;
+            // 73bd1f03: shared with the CA Embeditor route, so both answer in the same shape.
+            return EmbedSlotText.Search(source, pattern, contextLines);
+        }
 
-            var lines = source.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-            Regex rx;
-            try { rx = new Regex(pattern, RegexOptions.IgnoreCase); }
-            catch (Exception ex) { return "Error: invalid pattern — " + ex.Message; }
-
-            // Collect [start, end] ranges for each match (with context), then merge overlaps
-            var ranges = new List<int[]>();
-            for (int i = 0; i < lines.Length; i++)
+        /// <summary>73bd1f03 fix (2): the column of the embed point whose slot starts at 1-based
+        /// <paramref name="lineNumber"/> of the native embeditor document (what WriteEmbedContentByLine indents
+        /// to), or 0 when no embed point starts there. UI thread only.</summary>
+        public int GetEmbedColumn(int lineNumber)
+        {
+            try
             {
-                if (rx.IsMatch(lines[i]))
+                var editor = GetClaGenEditor();
+                var textControl = editor != null ? GetProp(editor, "TextEditorControl") : null;
+                var document = textControl != null ? GetProp(textControl, "Document") : null;
+                var lineManager = document != null ? GetProp(document, "CustomLineManager") : null;
+                var customLines = lineManager != null ? GetProp(lineManager, "CustomLines") as System.Collections.IEnumerable : null;
+                if (customLines == null) return 0;
+                foreach (var cl in customLines)
                 {
-                    int from = Math.Max(0, i - contextLines);
-                    int to   = Math.Min(lines.Length - 1, i + contextLines);
-                    ranges.Add(new[] { from, to });
+                    if (cl == null) continue;
+                    var startNr = GetProp(cl, "StartLineNr");
+                    if (startNr == null || (int)startNr != lineNumber - 1) continue;
+                    var pweePart = GetProp(cl, "PweePart");
+                    if (pweePart == null || pweePart.GetType().GetInterface("SoftVelocity.Generator.PWEE.IPweeEmbedPoint") == null)
+                        return 0;
+                    var textSection = GetProp(pweePart, "Text");
+                    return textSection != null ? Convert.ToInt32(GetProp(textSection, "Column") ?? 1) : 1;
                 }
             }
-
-            if (ranges.Count == 0)
-                return "No matches for: " + pattern;
-
-            // Merge overlapping/adjacent ranges
-            var merged = new List<int[]> { ranges[0] };
-            foreach (var r in ranges)
-            {
-                var last = merged[merged.Count - 1];
-                if (r[0] <= last[1] + 1) last[1] = Math.Max(last[1], r[1]);
-                else merged.Add(new[] { r[0], r[1] });
-            }
-
-            const int MaxOutputChars = 6000;
-            var sb = new StringBuilder();
-            sb.AppendLine("Matches for: " + pattern);
-            int blocksEmitted = 0;
-            foreach (var m in merged)
-            {
-                var block = new StringBuilder();
-                block.AppendLine("--- lines " + (m[0] + 1) + "–" + (m[1] + 1) + " ---");
-                for (int i = m[0]; i <= m[1]; i++)
-                    block.AppendLine(lines[i]);
-
-                if (sb.Length + block.Length > MaxOutputChars)
-                {
-                    int remaining = merged.Count - blocksEmitted;
-                    sb.AppendLine("... [" + remaining + " more block(s) truncated — use a more specific pattern]");
-                    break;
-                }
-                sb.Append(block);
-                blocksEmitted++;
-            }
-            return sb.ToString().TrimEnd();
+            catch { }
+            return 0;
         }
 
         /// <summary>

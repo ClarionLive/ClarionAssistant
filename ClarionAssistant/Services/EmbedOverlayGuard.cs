@@ -14,10 +14,14 @@ namespace ClarionAssistant.Services
     ///     developer's unsaved Monaco edits;
     ///   * a same-size write is overwritten silently if the developer edits that slot in Monaco;
     ///   * Cancel, a tab switch or a tab close discards the native buffer, write included.
-    /// Routing the write into Monaco is the follow-up (it needs fc420c30's page channel); until then the
-    /// write is refused, the same call apply_embed_edits makes through <see cref="EmbedAdoptPolicy"/>.
     ///
-    /// Reads are not refused, but they do not show the developer's unsaved Monaco edits, so they say so.
+    /// FIX (2) ROUTES instead: when the CA Embeditor's page is ready (the "routable" fact), the embed tools go
+    /// to EmbedToolRouter and the editor tools to fc420c30's EditorToolRouter, both acting on Monaco's buffer.
+    /// The refusals and notes below are then the FALLBACK: while the page is not ready (loading, an old page),
+    /// writes are refused and reads say they came from the native buffer, exactly as fix (1) did, and nothing
+    /// ever goes to the native document behind the CA Embeditor. Tools routing cannot serve stay refused:
+    /// native save/cancel (closing the embed under the CA Embeditor), save_file and close_file on the covered
+    /// view (the CA Embeditor's own save is the developer's, until 1565ef7b exposes it).
     ///
     /// Pure: the facts come from the addin (McpToolRegistry's probe hooks), so tests\EmbedOverlayGuard.Test.cs
     /// can pin every branch without an IDE.
@@ -61,6 +65,8 @@ namespace ClarionAssistant.Services
         public static bool IsEmbedWriteTool(string tool) { return In(tool, EmbedWriteTools); }
         public static bool IsEmbedLifecycleTool(string tool) { return In(tool, EmbedLifecycleTools); }
         public static bool IsEditorWriteTool(string tool) { return In(tool, EditorWriteTools); }
+        /// <summary>Editor writes routing does not take over on the covered view: always refused there.</summary>
+        public static bool IsNeverRoutedEditorTool(string tool) { return tool == "save_file" || tool == "close_file"; }
         public static bool IsEmbedReadTool(string tool) { return In(tool, EmbedReadTools); }
         public static bool IsEditorReadTool(string tool) { return In(tool, EditorReadTools); }
 
@@ -80,9 +86,10 @@ namespace ClarionAssistant.Services
         /// <param name="caEmbeditorLive">The CA Embeditor (overlay or live tab) holds the native embeditor open.</param>
         /// <param name="activeEditorCovered">The active editor's text area is that native embed document,
         /// hidden under the overlay.</param>
-        public static string Refusal(string tool, bool caEmbeditorLive, bool activeEditorCovered)
+        /// <param name="routable">The CA Embeditor's page is ready, so the tool is routed to it instead.</param>
+        public static string Refusal(string tool, bool caEmbeditorLive, bool activeEditorCovered, bool routable = false)
         {
-            if (IsEmbedWriteTool(tool) && caEmbeditorLive)
+            if (IsEmbedWriteTool(tool) && caEmbeditorLive && !routable)
                 return "Error: the CA Embeditor is open on this procedure. " + tool + " writes the native embeditor " +
                        "hidden behind it, where the change would not show and would be lost (or would discard the " +
                        "developer's unsaved edits) when the CA Embeditor saves or closes. Nothing was written. " +
@@ -97,7 +104,7 @@ namespace ClarionAssistant.Services
                        ", and leave the CA Embeditor with nothing behind it. Nothing was done. Ask the developer to " +
                        "save or close the CA Embeditor themselves.";
 
-            if (IsEditorWriteTool(tool) && activeEditorCovered)
+            if (IsEditorWriteTool(tool) && activeEditorCovered && (!routable || IsNeverRoutedEditorTool(tool)))
                 return "Error: the active editor is the CA Embeditor. " + tool + " would act on the native embeditor " +
                        "document hidden behind it, not on the code the developer sees, and the CA Embeditor's next " +
                        "save or close would lose or overwrite the change. Nothing was changed. Show the developer the " +
@@ -107,8 +114,9 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>A note to put in front of a read's result, or null.</summary>
-        public static string ReadNote(string tool, bool caEmbeditorLive, bool activeEditorCovered)
+        public static string ReadNote(string tool, bool caEmbeditorLive, bool activeEditorCovered, bool routable = false)
         {
+            if (routable) return null;   // routed: the answer comes from Monaco (the embed route adds its own lineBase)
             if (IsEmbedReadTool(tool) && caEmbeditorLive)
                 return "NOTE: the CA Embeditor is open on this procedure. This is the native embeditor's buffer, which " +
                        "does NOT include the developer's unsaved CA Embeditor edits, and write_embed_content is refused " +
@@ -134,19 +142,28 @@ namespace ClarionAssistant.Services
         public static object Run(string tool, Func<bool> caEmbeditorLiveProbe, Func<bool> activeEditorCoveredProbe,
             Func<object> run, Action<string> log)
         {
+            return Run(tool, caEmbeditorLiveProbe, activeEditorCoveredProbe, null, run, log);
+        }
+
+        /// <param name="routableProbe">Fix (2): the CA Embeditor's page is ready for routed tools. Null (no router)
+        /// or a throwing probe = NOT routable, so the fix (1) refusals apply (fail closed).</param>
+        public static object Run(string tool, Func<bool> caEmbeditorLiveProbe, Func<bool> activeEditorCoveredProbe,
+            Func<bool> routableProbe, Func<object> run, Action<string> log)
+        {
             if (!IsGuarded(tool)) return run();
 
             bool caLive = Probe(caEmbeditorLiveProbe);
             bool covered = caLive && NeedsCovered(tool) && Probe(activeEditorCoveredProbe);
-            string refusal = Refusal(tool, caLive, covered);
+            bool routable = caLive && ProbeOr(routableProbe, false);
+            string refusal = Refusal(tool, caLive, covered, routable);
             if (refusal != null)
             {
-                if (log != null) log("[73bd1f03] refused " + tool + " (caLive=" + caLive + ", covered=" + covered + ")");
+                if (log != null) log("[73bd1f03] refused " + tool + " (caLive=" + caLive + ", covered=" + covered + ", routable=" + routable + ")");
                 return refusal;
             }
 
             object result = run();
-            string note = ReadNote(tool, caLive, covered);
+            string note = ReadNote(tool, caLive, covered, routable);
             var text = result as string;
             if (note != null && text != null && !text.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
                 return note + "\n\n" + text;
@@ -161,6 +178,13 @@ namespace ClarionAssistant.Services
             if (probe == null) return false;
             try { return probe(); }
             catch { return true; }
+        }
+
+        private static bool ProbeOr(Func<bool> probe, bool onFailure)
+        {
+            if (probe == null) return onFailure;
+            try { return probe(); }
+            catch { return onFailure; }
         }
 
         private static bool In(string tool, string[] set)

@@ -101,6 +101,68 @@ namespace ClarionAssistant.Terminal
 
         private const int CoveredProbeTimeoutMs = 2000;
 
+        // ── 73bd1f03 fix (2): Claude's embed and editor tools routed to this CA Embeditor's Monaco buffer ─────────
+
+        /// <summary>The CA Embeditor as the tool routers see it: the procedure, readiness, its open-time (native) slot
+        /// ranges, and requests to the page over fc420c30's host-request channel. Serves both EmbedToolRouter (embed
+        /// tools) and EditorToolRouter (editor tools on the covered view).</summary>
+        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel
+        {
+            private readonly ModernEmbeditorViewContent _v;
+            private readonly List<int[]> _native;
+            public EmbedChannel(ModernEmbeditorViewContent v)
+            {
+                _v = v;
+                _native = new List<int[]>();
+                if (v._editableRanges != null)
+                    foreach (var r in v._editableRanges) if (r != null) _native.Add(new[] { r[0], r[1] });
+            }
+            public string ProcedureName { get { return _v._procedureName ?? "embeditor"; } }
+            public string FilePath { get { return "the CA Embeditor ('" + ProcedureName + "')"; } }
+            public bool PageReady { get { return _v._panel != null && _v._isInitialized; } }
+            public IList<int[]> NativeRanges { get { return _native; } }
+            public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
+            {
+                var p = _v._panel;
+                if (p == null) throw new TimeoutException("the CA Embeditor for '" + ProcedureName + "' closed");
+                return p.Request(action, args, timeoutMs);
+            }
+        }
+
+        private static ModernEmbeditorViewContent LiveEmbedView()
+        {
+            var live = _liveInstance;
+            return (live != null && !live._fileMode && live._liveLinked) ? live : null;
+        }
+
+        /// <summary>EmbedToolRouter.LiveEmbedResolver: the CA Embeditor (overlay or live tab) holding the native embed,
+        /// or null (then the embed tools use the native embeditor, as before). UI thread.</summary>
+        internal static IEmbedOverlayChannel ResolveLiveEmbedChannel()
+        {
+            var v = LiveEmbedView();
+            return v == null ? null : new EmbedChannel(v);
+        }
+
+        /// <summary>Composed after MonacoClarionEditor.ResolveActiveOverlay into EditorToolRouter.ActiveOverlayResolver:
+        /// the CA Embeditor overlay when the ACTIVE view is the native ClaGenEditor it covers, else null. UI thread.</summary>
+        internal static IEditorOverlayChannel ResolveCoveredEmbedOverlay()
+        {
+            var v = LiveEmbedView();
+            if (v == null || !v._embedOverlay) return null;
+            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v) : null;
+        }
+
+        /// <summary>True when Claude's tools can be routed to the CA Embeditor's page (it has loaded). Read off the UI
+        /// thread by EmbedOverlayGuard: while false, the tools stay refused rather than going native.</summary>
+        internal static bool EmbedRoutingReady
+        {
+            get
+            {
+                var v = LiveEmbedView();
+                return v != null && v._panel != null && v._isInitialized;
+            }
+        }
+
         private static bool ActiveEditorIsCoveredByOverlayOnUi()
         {
             var live = LiveOverlayInstance;

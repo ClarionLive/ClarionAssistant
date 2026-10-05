@@ -96,6 +96,9 @@ namespace ClarionAssistant.Services
         // fc420c30: the editor tools go to the CA Editor (Monaco) when one holds the active file, else the native editor.
         private EditorToolRouter _editorRouterField;
         private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui)); } }
+        // 73bd1f03 fix (2): the embed tools, routed to the CA Embeditor's Monaco buffer while it holds the procedure.
+        private EmbedToolRouter _embedRouterField;
+        private EmbedToolRouter EmbedRouter { get { return _embedRouterField ?? (_embedRouterField = new EmbedToolRouter(() => _ui)); } }
         private LspClient _lspClient;
 
         /// <summary>
@@ -150,6 +153,12 @@ namespace ClarionAssistant.Services
         /// its own bounded UI marshal, and a timeout throws (refused, fail closed).
         /// </summary>
         public static Func<bool> ActiveEditorCoveredProbe;
+
+        /// <summary>
+        /// 73bd1f03 fix (2), supplied by the addin: the CA Embeditor's page is ready, so the embed and editor tools are
+        /// ROUTED to its Monaco buffer instead of refused. Any thread. Null or throwing = not routable (refused).
+        /// </summary>
+        public static Func<bool> EmbedRoutableProbe;
 
         /// <summary>
         /// True when the editor-agnostic tools are served by a SEPARATE process and this registry
@@ -243,7 +252,7 @@ namespace ClarionAssistant.Services
                 throw new ArgumentException("Unknown tool: " + name);
 
             // 73bd1f03: never write the native embed document from behind the CA Embeditor.
-            return EmbedOverlayGuard.Run(name, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe,
+            return EmbedOverlayGuard.Run(name, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe, EmbedRoutableProbe,
                 () => tool.Handler(arguments ?? new Dictionary<string, object>()), DiagnosticLog);
         }
 
@@ -1277,12 +1286,12 @@ IdeOnly = true,
                     "Generated code passes through as context; noise lines (! Start of, ! End of, ! [Priority N], !!!) are stripped. " +
                     "Use search_embeditor_source for targeted searches to avoid large output.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
-                RequiresUiThread = true,
-                Handler = args =>
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
+                Handler = args => EmbedRouter.Run("get_embeditor_source", () =>
                 {
                     var result = _appTree.GetEmbeditorSource();
                     return result ?? "Error: No PWEE embeditor is currently open.";
-                }
+                }, ov => ov.GetEmbeditorSource())
             });
 
             Register(new McpTool
@@ -1299,14 +1308,17 @@ IdeOnly = true,
                     { "pattern",       "Regex pattern to search for (case-insensitive). Use specific terms to avoid truncation." },
                     { "context_lines", "Lines of context around each match (default 5)" }
                 }, new[] { "pattern" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     string pattern = McpJsonRpc.GetString(args, "pattern");
                     if (string.IsNullOrEmpty(pattern)) return "Error: pattern is required.";
                     int ctx = McpJsonRpc.GetInt(args, "context_lines", 5);
-                    var result = _appTree.SearchEmbeditorSource(pattern, ctx);
-                    return result ?? "Error: No PWEE embeditor is currently open.";
+                    return EmbedRouter.Run("search_embeditor_source", () =>
+                    {
+                        var result = _appTree.SearchEmbeditorSource(pattern, ctx);
+                        return result ?? "Error: No PWEE embeditor is currently open.";
+                    }, ov => ov.SearchEmbeditorSource(pattern, ctx));
                 }
             });
 
@@ -1322,12 +1334,13 @@ IdeOnly = true,
                 {
                     { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" }
                 }, new[] { "line_number" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line_number", 0);
                     if (line <= 0) return "Error: line_number is required and must be > 0.";
-                    return _appTree.GetEmbedContent(line);
+                    return EmbedRouter.Run("get_embed_content", () => _appTree.GetEmbedContent(line),
+                        ov => ov.GetEmbedContent(line));
                 }
             });
 
@@ -1345,20 +1358,23 @@ IdeOnly = true,
                     "number first and work downward so earlier «E:N» tokens stay valid. " +
                     "Response reports the line delta: if non-zero, all «E:N» tokens after this line are stale — " +
                     "call search_embeditor_source or get_embeditor_source again before writing to later embeds. " +
-                    "Refused (nothing written) while the CA Embeditor is open on the procedure: the native buffer " +
-                    "this writes is hidden behind it and the CA Embeditor's save would lose the change.",
+                    "While the CA Embeditor is open on the procedure the code goes into ITS buffer (visible to the " +
+                    "developer, saved by their save) and line numbers are the CA Embeditor's: read them with " +
+                    "get_embeditor_source/search_embeditor_source while it is open. If it is still loading, the call is " +
+                    "refused and nothing is written.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "line_number", "1-based line number from «E:N» tokens in get_embeditor_source or search_embeditor_source output" },
                     { "code",      "Complete replacement Clarion code for the embed. Include a trailing newline so Ctrl-X can delete every code line. Indentation is applied automatically." }
                 }, new[] { "line_number", "code" }),
-                RequiresUiThread = true,
+                RequiresUiThread = false,   // 73bd1f03: EmbedRouter marshals
                 Handler = args =>
                 {
                     int line = McpJsonRpc.GetInt(args, "line_number", 0);
                     if (line <= 0) return "Error: line_number is required and must be > 0.";
                     string code = McpJsonRpc.GetString(args, "code") ?? string.Empty;
-                    return _appTree.WriteEmbedContentByLine(line, code);
+                    return EmbedRouter.Run("write_embed_content", () => _appTree.WriteEmbedContentByLine(line, code),
+                        ov => ov.WriteEmbedContent(line, code));
                 }
             });
 

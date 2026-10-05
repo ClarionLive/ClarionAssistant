@@ -149,6 +149,39 @@ static class EmbedOverlayGuardTest
         EmbedOverlayGuard.Run("go_to_line", counting, counting, handler, null);
         Ok("navigation (go_to_line) is not refused", ran == 1, null);
 
+        // --- fix (2): routable (the CA Embeditor's page is ready) -> routing replaces the refusals ---
+        mk("Wrote to embed at line 12.");
+        r = EmbedOverlayGuard.Run("write_embed_content", Const(true), Const(false), Const(true), handler, null) as string;
+        Ok("routable: write_embed_content passes to its (routed) handler", ran == 1 && r == "Wrote to embed at line 12.", r);
+        mk("x");
+        r = EmbedOverlayGuard.Run("write_embed_content", Const(true), Const(false), () => { throw new Exception("probe"); }, handler, null) as string;
+        Ok("routable probe throws -> NOT routable: refused (fail closed)", ran == 0 && r != null && r.StartsWith("Error"), r);
+        mk("x");
+        r = EmbedOverlayGuard.Run("write_embed_content", Const(true), Const(false), Const(false), handler, null) as string;
+        Ok("page not ready -> the fix (1) refusal stands", ran == 0 && r != null && r.Contains("Nothing was written"), r);
+        mk("src");
+        r = EmbedOverlayGuard.Run("get_embeditor_source", Const(true), Const(false), Const(true), handler, null) as string;
+        Ok("routable: embed read gets no native-buffer note (the route adds its lineBase)", r == "src", r);
+        foreach (var tool in new[] { "insert_text_at_cursor", "replace_text", "replace_range", "delete_range", "toggle_comment", "undo", "redo" })
+        {
+            mk("ok");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(true), handler, null) as string;
+            Ok("routable: " + tool + " on the covered view passes to its (routed) handler", ran == 1 && r == "ok", r);
+        }
+        foreach (var tool in new[] { "save_file", "close_file", "save_and_close_embeditor", "cancel_embeditor" })
+        {
+            mk("ok");
+            r = EmbedOverlayGuard.Run(tool, Const(true), Const(true), Const(true), handler, null) as string;
+            Ok("routable: " + tool + " is STILL refused (routing does not serve it)", ran == 0 && r != null && r.StartsWith("Error"), r);
+        }
+        mk("line text");
+        r = EmbedOverlayGuard.Run("get_lines_range", Const(true), Const(true), Const(true), handler, null) as string;
+        Ok("routable: editor read on the covered view has no note (it reads Monaco)", r == "line text", r);
+        int routableCalls = 0;
+        mk("x");
+        EmbedOverlayGuard.Run("write_embed_content", Const(false), Const(false), () => { routableCalls++; return true; }, handler, null);
+        Ok("no CA Embeditor -> the routable probe is not asked", routableCalls == 0 && ran == 1, routableCalls.ToString());
+
         // --- wiring (source scan) ---
         string dir = args.Length > 0 ? args[0] : null;
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
@@ -163,7 +196,7 @@ static class EmbedOverlayGuardTest
             string body = m.Success ? m.Groups[1].Value : "";
             Ok("ExecuteTool found", m.Success, null);
             Ok("ExecuteTool routes the handler through EmbedOverlayGuard.Run",
-                Regex.IsMatch(body, @"EmbedOverlayGuard\.Run\(\s*name,\s*CaEmbeditorLiveProbe,\s*ActiveEditorCoveredProbe,\s*\(\)\s*=>\s*tool\.Handler\("),
+                Regex.IsMatch(body, @"EmbedOverlayGuard\.Run\(\s*name,\s*CaEmbeditorLiveProbe,\s*ActiveEditorCoveredProbe,\s*EmbedRoutableProbe,\s*\(\)\s*=>\s*tool\.Handler\("),
                 body.Trim());
             Ok("ExecuteTool calls tool.Handler nowhere else",
                 Regex.Matches(body, @"tool\.Handler\(").Count == 1, body.Trim());
@@ -193,6 +226,25 @@ static class EmbedOverlayGuardTest
                 !Regex.IsMatch(probeBody, @"(?<!Begin)Invoke\("), probeBody.Trim());
             Ok("_liveInstance is volatile (HasLiveOverlay is read off the UI thread)",
                 Regex.IsMatch(mevc, @"private static volatile ModernEmbeditorViewContent _liveInstance;"), null);
+
+            // fix (2) wiring
+            foreach (var t in new[] { "get_embeditor_source", "search_embeditor_source", "get_embed_content", "write_embed_content" })
+            {
+                var tm = Regex.Match(reg, "Name = \"" + t + "\",(.*?)\\n            \\}\\);", RegexOptions.Singleline);
+                string tb = tm.Success ? tm.Groups[1].Value : "";
+                Ok(t + " routes through EmbedRouter.Run, off the UI thread",
+                    tb.Contains("EmbedRouter.Run(\"" + t + "\"") && Regex.IsMatch(tb, @"RequiresUiThread\s*=\s*false"), tm.Success ? null : "tool not found");
+            }
+            string lsp = File.ReadAllText(Path.Combine(dir, "LspAutostartCommand.cs"));
+            Ok("the editor router's resolver is COMPOSED: CA Editor first, then the covered CA Embeditor",
+                Regex.IsMatch(lsp, @"ActiveOverlayResolver\s*=\s*\(\)\s*=>\s*MonacoClarionEditor\.ResolveActiveOverlay\(\)\s*\?\?\s*Terminal\.ModernEmbeditorViewContent\.ResolveCoveredEmbedOverlay\(\)"), null);
+            Ok("the embed router's resolver, column lookup and the routable probe are wired at addin start",
+                lsp.Contains("EmbedToolRouter.LiveEmbedResolver = Terminal.ModernEmbeditorViewContent.ResolveLiveEmbedChannel") &&
+                lsp.Contains("EmbedToolRouter.NativeEmbedColumn = ") &&
+                lsp.Contains("McpToolRegistry.EmbedRoutableProbe = () => Terminal.ModernEmbeditorViewContent.EmbedRoutingReady"), null);
+            string ats = File.ReadAllText(Path.Combine(dir, @"Services\AppTreeService.cs"));
+            Ok("native search_embeditor_source shares EmbedSlotText.Search (one format for both editors)",
+                ats.Contains("return EmbedSlotText.Search(source, pattern, contextLines);"), null);
 
             Ok("addin project compiles the guard",
                 File.ReadAllText(Path.Combine(dir, "ClarionAssistant.csproj")).Contains(@"Services\EmbedOverlayGuard.cs"), null);

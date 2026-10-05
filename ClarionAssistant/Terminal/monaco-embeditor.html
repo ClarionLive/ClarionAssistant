@@ -1125,6 +1125,17 @@
                     hostSaveReqId = id;   // answered from the saveResult branch, after the host has written the file
                     doSave();
                     return;
+                case 'getSlots': {   // 73bd1f03 fix (2): the embed tools (get/search/write embed) routed here
+                    if (fileMode) { replyToHost(id, false, null, 'notEmbed'); return; }
+                    var sm = editor.getModel();
+                    var slotState = {
+                        versionId: sm.getVersionId(), dirty: isDirty, lineCount: sm.getLineCount(),
+                        ranges: embedRanges.map(function (r) { return [r[0], r[1]]; })   // live: the guard keeps them current
+                    };
+                    if (a.withText) slotState.text = sm.getValue();
+                    replyToHost(id, true, slotState);
+                    return;
+                }
                 default:
                     replyToHost(id, false, null, 'unknownAction:' + msg.action);
             }
