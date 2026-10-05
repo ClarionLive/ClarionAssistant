@@ -1522,6 +1522,18 @@ namespace ClarionAssistant.Terminal
         /// Either match reuses the existing tab. This covers the realistic cases, NOT every possible one: a reopen
         /// that changes BOTH the path alias AND the file ID at once (external replace + reopen via a different
         /// alias) still escapes dedup — tracked as follow-up 8348435a. (pipeline item 3 + Run-6/7 adversary)</summary>
+        /// <summary>44a1b10c: the live text of a FILE-mode CA Embeditor tab on <paramref name="path"/> (unsaved edits
+        /// included), or null. Safe off the UI thread: a reference read of a field each edit replaces whole.</summary>
+        internal static string TryGetFileModeLiveText(string path)
+        {
+            try
+            {
+                var inst = FindByFilePath(path);
+                return inst != null && !inst._disposed ? inst._fileLiveText : null;
+            }
+            catch { return null; }
+        }
+
         public static ModernEmbeditorViewContent FindByFilePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;

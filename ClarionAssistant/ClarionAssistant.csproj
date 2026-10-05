@@ -191,6 +191,7 @@
     <Compile Include="ShowModernEmbeditorCommand.cs" />
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
+    <Compile Include="EditorLiveTextProvider.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
     <Compile Include="ActiveDocumentRestoreCommand.cs" />
     <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />

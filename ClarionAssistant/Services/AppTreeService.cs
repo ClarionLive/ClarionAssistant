@@ -1576,6 +1576,17 @@ namespace ClarionAssistant.Services
         /// Metadata noise (! Start of, ! End of, ! [Priority N], !!!) is stripped.
         /// Returns null if no active PWEE editor is open.
         /// </summary>
+        /// <summary>44a1b10c: the open native embeditor's whole document text, unsaved edits (write_embed_content
+        /// included), or null when no embed is open. Its line N is the «E:N» of GetEmbeditorSource. UI thread only.</summary>
+        public string GetEmbeditorDocumentText()
+        {
+            var editor = GetClaGenEditor();
+            if (editor == null) return null;
+            var textControl = GetProp(editor, "TextEditorControl");
+            var document = textControl != null ? GetProp(textControl, "Document") : null;
+            return document != null ? GetProp(document, "TextContent") as string : null;
+        }
+
         public string GetEmbeditorSource()
         {
             var editor = GetClaGenEditor();

@@ -168,6 +168,30 @@ namespace ClarionAssistant
         }
 
         /// <summary>
+        /// 44a1b10c: the text a live CA Monaco source tab holds for <paramref name="path"/>, unsaved edits included, or
+        /// null when no tab has it open or the page has not mirrored an edit yet (its buffer is then the disk file).
+        /// Safe off the UI thread: a reference read of a field the page's fileState message replaces whole, at worst
+        /// one keystroke behind.
+        /// </summary>
+        internal static string TryGetLiveText(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(inst._filePath) || !PathsEqual(inst._filePath, path)) continue;
+                    var text = inst._overlayLiveText;
+                    if (text != null) return text;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Is <paramref name="path"/> open in a live CA Monaco source tab, and does that tab have unsaved
         /// edits? Needed by the editable-compare write-back (task 0d47078b), which must never write a file
         /// out from under an editor holding newer text.

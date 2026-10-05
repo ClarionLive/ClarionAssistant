@@ -2688,9 +2688,16 @@ COMMON QUERIES:
                 Name = "lsp_diagnostics",
                 Description = "Get current errors and warnings for a Clarion source file from the language server. " +
                     "Call this after writing code to verify the edit is syntactically valid — it's Claude's feedback loop " +
-                    "for self-correcting typos, missing imports, and other errors before save. Triggers a fresh analysis " +
-                    "(didChange if the file was already open) so results reflect the current on-disk content.\n" +
-                    "Returns: { pending: false, partial: false, count: N, diagnostics: [{severity, line, character, message, source}] } " +
+                    "for self-correcting typos, missing imports, and other errors before save.\n" +
+                    "WHICH TEXT: when the file is open in an editor, its CURRENT text is checked, unsaved edits included; " +
+                    "otherwise the file on disk. For a generated module whose procedure is open in the embeditor, that is the " +
+                    "embeditor's document, so write_embed_content edits can be checked BEFORE save_and_close_embeditor. " +
+                    "'analysed' says which text was checked (disk | ca-editor-buffer | embeditor-file-buffer | " +
+                    "embeditor-document) and 'lineBase' which line numbers are used (file | embeditor-document). With " +
+                    "lineBase embeditor-document, lineNumber is the embeditor line: the same N as «E:N» and the line_number " +
+                    "of get_embed_content/write_embed_content, NOT a line of the .clw file. 'source' forces the choice.\n" +
+                    "Returns: { pending: false, partial: false, count: N, analysed, lineBase, diagnostics: [{severity, lineNumber (1-based), " +
+                    "line (0-based), character, message, source, inEmbed?}] } " +
                     "when analysis finished (N may be 0 for a clean file). If the timeout runs out first, pending is true: " +
                     "treat that as 'still analyzing', NOT as 'no errors'. With pending: true, partial: true means the diagnostics " +
                     "are what the server has found SO FAR for the current text (real problems, but not all of them); " +
@@ -2700,7 +2707,8 @@ COMMON QUERIES:
                     new Dictionary<string, string>
                     {
                         { "file_path", "Absolute path to the .clw or .inc file to check" },
-                        { "timeout_ms", "Optional. How long to wait for the analysis to finish, in milliseconds. Default 3000, max " + LspDiagnosticsMaxTimeoutMs + "." }
+                        { "timeout_ms", "Optional. How long to wait for the analysis to finish, in milliseconds. Default 3000, max " + LspDiagnosticsMaxTimeoutMs + "." },
+                        { "source", "Optional. \"auto\" (default: the open editor's text if any, else disk), \"disk\" (the saved file), or \"buffer\" (the open editor's text; an error if none is open)." }
                     },
                     new[] { "file_path" }),
                 RequiresUiThread = false,
@@ -2717,7 +2725,14 @@ COMMON QUERIES:
                         return "Error: File not found: " + filePath;
 
                     int timeoutMs = LspDiagnosticsTimeoutMs(args);
-                    var result = SharedLspBridge.GetDiagnostics(filePath, timeoutMs);
+                    string source = McpJsonRpc.GetString(args, "source", "auto");
+                    if (source != "auto" && source != "disk" && source != "buffer")
+                        return "Error: source must be \"auto\", \"disk\" or \"buffer\".";
+
+                    // 44a1b10c: the open editor's text when there is one, else the disk.
+                    var tool = SharedLspBridge.GetDiagnosticsForTool(filePath, timeoutMs, source);
+                    if (tool.Error != null) return "Error: " + tool.Error;
+                    var result = tool.Result;
 
                     // Counted after CA's 'not declared' filter: a partial list it emptied is "nothing yet", not partial.
                     bool partial = result.Pending && result.Partial && result.Entries.Count > 0;
@@ -2725,8 +2740,16 @@ COMMON QUERIES:
                     {
                         { "pending", result.Pending },
                         { "partial", partial },
-                        { "count", result.Entries.Count }
+                        { "count", result.Entries.Count },
+                        { "analysed", tool.Analysed },
+                        { "lineBase", tool.LineBase }
                     };
+                    if (tool.FallbackReason != null)
+                        response["analysedReason"] = "The file is open in an editor, but its text could not be read ("
+                            + tool.FallbackReason + "), so the file on DISK was checked: unsaved edits are not included.";
+                    if (tool.LineBase == "embeditor-document")
+                        response["lineNote"] = "lineNumber is the EMBEDITOR line (the N of «E:N», the line_number of "
+                            + "get_embed_content/write_embed_content), NOT a line of the .clw module.";
 
                     if (result.Pending)
                     {
@@ -2740,22 +2763,27 @@ COMMON QUERIES:
                     }
 
                     var diagList = new List<Dictionary<string, object>>();
-                    foreach (var e in result.Entries)
+                    for (int i = 0; i < result.Entries.Count; i++)
                     {
+                        var e = result.Entries[i];
                         string sevLabel = e.Severity == 1 ? "error"
                                         : e.Severity == 2 ? "warning"
                                         : e.Severity == 3 ? "information"
                                         : e.Severity == 4 ? "hint"
                                         : "unknown";
-                        diagList.Add(new Dictionary<string, object>
+                        var d = new Dictionary<string, object>
                         {
                             { "severity", e.Severity },
                             { "severityLabel", sevLabel },
+                            { "lineNumber", e.Line + 1 },
                             { "line", e.Line },
                             { "character", e.Character },
                             { "message", e.Message ?? "" },
                             { "source", e.Source ?? "" }
-                        });
+                        };
+                        if (tool.InEmbed != null && i < tool.InEmbed.Count && tool.InEmbed[i].HasValue)
+                            d["inEmbed"] = tool.InEmbed[i].Value;
+                        diagList.Add(d);
                     }
                     response["diagnostics"] = diagList;
 

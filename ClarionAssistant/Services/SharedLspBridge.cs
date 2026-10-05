@@ -785,6 +785,143 @@ namespace ClarionAssistant.Services
         }
 
         // ===========================================================================================
+        // 44a1b10c: lsp_diagnostics diagnoses the open editor's text when there is one, else the disk
+        // ===========================================================================================
+
+        /// <summary>An open editor's current text for a path, as the LiveTextProvider reports it.</summary>
+        public sealed class LiveText
+        {
+            /// <summary>The text to diagnose, exactly as the editor syncs it (an embed is already wrapped). Null =
+            /// no usable text; <see cref="Reason"/> then says why, and the tool falls back to the disk.</summary>
+            public string Text;
+            /// <summary>"ca-editor-buffer" | "embeditor-file-buffer" | "embeditor-document".</summary>
+            public string Origin;
+            /// <summary>Lines the wrapping put in front of the editor's own first line (embeditor-document: 0 or 1).
+            /// A diagnostic's line minus this is its line in the editor's numbering; one before it is dropped.</summary>
+            public int LineOffset;
+            /// <summary>Optional 1-based inclusive [start,end] embed-slot ranges in the editor's numbering; when
+            /// present each diagnostic is marked inEmbed.</summary>
+            public List<int[]> EmbedRanges;
+            /// <summary>Why there is no text (e.g. "the IDE did not answer within 2 s"); shown as the fallback reason.</summary>
+            public string Reason;
+        }
+
+        /// <summary>
+        /// Answers "which text is open for this path?" for lsp_diagnostics. The addin registers it at startup (the
+        /// editors live there); the standalone server leaves it null, which means the disk. It is called on the MCP
+        /// worker thread and must never block on the UI thread: it reads with BeginInvoke and a short bounded wait,
+        /// and on a timeout returns a LiveText with a Reason (the tool then reports analysed: disk with that reason).
+        /// Returns null when no editor has the path open.
+        /// </summary>
+        public static Func<string, LiveText> LiveTextProvider;
+
+        /// <summary>What lsp_diagnostics answered for: the result plus which text and which line numbering.</summary>
+        public sealed class ToolDiagnostics
+        {
+            public LspClient.DiagnosticWaitResult Result;
+            /// <summary>"disk" | "ca-editor-buffer" | "embeditor-file-buffer" | "embeditor-document".</summary>
+            public string Analysed = "disk";
+            /// <summary>"file" (the file's own lines) | "embeditor-document" (the embeditor's lines, = «E:N»).</summary>
+            public string LineBase = "file";
+            /// <summary>Why the disk was used although auto was asked for (null when no editor had it open).</summary>
+            public string FallbackReason;
+            /// <summary>Per entry, parallel to Result.Entries: inside an embed slot (null = unknown).</summary>
+            public List<bool?> InEmbed;
+            /// <summary>Set when the call was refused (source "buffer" with no open editor).</summary>
+            public string Error;
+        }
+
+        /// <summary>
+        /// lsp_diagnostics' one entry point (44a1b10c). <paramref name="source"/>: "auto" (an open editor's text if
+        /// there is one, else the disk), "disk", or "buffer" (refused when no editor has the path open).
+        /// </summary>
+        public static ToolDiagnostics GetDiagnosticsForTool(string filePath, int timeoutMs, string source)
+        {
+            var answer = new ToolDiagnostics();
+            source = string.IsNullOrEmpty(source) ? "auto" : source.Trim().ToLowerInvariant();
+
+            LiveText live = null;
+            if (source != "disk")
+            {
+                var provider = LiveTextProvider;
+                if (provider != null)
+                {
+                    try { live = provider(filePath); }
+                    catch (Exception ex) { live = new LiveText { Reason = "the editor lookup failed: " + ex.Message }; }
+                }
+            }
+
+            bool haveText = live != null && live.Text != null;
+            if (!haveText)
+            {
+                if (source == "buffer")
+                {
+                    answer.Error = "No open editor buffer for " + filePath
+                        + (live != null && !string.IsNullOrEmpty(live.Reason) ? " (" + live.Reason + ")" : "")
+                        + ". Use source \"auto\" or \"disk\".";
+                    answer.Result = new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
+                    return answer;
+                }
+                if (live != null) answer.FallbackReason = live.Reason;
+                answer.Result = GetDiagnostics(filePath, timeoutMs);
+                return answer;
+            }
+
+            answer.Analysed = string.IsNullOrEmpty(live.Origin) ? "ca-editor-buffer" : live.Origin;
+            answer.Result = DropUndeclaredWeCanResolve(DiagnosticsForText(filePath, live.Text, timeoutMs), filePath);
+
+            if (answer.Analysed == "embeditor-document")
+            {
+                answer.LineBase = "embeditor-document";
+                answer.Result = ToEditorLines(answer.Result, live.LineOffset);
+            }
+            if (live.EmbedRanges != null && answer.Result.Entries != null)
+            {
+                answer.InEmbed = new List<bool?>(answer.Result.Entries.Count);
+                foreach (var e in answer.Result.Entries)
+                {
+                    int line1 = e.Line + 1;   // already in the editor's numbering
+                    bool inside = false;
+                    foreach (var r in live.EmbedRanges)
+                        if (r != null && r.Length >= 2 && line1 >= r[0] && line1 <= r[1]) { inside = true; break; }
+                    answer.InEmbed.Add(inside);
+                }
+            }
+            return answer;
+        }
+
+        // The given text, never the disk: the bundled client syncs it hash-gated (nothing re-sent when the server holds
+        // it, #359), the shared client gets it as the buffer of its single request.
+        private static LspClient.DiagnosticWaitResult DiagnosticsForText(string filePath, string text, int timeoutMs)
+        {
+            var c = Shared;
+            if (c != null) return SharedGetDiagnostics(c, filePath, timeoutMs, true, text);
+            var lsp = LspClient.Active;
+            return lsp != null
+                ? lsp.GetDiagnosticsForText(filePath, text, timeoutMs)
+                : new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };
+        }
+
+        // Shift entries from the wrapped text's lines to the editor's own (minus the injected header lines), dropping
+        // any that fall on the header. Copies: the entries may be the cache's own objects.
+        private static LspClient.DiagnosticWaitResult ToEditorLines(LspClient.DiagnosticWaitResult r, int offset)
+        {
+            if (r == null || r.Entries == null || offset <= 0) return r;
+            var kept = new List<LspClient.DiagnosticEntry>(r.Entries.Count);
+            foreach (var e in r.Entries)
+            {
+                if (e == null || e.Line - offset < 0) continue;
+                kept.Add(new LspClient.DiagnosticEntry
+                {
+                    Severity = e.Severity, Message = e.Message, Source = e.Source,
+                    Line = e.Line - offset, Character = e.Character,
+                    EndLine = Math.Max(e.Line - offset, e.EndLine - offset), EndCharacter = e.EndCharacter
+                });
+            }
+            return new LspClient.DiagnosticWaitResult { Entries = kept, Pending = r.Pending, Partial = r.Partial && kept.Count > 0 };
+        }
+
+        // ===========================================================================================
         // "'X' is not declared in this file." false positives for app globals
         // ===========================================================================================
         // The server's undeclared-variable diagnostic and its own hover/F12 resolve globals through two
@@ -1290,10 +1427,11 @@ namespace ClarionAssistant.Services
         /// fallback branch (LspClient.GetDiagnostics) carries the #216 gate itself.
         /// This call runs on the caller's thread through Block (bounded), never the UI thread:
         /// lsp_diagnostics is an MCP tool call, and AssistantChatControl dispatches it via Task.Run.</summary>
-        private static LspClient.DiagnosticWaitResult SharedGetDiagnostics(IClarionLanguageClient c, string filePath, int timeoutMs, bool liveBuffer)
+        private static LspClient.DiagnosticWaitResult SharedGetDiagnostics(IClarionLanguageClient c, string filePath, int timeoutMs, bool liveBuffer,
+                                                                           string explicitText = null)
         {
-            string buffer = null;
-            if (liveBuffer) { lock (_sharedBufLock) { _sharedBuffers.TryGetValue(filePath, out buffer); } }
+            string buffer = explicitText;   // 44a1b10c: an open editor's text, chosen by the caller
+            if (buffer == null && liveBuffer) { lock (_sharedBufLock) { _sharedBuffers.TryGetValue(filePath, out buffer); } }
             if (buffer == null && File.Exists(filePath)) { try { buffer = EncodingHelper.ReadAllText(filePath, out _); } catch { } }
 
             var result = new LspClient.DiagnosticWaitResult { Entries = new List<LspClient.DiagnosticEntry>(), Pending = true };

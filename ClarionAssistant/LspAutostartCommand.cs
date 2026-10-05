@@ -78,6 +78,12 @@ namespace ClarionAssistant
                 LspService.SolutionPathProvider = () => EditorService.GetOpenSolutionPath();
             LspService.StartLog = MonacoSpikeLog.Write;   // [lsp-autostart] start|skip reason=
 
+            // 44a1b10c: lsp_diagnostics checks an open editor's text, not the disk. Here, not in the chat panel, so it
+            // works with no chat tab (the chat-only-initialization trap); Run() is on the UI thread, whose context the
+            // provider posts its embeditor reads to.
+            try { EditorLiveTextProvider.Register(); }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] live-text provider failed: " + ex.Message); }
+
             try
             {
                 // (e) Seed and subscribe BEFORE any start below (pipeline run 1): a seed taken after a start
