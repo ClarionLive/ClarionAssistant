@@ -48,7 +48,14 @@ static class SolutionVersionResolverTest
             : "  <Array name=\"OpenFiles\">\r\n    <String value=\"" + openFile + "\" />\r\n  </Array>\r\n");
         if (activeVersion != null) sb.Append("  <ActiveVersion value=\"" + activeVersion + "\" />\r\n");
         sb.Append("</Properties>");
-        File.WriteAllText(Path.Combine(dir, file), sb.ToString(), new UTF8Encoding(true));   // the IDE writes a BOM
+        // The IDE writes its preferences files WITH a UTF-8 BOM, and the reader must cope, so the fixture has one
+        // on purpose: preamble + BOM-free bytes, written explicitly (the BOM guard rejects BOM-emitting encoders).
+        byte[] bom = Encoding.UTF8.GetPreamble();
+        byte[] body = new UTF8Encoding(false).GetBytes(sb.ToString());
+        var bytes = new byte[bom.Length + body.Length];
+        Buffer.BlockCopy(bom, 0, bytes, 0, bom.Length);
+        Buffer.BlockCopy(body, 0, bytes, bom.Length, body.Length);
+        File.WriteAllBytes(Path.Combine(dir, file), bytes);
     }
 
     static int Main()
