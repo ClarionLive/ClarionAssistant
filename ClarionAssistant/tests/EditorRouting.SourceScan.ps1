@@ -7,7 +7,9 @@
 #     overlay path waits for the page, which cannot happen on the UI thread)
 #   * get_open_files marks dirty CA Editor tabs (EditorToolRouter.OpenFilesAdjuster)
 #   * the addin registers the resolver at STARTUP (LspAutostartCommand), not in the chat panel
-#   * get_live_text says "open in the CA Editor with no unsaved edits" for an open, unedited CA Editor tab
+#   * get_live_text says "open in the CA Editor with no unsaved edits" for an open, unedited CA Editor tab, and that a
+#     NATIVE-mode tab's unsaved edits are not visible
+#   * open_file waits until the file is the active editor; the write tools take file_path and name the file they changed
 #
 # MUST BE ABLE TO GO RED: on master (3904549) every tool check fails (-Root <a master checkout's ClarionAssistant>).
 #
@@ -58,6 +60,30 @@ Check ($auto.Contains('EditorToolRouter.ActiveOverlayResolver = MonacoClarionEdi
 $prov = if (Test-Path $provider) { [System.IO.File]::ReadAllText($provider) } else { '' }
 Check ($prov.Contains('MonacoClarionEditor.IsOpenInOverlay(path)') -and $prov.Contains('open in the CA Editor with no unsaved edits')) `
     'get_live_text tells an open, unedited CA Editor tab apart from "no editor has this file open"'
+
+# fc420c30 safety (live, combined-1005b): open_file returned "Opened" while the previous tab was still active.
+$of = Block 'open_file'
+Check ($null -ne $of -and $of.Contains('EditorRouter.OpenAndWait(path') -and $of.Contains('_editorService.ActivateOpenFile(path)') -and
+       $of.Contains('RequiresUiThread = false')) 'open_file waits (off the UI thread) until the file is active, selecting its tab'
+Check ($auto.Contains('EditorToolRouter.OverlayExpectedFor = ') -and $auto.Contains('CaEditorSettings.SourceAppliesTo(path)')) `
+    'open_file knows when to wait for a CA Editor page too (OverlayExpectedFor at startup)'
+foreach ($t in @('insert_text_at_cursor', 'replace_text', 'replace_range', 'delete_range', 'toggle_comment', 'undo', 'redo',
+                 'save_file', 'close_file')) {
+    $b = Block $t
+    Check ($null -ne $b -and $b.Contains('WriteOpts(args') -and $b.Contains('{ "file_path", WriteFilePathHelp }')) `
+        "$t names the file it changed and takes file_path"
+}
+
+# fc420c30 (live): a NATIVE-mode tab (CA Editor toggled off) was reported as "open in the CA Editor with no unsaved edits".
+$mce = Join-Path $Root 'MonacoClarionSourceEditor.cs'
+$mceSrc = if (Test-Path $mce) { [System.IO.File]::ReadAllText($mce) } else { '' }
+$k = $mceSrc.IndexOf('private static bool? OpenTabHasOverlay(')
+$tabHas = if ($k -ge 0) { $mceSrc.Substring($k, [Math]::Min(900, $mceSrc.Length - $k)) } else { '' }
+Check ($tabHas.Contains('if (inst._editor != null) return true;') -and
+       $mceSrc.Contains('internal static bool IsOpenInOverlay(string path) { return OpenTabHasOverlay(path) == true; }')) `
+    'IsOpenInOverlay counts a tab only when its CA Editor is up'
+Check ($prov.Contains('MonacoClarionEditor.IsOpenInNativeEditor(path)') -and $prov.Contains('open in the native Clarion editor') -and
+       $prov.Contains('not visible to the tool')) 'get_live_text says a native-mode tab''s unsaved edits are not visible'
 
 Write-Host ''
 if ($fail -eq 0) { Write-Host "PASS - $pass checks" -ForegroundColor Green; exit 0 }

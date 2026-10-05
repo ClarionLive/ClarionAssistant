@@ -1880,11 +1880,32 @@ namespace ClarionAssistant
             return files;
         }
 
-        /// <summary>44a1b10c / fc420c30: is a CA Editor tab open on <paramref name="path"/> (with or without edits)?</summary>
-        internal static bool IsOpenInOverlay(string path)
+        /// <summary>44a1b10c / fc420c30: is <paramref name="path"/> open in a tab whose CA Editor is UP (with or without
+        /// edits)? A tab in native mode (overlay toggled off, or the file type excluded) has an instance but no overlay:
+        /// that is <see cref="IsOpenInNativeEditor"/>, whose unsaved edits the tools cannot see.</summary>
+        internal static bool IsOpenInOverlay(string path) { return OpenTabHasOverlay(path) == true; }
+
+        /// <summary>fc420c30: is <paramref name="path"/> open in a source tab showing the NATIVE Clarion editor?</summary>
+        internal static bool IsOpenInNativeEditor(string path) { return OpenTabHasOverlay(path) == false; }
+
+        // null = no source tab on that path; else whether its CA Editor overlay is up.
+        private static bool? OpenTabHasOverlay(string path)
         {
-            bool dirty;
-            return TryGetLiveTabState(path, out dirty);
+            if (string.IsNullOrEmpty(path)) return null;
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            bool? found = null;
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(inst._filePath) || !PathsEqual(inst._filePath, path)) continue;
+                    if (inst._editor != null) return true;
+                    found = false;
+                }
+                catch { }
+            }
+            return found;
         }
 
         public static bool? ActiveEditorIsDark()

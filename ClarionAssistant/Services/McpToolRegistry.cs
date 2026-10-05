@@ -1545,7 +1545,7 @@ IdeOnly = true,
                         }
                         _editorService.NavigateToFileAndLine(path, line);
                         return "Opened " + path + " at line " + line;
-                    });
+                    }, () => _editorService.ActivateOpenFile(path));
                 }
             });
 

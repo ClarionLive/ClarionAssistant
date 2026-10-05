@@ -51,6 +51,8 @@ namespace ClarionAssistant.Services
         public const int NativeTimeoutMs = 30000;
         /// <summary>open_file: how long to wait for the opened file to become the active editor (and its CA Editor ready).</summary>
         public const int OpenActivateTimeoutMs = 15000;
+        /// <summary>open_file: when the file is still not active this long after the open, select its tab once more.</summary>
+        public const int ReactivateAfterMs = 1500;
 
         /// <summary>open_file: whether a CA Editor overlay will take this file (MonacoSourceOverlay.Enabled +
         /// CaEditorSettings.SourceAppliesTo). UI thread. Null = never (the standalone server).</summary>
@@ -173,9 +175,11 @@ namespace ClarionAssistant.Services
         /// open_file (fc420c30 safety): open <paramref name="path"/>, then return only once it is the ACTIVE editor and,
         /// when a CA Editor takes it, that editor's page is ready. Bounded: on timeout an error says it is not active
         /// yet, so no write can follow into whichever file IS active (live: "Opened" came back while the developer's real
-        /// file was still active).
+        /// file was still active). <paramref name="activate"/> (UI thread) selects the file's tab: run right after the open
+        /// and again once if it is still not active after <see cref="ReactivateAfterMs"/> (live: an already-open native-mode
+        /// tab stayed behind the previous one).
         /// </summary>
-        public object OpenAndWait(string path, Func<object> nativeOpen, int timeoutMs = OpenActivateTimeoutMs)
+        public object OpenAndWait(string path, Func<object> nativeOpen, Action activate = null, int timeoutMs = OpenActivateTimeoutMs)
         {
             var sw = Stopwatch.StartNew();
             var opened = RunNative("open_file", nativeOpen, sw);
@@ -185,8 +189,15 @@ namespace ClarionAssistant.Services
 
             string lastActive = null;
             bool expectOverlay = false, overlayReady = false;
+            int activations = 0;
             while (true)
             {
+                if (activate != null && (activations == 0 || (activations == 1 && sw.ElapsedMilliseconds >= ReactivateAfterMs)))
+                {
+                    activations++;
+                    bool t;
+                    OnUi<object>(() => { activate(); return null; }, ResolveTimeoutMs, out t);
+                }
                 bool timedOut;
                 var probe = OnUi(() =>
                 {

@@ -99,7 +99,8 @@ console.log('\nwiring (source scan)');
     check('the content listener derives dirty from the model at both legal-edit sites',
         (guard.match(/setDirty\(dirtyFromModel\(\)\)/g) || []).length === 2 && guard.indexOf('setDirty(true)') < 0);
     const src = slice(html, '    function applySource(msg) {', '\n    }\n', 'applySource');
-    check('a load marks the loaded text as the clean state (after setValue)', /model\.setValue\(text\);\s*\n\s*markSavedState\(\);/.test(src));
+    const sv = src.indexOf('model.setValue(text);'), ms = src.indexOf('markSavedState();'), unguard = src.indexOf('guarding = false;');
+    check('a load marks the loaded text as the clean state (after setValue, while still guarded)', sv >= 0 && ms > sv && unguard > ms);
     check('a successful save marks the saved text as the clean state', /setDirty\(false\);\s*markSavedState\(\);/.test(html));
 }
 

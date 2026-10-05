@@ -278,6 +278,90 @@ static class EditorToolRouterTest
             Check("an unanswered UI thread gives an error after the resolve timeout", (r as string ?? "").StartsWith("Error: the IDE's UI thread did not answer")
                 && ms >= EditorToolRouter.ResolveTimeoutMs - 200 && ms < EditorToolRouter.ResolveTimeoutMs + 2000, r + " in " + ms + " ms");
 
+            Console.WriteLine("\nSafety: a write names the file it changed; file_path refuses a write into another file");
+            EditorToolRouter.ActiveOverlayResolver = () => page;
+            NativeCalls = 0;
+            string name = Path.GetFileName(tmp);
+            page.CurLine = 2; page.CurCol = 1;
+            r = router.Run("insert_text_at_cursor", () => Native("insert"), ov => ov.InsertTextAtCursor("! hi"), new EditorToolRouter.RouteOptions { IsWrite = true });
+            Check("an overlay write's result names the file and line", r as string == "Text inserted successfully — " + name + ":2 (" + tmp + ")", r as string);
+            r = router.Run("get_line_text", () => Native("get"), ov => ov.GetLineText(2));
+            Check("...a READ result is not labelled", r as string == "! hiP PROCEDURE", r as string);
+            r = router.Run("replace_text", () => Native("rt"), ov => ov.ReplaceText("nope", "x"), new EditorToolRouter.RouteOptions { IsWrite = true });
+            Check("...an error is not labelled", r as string == "Error: Text not found in document", r as string);
+            string other = Path.Combine(Path.GetTempPath(), "SCRATCH130.clw");
+            string textBefore = page.Text;
+            r = router.Run("insert_text_at_cursor", () => Native("insert"), ov => ov.InsertTextAtCursor("X"),
+                new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = other });
+            Check("file_path naming ANOTHER file is refused, nothing changed", (r as string ?? "").StartsWith("Error: the active editor holds " + tmp + ", not " + other)
+                && page.Text == textBefore && NativeCalls == 0, r as string);
+            r = router.Run("insert_text_at_cursor", () => Native("insert"), ov => ov.InsertTextAtCursor("Y"),
+                new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = tmp.ToUpperInvariant() });
+            Check("file_path naming the active file (any case) goes ahead", (r as string ?? "").StartsWith("Text inserted successfully — " + name), r as string);
+
+            string nativeActive = Path.Combine(Path.GetTempPath(), "PRM002023.clw");
+            var nrouter = new EditorToolRouter(() => ui, () => nativeActive);
+            EditorToolRouter.ActiveOverlayResolver = () => null;
+            r = nrouter.Run("replace_range", () => Native("rr"), ov => "OVERLAY", new EditorToolRouter.RouteOptions { IsWrite = true, NativeLine = 7 });
+            Check("a native write's result names the native active file and line", r as string == "NATIVE:rr — PRM002023.clw:7 (" + nativeActive + ")", r as string);
+            NativeCalls = 0;
+            r = nrouter.Run("replace_range", () => Native("rr"), ov => "OVERLAY", new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = other });
+            Check("file_path is checked against the NATIVE active file too", (r as string ?? "").StartsWith("Error: the active editor holds " + nativeActive) && NativeCalls == 0, r as string);
+
+            Console.WriteLine("\nSafety: open_file returns only once the file is the active editor");
+            string target = other;
+            string active = nativeActive;   // the workbench's active file; ONLY the UI thread changes it
+            int activations = 0;
+            var orouter = new EditorToolRouter(() => ui, () => active);
+            EditorToolRouter.OverlayExpectedFor = p => false;
+            Func<int, Func<object>> openActivatingAfter = delayMs => () =>
+            {
+                new Timer(_ => ui.BeginInvokeOnUi(() => active = target), null, delayMs, Timeout.Infinite);
+                return "Opened " + target;
+            };
+            sw.Restart();
+            r = orouter.OpenAndWait(target, openActivatingAfter(600), null, 5000);
+            ms = sw.ElapsedMilliseconds;
+            Check("open_file waits for a tab that becomes active late", r as string == "Opened " + target && ms >= 500 && ms < 3000, r + " in " + ms + " ms");
+
+            active = nativeActive;
+            sw.Restart();
+            r = orouter.OpenAndWait(target, () => "Opened " + target, null, 1000);
+            ms = sw.ElapsedMilliseconds;
+            Check("a tab that never becomes active gives an error naming the active file (bounded)",
+                (r as string ?? "").StartsWith("Error: opened " + target + ", but it is not the active editor yet (the active editor is " + nativeActive)
+                && ms >= 900 && ms < 3000, r + " in " + ms + " ms");
+
+            // An ALREADY-OPEN tab (live: native mode) that OpenFile did not bring forward: open_file selects it, and
+            // selects it again once if it is still behind.
+            active = nativeActive; activations = 0;
+            sw.Restart();
+            r = orouter.OpenAndWait(target, () => "Opened " + target, () => { if (++activations == 2) active = target; }, 5000);
+            ms = sw.ElapsedMilliseconds;
+            Check("an already-open tab is selected (again after " + EditorToolRouter.ReactivateAfterMs + " ms) until it is active",
+                r as string == "Opened " + target && activations == 2 && ms >= EditorToolRouter.ReactivateAfterMs - 100, r + " activations=" + activations + " in " + ms + " ms");
+            active = nativeActive; activations = 0;
+            r = orouter.OpenAndWait(target, () => "Opened " + target, () => { activations++; active = target; }, 5000);
+            Check("...selected once when that is enough", r as string == "Opened " + target && activations == 1, r + " activations=" + activations);
+
+            // A CA Editor takes the file: wait for its page too.
+            var tpage = new FakePage { Path = target, Text = "x\r\n", UiThreadId = ui.Thread.ManagedThreadId, Ready = false };
+            EditorToolRouter.ActiveOverlayResolver = () => tpage;
+            EditorToolRouter.OverlayExpectedFor = p => true;
+            new Timer(_ => tpage.Ready = true, null, 600, Timeout.Infinite);
+            sw.Restart();
+            r = orouter.OpenAndWait(target, () => "Opened " + target, null, 5000);
+            ms = sw.ElapsedMilliseconds;
+            Check("open_file waits for the CA Editor's page to be ready", r as string == "Opened " + target && ms >= 500, r + " in " + ms + " ms");
+            tpage.Ready = false;
+            r = orouter.OpenAndWait(target, () => "Opened " + target, null, 800);
+            Check("...and a page that never gets ready gives an error", (r as string ?? "").StartsWith("Error: opened") && (r as string).Contains("its CA Editor still loading"), r as string);
+            sw.Restart();
+            r = orouter.OpenAndWait(@"C:\x\Inventory.app", () => "Opened app", null, 5000);
+            Check("an .app (no text editor) returns at once", r as string == "Opened app" && sw.ElapsedMilliseconds < 500, r + " in " + sw.ElapsedMilliseconds + " ms");
+            EditorToolRouter.OverlayExpectedFor = null;
+            EditorToolRouter.ActiveOverlayResolver = () => page;
+
             Console.WriteLine("\nHostRequestBroker");
             int brokerUi = -1;
             var broker = new HostRequestBroker(json => { }, () => Thread.CurrentThread.ManagedThreadId == brokerUi);

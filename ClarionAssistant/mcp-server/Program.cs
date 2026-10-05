@@ -876,6 +876,7 @@ namespace ClarionAssistant.McpServer
             public bool GoToLine(int lineNumber) { return Nope<bool>(); }
             public void NavigateToFileAndLine(string filePath, int lineNumber) { Nope<bool>(); }
             public void OpenFileOnly(string filePath) { Nope<bool>(); }
+            public bool ActivateOpenFile(string filePath) { return Nope<bool>(); }
             public bool SaveActiveDocument() { return Nope<bool>(); }
             public bool CloseActiveDocument() { return Nope<bool>(); }
         }

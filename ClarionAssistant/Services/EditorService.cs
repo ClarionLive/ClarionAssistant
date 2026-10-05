@@ -603,6 +603,27 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// fc420c30: bring an already-open file's tab to the front (FileService.GetOpenFile + SelectWindow). OpenFile alone
+        /// left the previous tab active when the file was already open (live, a native-mode tab), so open_file selects it
+        /// explicitly. Returns false when the file is not open.
+        /// </summary>
+        public bool ActivateOpenFile(string filePath)
+        {
+            try
+            {
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                var fileServiceType = sharpDevelopAsm?.GetType("ICSharpCode.SharpDevelop.FileService");
+                var getOpenFile = fileServiceType?.GetMethod("GetOpenFile",
+                    BindingFlags.Public | BindingFlags.Static, null, new Type[] { typeof(string) }, null);
+                var window = getOpenFile?.Invoke(null, new object[] { filePath });
+                if (window == null) return false;
+                window.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(window, null);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Scroll a SPECIFIC text area so the given 0-based line sits roughly centered in the
         /// viewport, instead of pinned to the very top. Computes the target first-visible line
         /// from TextView.VisibleLineCount, but always applies it via the TextArea's own ScrollTo

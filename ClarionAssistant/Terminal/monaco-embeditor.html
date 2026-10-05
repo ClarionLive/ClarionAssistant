@@ -1778,10 +1778,10 @@
                 var model = editor.getModel();
                 guarding = true;            // programmatic load — don't let the guard revert it
                 model.setValue(text);
-                markSavedState();           // fc420c30: this text is the clean state an undo can return to
                 resetBufferSync();          // a new document: the host's cached buffer is the old one (16d140e9)
                 resetDiagnosticsForNewSource();   // ...and its first squiggle pass must not queue behind the old one's
                 resetLocalFirstState();     // ...and the old procedure's cached completion must not leak in (1c685f2e)
+                markSavedState();           // fc420c30: the loaded text is the clean state an undo can return to
                 // Honor the host's language choice (file mode can open non-Clarion files as plaintext).
                 try { if (msg.language) monaco.editor.setModelLanguage(model, msg.language); } catch (e) { }
                 applyEmbedDecorations();
