@@ -1112,10 +1112,24 @@
                     return;
                 case 'undo':
                 case 'redo': {
+                    // The MODEL's own undo/redo, not editor.trigger(..., 'undo'): Monaco's undo command acts on the
+                    // FOCUSED editor, and while the developer's focus is in the terminal that call is a silent no-op
+                    // (live on PRM002130: "Undo successful", nothing changed, Ctrl+Z in Monaco then undid it).
+                    // TextModel.undo/redo/canUndo/canRedo are runtime methods (not in the 0.52 public d.ts).
+                    // `done` is what HAPPENED (the version moved), never what canUndo promised.
                     var model = editor.getModel();
-                    var can = msg.action === 'undo' ? model.canUndo() : model.canRedo();
-                    if (can) activeEd().trigger('mcp-tool', msg.action, null);
-                    replyToHost(id, true, { done: can });
+                    var isUndo = msg.action === 'undo';
+                    var can = isUndo ? model.canUndo() : model.canRedo();
+                    if (!can) { replyToHost(id, true, { done: false }); return; }
+                    if (typeof (isUndo ? model.undo : model.redo) !== 'function') { replyToHost(id, false, null, msg.action + 'Unavailable'); return; }
+                    var before = model.getVersionId();
+                    var settle = function () {
+                        if (model.getVersionId() !== before) replyToHost(id, true, { done: true });
+                        else replyToHost(id, false, null, msg.action + 'DidNothing');
+                    };
+                    var r = isUndo ? model.undo() : model.redo();
+                    if (r && typeof r.then === 'function') r.then(settle, function (e) { replyToHost(id, false, null, 'exception: ' + (e && e.message ? e.message : e)); });
+                    else settle();
                     return;
                 }
                 case 'save':

@@ -75,7 +75,10 @@ function makeWorld(text, opts) {
         },
         getValueInRange(r) { const v = value(); return v.substring(this.getOffsetAt(r.getStartPosition()), this.getOffsetAt({ lineNumber: r.endLineNumber, column: r.endColumn })); },
         canUndo: () => W.undo.length > 0,
-        canRedo: () => W.redo.length > 0
+        canRedo: () => W.redo.length > 0,
+        // Monaco 0.52's runtime TextModel.undo/redo: act on the model, focus or not.
+        undo() { if (opts.brokenModelUndo) return; if (W.undo.length) { W.redo.push(value()); W.lines = W.undo.pop().split('\r\n'); W.version++; contentListener(); } },
+        redo() { if (opts.brokenModelUndo) return; if (W.redo.length) { W.undo.push(value()); W.lines = W.redo.pop().split('\r\n'); W.version++; contentListener(); } }
     };
     W.model = model;
     W.pos = { lineNumber: 2, column: 1 };
@@ -103,9 +106,14 @@ function makeWorld(text, opts) {
             W.lines = v.split('\r\n'); W.version++;
             contentListener();
         },
+        // Monaco 0.52's REAL behaviour (fc420c30 live failure): editor.trigger(.., 'undo'/'redo') runs the undo COMMAND,
+        // which acts on the FOCUSED editor. Here the developer's focus is in the terminal (the MCP tool case), so it is
+        // a silent no-op. The previous fake made it always work, which is how the bug got through.
+        hasTextFocus: () => !!opts.focused,
         trigger(src, cmd) {
-            if (cmd === 'undo' && W.undo.length) { W.redo.push(value()); W.lines = W.undo.pop().split('\r\n'); W.version++; contentListener(); }
-            if (cmd === 'redo' && W.redo.length) { W.undo.push(value()); W.lines = W.redo.pop().split('\r\n'); W.version++; contentListener(); }
+            if (!opts.focused) return;
+            if (cmd === 'undo') model.undo();
+            if (cmd === 'redo') model.redo();
         },
         revealRangeInCenterIfOutsideViewport() { },
         revealPositionInCenterIfOutsideViewport() { },
@@ -199,6 +207,14 @@ console.log('\nselection, reveal, undo/redo');
     check('undo after an edit → done:true, text restored', env.last().data.done === true && env.model.getValue() === SEED);
     env.api.handle({ type: 'hostRequest', reqId: 14, action: 'redo', args: {} });
     check('redo → done:true, edit back', env.last().data.done === true && env.model.getValue().startsWith('!'));
+    check('undo/redo work with the editor NOT focused (the MCP tool case)', !env.editor.hasTextFocus());
+}
+{
+    // done must be what happened, never what canUndo promised: a model whose undo does nothing is an error.
+    const env = makeWorld(SEED, { brokenModelUndo: true });
+    env.api.handle({ type: 'hostRequest', reqId: 15, action: 'applyEdits', args: { expectedVersionId: 1, edits: [{ startLine: 1, startCol: 1, endLine: 1, endCol: 1, text: '!' }] } });
+    env.api.handle({ type: 'hostRequest', reqId: 16, action: 'undo', args: {} });
+    check('an undo that changes nothing → refused "undoDidNothing", not "done"', env.last().ok === false && env.last().error === 'undoDidNothing', JSON.stringify(env.last()));
 }
 
 console.log('\nsave');
