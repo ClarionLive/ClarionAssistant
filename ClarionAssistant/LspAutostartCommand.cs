@@ -131,6 +131,18 @@ namespace ClarionAssistant
         private static void StartVersionFollower()
         {
             if (_versionFollower != null) return;
+
+            // 0ce0b5e2: the record this IDE publishes for the standalone clarion-mcp-server carries the IDE's live
+            // version choice - which the IDE restored from the solution's own preferences when it opened it - and
+            // the config dir holding those preferences. The standalone cannot read either for itself.
+            IdeSolutionRecord.VersionChoiceProvider = () =>
+            {
+                string live;
+                return ClarionVersionService.TryGetLiveIdeVersionName(out live)
+                    ? ClarionVersionSelector.NormalizeIdeChoice(live) : null;
+            };
+            IdeSolutionRecord.ConfigDirProvider = ClarionConfigDirectory.Resolve;
+
             // Run() is a /Workspace/Autostart command, so this is the UI thread with the workbench's
             // WindowsFormsSynchronizationContext installed. Without one the handler below runs inline
             // (after the IDE has stored the new value), which is still correct.
@@ -184,6 +196,8 @@ namespace ClarionAssistant
                 // The server takes its .red and library paths once, at start. No-op when nothing is running,
                 // when it already serves this version, or while the shared ClarionLsp addin owns the LSP.
                 LspService.RestartIfVersionChanged(name);
+                // And tell the standalone clarion-mcp-server now, not at the next solution poll (0ce0b5e2).
+                IdeSolutionRecord.Republish();
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[version-follow] failed: " + ex.Message); }
         }

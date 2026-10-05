@@ -443,8 +443,15 @@ namespace ClarionAssistant.McpServer
                 // version independently, so --clarion-version and the solution's committed
                 // clarion-assistant.json shaped the tools' answers but not the language server's
                 // redirection file or library paths — the two silently disagreeing (d051fbd1 item 5).
-                ClarionAssistant.Services.LspService.VersionConfigProvider =
-                    () => workspace.CurrentVersionConfig;
+                // 0ce0b5e2: for the solution the LSP actually serves (--solution, or the IDE's followed one), and
+                // re-asked on every lsp_* call, so the IDE's own choice for that solution reaches the language
+                // server, and a change to it restarts the server.
+                ClarionAssistant.Services.LspService.SolutionVersionProvider = sln =>
+                {
+                    string note;
+                    var cfg = workspace.VersionConfigFor(sln, out note);
+                    return new ClarionAssistant.Services.SolutionVersionChoice { Config = cfg, Note = note };
+                };
                 // And the ClarionGraph library (root + key), for the same reason (GH #247): it used to run its own
                 // Detect(), which outside a Clarion tree read the newest settings folder.
                 ClarionAssistant.Services.EffectiveClarionVersion.HostConfigProvider =
