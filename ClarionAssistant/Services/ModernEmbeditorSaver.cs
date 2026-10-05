@@ -11,9 +11,10 @@ namespace ClarionAssistant.Services
     /// changed embed slots via WriteEmbedContentByLine, then SaveAndCloseEmbeditor.
     ///
     /// Safety-first (this writes real user code):
-    ///   • Re-derive the fresh embed structure and ABORT if it no longer matches the snapshot
-    ///     (slot count or start lines differ → the procedure changed underneath).
-    ///   • For each changed slot, ABORT if the fresh on-disk text differs from what we opened
+    ///   • Re-derive the fresh embed structure and match the snapshot's slots to it by identity
+    ///     (<see cref="EmbedSavePlanner"/>, 1565ef7b): slots that merely moved are found at their new lines;
+    ///     a changed slot count or generated skeleton ABORTS.
+    ///   • For each changed slot, ABORT if the fresh text differs from what we opened
     ///     (someone edited it elsewhere) — never overwrite a slot we don't recognise.
     ///   • Write changed slots bottom-to-top (so earlier line numbers stay valid), verbatim
     ///     (no re-indent). If any write errors, CANCEL (persist nothing).
@@ -29,7 +30,7 @@ namespace ClarionAssistant.Services
             return TextLines.ExtractRanges(source, ranges);
         }
 
-        public static string Save(string procName, List<int[]> originalRanges,
+        public static string Save(string procName, string originalSource, List<int[]> originalRanges,
             IList<string> originalSlotTexts, IList<string> currentSlotTexts, out bool ok)
         {
             ok = false;
@@ -58,32 +59,26 @@ namespace ClarionAssistant.Services
 
             try
             {
-                // Embeditor is open with the verified-correct procedure; confirm structure matches snapshot.
-                if (!RangesMatch(franges, originalRanges))
+                // Embeditor is open with the verified-correct procedure. Match the snapshot's slots to the
+                // fresh ones by identity, not line number (1565ef7b): a save from a tab whose slots have since
+                // moved still lands in the right slots, and a slot changed both here and elsewhere is refused.
+                // Cancelling here is safe: this is the TRANSIENT embed we just opened, and the developer's
+                // text stays in the tab.
+                var plan = EmbedSavePlanner.Plan(originalSource, originalRanges, originalSlotTexts, currentSlotTexts,
+                    null, fsource, franges);
+                if (!plan.CanSave)
                 {
                     try { appTree.CancelEmbeditor(); } catch { }
-                    return "Save aborted: '" + procName + "' has changed since you opened it (embed structure " +
-                           "differs). Reload the tab and re-apply your edits.";
+                    return "Save refused: " + plan.Refusal + " Your edits are still in this tab.";
                 }
 
-                var freshSlotTexts = ExtractSlotTexts(fsource, franges);
-                foreach (int i in changed)
-                {
-                    if (!NLEqual(freshSlotTexts[i], originalSlotTexts[i]))
-                    {
-                        try { appTree.CancelEmbeditor(); } catch { }
-                        return "Save aborted: the embed slot near line " + originalRanges[i][0] +
-                               " was changed elsewhere since you opened it. Reload the tab and re-apply.";
-                    }
-                }
-
-                // Write changed slots bottom-to-top so earlier slots' line numbers stay valid.
+                // Planned writes are bottom-to-top so earlier slots' line numbers stay valid.
                 var errors = new List<string>();
-                foreach (int i in changed.OrderByDescending(x => originalRanges[x][0]))
+                foreach (var w in plan.Writes)
                 {
-                    string res = appTree.WriteEmbedContentByLine(originalRanges[i][0], currentSlotTexts[i] ?? "", false);
+                    string res = appTree.WriteEmbedContentByLine(w.Key, w.Value, false);
                     if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + originalRanges[i][0] + ": " + res);
+                        errors.Add("  • slot@line " + w.Key + ": " + res);
                 }
 
                 if (errors.Count > 0)
@@ -106,7 +101,7 @@ namespace ClarionAssistant.Services
                            "close it in the IDE before saving again.";
 
                 ok = true;
-                return "Saved " + changed.Count + " embed slot(s) to '" + procName + "'.";
+                return "Saved " + changed.Count + " embed slot(s) to '" + procName + "'." + EmbedLiveSaveFlow.ForeignNote(plan);
             }
             catch (Exception ex)
             {
@@ -115,25 +110,6 @@ namespace ClarionAssistant.Services
             }
         }
 
-        /// <summary>
-        /// LIVE-LINKED fast-path save (ticket a5bbf005). The procedure's native embeditor is ALREADY open — the
-        /// foreground live tab never cancelled it — so we SKIP OpenAndMirror entirely: no locator re-type, no
-        /// re-find (the error-prone step this whole feature removes). We confirm the embed is still open and its
-        /// structure still matches the snapshot (a cheap re-read of the OPEN buffer — no typing), then write the
-        /// changed slots per-slot bottom-to-top (verbatim) into the SAME live Document and SaveAndCloseEmbeditor.
-        ///
-        /// SAVE-AND-EXIT semantics: SaveAndCloseEmbeditor closes the native embed (releasing the single-embeditor
-        /// lock); the caller then closes the Monaco tab — matching native Clarion embed editing.
-        ///
-        /// The caller (RunSaveRoundTrip) picks SaveLive-vs-<see cref="Save"/> UP FRONT via IsStillLive()
-        /// (this==_liveInstance AND the native embed is still open), so the normal demoted-tab case never reaches
-        /// here — it goes straight to <see cref="Save"/>. SaveLive's own "no longer open" return is a belt-and-
-        /// suspenders for the razor-thin window between that check and this call; it does NOT trigger an in-line
-        /// retry (RRT self-heals on the next save, when IsStillLive sees the embed gone and routes to Save).
-        /// Structure-mismatch is a genuine user-facing "reload and re-apply", never a silent fallback.
-        /// Never does a whole-buffer replace (that silently no-ops on PWEE embed regions and would clobber the
-        /// read-only generated lines) — always per changed slot. UI thread only.
-        /// </summary>
         /// <summary>Push the Monaco buffer's slots into the STILL-OPEN native embed WITHOUT saving or closing
         /// it — SaveLive's write loop, stopping short of SaveAndCloseEmbeditor.
         ///
@@ -150,8 +126,8 @@ namespace ClarionAssistant.Services
         /// Failure is NON-DESTRUCTIVE by design: unlike SaveLive, a partial write does NOT cancel the embed.
         /// The user has not asked to discard anything yet — they are mid-close, and Clarion's own prompt has
         /// not even been shown. Report and let the caller decide.</summary>
-        public static string SyncLive(string procName, List<int[]> ranges,
-            IList<string> originalSlotTexts, IList<string> currentSlotTexts, out bool ok)
+        public static string SyncLive(string procName, string originalSource, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> currentSlotTexts, IList<string> nativeAlt, out bool ok)
         {
             ok = false;
             if (string.IsNullOrWhiteSpace(procName)) return "Sync skipped: no procedure bound.";
@@ -164,34 +140,32 @@ namespace ClarionAssistant.Services
             var appTree = new AppTreeService();
             if (appTree.GetEmbedInfo() == null) return "Sync skipped: the live embeditor is no longer open.";
 
-            // Same structure guard as SaveLive: writing against stale ranges would corrupt the embed.
+            // Same slot matching as SaveLive (1565ef7b): writing against stale ranges would corrupt the embed,
+            // but slots that merely MOVED are matched by identity rather than refused.
             string ftitle, fsource, ferr;
             List<int[]> franges;
             if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out ftitle, out fsource, out franges, out ferr))
                 return "Sync skipped: could not re-read the open embed buffer: " + ferr;
-            if (!RangesMatch(franges, ranges))
-                return "Sync skipped: embed structure changed since it was opened.";
-
-            var changed = new List<int>();
-            for (int i = 0; i < ranges.Count; i++)
-                if (!NLEqual(currentSlotTexts[i], originalSlotTexts[i])) changed.Add(i);
-            if (changed.Count == 0) { ok = true; return "Nothing to sync."; }
+            var plan = EmbedSavePlanner.Plan(originalSource, ranges, originalSlotTexts, currentSlotTexts, nativeAlt,
+                fsource, franges);
+            if (!plan.CanSave) return "Sync skipped: " + plan.Refusal;
+            if (plan.Writes.Count == 0) { ok = true; return "Nothing to sync."; }
 
             try
             {
                 var errors = new List<string>();
-                // Bottom-to-top so earlier slots' line numbers stay valid; verbatim, no re-indent.
-                foreach (int i in changed.OrderByDescending(x => ranges[x][0]))
+                // Planned bottom-to-top so earlier slots' line numbers stay valid; verbatim, no re-indent.
+                foreach (var w in plan.Writes)
                 {
-                    string res = appTree.WriteEmbedContentByLine(ranges[i][0], currentSlotTexts[i] ?? "", false);
+                    string res = appTree.WriteEmbedContentByLine(w.Key, w.Value, false);
                     if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + ranges[i][0] + ": " + res);
+                        errors.Add("  • slot@line " + w.Key + ": " + res);
                 }
                 if (errors.Count > 0)
                     return "Sync FAILED (embed left open, nothing discarded):\r\n" + string.Join("\r\n", errors);
 
                 ok = true;
-                return "Synced " + changed.Count + " slot(s) into the live embed.";
+                return "Synced " + plan.Writes.Count + " slot(s) into the live embed.";
             }
             catch (Exception ex)
             {
@@ -199,77 +173,45 @@ namespace ClarionAssistant.Services
             }
         }
 
-        public static string SaveLive(string procName, List<int[]> ranges,
-            IList<string> originalSlotTexts, IList<string> currentSlotTexts, out bool ok)
+        /// <summary>
+        /// LIVE-LINKED fast-path save (ticket a5bbf005). The procedure's native embeditor is ALREADY open — the
+        /// foreground live tab never cancelled it — so we SKIP OpenAndMirror entirely: no locator re-type, no
+        /// re-find (the error-prone step this whole feature removes). The changed slots are written per slot,
+        /// bottom-to-top and verbatim, into the SAME live Document, then SaveAndCloseEmbeditor (SAVE-AND-EXIT:
+        /// it releases the single-embeditor lock and the caller closes the Monaco surface, as native Clarion does).
+        ///
+        /// Slots are matched to the CURRENT native buffer by identity, not line number, and the save decides
+        /// whether it can go through before anything is torn down; see <see cref="EmbedLiveSaveFlow"/> (1565ef7b).
+        /// A refusal or failed write leaves the native embed open and the CA Embeditor intact. <c>beforeClose</c>
+        /// runs only when the save is committed, immediately before SaveAndCloseEmbeditor. Never a whole-buffer
+        /// replace (that silently no-ops on PWEE embed regions and would clobber the read-only generated lines).
+        ///
+        /// The caller picks SaveLive vs <see cref="Save"/> up front via IsStillLive(); <c>NotLive</c> covers the
+        /// razor-thin window after that check. UI thread only.
+        /// </summary>
+        public static EmbedLiveSaveOutcome SaveLive(string procName, string originalSource, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> currentSlotTexts, IList<string> nativeAlt, Action beforeClose)
         {
-            ok = false;
-            if (string.IsNullOrWhiteSpace(procName))
-                return "Save unavailable: this view isn't bound to a procedure.";
-            if (ranges == null || originalSlotTexts == null || currentSlotTexts == null)
-                return "Save aborted: missing slot data.";
-            if (currentSlotTexts.Count != ranges.Count || originalSlotTexts.Count != ranges.Count)
-                return "Save aborted: slot count mismatch (Monaco " + currentSlotTexts.Count +
-                       ", original " + originalSlotTexts.Count + ", ranges " + ranges.Count + ").";
+            // 1565ef7b: the flow decides whether the save can go through BEFORE beforeClose (the overlay detach)
+            // and never cancels the native embed, so a refused or failed save keeps the developer's text.
+            return EmbedLiveSaveFlow.SaveLive(new AppTreeLiveSaveOps(new AppTreeService()), procName, originalSource,
+                ranges, originalSlotTexts, currentSlotTexts, nativeAlt, beforeClose);
+        }
 
-            var appTree = new AppTreeService();
-            // The live embed must still be open. If not, we're not actually live — signal fallback to Save().
-            if (appTree.GetEmbedInfo() == null)
-                return "Save aborted: the live embeditor is no longer open (fall back to re-open save).";
-
-            // Cheap re-read of the OPEN buffer (NO locator typing) + structure match. Held-open under a disabled
-            // IDE can't drift, so this virtually always matches; it's a belt-and-suspenders guard, not a re-open.
-            string ftitle, fsource, ferr;
-            List<int[]> franges;
-            if (!EmbeditorCompletionService.TryGetActiveEmbeditorSource(out ftitle, out fsource, out franges, out ferr))
-                return "Save aborted: could not re-read the open embed buffer: " + ferr;
-            if (!RangesMatch(franges, ranges))
+        /// <summary>The live IDE behind <see cref="IEmbedLiveSaveOps"/>. UI thread only.</summary>
+        private sealed class AppTreeLiveSaveOps : IEmbedLiveSaveOps
+        {
+            private readonly AppTreeService _appTree;
+            public AppTreeLiveSaveOps(AppTreeService appTree) { _appTree = appTree; }
+            public bool EmbedOpen() { return _appTree.GetEmbedInfo() != null; }
+            public bool ReadNative(out string source, out List<int[]> ranges, out string error)
             {
-                try { appTree.CancelEmbeditor(); } catch { }
-                return "Save aborted: '" + procName + "' embed structure changed since it was opened. " +
-                       "Reload the tab and re-apply your edits.";
+                string title;
+                return EmbeditorCompletionService.TryGetActiveEmbeditorSource(out title, out source, out ranges, out error);
             }
-
-            var changed = new List<int>();
-            for (int i = 0; i < ranges.Count; i++)
-                if (!NLEqual(currentSlotTexts[i], originalSlotTexts[i]))
-                    changed.Add(i);
-
-            try
-            {
-                // Write changed slots bottom-to-top so earlier slots' line numbers stay valid; verbatim.
-                var errors = new List<string>();
-                foreach (int i in changed.OrderByDescending(x => ranges[x][0]))
-                {
-                    string res = appTree.WriteEmbedContentByLine(ranges[i][0], currentSlotTexts[i] ?? "", false);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + ranges[i][0] + ": " + res);
-                }
-                if (errors.Count > 0)
-                {
-                    try { appTree.CancelEmbeditor(); } catch { } // discard — persist nothing on partial failure
-                    return "Save FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors);
-                }
-
-                // Save-AND-EXIT: SaveAndCloseEmbeditor persists AND closes the native embed (releasing the lock)
-                // even when nothing changed (keeps the lock lifecycle uniform — the caller always closes the tab).
-                string saveRes = appTree.SaveAndCloseEmbeditor();
-                if (saveRes != null && saveRes.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                    return "Save error: " + saveRes;
-
-                if (!ModernEmbeditorLauncher.WaitForEmbedClosed(appTree, 3000))
-                    return "Save error: '" + procName + "' was written but the embeditor did not confirm closed — " +
-                           "close it in the IDE before saving again.";
-
-                ok = true;
-                return changed.Count == 0
-                    ? "No changes to save."
-                    : "Saved " + changed.Count + " embed slot(s) to '" + procName + "'.";
-            }
-            catch (Exception ex)
-            {
-                try { appTree.CancelEmbeditor(); } catch { }
-                return "Save error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
-            }
+            public string WriteSlot(int line, string code) { return _appTree.WriteEmbedContentByLine(line, code, false); }
+            public string SaveAndClose() { return _appTree.SaveAndCloseEmbeditor(); }
+            public bool WaitClosed(int timeoutMs) { return ModernEmbeditorLauncher.WaitForEmbedClosed(_appTree, timeoutMs); }
         }
 
         /// <summary>
@@ -362,14 +304,6 @@ namespace ClarionAssistant.Services
                     return ex.InnerException != null ? ex.InnerException.Message : ex.Message;
                 }
             }
-        }
-
-        private static bool RangesMatch(List<int[]> a, List<int[]> b)
-        {
-            if (a == null || b == null || a.Count != b.Count) return false;
-            for (int i = 0; i < a.Count; i++)
-                if (a[i] == null || b[i] == null || a[i][0] != b[i][0] || a[i][1] != b[i][1]) return false;
-            return true;
         }
 
         private static bool NLEqual(string x, string y)

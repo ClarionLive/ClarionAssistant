@@ -220,6 +220,18 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedApplyFlow.Test"
                Sources = @("tests\EmbedApplyFlow.Test.cs", "Services\EmbedApplyFlow.cs", "Services\McpCallContext.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 1565ef7b: a CA Embeditor save that can't go through never loses the developer's text - slots are
+            # matched by read-only skeleton (a drift elsewhere re-maps), the save decides BEFORE the overlay
+            # detaches and never cancels, recovery files are BOM-free and atomic, the stash restores per slot.
+            @{ Name = "EmbedSaveFlow.Test"
+               Sources = @("tests\EmbedSaveFlow.Test.cs", "Services\EmbedSaveFlow.cs", "Services\EmbedRecovery.cs",
+                           "Services\TextLines.cs")
+               Refs = @("System.dll", "System.Core.dll") }
+            # ... and the ordering in the IDE-coupled callers that the harness above can't reach (red on 3904549).
+            @{ Name = "EmbedSaveOrder.SourceScan"
+               Sources = @("tests\EmbedSaveOrder.SourceScan.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             # 16d140e9: the Monaco buffer crosses to the host once per content version - the per-surface
             # cache/accessor MonacoEditorControl uses, the sync-message parser, and the newest-wins lane.
             @{ Name = "MonacoBufferSync.Test"

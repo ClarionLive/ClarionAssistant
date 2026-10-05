@@ -1405,8 +1405,45 @@ namespace ClarionAssistant.Terminal
             public string Proc;
             public List<string> Original;        // the torn-down overlay's slot BASELINE (validation key)
             public List<string> Edited;          // its unsaved edited slot texts
+            public string RecoveryFile;          // the disk copy WriteRecoveryFile made of them (path, "!error" or null)
         }
         private static EmbedEditStash _editStash;   // single-slot: at most one live overlay exists (a5bbf005)
+        // The slot texts the last successful close-gesture SyncLive pushed into the NATIVE buffer (bcba6efb). If
+        // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
+        // not the open-time text; the save planner accepts it as ours instead of calling it a conflict. (1565ef7b)
+        private List<string> _nativeSyncedSlots;
+        private List<string> _lastRecoverySlots;   // what WriteRecoveryFile last wrote, so a teardown doesn't write it twice
+        private string _lastRecoveryFile;
+
+        /// <summary>Write the developer's changed slots to a recovery file (<see cref="Services.EmbedRecovery"/>).
+        /// Returns the path, null when nothing differed from the baseline, or "!" + the error when the write
+        /// failed — never throws (it runs on failure paths).</summary>
+        private string WriteRecoveryFile(string reason, IList<string> editedSlots)
+        {
+            try
+            {
+                string path = Services.EmbedRecovery.Write(_procedureName, reason, _editableRanges, _originalSlotTexts, editedSlots);
+                MonacoSpikeLog.Write("[recovery] " + (path ?? "nothing to recover") + " — " + reason);
+                _lastRecoverySlots = editedSlots != null ? new List<string>(editedSlots) : null;
+                _lastRecoveryFile = path;
+                return path;
+            }
+            catch (Exception ex)
+            {
+                MonacoSpikeLog.Write("[recovery] write FAILED: " + ex.Message);
+                return "!" + ex.Message;
+            }
+        }
+
+        /// <summary>The sentence that tells the developer where their text went (folder AND file).</summary>
+        private static string RecoveryNote(string recoveryResult)
+        {
+            if (recoveryResult == null) return "";
+            if (recoveryResult.StartsWith("!"))
+                return " A recovery copy could NOT be written (" + recoveryResult.Substring(1) + ").";
+            return " Your edits were saved to a recovery file in " + Path.GetDirectoryName(recoveryResult) + ":\r\n" +
+                   Path.GetFileName(recoveryResult);
+        }
 
         public ModernEmbeditorViewContent(string title, string sourceText, List<int[]> editableRanges,
             string language = "clarion", bool isDark = true, string procedureName = null, bool liveLinked = false,
@@ -1743,18 +1780,28 @@ namespace ClarionAssistant.Terminal
                 if (stash == null || _panel == null) return;
                 if (!string.Equals(stash.Proc, _procedureName, StringComparison.OrdinalIgnoreCase)) return;   // another proc's stash — leave it for its own re-open
                 _editStash = null;   // single-shot: consumed (or invalidated) by this attach
-                bool baselineMatches = _originalSlotTexts != null && stash.Original.Count == _originalSlotTexts.Count;
-                if (baselineMatches)
-                    for (int i = 0; i < stash.Original.Count; i++)
-                        if (!string.Equals(stash.Original[i], _originalSlotTexts[i], StringComparison.Ordinal)) { baselineMatches = false; break; }
-                if (!baselineMatches)
+                // Per slot, not all-or-nothing (1565ef7b): a slot changed elsewhere since the teardown (e.g. Clarion's
+                // own "Save changes?" Yes) no longer blocks restoring the slots the developer actually edited.
+                var restored = Services.EmbedSavePlanner.MergeStash(stash.Original, stash.Edited, _originalSlotTexts);
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                if (restored == null)
                 {
-                    try { _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}"); } catch { }
+                    // Say where the text is: the recovery file written at teardown (1565ef7b).
+                    string where = stash.RecoveryFile != null && !stash.RecoveryFile.StartsWith("!")
+                        ? " They were saved to " + stash.RecoveryFile + "." : "";
+                    try
+                    {
+                        if (where.Length > 0)
+                            _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(
+                                "Your unsaved edits from the interrupted embeditor session could not be restored (the generated " +
+                                "source changed underneath them)." + where) + "}");
+                        else _panel.PostJson("{\"type\":\"restoreSlotsFailed\"}");
+                    }
+                    catch { }
                     ClarionAssistant.MonacoSpikeLog.Write("stashed unsaved edits NOT restored — baseline changed (" + _procedureName + ")");
                     return;
                 }
-                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(stash.Edited) + "}");
+                _panel.PostJson("{\"type\":\"restoreSlots\",\"slots\":" + ser.Serialize(restored) + "}");
                 ClarionAssistant.MonacoSpikeLog.Write("restored stashed unsaved edits into re-opened embed (" + _procedureName + ")");
             }
             catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("TryRestoreStashedEdits error: " + ex.Message); }
@@ -1950,9 +1997,24 @@ namespace ClarionAssistant.Terminal
                 }
 
                 bool ok;
-                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _editableRanges,
-                    _originalSlotTexts, _mirroredSlots, out ok);
+                string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, _mirroredSlots, _nativeSyncedSlots, out ok);
                 MonacoSpikeLog.Write("[native-dirty] SyncLive ok=" + ok + " — " + msg);
+                if (ok) _nativeSyncedSlots = new List<string>(_mirroredSlots);
+                else
+                {
+                    // Clarion's prompt is about to appear, and its Yes saves the NATIVE buffer, which does not have
+                    // these edits. Put them on disk and say where BEFORE the prompt, so neither answer loses them.
+                    // (1565ef7b: this was the second route to the same loss.)
+                    string rec = WriteRecoveryFile("Ctrl+F4 could not copy them into Clarion's embed buffer (" + msg + ")", _mirroredSlots);
+                    try
+                    {
+                        CaNotice.Post("embed-sync-failed", "CA Embeditor: edits not in Clarion's buffer",
+                            "Your CA Embeditor edits to " + _procedureName + " could not be copied into Clarion's embed " +
+                            "buffer, so Clarion's \"Save changes?\" will NOT include them (" + msg + ")." + RecoveryNote(rec));
+                    }
+                    catch { }
+                }
 
                 // Set the flag even if the sync failed: a prompt on stale content is bad, but closing with NO
                 // prompt loses the edits outright. The user still gets asked, and the log names the failure.
@@ -2059,6 +2121,7 @@ namespace ClarionAssistant.Terminal
                     catch { }
                     return;
                 }
+                _teardownIntentional = true;   // the developer chose to discard — Dispose must not keep a recovery copy
                 PostCloseTab();   // tab / snapshot / file mode: discard by closing the tab
             };
             try
@@ -2430,35 +2493,71 @@ namespace ClarionAssistant.Terminal
             // own right for a first-call cost, so it gets its own mark rather than being folded into "enter".
             mark("liveCheck(live=" + live + ",overlay=" + _embedOverlay + ",slots=" + current.Count + ")");
 
-            // OVERLAY save-and-exit (a5bbf005): tear the Monaco surface OFF the embed host BEFORE SaveLive closes the
-            // native embed. Closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
-            // our WebView2 child on the native close stack (the documented freeze). We already captured `current`, so
-            // the surface isn't needed for the write; and SaveLive discards-on-failure (cancels the embed either
-            // way), so detaching first is consistent with both outcomes. DetachOverlay disposes the WebView2 on THIS
-            // settled turn — well before SaveAndCloseEmbeditor's native-close DoEvents pump.
+            // OVERLAY save-and-exit (a5bbf005). The Monaco surface must come OFF the embed host BEFORE the native
+            // embed closes: closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
+            // our WebView2 child on the native close stack (the documented freeze).
+            //
+            // BUT ONLY ONCE THE SAVE IS GOING THROUGH (1565ef7b). This used to detach first and save second; when
+            // the save then refused (any line-count drift in the native buffer) and cancelled the embed, the
+            // developer's text was gone with the surface. SaveLive now plans and writes with the overlay still
+            // attached and calls the detach (beforeClose) only immediately before SaveAndCloseEmbeditor. A refusal
+            // or a failed write returns with the editor untouched, and the page shows why.
             if (_embedOverlay && live)
             {
-                _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
-                DetachOverlay();
-                mark("detachOverlay");
-                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
-                mark("SaveLive(overlay) ok=" + ok);
-                if (ok) _editStash = null;     // saved — any stash for this proc is now stale
+                var o = ModernEmbeditorSaver.SaveLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, current, _nativeSyncedSlots, () =>
+                    {
+                        _teardownIntentional = true;   // save-and-exit — the buffer is being persisted, don't stash (d19c036d)
+                        DetachOverlay();               // still on this settled turn, before the native-close DoEvents pump
+                        mark("detachOverlay");
+                    });
+                ok = o.Ok;
+                msg = o.Message;
+                editorIntact = o.EditorIntact;
+                mark("SaveLive(overlay) ok=" + ok + " intact=" + editorIntact);
+                if (ok)
+                {
+                    _editStash = null; _nativeSyncedSlots = null;   // saved — any stash for this proc is now stale
+                    // John's D1: slots changed outside the CA Embeditor were saved too. The page is gone, so say
+                    // it in a notice rather than let it pass unmentioned.
+                    if (o.Plan != null && o.Plan.Foreign > 0)
+                        try { CaNotice.Post("embed-save-foreign", "CA Embeditor saved", msg); } catch { }
+                }
+                else if (!editorIntact)
+                {
+                    // Past the point of no return: the surface is gone and the native save failed. The text must
+                    // not exist only in this method's locals.
+                    msg += RecoveryNote(WriteRecoveryFile("the save failed after the CA Embeditor had closed", current));
+                }
                 try
                 {
                     if (ok) RefreshPadSources();
-                    else MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    else
+                    {
+                        if (editorIntact) PostSaveResult(false, msg);   // the page is still there: toast it
+                        MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
                 }
                 catch { }
                 mark("refreshPadSources(overlay) — DONE");
-                editorIntact = false;   // detached before the save ran (the 1565ef7b loss)
                 return;
             }
 
             if (live)
-                msg = ModernEmbeditorSaver.SaveLive(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+            {
+                // Tab mode keeps its surface regardless; no beforeClose. NotLive = the embed closed in the razor-thin
+                // window since IsStillLive: fall straight through to the re-open save rather than fail.
+                var o = ModernEmbeditorSaver.SaveLive(_procedureName, _pweeBaselineText, _editableRanges,
+                    _originalSlotTexts, current, _nativeSyncedSlots, null);
+                if (o.NotLive)
+                {
+                    live = false;
+                    msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
+                }
+                else { ok = o.Ok; msg = o.Message; }
+            }
             else
-                msg = ModernEmbeditorSaver.Save(_procedureName, _editableRanges, _originalSlotTexts, current, out ok);
+                msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
             // The prime suspect: Save() RE-OPENS the native embeditor and pumps DoEvents, which is where a
             // one-time-per-session lazy ABC class load would be paid (see the warmup_abc tool).
             mark((live ? "SaveLive" : "Save(re-open)") + " ok=" + ok);
@@ -2473,7 +2572,7 @@ namespace ClarionAssistant.Terminal
 
             // On success, the saved content is the new baseline so a follow-up save sees no changes.
             if (ok && current.Count == _originalSlotTexts.Count) _originalSlotTexts = current;
-            if (ok) { _mirroredDirty = false; _editStash = null; }   // persisted — mirror clean, stash stale (d19c036d)
+            if (ok) { _mirroredDirty = false; _editStash = null; _nativeSyncedSlots = null; }   // persisted — mirror clean, stash stale (d19c036d)
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
             mark("bringToFront");
@@ -3268,6 +3367,13 @@ namespace ClarionAssistant.Terminal
                 };
                 ClarionAssistant.MonacoSpikeLog.Write("embed overlay torn down DIRTY — stashed " + _mirroredSlots.Count +
                     " slot(s) of unsaved edits for " + _procedureName);
+                // The in-memory stash only survives until the next attach, and that attach refuses it if the
+                // procedure was regenerated meanwhile. Keep a disk copy too (1565ef7b), unless the Ctrl+F4 sync
+                // failure just wrote this exact text.
+                if (_lastRecoverySlots == null || !_lastRecoverySlots.SequenceEqual(_mirroredSlots))
+                    _editStash.RecoveryFile = WriteRecoveryFile("the CA Embeditor was closed from outside with unsaved edits", _mirroredSlots);
+                else
+                    _editStash.RecoveryFile = _lastRecoveryFile;
             }
             // Overlay mode is never ShowView'd, so the workbench never calls our Dispose() — this IS the
             // teardown for the shared session-scoped state too (broker entry, LSP shadow, instance list). (#119)
@@ -4483,7 +4589,23 @@ namespace ClarionAssistant.Terminal
             // so the save is a synchronous file write — no async round-trip. Dispose the WebView2 FIRST so the
             // confirm MessageBox can't get stuck behind the live WebView2 (the documented native<->WebView2 deadlock).
             bool promptSave = _fileMode && _fileDirty && _fileLiveText != null && !_disposed;
+            // EMBED tab closed with unsaved Monaco edits by anything but our own Save/Cancel — the tab's X, a
+            // workbench close-all, IDE shutdown. Nothing prompts for an embed tab, so the text used to vanish.
+            // Keep a recovery copy (1565ef7b); no modal, for the same modal-storm reason as file mode at shutdown.
+            bool keepEmbedEdits = !_fileMode && !_disposed && !_teardownIntentional && _mirroredDirty &&
+                _mirroredSlots != null && !string.IsNullOrEmpty(_procedureName);
             _disposed = true;
+            if (keepEmbedEdits)
+            {
+                string rec = WriteRecoveryFile("its CA Embeditor tab was closed with unsaved edits", _mirroredSlots);
+                if (rec != null && !_shuttingDown)
+                    try
+                    {
+                        CaNotice.Post("embed-tab-closed-dirty", "CA Embeditor: unsaved edits kept",
+                            "The " + _procedureName + " tab closed without saving." + RecoveryNote(rec));
+                    }
+                    catch { }
+            }
 
             // Shared session teardown (broker unregister, LSP shadow revert, instance list) — one path
             // with DetachOverlay so the two lists can't drift again. (#119)
