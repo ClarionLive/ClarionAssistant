@@ -71,21 +71,35 @@ static class EmbedSaveOrderSourceScan
                 .Replace("if (_fileMode) { HandleFileSave(json); return; }", "");   // CA Editor file saves are out of scope
             // The one return allowed without a raise is the JOIN: a save arriving while one is in flight shares that
             // save's single outcome (pipeline Run 1), so raising for it too would be a second event for one save.
-            int joinAt = body.IndexOf("if (!_saveGate.TryEnter(", StringComparison.Ordinal);
-            int joins = joinAt >= 0 ? 1 : 0;
+            int joinAt = body.IndexOf("_saveGate.TryEnter(", StringComparison.Ordinal);
+            int joins = body.Contains("JoinRunningSave(current);") ? 1 : 0;
             int returns = Count(body, "return;"), raises = Count(body, "RaiseEmbedSaveFinished(");
             Ok("every early return in HandleSave raises EmbedSaveFinished, bar the in-flight join (" + returns + " returns, " +
                 raises + " raises, " + joins + " join)", returns == raises + joins && raises > 0);
-            int handOff = body.IndexOf("BeginInvoke((Action)(() => RunSaveRoundTrip(captured)))", StringComparison.Ordinal);
+            int handOff = body.IndexOf("BeginInvoke((Action)(() => RunSaveRoundTrip(captured, token)))", StringComparison.Ordinal);
             Ok("one save at a time: the gate is taken before the round-trip is handed off", joinAt >= 0 && handOff > joinAt);
-            Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured);"));
+            Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured, token);"));
         }
-        int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current)", StringComparison.Ordinal);
+        int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current, int token)", StringComparison.Ordinal);
+        Ok("a queued save that lost the gate does not run (Start(token) first)", rt >= 0 &&
+            view.IndexOf("if (!_saveGate.Start(token)) { JoinRunningSave(current); return; }", rt, StringComparison.Ordinal) > rt);
         int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
         int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
         string finBody = fin > rt && core > fin ? view.Substring(fin, core - fin) : "";
-        Ok("RunSaveRoundTrip raises in a finally, and releases the save gate there", finBody.Contains("RaiseEmbedSaveFinished(") &&
-            finBody.Contains("_saveGate.Exit()"));
+        Ok("RunSaveRoundTrip raises in a finally, and releases ITS OWN gate token there", finBody.Contains("RaiseEmbedSaveFinished(") &&
+            finBody.Contains("_saveGate.Exit(token)"));
+        Ok("newer text requested during a save is saved by a follow-up, or kept on disk — never dropped",
+            finBody.Contains("_saveGate.TakeFollowUp(current)") && finBody.Contains("PostFollowUpSave(followUp)") &&
+            finBody.Contains("KeepUnsavedRequest(followUp)"));
+        // Cancel and the Ctrl+F4 sync must not drive the native embed mid-save (pipeline Run 2).
+        int hc = view.IndexOf("private void HandleCancel()", StringComparison.Ordinal);
+        int hsn = view.IndexOf("private void HandleSyncNativeForClose()", StringComparison.Ordinal);
+        Ok("Cancel is held off while a save runs", hc >= 0 &&
+            view.IndexOf("_saveGate.Busy(", hc, StringComparison.Ordinal) > hc &&
+            view.IndexOf("_saveGate.Busy(", hc, StringComparison.Ordinal) < view.IndexOf("CancelEmbeditor()", hc, StringComparison.Ordinal));
+        Ok("the Ctrl+F4 sync is held off while a save runs", hsn >= 0 &&
+            view.IndexOf("_saveGate.Busy(", hsn, StringComparison.Ordinal) > hsn &&
+            view.IndexOf("_saveGate.Busy(", hsn, StringComparison.Ordinal) < view.IndexOf("ModernEmbeditorSaver.SyncLive(", hsn, StringComparison.Ordinal));
         string page = File.ReadAllText(Path.Combine(root, "Terminal", "monaco-embeditor.html"));
         int ds = page.IndexOf("function doSave()", StringComparison.Ordinal);
         int gate = ds >= 0 ? page.IndexOf("if (!saveEnabled)", ds, StringComparison.Ordinal) : -1;

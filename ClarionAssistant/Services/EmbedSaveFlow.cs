@@ -269,27 +269,86 @@ namespace ClarionAssistant.Services
     /// <summary>
     /// One CA Embeditor save at a time (pipeline Run 1: Codex security HIGH + adversary). The save pumps
     /// Application.DoEvents, so a second Ctrl+S, or a routed save racing the developer's, could otherwise
-    /// re-enter and plan, write or close against the same native embed mid-save. A request arriving while
-    /// one runs JOINS it: it is not run separately, and it shares that save's single outcome
-    /// (one saveResult, one EmbedSaveFinished). An entry older than <see cref="StaleAfter"/> is presumed
-    /// dead (its deferred callback was dropped with a destroyed handle) and no longer blocks.
+    /// re-enter and plan, write or close against the same native embed mid-save.
+    ///
+    /// OWNERSHIP IS A TOKEN (pipeline Run 2, both Codex gates). <see cref="TryEnter"/> hands out a token; only
+    /// <see cref="Exit"/> with THAT token releases, so a late finally can never free a newer save's gate.
+    /// QUEUED vs RUNNING: the save is queued (BeginInvoke) between TryEnter and <see cref="Start"/>. Only a
+    /// queued entry can go stale (its callback was dropped with a destroyed handle) — a RUNNING save never
+    /// expires, however long the IDE stalls inside it, because expiring it is exactly the overlap this prevents.
+    ///
+    /// NEWER TEXT IS NEVER DROPPED (pipeline Run 2, debugger + adversary). A save requested while one runs is
+    /// kept as the pending request (latest wins, <see cref="Join"/>). When the running save ends,
+    /// <see cref="TakeFollowUp"/> returns it if it differs from what was just saved, and the caller runs it as
+    /// one follow-up save whose outcome answers both requests. A duplicate (same text) simply shares the
+    /// running save's outcome.
     /// </summary>
     public sealed class EmbedSaveGate
     {
         public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
-        private DateTime? _enteredUtc;
+        private int _gen, _owner;
+        private bool _running;
+        private DateTime _queuedUtc;
+        private List<string> _pending;
 
-        /// <summary>True when this caller may run a save now (and the gate is taken).</summary>
-        public bool TryEnter(DateTime nowUtc)
+        /// <summary>A token (&gt; 0) when this caller may run a save, else 0 (one is queued or running).</summary>
+        public int TryEnter(DateTime nowUtc)
         {
-            if (_enteredUtc.HasValue && nowUtc - _enteredUtc.Value < StaleAfter) return false;
-            _enteredUtc = nowUtc;
+            if (Busy(nowUtc)) return 0;
+            _owner = ++_gen;
+            _running = false;
+            _queuedUtc = nowUtc;
+            return _owner;
+        }
+
+        /// <summary>The queued save with <paramref name="token"/> is starting. False when it was superseded
+        /// (it went stale and a newer save took the gate): the caller must not run.</summary>
+        public bool Start(int token)
+        {
+            if (token == 0 || token != _owner) return false;
+            _running = true;
             return true;
         }
 
-        public void Exit() { _enteredUtc = null; }
+        /// <summary>Release — only by the save that holds the gate.</summary>
+        public void Exit(int token)
+        {
+            if (token != 0 && token == _owner) { _owner = 0; _running = false; }
+        }
 
-        public bool Busy(DateTime nowUtc) { return _enteredUtc.HasValue && nowUtc - _enteredUtc.Value < StaleAfter; }
+        public bool Busy(DateTime nowUtc)
+        {
+            return _owner != 0 && (_running || nowUtc - _queuedUtc < StaleAfter);
+        }
+
+        /// <summary>A save requested while the gate was held: remember it (the latest request wins).</summary>
+        public void Join(List<string> slots) { if (slots != null) _pending = slots; }
+
+        /// <summary>The pending request to run as a follow-up after saving <paramref name="justSaved"/>, or null
+        /// when there is none or it carries the same text (it is then answered by the save that just ran).</summary>
+        public List<string> TakeFollowUp(IList<string> justSaved)
+        {
+            var p = _pending;
+            _pending = null;
+            if (p == null) return null;
+            if (justSaved != null && p.Count == justSaved.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < p.Count && same; i++) same = EmbedSavePlanner.NLEqual(p[i], justSaved[i]);
+                if (same) return null;
+            }
+            return p;
+        }
+
+        /// <summary>Whether a follow-up with newer text is waiting (without consuming it).</summary>
+        public bool HasNewerPending(IList<string> justSaved)
+        {
+            var p = _pending;
+            if (p == null) return false;
+            if (justSaved == null || p.Count != justSaved.Count) return true;
+            for (int i = 0; i < p.Count; i++) if (!EmbedSavePlanner.NLEqual(p[i], justSaved[i])) return true;
+            return false;
+        }
     }
 
     /// <summary>
