@@ -108,7 +108,12 @@ static class EmbedToolRouterTest
             if (action == "applyEdits") return new Dictionary<string, object>();
             throw new HostRequestBroker.RefusedException("unknownAction:" + action);
         }
-        public string WriteLabel(int line) { return "BrowseDepartment" + (line > 0 ? " line " + line : "") + " (CA Embeditor)"; }
+        public bool Throw;
+        public string WriteLabel(int line)
+        {
+            if (Throw) throw new InvalidOperationException("label blew up");
+            return "BrowseDepartment" + (line > 0 ? " line " + line : "") + " (CA Embeditor)";
+        }
     }
 
     static int Count(List<string> l, string s) { int n = 0; foreach (var x in l) if (x == s) n++; return n; }
@@ -331,9 +336,16 @@ static class EmbedToolRouterTest
         var editorRouter = new EditorToolRouter(() => ui, () => @"C:\apps\CacheTPSABC.app");
         r = editorRouter.Run("insert_text_at_cursor", () => "NATIVE", ov => ov.InsertTextAtCursor("! x"),
             new EditorToolRouter.RouteOptions { IsWrite = true });
-        EditorToolRouter.ActiveOverlayResolver = savedResolver;
         Ok("an editor write in the CA Embeditor is labelled with the procedure and line, not the .app",
             (r as string) == "Text inserted successfully — BrowseDepartment line 265 (CA Embeditor)", r as string);
+        // The label runs AFTER the edit landed: if it throws, the write must still report success (default label),
+        // never "nothing was done".
+        EditorToolRouter.ActiveOverlayResolver = () => new LabelledPage { Throw = true };
+        r = editorRouter.Run("insert_text_at_cursor", () => "NATIVE", ov => ov.InsertTextAtCursor("! x"),
+            new EditorToolRouter.RouteOptions { IsWrite = true });
+        EditorToolRouter.ActiveOverlayResolver = savedResolver;
+        Ok("a throwing label falls back to the default label; the landed write still reads as success",
+            (r as string) == @"Text inserted successfully — CacheTPSABC.app:265 (C:\apps\CacheTPSABC.app)", r as string);
 
         // --- a blocked UI thread: bounded, says so, touches nothing ---
         p = page();
