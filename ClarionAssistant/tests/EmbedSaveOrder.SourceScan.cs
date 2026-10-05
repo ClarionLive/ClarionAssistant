@@ -69,16 +69,23 @@ static class EmbedSaveOrderSourceScan
             int next = view.IndexOf("private void ", hs + 1, StringComparison.Ordinal);
             string body = view.Substring(hs, (next > hs ? next : view.Length) - hs)
                 .Replace("if (_fileMode) { HandleFileSave(json); return; }", "");   // CA Editor file saves are out of scope
+            // The one return allowed without a raise is the JOIN: a save arriving while one is in flight shares that
+            // save's single outcome (pipeline Run 1), so raising for it too would be a second event for one save.
+            int joinAt = body.IndexOf("if (!_saveGate.TryEnter(", StringComparison.Ordinal);
+            int joins = joinAt >= 0 ? 1 : 0;
             int returns = Count(body, "return;"), raises = Count(body, "RaiseEmbedSaveFinished(");
-            Ok("every early return in HandleSave raises EmbedSaveFinished (" + returns + " returns, " + raises + " raises)",
-                returns == raises && returns > 0);
+            Ok("every early return in HandleSave raises EmbedSaveFinished, bar the in-flight join (" + returns + " returns, " +
+                raises + " raises, " + joins + " join)", returns == raises + joins && raises > 0);
+            int handOff = body.IndexOf("BeginInvoke((Action)(() => RunSaveRoundTrip(captured)))", StringComparison.Ordinal);
+            Ok("one save at a time: the gate is taken before the round-trip is handed off", joinAt >= 0 && handOff > joinAt);
             Ok("the round-trip hand-off can't be dropped silently (inline fallback)", body.Contains("if (!posted) RunSaveRoundTrip(captured);"));
         }
         int rt = view.IndexOf("private void RunSaveRoundTrip(List<string> current)", StringComparison.Ordinal);
-        Ok("RunSaveRoundTrip raises in a finally", rt >= 0 &&
-            view.IndexOf("finally { RaiseEmbedSaveFinished(", rt, StringComparison.Ordinal) > rt &&
-            view.IndexOf("finally { RaiseEmbedSaveFinished(", rt, StringComparison.Ordinal) <
-                view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal));
+        int core = rt >= 0 ? view.IndexOf("private void RunSaveRoundTripCore(", rt, StringComparison.Ordinal) : -1;
+        int fin = rt >= 0 ? view.IndexOf("finally", rt, StringComparison.Ordinal) : -1;
+        string finBody = fin > rt && core > fin ? view.Substring(fin, core - fin) : "";
+        Ok("RunSaveRoundTrip raises in a finally, and releases the save gate there", finBody.Contains("RaiseEmbedSaveFinished(") &&
+            finBody.Contains("_saveGate.Exit()"));
         string page = File.ReadAllText(Path.Combine(root, "Terminal", "monaco-embeditor.html"));
         int ds = page.IndexOf("function doSave()", StringComparison.Ordinal);
         int gate = ds >= 0 ? page.IndexOf("if (!saveEnabled)", ds, StringComparison.Ordinal) : -1;

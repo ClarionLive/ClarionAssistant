@@ -13,6 +13,8 @@ namespace ClarionAssistant.Services
         /// <summary>(native slot start line, complete slot text), bottom-to-top so each write leaves the
         /// earlier lines valid. Slots the native buffer already holds verbatim are left out.</summary>
         public List<KeyValuePair<int, string>> Writes = new List<KeyValuePair<int, string>>();
+        /// <summary>The slot index of each entry in <see cref="Writes"/>, same order.</summary>
+        public List<int> WriteSlots = new List<int>();
         /// <summary>Slots the developer changed in Monaco (whether or not a write was needed).</summary>
         public int Changed;
         /// <summary>Slots the developer did NOT change that hold different text natively — changed outside the
@@ -65,15 +67,18 @@ namespace ClarionAssistant.Services
             }
             if (nativeAlt != null && nativeAlt.Count != originalRanges.Count) nativeAlt = null;   // stale push: ignore
 
-            if (!RangesEqual(originalRanges, freshRanges))
+            if (freshRanges.Count != originalRanges.Count)
             {
-                // The slots moved. Match them by identity, or refuse.
-                if (freshRanges.Count != originalRanges.Count)
-                {
-                    plan.Refusal = "the procedure's embed structure changed since it was opened (" + originalRanges.Count +
-                        " editable regions then, " + freshRanges.Count + " now).";
-                    return plan;
-                }
+                plan.Refusal = "the procedure's embed structure changed since it was opened (" + originalRanges.Count +
+                    " editable regions then, " + freshRanges.Count + " now).";
+                return plan;
+            }
+            // Identity comes from the skeleton, ALWAYS — equal coordinates are not proof on their own: a regenerated
+            // procedure can put a different embed at the same lines (pipeline Run 1, cross-model adversary). Without
+            // the open-time source only the old line-number rule is available, so moved slots are refused then.
+            bool moved = !RangesEqual(originalRanges, freshRanges);
+            if (originalSource != null || moved)
+            {
                 string why = SkeletonDiff(originalSource, originalRanges, freshSource, freshRanges);
                 if (why != null)
                 {
@@ -81,11 +86,12 @@ namespace ClarionAssistant.Services
                         "embed slots can't be matched safely.";
                     return plan;
                 }
-                plan.Remapped = true;
             }
+            plan.Remapped = moved;
 
             var fresh = TextLines.ExtractRanges(freshSource ?? "", freshRanges);
             var writes = new List<KeyValuePair<int, string>>();
+            var slots = new List<int>();
             for (int i = 0; i < originalRanges.Count; i++)
             {
                 string orig = originalSlotTexts[i], cur = currentSlotTexts[i], nat = fresh[i];
@@ -107,9 +113,47 @@ namespace ClarionAssistant.Services
                     continue;
                 }
                 writes.Add(new KeyValuePair<int, string>(freshRanges[i][0], cur ?? ""));
+                slots.Add(i);
             }
-            plan.Writes = writes.OrderByDescending(w => w.Key).ToList();
+            var order = Enumerable.Range(0, writes.Count).OrderByDescending(k => writes[k].Key).ToList();
+            plan.Writes = order.Select(k => writes[k]).ToList();
+            plan.WriteSlots = order.Select(k => slots[k]).ToList();
             return plan;
+        }
+
+        /// <summary>
+        /// Perform a plan's writes in order through <paramref name="writeSlot"/> (WriteEmbedContentByLine), stopping
+        /// at the first "Error"-prefixed result or throw. Every slot whose write SUCCEEDED is added to
+        /// <paramref name="written"/>, failure or not — the caller records them as native text that is ours
+        /// (<c>nativeAlt</c>), so a save that failed partway and was followed by more typing is not later mistaken
+        /// for a change made outside the CA Embeditor (pipeline Run 1, debugger). Returns null, or what failed.
+        /// </summary>
+        public static string WriteAll(EmbedSavePlan plan, Func<int, string, string> writeSlot, List<int> written)
+        {
+            for (int k = 0; k < plan.Writes.Count; k++)
+            {
+                var w = plan.Writes[k];
+                string res;
+                try { res = writeSlot(w.Key, w.Value); }
+                catch (Exception ex) { return "the embed slot at line " + w.Key + ": " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message); }
+                if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+                    return "the embed slot at line " + w.Key + ": " + res;
+                if (written != null && k < plan.WriteSlots.Count) written.Add(plan.WriteSlots[k]);
+            }
+            return null;
+        }
+
+        /// <summary>The last known native text per slot after some of them were written: <paramref name="known"/>
+        /// (or the open-time baseline) with each slot in <paramref name="written"/> set to the text written. Null when
+        /// nothing was written.</summary>
+        public static List<string> RecordWrites(IList<string> known, IList<string> baseline, IList<string> current, IList<int> written)
+        {
+            if (written == null || written.Count == 0 || current == null) return known != null ? new List<string>(known) : null;
+            var src = known != null && known.Count == current.Count ? known : baseline;
+            if (src == null || src.Count != current.Count) return null;
+            var rec = new List<string>(src);
+            foreach (int i in written) if (i >= 0 && i < rec.Count) rec[i] = current[i];
+            return rec;
         }
 
         /// <summary>
@@ -217,6 +261,35 @@ namespace ClarionAssistant.Services
         /// <summary>The native embed was gone before we started: the caller should use the re-open save.</summary>
         public bool NotLive;
         public EmbedSavePlan Plan;
+        /// <summary>Slots whose native write succeeded, even when the save then failed. The caller records them
+        /// (<see cref="EmbedSavePlanner.RecordWrites"/>) as native text that is the developer's own.</summary>
+        public List<int> WrittenSlots = new List<int>();
+    }
+
+    /// <summary>
+    /// One CA Embeditor save at a time (pipeline Run 1: Codex security HIGH + adversary). The save pumps
+    /// Application.DoEvents, so a second Ctrl+S, or a routed save racing the developer's, could otherwise
+    /// re-enter and plan, write or close against the same native embed mid-save. A request arriving while
+    /// one runs JOINS it: it is not run separately, and it shares that save's single outcome
+    /// (one saveResult, one EmbedSaveFinished). An entry older than <see cref="StaleAfter"/> is presumed
+    /// dead (its deferred callback was dropped with a destroyed handle) and no longer blocks.
+    /// </summary>
+    public sealed class EmbedSaveGate
+    {
+        public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(5);
+        private DateTime? _enteredUtc;
+
+        /// <summary>True when this caller may run a save now (and the gate is taken).</summary>
+        public bool TryEnter(DateTime nowUtc)
+        {
+            if (_enteredUtc.HasValue && nowUtc - _enteredUtc.Value < StaleAfter) return false;
+            _enteredUtc = nowUtc;
+            return true;
+        }
+
+        public void Exit() { _enteredUtc = null; }
+
+        public bool Busy(DateTime nowUtc) { return _enteredUtc.HasValue && nowUtc - _enteredUtc.Value < StaleAfter; }
     }
 
     /// <summary>
@@ -227,9 +300,9 @@ namespace ClarionAssistant.Services
     ///   re-read → plan → write the slots (overlay still attached, as SyncLive already does) → beforeClose →
     ///   SaveAndCloseEmbeditor → confirm closed.
     /// A refusal or a write failure therefore leaves the CA Embeditor open with the developer's text in it.
-    /// A partial write is left in the native buffer, not rolled back: the next attempt sees those slots
-    /// already holding the developer's text and skips them (the planner's idempotent case), and Cancel
-    /// still discards the lot. Only a failure AFTER beforeClose can leave the text outside an open editor,
+    /// A partial write is left in the native buffer, not rolled back: the slots that were written come back in
+    /// <see cref="EmbedLiveSaveOutcome.WrittenSlots"/> for the caller to record as ours (nativeAlt), so the next
+    /// attempt accepts them even if the developer typed more in the meantime, and Cancel still discards the lot. Only a failure AFTER beforeClose can leave the text outside an open editor,
     /// and the caller writes a recovery file for exactly that case (EditorIntact == false and !Ok).
     /// </summary>
     public static class EmbedLiveSaveFlow
@@ -263,23 +336,10 @@ namespace ClarionAssistant.Services
                 return o;
             }
 
-            try
+            string writeErr = EmbedSavePlanner.WriteAll(plan, ops.WriteSlot, o.WrittenSlots);
+            if (writeErr != null)
             {
-                foreach (var w in plan.Writes)
-                {
-                    string res = ops.WriteSlot(w.Key, w.Value);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                    {
-                        o.Message = "Save failed writing the embed slot at line " + w.Key + ": " + res + "." + kept +
-                            " Save again to retry, or Cancel to discard them.";
-                        return o;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                o.Message = "Save failed while writing: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message) +
-                    "." + kept + " Save again to retry, or Cancel to discard them.";
+                o.Message = "Save failed writing " + writeErr + "." + kept + " Save again to retry, or Cancel to discard them.";
                 return o;
             }
 

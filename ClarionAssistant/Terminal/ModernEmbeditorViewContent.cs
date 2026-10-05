@@ -1412,6 +1412,8 @@ namespace ClarionAssistant.Terminal
         // the developer then answers Cancel to Clarion's prompt and keeps editing, the native slots hold THIS text,
         // not the open-time text; the save planner accepts it as ours instead of calling it a conflict. (1565ef7b)
         private List<string> _nativeSyncedSlots;
+        // One save at a time per surface (pipeline Run 1): a save arriving while one runs joins it. See EmbedSaveGate.
+        private readonly Services.EmbedSaveGate _saveGate = new Services.EmbedSaveGate();
         private List<string> _lastRecoverySlots;   // what WriteRecoveryFile last wrote, so a teardown doesn't write it twice
         private string _lastRecoveryFile;
 
@@ -1433,6 +1435,16 @@ namespace ClarionAssistant.Terminal
                 MonacoSpikeLog.Write("[recovery] write FAILED: " + ex.Message);
                 return "!" + ex.Message;
             }
+        }
+
+        /// <summary>Slots a failed save or sync DID write now hold the developer's text natively. Record them in
+        /// <see cref="_nativeSyncedSlots"/> so the planner accepts them as ours on the next attempt, even after more
+        /// typing (pipeline Run 1, debugger: otherwise every later save was refused as an outside change).</summary>
+        private void RecordNativeWrites(IList<string> slotsWritten, List<int> written)
+        {
+            if (written == null || written.Count == 0) return;
+            var rec = Services.EmbedSavePlanner.RecordWrites(_nativeSyncedSlots, _originalSlotTexts, slotsWritten, written);
+            if (rec != null) _nativeSyncedSlots = rec;
         }
 
         /// <summary>The sentence that tells the developer where their text went (folder AND file).</summary>
@@ -1902,6 +1914,15 @@ namespace ClarionAssistant.Terminal
             // re-opens the native embeditor and drives it with nested Application.DoEvents() pumps; on this
             // reentrant stack that deadlocks the IDE — the same failure mode the deferred ShowView fixed on
             // open. Post it so this handler returns and the round-trip runs on a settled UI turn.
+            // ONE SAVE AT A TIME (pipeline Run 1: Codex security HIGH). The round-trip pumps DoEvents, so a second
+            // Ctrl+S or a routed save could otherwise re-enter it and plan/write/close against the same native embed.
+            // A save arriving while one runs JOINS it: nothing is queued, and it shares that save's single outcome —
+            // its saveResult and its one EmbedSaveFinished (the routed waiter, keyed on the procedure, gets it too).
+            if (!_saveGate.TryEnter(DateTime.UtcNow))
+            {
+                try { MonacoSpikeLog.Write("[save-timing] save requested while one is in flight — joined it (slots=" + current.Count + ")"); } catch { }
+                return;
+            }
             var captured = current;
             // DIAGNOSTIC (e1162adf): log the handoff, so the gap between THIS line and "[save-timing] enter"
             // in the log measures how long the BeginInvoke sat queued. A large gap here means the UI thread
@@ -2006,12 +2027,14 @@ namespace ClarionAssistant.Terminal
                 }
 
                 bool ok;
+                var written = new List<int>();
                 string msg = ModernEmbeditorSaver.SyncLive(_procedureName, _pweeBaselineText, _editableRanges,
-                    _originalSlotTexts, _mirroredSlots, _nativeSyncedSlots, out ok);
+                    _originalSlotTexts, _mirroredSlots, _nativeSyncedSlots, written, out ok);
                 MonacoSpikeLog.Write("[native-dirty] SyncLive ok=" + ok + " — " + msg);
                 if (ok) _nativeSyncedSlots = new List<string>(_mirroredSlots);
                 else
                 {
+                    RecordNativeWrites(_mirroredSlots, written);   // slots written before the failure are ours
                     // Clarion's prompt is about to appear, and its Yes saves the NATIVE buffer, which does not have
                     // these edits. Put them on disk and say where BEFORE the prompt, so neither answer loses them.
                     // (1565ef7b: this was the second route to the same loss.)
@@ -2469,7 +2492,11 @@ namespace ClarionAssistant.Terminal
                 intact = _panel != null;   // the surface is gone only if the overlay already detached
                 try { PostSaveResult(false, msg); } catch { }
             }
-            finally { RaiseEmbedSaveFinished(ok, msg, intact); }
+            finally
+            {
+                _saveGate.Exit();   // before the event, so a subscriber reacting to it can save again
+                RaiseEmbedSaveFinished(ok, msg, intact);
+            }
         }
 
         private void RunSaveRoundTripCore(List<string> current, out bool ok, out string msg, out bool editorIntact)
@@ -2532,7 +2559,9 @@ namespace ClarionAssistant.Terminal
                     if (o.Plan != null && o.Plan.Foreign > 0)
                         try { CaNotice.Post("embed-save-foreign", "CA Embeditor saved", msg); } catch { }
                 }
-                else if (!editorIntact)
+                else if (editorIntact)
+                    RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
+                else
                 {
                     // Past the point of no return: the surface is gone and the native save failed. The text must
                     // not exist only in this method's locals.
@@ -2543,6 +2572,9 @@ namespace ClarionAssistant.Terminal
                     if (ok) RefreshPadSources();
                     else
                     {
+                        // Both, deliberately: the toast clears the page's "Saving…" state (and answers a routed save's
+                        // page request); the MessageBox is the overlay's established failure UX — a refused save is
+                        // the one moment the developer must not miss.
                         if (editorIntact) PostSaveResult(false, msg);   // the page is still there: toast it
                         MessageBox.Show(msg, "CA Embeditor — save", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
@@ -2563,7 +2595,11 @@ namespace ClarionAssistant.Terminal
                     live = false;
                     msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
                 }
-                else { ok = o.Ok; msg = o.Message; }
+                else
+                {
+                    ok = o.Ok; msg = o.Message;
+                    if (!ok) RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
+                }
             }
             else
                 msg = ModernEmbeditorSaver.Save(_procedureName, _pweeBaselineText, _editableRanges, _originalSlotTexts, current, out ok);
@@ -2581,7 +2617,14 @@ namespace ClarionAssistant.Terminal
 
             // On success, the saved content is the new baseline so a follow-up save sees no changes.
             if (ok && current.Count == _originalSlotTexts.Count) _originalSlotTexts = current;
-            if (ok) { _mirroredDirty = false; _editStash = null; _nativeSyncedSlots = null; }   // persisted — mirror clean, stash stale (d19c036d)
+            if (ok)
+            {
+                // Persisted — stash stale (d19c036d). Clean only if nothing was typed while the save pumped
+                // DoEvents: those keystrokes' embedState push is newer than `current` and still unsaved, and a
+                // false clean would skip Dispose's recovery copy for them (pipeline Run 1, debugger).
+                if (_mirroredSlots == null || _mirroredSlots.SequenceEqual(current)) _mirroredDirty = false;
+                _editStash = null; _nativeSyncedSlots = null;
+            }
             // The save activated the app tree to drive the embeditor — bring this tab back to the front.
             BringToFront();
             mark("bringToFront");

@@ -238,6 +238,51 @@ static class EmbedSaveFlowTest
             Ok("a throwing detach does not abandon a save already written", o.Ok && ops.Log.Contains("save"), o.Message);
         }
 
+        // ---------------- pipeline Run 1 fixes ----------------
+        Console.WriteLine("pipeline run 1");
+        {
+            // Adversary: equal coordinates are not proof of identity — a changed generated line still refuses.
+            string fresh = orig.Replace("G-d generated", "G-d REGENERATED");
+            var p = EmbedSavePlanner.Plan(orig, origR, origT, new List<string> { "  x = 4", O1, O2 }, null, fresh, origR);
+            Ok("unmoved ranges but changed skeleton: refused", !p.CanSave && p.Refusal.Contains("generated code changed"), p.Refusal);
+            var p2 = EmbedSavePlanner.Plan(null, origR, origT, new List<string> { "  x = 4", O1, O2 }, null, fresh, origR);
+            Ok("unmoved ranges, no open-time source: the old line-number rule still saves", p2.CanSave, p2.Refusal);
+        }
+        {
+            // Debugger: a save that fails partway, then more typing, must not lock the developer out.
+            var cur1 = new List<string> { "  x = 10", O1, "  z = 30\n  z += 1" };
+            var ops = new FakeOps { Source = orig, RangesNow = origR, FailWriteAt = 2 };   // S2 (line 7) writes, S0 (line 2) fails
+            var o = EmbedLiveSaveFlow.SaveLive(ops, "P", orig, origR, origT, cur1, null, () => { });
+            Ok("partial write: reports the slot that DID get written", !o.Ok && o.EditorIntact && o.WrittenSlots.SequenceEqual(new[] { 2 }),
+                string.Join(",", o.WrittenSlots));
+            // The native buffer now holds cur1[2] in S2; the developer then edits S2 again.
+            string nat = Src(O0, O1, cur1[2]);
+            var cur2 = new List<string> { "  x = 10", O1, "  z = 31\n  z += 1" };
+            var stale = EmbedSavePlanner.Plan(orig, origR, origT, cur2, null, nat, origR);
+            Ok("...without the record the retry is locked out (the bug)", !stale.CanSave, stale.Refusal);
+            var alt = EmbedSavePlanner.RecordWrites(null, origT, cur1, o.WrittenSlots);
+            var p = EmbedSavePlanner.Plan(orig, origR, origT, cur2, alt, nat, origR);
+            Ok("...with the record the retry saves both slots", p.CanSave && p.Writes.Count == 2, p.Refusal);
+            Ok("RecordWrites keeps earlier records and baseline elsewhere", alt[0] == O0 && alt[1] == O1 && alt[2] == cur1[2]);
+        }
+        {
+            var plan = EmbedSavePlanner.Plan(orig, origR, origT, new List<string> { "  x = 1!", O1, "  z = 0\n  z += 1" }, null, orig, origR);
+            var written = new List<int>();
+            string err = EmbedSavePlanner.WriteAll(plan, (line, code) => { if (line == 2) throw new InvalidOperationException("pwee"); return "ok"; }, written);
+            Ok("WriteAll: a throwing write stops, names the line, keeps what was written",
+                err != null && err.Contains("line 2") && err.Contains("pwee") && written.SequenceEqual(new[] { 2 }), err);
+        }
+        {
+            var gate = new EmbedSaveGate();
+            var t0 = new DateTime(2026, 10, 5, 12, 0, 0, DateTimeKind.Utc);
+            Ok("gate: first save enters", gate.TryEnter(t0));
+            Ok("gate: a second save while one runs does NOT enter (it joins)", !gate.TryEnter(t0.AddSeconds(2)) && gate.Busy(t0.AddSeconds(2)));
+            gate.Exit();
+            Ok("gate: free again after the first finishes", gate.TryEnter(t0.AddSeconds(3)));
+            Ok("gate: an entry whose callback was dropped stops blocking after StaleAfter",
+                gate.TryEnter(t0.AddSeconds(3) + EmbedSaveGate.StaleAfter));
+        }
+
         // ---------------- MergeStash ----------------
         Console.WriteLine("stash restore");
         {

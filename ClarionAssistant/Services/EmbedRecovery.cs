@@ -69,9 +69,10 @@ namespace ClarionAssistant.Services
             Directory.CreateDirectory(dir);
             string stem = SafeName(procName) + "-" + now.ToString("yyyyMMdd-HHmmss");
             string tmp = Path.Combine(dir, "." + stem + "." + Guid.NewGuid().ToString("N") + ".tmp");
-            File.WriteAllText(tmp, text, new UTF8Encoding(false));
             try
             {
+                File.WriteAllText(tmp, text, new UTF8Encoding(false));   // inside the try: a failed write leaves no .tmp
+
                 for (int i = 0; ; i++)
                 {
                     string target = Path.Combine(dir, stem + (i == 0 ? "" : "-" + i) + ".txt");

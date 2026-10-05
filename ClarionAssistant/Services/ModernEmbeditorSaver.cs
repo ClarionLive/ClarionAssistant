@@ -45,7 +45,7 @@ namespace ClarionAssistant.Services
             // Which slots did the user actually change?
             var changed = new List<int>();
             for (int i = 0; i < originalRanges.Count; i++)
-                if (!NLEqual(currentSlotTexts[i], originalSlotTexts[i]))
+                if (!EmbedSavePlanner.NLEqual(currentSlotTexts[i], originalSlotTexts[i]))
                     changed.Add(i);
             if (changed.Count == 0) { ok = true; return "No changes to save."; }
 
@@ -73,18 +73,11 @@ namespace ClarionAssistant.Services
                 }
 
                 // Planned writes are bottom-to-top so earlier slots' line numbers stay valid.
-                var errors = new List<string>();
-                foreach (var w in plan.Writes)
-                {
-                    string res = appTree.WriteEmbedContentByLine(w.Key, w.Value, false);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + w.Key + ": " + res);
-                }
-
-                if (errors.Count > 0)
+                string writeErr = EmbedSavePlanner.WriteAll(plan, (line, code) => appTree.WriteEmbedContentByLine(line, code, false), null);
+                if (writeErr != null)
                 {
                     try { appTree.CancelEmbeditor(); } catch { } // discard — persist nothing on partial failure
-                    return "Save FAILED — nothing persisted:\r\n" + string.Join("\r\n", errors);
+                    return "Save FAILED — nothing persisted: " + writeErr + ". Your edits are still in this tab.";
                 }
 
                 string saveRes = appTree.SaveAndCloseEmbeditor();
@@ -101,7 +94,9 @@ namespace ClarionAssistant.Services
                            "close it in the IDE before saving again.";
 
                 ok = true;
-                return "Saved " + changed.Count + " embed slot(s) to '" + procName + "'." + EmbedLiveSaveFlow.ForeignNote(plan);
+                // No "Also saved" note here: this re-opened the embed from the .app, so slots that differ were
+                // already persisted by someone else — this save did not save them (pipeline Run 1, reviewer).
+                return "Saved " + plan.Changed + " embed slot(s) to '" + procName + "'.";
             }
             catch (Exception ex)
             {
@@ -127,7 +122,8 @@ namespace ClarionAssistant.Services
         /// The user has not asked to discard anything yet — they are mid-close, and Clarion's own prompt has
         /// not even been shown. Report and let the caller decide.</summary>
         public static string SyncLive(string procName, string originalSource, List<int[]> ranges,
-            IList<string> originalSlotTexts, IList<string> currentSlotTexts, IList<string> nativeAlt, out bool ok)
+            IList<string> originalSlotTexts, IList<string> currentSlotTexts, IList<string> nativeAlt,
+            List<int> written, out bool ok)
         {
             ok = false;
             if (string.IsNullOrWhiteSpace(procName)) return "Sync skipped: no procedure bound.";
@@ -151,26 +147,14 @@ namespace ClarionAssistant.Services
             if (!plan.CanSave) return "Sync skipped: " + plan.Refusal;
             if (plan.Writes.Count == 0) { ok = true; return "Nothing to sync."; }
 
-            try
-            {
-                var errors = new List<string>();
-                // Planned bottom-to-top so earlier slots' line numbers stay valid; verbatim, no re-indent.
-                foreach (var w in plan.Writes)
-                {
-                    string res = appTree.WriteEmbedContentByLine(w.Key, w.Value, false);
-                    if (res != null && res.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
-                        errors.Add("  • slot@line " + w.Key + ": " + res);
-                }
-                if (errors.Count > 0)
-                    return "Sync FAILED (embed left open, nothing discarded):\r\n" + string.Join("\r\n", errors);
+            // Planned bottom-to-top so earlier slots' line numbers stay valid; verbatim, no re-indent. Slots written
+            // before a failure come back in `written`, so the caller can record them as ours.
+            string writeErr = EmbedSavePlanner.WriteAll(plan, (line, code) => appTree.WriteEmbedContentByLine(line, code, false), written);
+            if (writeErr != null)
+                return "Sync FAILED (embed left open, nothing discarded): " + writeErr;
 
-                ok = true;
-                return "Synced " + plan.Writes.Count + " slot(s) into the live embed.";
-            }
-            catch (Exception ex)
-            {
-                return "Sync error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
-            }
+            ok = true;
+            return "Synced " + plan.Writes.Count + " slot(s) into the live embed.";
         }
 
         /// <summary>
@@ -304,16 +288,6 @@ namespace ClarionAssistant.Services
                     return ex.InnerException != null ? ex.InnerException.Message : ex.Message;
                 }
             }
-        }
-
-        private static bool NLEqual(string x, string y)
-        {
-            return string.Equals(NormalizeNL(x), NormalizeNL(y), StringComparison.Ordinal);
-        }
-
-        private static string NormalizeNL(string s)
-        {
-            return (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n");
         }
 
         private static string[] SplitLines(string text)
