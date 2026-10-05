@@ -1160,7 +1160,9 @@
             for (var i = embedRanges.length - 1; i >= 0; i--) {
                 var r = embedRanges[i];
                 var range = new monaco.Range(r[0], 1, r[1], model.getLineMaxColumn(r[1]));
-                if (model.getValueInRange(range) === slots[i]) continue;
+                // EOL-insensitive: the host's slot text is "\n"-joined while the model may hold CRLF, and an exact
+                // compare rewrote every unedited multi-line slot with identical text (1565ef7b pipeline Run 1).
+                if (String(model.getValueInRange(range)).replace(/\r\n?/g, '\n') === String(slots[i]).replace(/\r\n?/g, '\n')) continue;
                 applyGuardedEdits([{ range: range, text: slots[i] }]);
                 changed = true;
             }
@@ -2092,7 +2094,14 @@
     }
 
     function doSave() {
-        if (!saveEnabled) { showToast('Save not available (mirror mode)', false); return; }
+        // Mirror mode can't save, but the HOST still has to hear about the attempt: it answers with the refusal
+        // and raises EmbedSaveFinished, which a routed save (73bd1f03) waits on. Returning here without a word
+        // to the host left that caller waiting out its whole budget. (1565ef7b)
+        if (!saveEnabled) {
+            if (fileMode) showToast('Save not available (mirror mode)', false);
+            else postToHost({ action: 'save', slots: [] });   // the host's saveResult toasts the reason
+            return;
+        }
         if (_snippetTabState) clearSnippetTabState();   // converge any in-progress mirrored stops before persisting (adversary FAILURE 2)
         // Drop any caret-behind-EOL padding BEFORE the cursor is captured, so we neither save the spaces
         // (file mode reads getValue() directly, bypassing gatherSlots) nor persist a caret sitting in

@@ -216,6 +216,8 @@
     <Compile Include="Services\EmbedToolRouter.cs" />
     <Compile Include="Services\EmbedSlotText.cs" />
     <Compile Include="Services\EmbedApplyFlow.cs" />
+    <Compile Include="Services\EmbedSaveFlow.cs" />
+    <Compile Include="Services\EmbedRecovery.cs" />
     <Compile Include="Services\ModernEmbeditorDiagnostics.cs" />
     <Compile Include="Services\LocalLayerHandlers.cs" />
     <Compile Include="Services\WebMessageGuard.cs" />
