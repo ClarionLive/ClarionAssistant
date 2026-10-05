@@ -1958,7 +1958,9 @@ namespace ClarionAssistant.Terminal
 
             if (!_saveEnabled || string.IsNullOrWhiteSpace(_procedureName))
             {
-                PostSaveResult(false, "Save isn't available — this tab was opened in mirror mode, not from the procedure picker.");
+                const string noSave = "Save isn't available — this tab was opened in mirror mode, not from the procedure picker.";
+                PostSaveResult(false, noSave);
+                RaiseEmbedSaveFinished(false, noSave, true);
                 return;
             }
 
@@ -1968,12 +1970,20 @@ namespace ClarionAssistant.Terminal
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 var data = ser.DeserializeObject(json) as Dictionary<string, object>;
                 var arr = (data != null && data.ContainsKey("slots")) ? data["slots"] as object[] : null;
-                if (arr == null) { PostSaveResult(false, "Save failed: malformed payload (no slots)."); return; }
+                if (arr == null)
+                {
+                    const string noSlots = "Save failed: malformed payload (no slots).";
+                    PostSaveResult(false, noSlots);
+                    RaiseEmbedSaveFinished(false, noSlots, true);
+                    return;
+                }
                 current = arr.Select(o => o == null ? "" : o.ToString()).ToList();
             }
             catch (Exception ex)
             {
-                PostSaveResult(false, "Save failed parsing the editor payload: " + ex.Message);
+                string bad = "Save failed parsing the editor payload: " + ex.Message;
+                PostSaveResult(false, bad);
+                RaiseEmbedSaveFinished(false, bad, true);
                 return;
             }
 
@@ -2487,11 +2497,49 @@ namespace ClarionAssistant.Terminal
             }
         }
 
+        /// <summary>Raised on the UI thread when an embed save round-trip ends, whichever branch it took:
+        /// (procedureName, ok, message, editorIntact). editorIntact is true when the CA Embeditor surface is
+        /// still open afterwards, so the developer's text is still in it (a refused or failed save, or a snapshot
+        /// tab that stays open after saving). On a successful OVERLAY save the page is already disposed by the
+        /// time the outcome is known, so it cannot answer its own save request; this event is the authoritative
+        /// outcome (EmbedSave's routed save_and_close_embeditor waits on it, 73bd1f03). Subscriber exceptions
+        /// are swallowed so they can never break the save.</summary>
+        public static event Action<string, bool, string, bool> EmbedSaveFinished;
+
+        private void RaiseEmbedSaveFinished(bool ok, string message, bool editorIntact)
+        {
+            var handlers = EmbedSaveFinished;
+            if (handlers == null) return;
+            foreach (Action<string, bool, string, bool> h in handlers.GetInvocationList())
+            {
+                try { h(_procedureName, ok, message, editorIntact); }
+                catch (Exception ex) { MonacoSpikeLog.Write("EmbedSaveFinished subscriber threw: " + ex.Message); }
+            }
+        }
+
         // The actual save round-trip — re-open native embed, write slots, save+close. Runs deferred (off the
         // WebView2 web-message handler) on a settled UI turn so its nested DoEvents pumps don't reenter the
         // WebView2 message loop and deadlock the IDE.
         private void RunSaveRoundTrip(List<string> current)
         {
+            // Every exit raises EmbedSaveFinished exactly once, including an unexpected throw.
+            bool ok = false, intact = true;
+            string msg = "Save error: the save round-trip did not complete.";
+            try { RunSaveRoundTripCore(current, out ok, out msg, out intact); }
+            catch (Exception ex)
+            {
+                msg = "Save error: " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message);
+                MonacoSpikeLog.Write("RunSaveRoundTrip threw: " + ex);
+                ok = false;
+                intact = _panel != null;   // the surface is gone only if the overlay already detached
+                try { PostSaveResult(false, msg); } catch { }
+            }
+            finally { RaiseEmbedSaveFinished(ok, msg, intact); }
+        }
+
+        private void RunSaveRoundTripCore(List<string> current, out bool ok, out string msg, out bool editorIntact)
+        {
+            editorIntact = true;
             // DIAGNOSTIC (ticket e1162adf): the FIRST embed save after a fresh Clarion start blocks ~60s
             // before the embeditor closes; later saves in the same session take seconds. The page posts its
             // "Saving…" toast and hands off immediately, so the stall is somewhere below this line — but
@@ -2511,8 +2559,6 @@ namespace ClarionAssistant.Terminal
             };
 
             mark("enter");
-            bool ok;
-            string msg;
             // LIVE fast-path (ticket a5bbf005): if THIS tab still holds its native embed open, write straight back
             // into it (no re-open, no locator re-type). Otherwise — a demoted/background tab — fall back to the
             // proven re-open Save. Both share the same per-slot write + SaveAndClose tail.
@@ -2542,6 +2588,7 @@ namespace ClarionAssistant.Terminal
                 }
                 catch { }
                 mark("refreshPadSources(overlay) — DONE");
+                editorIntact = false;   // detached before the save ran (the 1565ef7b loss)
                 return;
             }
 
@@ -2576,7 +2623,7 @@ namespace ClarionAssistant.Terminal
             // SAVE-AND-EXIT (live mode only): once the round-trip has settled and the result posted, close this
             // tab — mirroring native Clarion embed editing. Deferred so it runs after the WebView2 gets its save
             // result and the close stack is clean.
-            if (live && ok) PostCloseTab();
+            if (live && ok) { PostCloseTab(); editorIntact = false; }
         }
 
         /// <summary>True if THIS tab is still the live one AND its native embed is still open (GetEmbedInfo). A tab
