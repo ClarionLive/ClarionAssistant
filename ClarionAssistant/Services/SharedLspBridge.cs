@@ -1009,7 +1009,6 @@ namespace ClarionAssistant.Services
             return false;
         }
 
-        /// <summary>Last diagnostics computed for a file (no re-query).</summary>
         /// <summary>K2 (1c685f2e): forget the cached diagnostics for <paramref name="filePath"/> (both clients).
         /// EmbedLspContext.RevertShadow calls it after pushing the on-disk text back, so the next embeditor on this
         /// module never inherits the disk text's publish.</summary>
@@ -1019,9 +1018,27 @@ namespace ClarionAssistant.Services
             var lsp = LspClient.Active;
             if (lsp != null) lsp.ClearDiagnostics(filePath);
             lock (_sharedDiagLock) { _sharedDiagCache.Remove(filePath); }
+            lock (_filteredDiagCache) { _filteredDiagCache.Remove(filePath); }
         }
 
+        /// <summary>
+        /// Last diagnostics published for a file (no re-query), with the same 'not declared' filter the wait
+        /// paths apply (DropUndeclaredWeCanResolve). null = nothing ever published; empty = clean.
+        ///
+        /// 2abfbba2: this is the ONLY reader of the cached diagnostics, so the raw cache cannot reach the user.
+        /// It used to return it raw. When the filter cleared every entry (PRM002004.clw: the server's 3 false
+        /// "'GlobalRequest' is not declared" warnings), the waited answer was empty, ModernEmbeditorDiagnostics'
+        /// settle loop read this cache to check for a late republish, and painted the 3 squiggles back in the
+        /// CA Editor. The status pill (AssistantChatControl.PollLspUi) counted them too.
+        /// </summary>
         public static List<LspClient.DiagnosticEntry> GetCachedDiagnostics(string filePath)
+        {
+            var raw = GetCachedDiagnosticsRaw(filePath);
+            if (raw == null || raw.Count == 0) return raw;
+            return FilterCachedDiagnostics(filePath, raw);
+        }
+
+        private static List<LspClient.DiagnosticEntry> GetCachedDiagnosticsRaw(string filePath)
         {
             var c = Shared;
             if (c == null) { var lsp = LspClient.Active; return lsp != null ? lsp.GetCachedDiagnostics(filePath) : null; }
@@ -1030,6 +1047,49 @@ namespace ClarionAssistant.Services
                 List<LspClient.DiagnosticEntry> entries;
                 return _sharedDiagCache.TryGetValue(filePath, out entries) ? new List<LspClient.DiagnosticEntry>(entries) : null;
             }
+        }
+
+        // The status pill reads the cache every 2 s on the UI thread, and the filter reads the PROGRAM file and
+        // CodeGraph. So the filtered list is kept per file until the raw entries change, and for at most
+        // FilteredCacheTtlMs, so a re-index or an edited PROGRAM file is picked up without a new publish.
+        private const int FilteredCacheTtlMs = 30000;
+        private sealed class FilteredCacheEntry { public string Signature; public long Ticks; public List<LspClient.DiagnosticEntry> Entries; }
+        private static readonly Dictionary<string, FilteredCacheEntry> _filteredDiagCache =
+            new Dictionary<string, FilteredCacheEntry>(StringComparer.OrdinalIgnoreCase);
+
+        private static List<LspClient.DiagnosticEntry> FilterCachedDiagnostics(string filePath, List<LspClient.DiagnosticEntry> raw)
+        {
+            string sig = DiagnosticsSignature(raw);
+            long now = DateTime.UtcNow.Ticks;
+            lock (_filteredDiagCache)
+            {
+                FilteredCacheEntry hit;
+                if (_filteredDiagCache.TryGetValue(filePath, out hit) && hit.Signature == sig
+                    && (now - hit.Ticks) / TimeSpan.TicksPerMillisecond < FilteredCacheTtlMs)
+                    return new List<LspClient.DiagnosticEntry>(hit.Entries);
+            }
+
+            var filtered = DropUndeclaredWeCanResolve(
+                new LspClient.DiagnosticWaitResult { Entries = raw, Pending = false }, filePath);
+            var entries = (filtered != null && filtered.Entries != null) ? filtered.Entries : raw;
+            lock (_filteredDiagCache)
+            {
+                if (_filteredDiagCache.Count > 64) _filteredDiagCache.Clear();   // a bound, not an LRU: refills on demand
+                _filteredDiagCache[filePath] = new FilteredCacheEntry { Signature = sig, Ticks = now, Entries = entries };
+            }
+            return new List<LspClient.DiagnosticEntry>(entries);
+        }
+
+        private static string DiagnosticsSignature(List<LspClient.DiagnosticEntry> entries)
+        {
+            var sb = new System.Text.StringBuilder(entries.Count * 48);
+            foreach (var e in entries)
+            {
+                if (e == null) { sb.Append("~\n"); continue; }
+                sb.Append(e.Line).Append(':').Append(e.Character).Append(':').Append(e.EndLine).Append(':')
+                  .Append(e.EndCharacter).Append(':').Append(e.Severity).Append(':').Append(e.Message).Append('\n');
+            }
+            return sb.ToString();
         }
 
         // ===========================================================================================
