@@ -96,8 +96,11 @@ static class EmbedToolRouterTest
 
     // An editor-tool channel that labels its own writes (the CA Embeditor's covered view): fc420c30's EditorToolRouter
     // must use that label instead of "file:line (path)" (Charlie's round-2 finding: results named the .app).
-    sealed class LabelledPage : IEditorOverlayChannel, IOverlayWriteLabel
+    sealed class LabelledPage : IEditorOverlayChannel, IOverlayWriteLabel, IOverlayPathAliases
     {
+        public IList<string> AcceptedPaths() { return new[] { @"C:\apps\CacheTPSABC003.clw" }; }
+        public IList<string> AcceptedNames() { return new[] { "CacheTPSABC003.clw", "BrowseDepartment" }; }
+        public static int Applied;
         public string FilePath { get { return @"C:\apps\CacheTPSABC.app"; } }
         public bool PageReady { get { return true; } }
         public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs)
@@ -105,7 +108,7 @@ static class EmbedToolRouterTest
             if (action == "getState")
                 return new Dictionary<string, object> { { "versionId", 1L }, { "lineCount", 300 },
                     { "cursor", new Dictionary<string, object> { { "line", 265 }, { "column", 5 } } } };
-            if (action == "applyEdits") return new Dictionary<string, object>();
+            if (action == "applyEdits") { Applied++; return new Dictionary<string, object>(); }
             throw new HostRequestBroker.RefusedException("unknownAction:" + action);
         }
         public bool Throw;
@@ -114,6 +117,15 @@ static class EmbedToolRouterTest
             if (Throw) throw new InvalidOperationException("label blew up");
             return "BrowseDepartment" + (line > 0 ? " line " + line : "") + " (CA Embeditor)";
         }
+    }
+
+    // The same page WITHOUT IOverlayPathAliases: file_path must stay exactly as strict as before (FilePath only).
+    sealed class PlainPage : IEditorOverlayChannel
+    {
+        readonly LabelledPage _inner = new LabelledPage();
+        public string FilePath { get { return _inner.FilePath; } }
+        public bool PageReady { get { return true; } }
+        public Dictionary<string, object> Request(string action, Dictionary<string, object> args, int timeoutMs) { return _inner.Request(action, args, timeoutMs); }
     }
 
     static int Count(List<string> l, string s) { int n = 0; foreach (var x in l) if (x == s) n++; return n; }
@@ -346,6 +358,39 @@ static class EmbedToolRouterTest
         EditorToolRouter.ActiveOverlayResolver = savedResolver;
         Ok("a throwing label falls back to the default label; the landed write still reads as success",
             (r as string) == @"Text inserted successfully — CacheTPSABC.app:265 (C:\apps\CacheTPSABC.app)", r as string);
+
+        // --- file_path on the CA Embeditor: the .app, the procedure's module (.clw) or the procedure name ---
+        // Charlie, live round 3: the module path was refused ("the active editor holds ...CacheTPSABC.app").
+        EditorToolRouter.ActiveOverlayResolver = () => new LabelledPage();
+        Func<string, string> writeWith = fp => editorRouter.Run("insert_text_at_cursor", () => "NATIVE", ov => ov.InsertTextAtCursor("! x"),
+            new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = fp }) as string;
+        foreach (var fp in new[] { @"C:\apps\CacheTPSABC.app", @"C:\apps\CacheTPSABC003.clw", "cachetpsabc003.CLW", "BrowseDepartment", "browsedepartment" })
+        {
+            LabelledPage.Applied = 0;
+            r = writeWith(fp);
+            Ok("file_path '" + fp + "' is accepted on the CA Embeditor (and the edit applied)",
+                (r as string ?? "").StartsWith("Text inserted successfully") && LabelledPage.Applied == 1, r as string);
+        }
+        foreach (var fp in new[] { @"C:\apps\gen\CacheTPSABC003.clw", @"C:\apps\CacheTPSABC004.clw", "UpdateDepartment", @"gen\CacheTPSABC003.clw" })
+        {
+            LabelledPage.Applied = 0;
+            r = writeWith(fp);
+            Ok("file_path '" + fp + "' is refused, nothing changed (a same-named module elsewhere never matches)",
+                (r as string ?? "").StartsWith("Error: the active editor holds") && LabelledPage.Applied == 0, r as string);
+        }
+        r = writeWith(@"C:\apps\CacheTPSABC004.clw");
+        Ok("the refusal lists what IS accepted",
+            (r as string ?? "").StartsWith(@"Error: the active editor holds C:\apps\CacheTPSABC.app (file_path also accepts C:\apps\CacheTPSABC003.clw, CacheTPSABC003.clw, BrowseDepartment), not C:\apps\CacheTPSABC004.clw"),
+            r as string);
+        // A channel WITHOUT the interface (the CA Editor, any other overlay): unchanged, FilePath only.
+        EditorToolRouter.ActiveOverlayResolver = () => new PlainPage();
+        LabelledPage.Applied = 0;
+        r = writeWith("CacheTPSABC003.clw");
+        Ok("a channel without IOverlayPathAliases still refuses the module name, nothing changed, no 'also accepts'",
+            (r as string ?? "").StartsWith(@"Error: the active editor holds C:\apps\CacheTPSABC.app, not CacheTPSABC003.clw") && LabelledPage.Applied == 0, r as string);
+        r = writeWith(@"C:\apps\CacheTPSABC.app");
+        Ok("...and still accepts its FilePath", (r as string ?? "").StartsWith("Text inserted successfully"), r as string);
+        EditorToolRouter.ActiveOverlayResolver = savedResolver;
 
         // --- a blocked UI thread: bounded, says so, touches nothing ---
         p = page();

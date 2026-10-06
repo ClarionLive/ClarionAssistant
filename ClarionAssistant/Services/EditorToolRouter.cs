@@ -13,6 +13,18 @@ namespace ClarionAssistant.Services
         string WriteLabel(int line);
     }
 
+    /// <summary>73bd1f03: optional on an <see cref="IEditorOverlayChannel"/>. Other names a write's file_path may use for
+    /// this editor besides its FilePath (the CA Embeditor's FilePath is the .app). A channel without it accepts FilePath
+    /// only, exactly as before.</summary>
+    public interface IOverlayPathAliases
+    {
+        /// <summary>Full paths, compared as paths (SamePath) and nothing looser. Null or empty = none.</summary>
+        IList<string> AcceptedPaths();
+        /// <summary>Bare names (a module file name, a procedure name), matched ONLY when the caller's file_path is itself
+        /// a bare name (no directory), so a same-named file in another folder never matches. Null or empty = none.</summary>
+        IList<string> AcceptedNames();
+    }
+
     /// <summary>fc420c30: the CA Editor (Monaco overlay) that owns the active file, as the router sees it.</summary>
     public interface IEditorOverlayChannel
     {
@@ -134,10 +146,13 @@ namespace ClarionAssistant.Services
 
             // fc420c30 safety: a write meant for one file must never land in another (live: open_file returned before
             // its tab was active, and the next insert would have gone into the developer's real file).
-            if (!string.IsNullOrEmpty(opts.ExpectedPath) && !SamePath(activePath, opts.ExpectedPath))
+            if (!string.IsNullOrEmpty(opts.ExpectedPath) && !SamePath(activePath, opts.ExpectedPath)
+                && !AliasMatches(ch, opts.ExpectedPath))
             {
                 Write(tool, ch != null ? "overlay" : "native", activePath, sw, "refused: expected " + opts.ExpectedPath);
+                var aliases = Aliases(ch);
                 return "Error: the active editor holds " + (string.IsNullOrEmpty(activePath) ? "no file" : activePath)
+                    + (aliases.Count > 0 ? " (file_path also accepts " + string.Join(", ", aliases) + ")" : "")
                     + ", not " + opts.ExpectedPath + "; nothing was changed. Open it with open_file (and wait for it) first.";
             }
 
@@ -192,6 +207,43 @@ namespace ClarionAssistant.Services
             if (!string.IsNullOrEmpty(own)) return s + " — " + own;
             if (string.IsNullOrEmpty(path)) return result;
             return s + " — " + System.IO.Path.GetFileName(path) + (line > 0 ? ":" + line : "") + " (" + path + ")";
+        }
+
+        // 73bd1f03: what a channel answers to in file_path besides FilePath (IOverlayPathAliases). A channel without the
+        // interface gets nothing extra, so the CA Editor and native paths cannot loosen.
+        private static IList<string> AliasPaths(IEditorOverlayChannel ch)
+        {
+            var a = ch as IOverlayPathAliases;
+            if (a == null) return new string[0];
+            try { return a.AcceptedPaths() ?? (IList<string>)new string[0]; } catch { return new string[0]; }
+        }
+
+        private static IList<string> AliasNames(IEditorOverlayChannel ch)
+        {
+            var a = ch as IOverlayPathAliases;
+            if (a == null) return new string[0];
+            try { return a.AcceptedNames() ?? (IList<string>)new string[0]; } catch { return new string[0]; }
+        }
+
+        private static List<string> Aliases(IEditorOverlayChannel ch)
+        {
+            var all = new List<string>();
+            foreach (var p in AliasPaths(ch)) if (!string.IsNullOrEmpty(p)) all.Add(p);
+            foreach (var n in AliasNames(ch)) if (!string.IsNullOrEmpty(n)) all.Add(n);
+            return all;
+        }
+
+        // Full-path aliases only through SamePath; name aliases only against a BARE file_path (no directory), never by
+        // stripping a caller's path down to its file name (a same-named module in another folder must not match).
+        private static bool AliasMatches(IEditorOverlayChannel ch, string expected)
+        {
+            foreach (var p in AliasPaths(ch))
+                if (!string.IsNullOrEmpty(p) && SamePath(p, expected)) return true;
+            bool bare = expected.IndexOf('\\') < 0 && expected.IndexOf('/') < 0 && expected.IndexOf(':') < 0;
+            if (!bare) return false;
+            foreach (var n in AliasNames(ch))
+                if (!string.IsNullOrEmpty(n) && string.Equals(n, expected.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         private static bool SamePath(string a, string b)

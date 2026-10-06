@@ -106,8 +106,18 @@ namespace ClarionAssistant.Terminal
         /// <summary>The CA Embeditor as the tool routers see it: the procedure, readiness, its open-time (native) slot
         /// ranges, and requests to the page over fc420c30's host-request channel. Serves both EmbedToolRouter (embed
         /// tools) and EditorToolRouter (editor tools on the covered view).</summary>
-        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel, IOverlayWriteLabel
+        private sealed class EmbedChannel : IEmbedOverlayChannel, IEditorOverlayChannel, IOverlayWriteLabel, IOverlayPathAliases
         {
+            /// <summary>file_path for an editor-tool write here may also name the procedure's module (.clw, the file
+            /// Claude naturally associates with the code) or the procedure itself; FilePath is the .app (Charlie, live
+            /// round 3). As a FULL path the module is accepted only in the app's own folder (compared as a path); as a bare
+            /// name it matches only a bare file_path (DiagFix's rule: never strip a caller's path to its file name).
+            /// Gathered on the UI thread when the channel is resolved.</summary>
+            public IList<string> AcceptedPaths() { return _aliasPaths; }
+            public IList<string> AcceptedNames() { return _aliasNames; }
+            private readonly List<string> _aliasPaths = new List<string>();
+            private readonly List<string> _aliasNames = new List<string>();
+
             /// <summary>An editor-tool write in the CA Embeditor names the procedure and buffer line, matching
             /// write_embed_content's "— BrowseDepartment «E:N» (CA Embeditor)", not the .app the native path reports.</summary>
             public string WriteLabel(int line)
@@ -121,10 +131,21 @@ namespace ClarionAssistant.Terminal
             /// <param name="activePath">For the covered-view channel (EditorToolRouter): the path the NATIVE editor
             /// reports for this view, so fc420c30's file_path check and its "— file:line (path)" naming behave exactly as
             /// they do with the CA Embeditor off. Null = describe the CA Embeditor instead.</param>
-            public EmbedChannel(ModernEmbeditorViewContent v, string activePath = null)
+            public EmbedChannel(ModernEmbeditorViewContent v, string activePath = null, string module = null)
             {
                 _v = v;
                 _path = activePath;
+                if (!string.IsNullOrEmpty(module))
+                {
+                    _aliasNames.Add(module);
+                    try
+                    {
+                        string dir = string.IsNullOrEmpty(activePath) ? null : System.IO.Path.GetDirectoryName(activePath);
+                        if (!string.IsNullOrEmpty(dir)) _aliasPaths.Add(System.IO.Path.Combine(dir, module));
+                    }
+                    catch { }
+                }
+                if (!string.IsNullOrEmpty(v._procedureName)) _aliasNames.Add(v._procedureName);
                 _native = new List<int[]>();
                 if (v._editableRanges != null)
                     foreach (var r in v._editableRanges) if (r != null) _native.Add(new[] { r[0], r[1] });
@@ -172,7 +193,34 @@ namespace ClarionAssistant.Terminal
         {
             var v = LiveEmbedView();
             if (v == null || !v._embedOverlay) return null;
-            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v, NativeActivePath()) : null;
+            return ActiveEditorIsCoveredByOverlayOnUi() ? new EmbedChannel(v, NativeActivePath(), v.ModuleName()) : null;
+        }
+
+        private string _moduleName;   // the procedure's module file name, looked up once ("" = none found)
+
+        /// <summary>The procedure's module (e.g. "CacheTPSABC003.clw"), from the app tree, looked up once per view and
+        /// cached; null when unknown. UI thread.</summary>
+        private string ModuleName()
+        {
+            if (_moduleName == null)
+            {
+                _moduleName = "";
+                try
+                {
+                    var procs = new AppTreeService().GetProcedureDetails();
+                    if (procs != null && !string.IsNullOrEmpty(_procedureName))
+                        foreach (var d in procs)
+                        {
+                            object n, m;
+                            if (d != null && d.TryGetValue("name", out n) &&
+                                string.Equals(n as string, _procedureName, StringComparison.OrdinalIgnoreCase) &&
+                                d.TryGetValue("module", out m))
+                            { _moduleName = (m as string) ?? ""; break; }
+                        }
+                }
+                catch { }
+            }
+            return _moduleName.Length > 0 ? _moduleName : null;
         }
 
         /// <summary>The active document path as EditorService.GetActiveDocumentPath derives it (the window's ToolTipText
