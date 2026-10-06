@@ -4,7 +4,8 @@
 #
 # H1  fixed height: no Splitter / OnSplitterMoved / "Header.Height" in AssistantChatControl, no dead tab-bar
 #     plumbing (SyncTabBarToHeader, HeaderWebView.SetTabs / SetActiveTab / TabDescriptor), and the header's
-#     height comes from its CssFullHeight / CssStripHeight constants, not a literal.
+#     height comes from its FullCss / StripCss heights (measured, falling back to the CssFullHeight /
+#     CssStripHeight constants), not a literal.
 # H2  ONE solution-level panel: no AttachSchemaSourcesView, no TerminalTab.SchemaSourcesView, exactly one
 #     `new SchemaSourcesView(`, disposed in Dispose, theme not applied per tab.
 # H3  every method that assigns _currentSlnPath then calls RefreshSolutionSettings() or LoadSolutionHistory(),
@@ -30,6 +31,10 @@
 #     no inline copy left; the panel shares the header's zoom key (no "schemaSources" key); the modal height
 #     is scaled by zoom and DPI; both views re-apply their height on a DPI change; one light background
 #     (#eff1f5) in both pages and both host BackColors.
+# H11 GH #234 (panes clipped at some Windows scaling): header.html posts its measured "headerSize" and
+#     schema-sources.html its "contentSize"; the views handle them without forwarding them to the host's
+#     action handler; the header's ToPixels applies the learned _scaleCorrection, which the host passes to
+#     the panel; the panel grows to its content (ApplyPaneHeight, capped at MAX_PANE_HEIGHT).
 #
 # PROVES IT CAN FAIL: after the real scan passes, the same scan runs on temp copies with one planted
 # mutation each (listed at the bottom); every one must go red.
@@ -101,8 +106,11 @@ function Invoke-Scan($p) {
     }
     if ($hdr -match '(?m)^\s*Height\s*=\s*\d+\s*;') { $fails.Add('H1 HeaderWebView sets a literal Height') }
     $apply = Get-Body $hdr 'private void ApplyHeight('
-    if (-not $apply -or -not $apply.Contains('CssFullHeight') -or -not $apply.Contains('CssStripHeight')) {
-        $fails.Add('H1 ApplyHeight does not size from the constants')
+    if (-not $apply -or -not $apply.Contains('ToPixels(_activeTab == "solution" ? FullCss : StripCss)')) {
+        $fails.Add('H1 ApplyHeight does not size from FullCss / StripCss')
+    }
+    if ($hdr -notmatch 'private int StripCss \{[^}]*: CssStripHeight; \}' -or $hdr -notmatch 'private int FullCss \{[^}]*: CssFullHeight; \}') {
+        $fails.Add('H1 StripCss / FullCss do not fall back to the constants')
     }
 
     # H2
@@ -151,7 +159,7 @@ function Invoke-Scan($p) {
     if (-not $post -or -not $post.Contains('IsDisposed')) { $fails.Add('H5 PostToSchemaView is not guarded against disposal') }
     if ($sv -notmatch 'MODAL_HEIGHT = 580;') { $fails.Add('H5 the Manage Sources modal height is not 580') }
     if ($sv -notmatch '"modalOpened"\)\s*\{[^}]*Height = ModalPixelHeight;') { $fails.Add('H5 modalOpened does not grow to the scaled modal height') }
-    if ($sv -notmatch '"modalClosed"\)\s*\{[^}]*Height = _paneHeight;') { $fails.Add('H5 modalClosed does not restore the pane height') }
+    if ($sv -notmatch '"modalClosed"\)\s*\{[^}]*ApplyPaneHeight\(\);') { $fails.Add('H5 modalClosed does not restore the pane height') }
 
     # H6
     foreach ($bad in @('toggleDiagBar', 'OnToggleDiagnosticsBar')) { if ($chat.Contains($bad)) { $fails.Add("H6 $bad is back") } }
@@ -238,6 +246,19 @@ function Invoke-Scan($p) {
     $openable = Get-Body $chat 'private bool RedFileOpenable'
     if (-not $openable -or -not $openable.Contains('_redFileCss != "warning"')) { $fails.Add('H8 RedFileOpenable does not exclude the warning state') }
 
+    # H11
+    if (-not $hh.Contains("send('headerSize'") -or -not $hh.Contains('new ResizeObserver(reportSize)')) { $fails.Add('H11 header.html does not report its measured size') }
+    if (-not $sh.Contains("send('contentSize'") -or -not $sh.Contains('new ResizeObserver(reportSize)')) { $fails.Add('H11 schema-sources.html does not report its content size') }
+    if (-not $hdr.Contains('if (action == "headerSize") { OnHeaderSize(data); return; }')) { $fails.Add('H11 HeaderWebView does not consume headerSize') }
+    if (-not $sv.Contains('if (action == "contentSize") { OnContentSize(data); return; }')) { $fails.Add('H11 SchemaSourcesView does not consume contentSize') }
+    $tp = Get-Body $hdr 'private int ToPixels('
+    if (-not $tp -or -not $tp.Contains('* _scaleCorrection')) { $fails.Add('H11 ToPixels ignores the measured scale correction') }
+    $ohs = Get-Body $hdr 'private void OnHeaderSize('
+    if (-not $ohs -or -not $ohs.Contains('_scaleCorrection = correction;') -or -not $ohs.Contains('ApplyHeight();')) { $fails.Add('H11 OnHeaderSize does not learn the scale and re-apply the height') }
+    if (([regex]::Matches($chat, '_schemaView\.ScaleCorrection = _header\.ScaleCorrection;|ScaleCorrection = _header\.ScaleCorrection,')).Count -ne 2) { $fails.Add('H11 the host does not pass the header''s scale correction to the panel (created and on LayoutChanged)') }
+    $app = Get-Body $sv 'private void ApplyPaneHeight('
+    if (-not $app -or -not $app.Contains('Math.Max(_paneHeight, Math.Min(_contentPixelHeight, max))') -or -not $app.Contains('MAX_PANE_HEIGHT')) { $fails.Add('H11 the panel does not grow to its content up to the cap') }
+
     return , $fails
 }
 
@@ -248,7 +269,7 @@ if ($real.Count -gt 0) {
     $real | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     exit 1
 }
-Write-Host "  PASS  H1-H10 on the real sources (fixed height, one panel, solution-change refresh, ready once, disposal-guarded posts, hidden LSP bar, copy + RED intents, no cross-solution writes, shared defer helper, one zoom, DPI, one light background)"
+Write-Host "  PASS  H1-H11 on the real sources (measured height, one panel, solution-change refresh, ready once, disposal-guarded posts, hidden LSP bar, copy + RED intents, no cross-solution writes, shared defer helper, one zoom, DPI, one light background, fit-to-content panes)"
 
 # ---- prove the scan can fail ----
 $tmp = Join-Path $env:TEMP ("ca-headerscan-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -276,7 +297,14 @@ try {
     Test-Mutation 'LoadSolutionHistory no longer refreshes' 'Chat' "            RefreshSolutionSettings();`r`n`r`n            // NO auto-index here" "`r`n            // NO auto-index here"
     Test-Mutation 'OnSchemaSourcesReady run twice' 'Chat' 'case "getGlobalSources":' "case `"schemaSourcesReady`": OnSchemaSourcesReady(null, EventArgs.Empty); break;`r`n                case `"getGlobalSources`":"
     Test-Mutation 'test-connection result posted without the guard' 'Chat' 'PostToSchemaView(view => view.SendMessage(resultJson));' 'BeginInvoke(new Action(() => _schemaView.SendMessage(resultJson)));'
-    Test-Mutation 'modal no longer restores' 'Schema' "_modalOpen = false;`r`n                    Height = _paneHeight;" "_modalOpen = false;"
+    Test-Mutation 'modal no longer restores' 'Schema' "_modalOpen = false;`r`n                    ApplyPaneHeight();" "_modalOpen = false;"
+    Test-Mutation 'header back to fixed constants' 'Header' 'Height = ToPixels(_activeTab == "solution" ? FullCss : StripCss);' 'Height = ToPixels(_activeTab == "solution" ? CssFullHeight : CssStripHeight);'
+    Test-Mutation 'header page stops reporting' 'HdrHtml' "send('headerSize', data);" ''
+    Test-Mutation 'panel page stops reporting' 'SsHtml' "send('contentSize', data);" ''
+    Test-Mutation 'headerSize forwarded to the host handler' 'Header' 'if (action == "headerSize") { OnHeaderSize(data); return; }' ''
+    Test-Mutation 'scale correction ignored' 'Header' ' * _scaleCorrection);' ');'
+    Test-Mutation 'panel not given the correction' 'Chat' '_schemaView.ScaleCorrection = _header.ScaleCorrection;' ''
+    Test-Mutation 'panel ignores its content' 'Schema' 'Math.Max(_paneHeight, Math.Min(_contentPixelHeight, max))' '_paneHeight'
     Test-Mutation 'LSP bar shown by SetDiagnostics again' 'Bar' '// Retired from view (82938fc7)' 'Visible = true; // Retired from view (82938fc7)'
     Test-Mutation 'LSP bar created visible' 'Chat' 'new Terminal.LspStatusBar { Visible = false }' 'new Terminal.LspStatusBar()'
     Test-Mutation 'copy takes the path from the page' 'Chat' 'case "copySolutionPath": OnCopySolutionPath(); break;' 'case "copySolutionPath": OnCopySolutionPath(e.Data); break;'
