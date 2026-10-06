@@ -15,15 +15,18 @@
     font-size: 12px;
     background: #1e1e2e;
     color: #cdd6f4;
-    overflow: hidden;
+    /* The host sizes the view to the page's measured height (GH #234), so this never scrolls in practice;
+       it is the fallback that keeps everything reachable if the two ever disagree. */
+    overflow-x: hidden;
+    overflow-y: auto;
     user-select: none;
     -webkit-user-select: none;
   }
 
+  /* Natural height, not 100vh: reportSize() measures it and the host sizes the view to fit (GH #234). */
   .header {
     display: flex;
     flex-direction: column;
-    height: 100vh;
     padding: 6px 10px 4px 10px;
   }
 
@@ -284,6 +287,9 @@
   .tab-badge[hidden] { display: none; }
   .hdr-tab.active .tab-badge { background: rgba(137, 180, 250, 0.18); color: #89b4fa; }
   .hdr-pane[hidden] { display: none; }
+  /* Schema Sources / Source Control: the page is exactly the title row + strip, which the host sizes it to. */
+  body.strip-only .header { padding-bottom: 0; }
+  body.strip-only .hdr-tabs { margin-bottom: 0; }
 
   /* Row icons sized to the 22 px controls beside them, so the fixed Solution pane stays compact. */
   .config-row .btn-icon, .codegraph-row .btn-icon { width: 26px; height: 22px; font-size: 14px; }
@@ -421,7 +427,34 @@
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('active', btns[i].getAttribute('data-tab') === tab);
     document.getElementById('paneSolution').hidden = tab !== 'solution';
+    document.body.classList.toggle('strip-only', tab !== 'solution');
     send('headerTab', tab);
+    if (sizeReporting) reportSize();
+  }
+
+  // Report the page's real height to the host (GH #234). Fixed CSS heights clipped the header whenever the
+  // page rendered larger than the host computed (Windows scaling the WebView beyond the IDE's DPI). Sends
+  // "strip,full,viewport" in CSS px: the title row + tab strip, the whole page with the Solution pane
+  // (remembered while another tab hides it) and window.innerHeight, from which the host learns how many of
+  // its pixels one CSS px really takes. The header's bottom padding + the CodeGraph row's margin are the
+  // 8 px above the host's terminal tab strip (d4e941e3).
+  var lastFull = 0, lastSent = '', sizeReporting = false;
+  function reportSize() {
+    var header = document.querySelector('.header');
+    var tabs = document.getElementById('hdrTabs');
+    if (!header || !tabs) return;
+    var strip = Math.ceil(tabs.getBoundingClientRect().bottom);
+    if (!document.getElementById('paneSolution').hidden)
+      lastFull = Math.ceil(header.getBoundingClientRect().height);
+    var data = strip + ',' + (lastFull || 0) + ',' + window.innerHeight;
+    if (data === lastSent) return;
+    lastSent = data;
+    send('headerSize', data);
+  }
+  if (typeof ResizeObserver === 'function') {
+    sizeReporting = true;
+    new ResizeObserver(reportSize).observe(document.querySelector('.header'));
+    window.addEventListener('resize', reportSize);   // zoom and DPI changes alter the viewport, not the content
   }
 
   // Intent only: the host copies ITS solution path (navigator.clipboard fails on file:// in WebView2).

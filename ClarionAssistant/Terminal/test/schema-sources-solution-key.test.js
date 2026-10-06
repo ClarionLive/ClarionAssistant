@@ -154,7 +154,7 @@ section('refused write');
     t.fromHost({ type: 'staleRefused' });
     check('staleRefused shows the note', note && note.hidden === false);
     check('the note sits in the pane, above the Schema Sources table',
-          note && note.parentElement === t.doc.getElementById('contentArea') &&
+          note && t.doc.getElementById('contentArea').contains(note) &&
           (note.compareDocumentPosition(t.doc.getElementById('paneSchema')) & 4) !== 0);
     check('the note hides itself after a few seconds', /showStaleNote[\s\S]*?setTimeout\([\s\S]*?hidden = true[\s\S]*?\d{4}\)/.test(html));
 }

@@ -27,9 +27,10 @@ body {
 .btn-sm.primary { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
 .btn-sm.primary:hover { background: #74c7ec; }
 
-/* ── Content: the pane under the CA header's tab strip (82938fc7). The host sizes this view to the
-   header's fixed pane, so a long source list scrolls here instead of growing the pane. ── */
+/* ── Content: the pane under the CA header's tab strip (82938fc7). The host sizes this view to fit
+   #contentFit (GH #234, reportSize) up to a cap, so only a long source list scrolls here. ── */
 .content { height: 100vh; overflow-y: auto; padding: 4px 12px 6px; }
+#contentFit { display: flow-root; }   /* contains its children's margins, so its height is the content's */
 .content::-webkit-scrollbar { width: 8px; }
 .content::-webkit-scrollbar-thumb { background: #45475a; border-radius: 4px; }
 
@@ -230,6 +231,7 @@ body.light .status-text.error { color: #d20f39; }
 <!-- The CA header's Schema Sources / Source Control panes. The header's tabs choose which one
      (setMode); this page has no tab strip or collapse bar of its own (82938fc7). -->
 <div class="content" id="contentArea">
+<div id="contentFit">
 
 <!-- Shown when the host refused a Select / repo save because the solution changed under it. -->
 <div class="stale-note" id="staleNote" hidden>The solution changed. Settings were refreshed; please re-apply.</div>
@@ -270,6 +272,7 @@ body.light .status-text.error { color: #d20f39; }
     <div style="font-size:11px;color:#6c7086;margin-top:4px" id="repoStatus"></div>
 </div>
 
+</div>
 </div>
 
 <!-- Manage Sources Modal -->
@@ -389,6 +392,26 @@ function setMode(mode) {
     if (mode !== 'schema' && mode !== 'repo') return;
     document.getElementById('paneSchema').style.display = mode === 'schema' ? '' : 'none';
     document.getElementById('paneRepo').style.display = mode === 'repo' ? '' : 'none';
+}
+
+// ── Report the content's height to the host (GH #234): "content,viewport" in CSS px. The host grows the
+// pane to fit it (capped; .content scrolls past that) and works out its pixel scale from the viewport. ──
+var lastSizeSent = '', sizeReporting = false;
+function reportSize() {
+    var area = document.getElementById('contentArea');
+    var fit = document.getElementById('contentFit');
+    if (!area || !fit) return;
+    var cs = getComputedStyle(area);
+    var content = Math.ceil(fit.getBoundingClientRect().height + (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0));
+    var data = content + ',' + window.innerHeight;
+    if (data === lastSizeSent) return;
+    lastSizeSent = data;
+    send('contentSize', data);
+}
+if (typeof ResizeObserver === 'function') {
+    sizeReporting = true;
+    new ResizeObserver(reportSize).observe(document.getElementById('contentFit'));
+    window.addEventListener('resize', reportSize);   // zoom and DPI changes alter the viewport, not the content
 }
 
 // ── Source Control ──
@@ -728,6 +751,7 @@ if (window.chrome && window.chrome.webview) {
         }
         if (msg.type === 'setMode') {
             setMode(msg.mode);
+            if (sizeReporting) reportSize();   // now, not on the next frame: the host sizes the pane as it shows it
         }
     });
 }

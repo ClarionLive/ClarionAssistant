@@ -130,6 +130,7 @@ namespace ClarionAssistant
             {
                 if (!SchemaViewAlive) return;
                 _schemaView.ZoomFactor = _header.ZoomFactor;
+                _schemaView.ScaleCorrection = _header.ScaleCorrection;
                 _schemaView.PaneHeight = _header.PanePixelHeight;
             };
 
@@ -1662,6 +1663,7 @@ namespace ClarionAssistant
             _schemaView = new SchemaSourcesView
             {
                 Visible = false,
+                ScaleCorrection = _header.ScaleCorrection,
                 PaneHeight = _header.PanePixelHeight,
                 ZoomFactor = _header.ZoomFactor
             };

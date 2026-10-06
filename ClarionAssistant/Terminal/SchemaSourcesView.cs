@@ -19,7 +19,8 @@ namespace ClarionAssistant.Terminal
     /// <summary>
     /// The CA header's Schema Sources / Source Control panes (82938fc7): ONE WebView2 panel for the whole
     /// chat pane, docked under the header and shown while one of those header tabs is active. It is sized
-    /// to the header's fixed pane (PaneHeight) and grows to fit the Manage Sources modal while it is open.
+    /// to the header's pane (PaneHeight), grows to fit taller content (GH #234, capped; the page scrolls past
+    /// that) and grows to fit the Manage Sources modal while it is open.
     /// It shares the header's zoom (HeaderWebView.ZoomKey): its height is the header's pane, so content at a
     /// different zoom would not fit the pane it was sized for. Follows the same pattern as HomeWebView.
     /// </summary>
@@ -53,9 +54,17 @@ namespace ClarionAssistant.Terminal
             set { if (_webView != null && Math.Abs(_webView.ZoomFactor - value) > 0.001) _webView.ZoomFactor = value; }
         }
 
+        // GH #234: the pane grows past the header's pane height to fit its content (the page reports it,
+        // contentSize), up to this many CSS px; past that the page's .content scrolls.
+        private const int MAX_PANE_HEIGHT = 360;
+        private int _contentPixelHeight;   // 0 until the page reports
+
+        /// <summary>The header's CSS-to-pixel correction (HeaderWebView.ScaleCorrection); set by the host.</summary>
+        public double ScaleCorrection { get; set; } = 1.0;
+
         private int ModalPixelHeight
         {
-            get { return (int)Math.Ceiling(MODAL_HEIGHT * ZoomFactor * DeviceDpi / 96.0); }
+            get { return (int)Math.Ceiling(MODAL_HEIGHT * ZoomFactor * DeviceDpi / 96.0 * ScaleCorrection); }
         }
 
         protected override void OnDpiChangedAfterParent(EventArgs e)
@@ -71,8 +80,34 @@ namespace ClarionAssistant.Terminal
             set
             {
                 _paneHeight = Math.Max(1, value);
-                if (!_modalOpen) Height = _paneHeight;
+                if (!_modalOpen) ApplyPaneHeight();
             }
+        }
+
+        // The header's pane, or the page's content when that is taller (capped at MAX_PANE_HEIGHT).
+        private void ApplyPaneHeight()
+        {
+            if (IsDisposed) return;
+            int max = (int)Math.Ceiling(MAX_PANE_HEIGHT * ZoomFactor * DeviceDpi / 96.0 * ScaleCorrection);
+            Height = Math.Max(_paneHeight, Math.Min(_contentPixelHeight, max));
+        }
+
+        // The page's "content,viewport" (CSS px, schema-sources.html reportSize): this control's pixel height
+        // over the viewport is the real CSS-to-pixel scale, so the content's pixel height needs no DPI guess.
+        private void OnContentSize(string data)
+        {
+            string[] parts = (data ?? "").Split(',');
+            int content, viewport;
+            if (parts.Length != 2
+                || !int.TryParse(parts[0], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out content)
+                || !int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out viewport))
+                return;
+            int hostPx = _webView != null ? _webView.ClientSize.Height : 0;
+            if (content <= 0 || viewport < 20 || hostPx < 20) return;
+            int px = (int)Math.Ceiling(content * (double)hostPx / viewport);
+            if (Math.Abs(px - _contentPixelHeight) <= 1) return;   // whole-pixel rounding, not a change
+            _contentPixelHeight = px;
+            if (!_modalOpen) ApplyPaneHeight();
         }
 
         public SchemaSourcesView()
@@ -150,9 +185,10 @@ namespace ClarionAssistant.Terminal
                 if (action == "modalClosed")
                 {
                     _modalOpen = false;
-                    Height = _paneHeight;
+                    ApplyPaneHeight();
                     return;
                 }
+                if (action == "contentSize") { OnContentSize(data); return; }   // host-only: sizes this view
 
                 if (!string.IsNullOrEmpty(action))
                     ActionReceived?.Invoke(this, new SchemaSourceActionEventArgs(action, data));
