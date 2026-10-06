@@ -271,7 +271,7 @@ static class EmbedOverlayGuardTest
             // fc420c30's file_path check and "— file:line (path)" naming read the channel's FilePath: on the covered view
             // it must be the path the NATIVE editor reports there, or file_path writes are refused only with the overlay up.
             Ok("the covered CA Embeditor channel reports the native active path as its FilePath",
-                mevc.Contains("new EmbedChannel(v, NativeActivePath())") && mevc.Contains("return _path ?? ("), null);
+                mevc.Contains("new EmbedChannel(v, NativeActivePath()") && mevc.Contains("return _path ?? ("), null);
 
             // The routed save recognises 1565ef7b's busy refusal by its text (no request id until dc4f7115): the gate's
             // message must keep starting with the prefix EmbedSaveWait matches.
@@ -291,6 +291,9 @@ static class EmbedOverlayGuardTest
             Ok("both annotated tools document the buffer-line numbering rule",
                 reg.Contains("for targeted searches to avoid large output. \" + EmbedSlotText.NumberingRule")
                 && reg.Contains("capped at ~6 KB. \" + EmbedSlotText.NumberingRule"), null);
+            Ok("the CA Embeditor channel answers file_path for its module and procedure (IOverlayPathAliases, module looked up once)",
+                mevc.Contains("IOverlayWriteLabel, IOverlayPathAliases") && mevc.Contains("new EmbedChannel(v, NativeActivePath(), v.ModuleName())"), null);
+
             string etr = File.ReadAllText(Path.Combine(dir, @"Services\EditorToolRouter.cs"));
             Ok("editor-tool writes in the CA Embeditor are labelled by the channel (procedure + line), not the .app",
                 mevc.Contains("IEditorOverlayChannel, IOverlayWriteLabel") && etr.Contains("Label(result, opts, ch.FilePath, ops.LastLine, ch)"), null);
