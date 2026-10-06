@@ -389,7 +389,7 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Insert text at the current cursor position in the Clarion IDE editor",
                 InputSchema = McpJsonRpc.BuildSchema(
-                    new Dictionary<string, string> { { "text", "The text to insert" }, { "file_path", WriteFilePathHelp } },
+                    new Dictionary<string, string> { { "text", "The text to insert" }, { "file_path?", WriteFilePathHelp } },
                     new[] { "text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args =>
@@ -415,7 +415,7 @@ IdeOnly = true,
                     {
                         { "old_text", "The exact text to find and replace" },
                         { "new_text", "The replacement text" },
-                        { "file_path", WriteFilePathHelp }
+                        { "file_path?", WriteFilePathHelp }
                     },
                     new[] { "old_text", "new_text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -446,7 +446,7 @@ IdeOnly = true,
                         { "end_line", "End line (1-based)" },
                         { "end_col", "End column (1-based)" },
                         { "new_text", "Replacement text (empty string to delete)" },
-                        { "file_path", WriteFilePathHelp }
+                        { "file_path?", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line", "new_text" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -506,7 +506,7 @@ IdeOnly = true,
                         { "start_col", "Start column (1-based)" },
                         { "end_line", "End line (1-based)" },
                         { "end_col", "End column (1-based)" },
-                        { "file_path", WriteFilePathHelp }
+                        { "file_path?", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -529,7 +529,7 @@ IdeOnly = true,
                 Name = "undo",
 IdeOnly = true,
                 Description = "Undo the last edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path?", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args => EditorRouter.Run("undo",
                     () => _editorService.Undo() ? "Undo successful" : "Nothing to undo",
@@ -541,7 +541,7 @@ IdeOnly = true,
                 Name = "redo",
 IdeOnly = true,
                 Description = "Redo the last undone edit in the active editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path?", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 Handler = args => EditorRouter.Run("redo",
                     () => _editorService.Redo() ? "Redo successful" : "Nothing to redo",
@@ -553,7 +553,7 @@ IdeOnly = true,
                 Name = "save_file",
 IdeOnly = true,
                 Description = "Save the currently active file in the Clarion IDE editor.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path?", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 // fc420c30: with a CA Editor up this saves ITS text through its own save path. It used to Save() the
                 // native shell, which the overlay keeps clean: the developer's unsaved edits were not saved at all.
@@ -567,7 +567,7 @@ IdeOnly = true,
                 Name = "close_file",
 IdeOnly = true,
                 Description = "Close the currently active editor tab.",
-                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path", WriteFilePathHelp } }),
+                InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string> { { "file_path?", WriteFilePathHelp } }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 // fc420c30: a CA Editor with unsaved edits is NOT closed (John, 2026-10-05). CloseWindow(true) skips the
                 // closing prompt, and the overlay's Dispose fallback would then write the edits silently.
@@ -695,7 +695,7 @@ IdeOnly = true,
                     {
                         { "start_line", "First line to toggle (1-based)" },
                         { "end_line", "Last line to toggle (1-based, inclusive)" },
-                        { "file_path", WriteFilePathHelp }
+                        { "file_path?", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals

@@ -79,8 +79,11 @@ Check ($gof.Contains('"ToolTipText"') -and $gof.IndexOf('"ToolTipText"') -lt $go
 foreach ($t in @('insert_text_at_cursor', 'replace_text', 'replace_range', 'delete_range', 'toggle_comment', 'undo', 'redo',
                  'save_file', 'close_file')) {
     $b = Block $t
-    Check ($null -ne $b -and $b.Contains('WriteOpts(args') -and $b.Contains('{ "file_path", WriteFilePathHelp }')) `
-        "$t names the file it changed and takes file_path"
+    # "file_path?": BuildSchema makes a key without '?' REQUIRED when the tool passes no required list (live, round 2:
+    # undo's schema demanded file_path although its help says optional).
+    Check ($null -ne $b -and $b.Contains('WriteOpts(args') -and $b.Contains('{ "file_path?", WriteFilePathHelp }') -and
+           -not $b.Contains('{ "file_path", WriteFilePathHelp }')) `
+        "$t names the file it changed and takes an OPTIONAL file_path"
 }
 
 # fc420c30 (live): a NATIVE-mode tab (CA Editor toggled off) was reported as "open in the CA Editor with no unsaved edits".
