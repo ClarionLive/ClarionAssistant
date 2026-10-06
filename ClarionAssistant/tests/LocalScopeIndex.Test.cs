@@ -238,6 +238,21 @@ static class LocalScopeIndexTest
         var h310 = HoverOn(c310, "x = Clip", "Clip");
         Check(h310 != null && h310.Authoritative && h310.Kind == "local", "3.10a", "a local named Clip wins, authoritative");
 
+        // Module data and structures: the buffer's card is a FALLBACK for the server's richer one (scope, field
+        // count, declaration link); a plain procedure local stays authoritative (1.17).
+        var hMod = HoverOn(_two, codeLine, "ModCounter");
+        Check(hMod != null && !hMod.Authoritative && hMod.Fallback && hMod.Markdown.Contains("LONG"), "1.fb1",
+              "ModCounter (module LONG) -> fallback, not authoritative: " + Md(hMod));
+        string cGrp = WithLine(_two, "Loc", "  CLEAR(MyGrp)");
+        var hGrp = HoverOn(cGrp, "CLEAR(MyGrp)", "MyGrp");
+        Check(hGrp != null && !hGrp.Authoritative && hGrp.Fallback && hGrp.Markdown.Contains("GROUP"), "1.fb2",
+              "MyGrp (local GROUP) -> fallback, not authoritative: " + Md(hGrp));
+        string cCls = WithLine(_two, "Loc", "  x = ThisWindow");
+        var hCls = HoverOn(cCls, "x = ThisWindow", "ThisWindow");
+        Check(hCls != null && !hCls.Authoritative && hCls.Fallback, "1.fb3",
+              "ThisWindow (local CLASS) -> fallback, not authoritative: " + Md(hCls));
+        Check(h17 != null && !h17.Fallback, "1.fb4", "LOC:Count (plain local) -> not a fallback: " + Md(h17));
+
         // Local class member access (SELF.Init inside ThisWindow.Init): non-authoritative member hover.
         string cm = WithLine(_two, "SELF.", "  SELF.Kill()");
         var hm = HoverOn(cm, "SELF.Kill()", "Kill");
