@@ -20,11 +20,222 @@
  * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms.
  */
 
+// ── Process-kill detection (ticket 24a72aa1) ────────────────────────
+//
+// The kill rule used to ask whenever a kill word appeared anywhere in the
+// command, so
+//   grep -n '"quit"\|"kill"' *.cs
+// stopped a helper on a confirmation prompt until the Owner answered it — a
+// hook's "ask" overrides bypass mode.
+//
+// It still asks for a kill word anywhere, except inside a SIMPLE quoted
+// string: '...' or "..." that opens and closes on one line, where "..." holds
+// no $(, ${ or backtick (bash would run or expand those). Everything else is
+// left as it is. In particular this hook does not try to understand heredocs,
+// comments, ${...} or $'...': five review passes found that each attempt to
+// interpret them hid a real kill somewhere, while leaving them alone only
+// costs an extra prompt.
+//
+// FAIL SAFE: at the first quote that is not simple — unclosed, spanning a
+// line, $'...', or a "..." holding $( ${ ` — reading stops and the rest of
+// the command stays as it is. A misread therefore makes the rule ask, never
+// stay silent.
+//
+// A simple quoted string that IS a kill program is not data, because bash runs
+// it: a path or .exe name ending in a kill word ("C:/Windows/System32/
+// taskkill.exe", "/usr/bin/kill") wherever it stands — quoting a full path is
+// ordinary on Windows — and the bare word ('kill') where a command starts
+// (see atCommandStart). So is a quoted script or program whose file name holds
+// a kill word anywhere ("./scripts/kill.sh", "C:/My Tools/kill-server.bat";
+// see isKillScript). The price: such a path asks even as an argument
+// (rg "taskkill.exe", ls "C:/tools/kill.exe", cat "kill.sh").
+// grep "kill" x stays silent: there the word is an argument.
+//
+// Quoted text also counts when the command runs a variable as a command
+// (CMD="taskkill //F //IM x.exe"; $CMD), because the kill is stored in quotes
+// and run from the variable.
+//
+// If the command also runs a program that executes code (a shell,
+// PowerShell, a language runtime, awk, trap, watch, ssh, eval, ...), quoted
+// text counts too: bash -c "kill 1" and node -e "process.kill(1)" ask. That
+// check reads the command as written, quotes and all, so a quoted path such as
+// "/c/Program Files/Git/bin/bash.exe" is still seen.
+//
+// Accepted: an unquoted mention (grep -n kill *.cs) still asks, as before, and
+// so does a quoted one in a command that also names a runner (echo 'use sh to
+// kill it'). A kill inside quotes run by a program not listed below is not
+// seen; this guards against accidents, not evasion.
+
+const KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps)\b/i;
+
+// A program that runs code handed to it as text: a whole word, after a
+// separator, a quote or the start, with an optional path and .exe.
+const RUNS_CODE = new RegExp(
+  String.raw`(?:^|[\s;&|(){}!"'` + '`' + String.raw`]|\$\()(?:[^\s;&|(){}!"'` + '`' + String.raw`]*[\\/])?` +
+  String.raw`(?:powershell|pwsh|cmd|bash|sh|zsh|dash|wsl|iex|Invoke-Expression|Start-Process|` +
+  String.raw`node|nodejs|ts-node|deno|bun|tsx|python[\d.]*|py|perl|ruby|php|awk|gawk|` +
+  String.raw`trap|watch|su|runuser|ssh|parallel|eval|\$\{?SHELL\}?|\$\{?BASH\}?)` +
+  String.raw`(?:\.exe)?(?=[\s;&|)}"'` + '`' + String.raw`]|$)`,
+  'i'
+);
+
+// The whole content of a quoted string that names a kill program, optionally
+// with a path in front and .exe after.
+const KILL_PROGRAM = /(?:^|[\\/])(?:taskkill|kill|pkill|killall|fkill|Stop-Process|spps)(?:\.exe)?$/i;
+
+// True when `text` up to `end` (the command read so far) ends where a new
+// command starts:
+// at the beginning; after ; & | ( ) { ` ! or a newline (")" ends a case
+// pattern); after a keyword that is followed by a command (if while until do
+// then else elif); or after any of those followed only by VAR=val words and
+// redirections written against their target (X=1 'kill', >/dev/null 'kill',
+// 2>/dev/null 'kill'). It walks back one word at a time and stops at the first
+// word that is none of these.
+//
+// Accepted: a redirection with a space before its target (> /dev/null 'kill',
+// < in 'kill') or one ending in &N (2>&1 'kill') is not skipped, so a quoted
+// bare kill after it is read as an argument and does not ask. Nobody writes a
+// kill that way by accident.
+//
+// `text` is an array of single characters, not a string: reading one character
+// of a string built with += makes V8 copy the whole string first, so indexing
+// it once per quote was quadratic on its own (80000 quotes took 8 s).
+// `seen` maps a position in `text` to the answer for the text before it. The
+// caller only ever appends to `text`, so an answer never goes stale, and every
+// position is walked once per command: without it, X='kill' repeated walks
+// back over all the earlier ones each time, which is quadratic too.
+// `seen` only holds word boundaries, so it cannot help quotes glued into one
+// word ('kill''kill'..., ,"kill","kill"...): each would rescan the whole word.
+// A word longer than MAX_WORD therefore counts as a command start, so a quoted
+// bare kill word after it is kept and the command asks; other quoted text is
+// unaffected. Nobody glues 256 characters to a quoted kill word by hand.
+const MAX_WORD = 256;
+const COMMAND_KEYWORD = /^(?:if|while|until|do|then|else|elif)$/;
+const PREFIX_WORD = /^(?:\w+=|\d*[<>])/;
+const WORD_BREAK = ' \t\n;&|(){}`!';
+
+function atCommandStart(text, seen, end = text.length) {
+  const walked = [];
+  let j = end;
+  let answer;
+  for (;;) {
+    while (j > 0 && (text[j - 1] === ' ' || text[j - 1] === '\t')) j--;
+    if (seen.has(j)) { answer = seen.get(j); break; }
+    walked.push(j);
+    if (j === 0 || ';&|(){`!\n'.includes(text[j - 1])) { answer = true; break; }
+    let k = j;
+    while (k > 0 && j - k <= MAX_WORD && !WORD_BREAK.includes(text[k - 1])) k--;
+    if (j - k > MAX_WORD) { answer = true; break; }
+    const word = text.slice(k, j).join('');
+    if (COMMAND_KEYWORD.test(word)) { answer = true; break; }
+    if (!PREFIX_WORD.test(word)) { answer = false; break; }
+    j = k;
+  }
+  for (const position of walked) seen.set(position, answer);
+  return answer;
+}
+
+// A program or script file whose name holds a kill word anywhere (kill.sh,
+// kill-server.bat, stop-and-kill.sh): a name with a runnable extension, or a
+// path whose last part has no extension. kill.ts or a directory is not one,
+// and neither is a grep pattern such as "quit"\|"kill", whose \ is not a path
+// separator: the last part must look like a file name.
+const RUNNABLE_EXTENSION = /\.(?:exe|com|sh|bash|bat|cmd|ps1)$/i;
+const FILE_NAME = /^[\w.+-]+$/;
+
+function isKillScript(body) {
+  const name = body.slice(Math.max(body.lastIndexOf('/'), body.lastIndexOf('\\')) + 1);
+  if (!FILE_NAME.test(name) || !KILL_WORD.test(name)) return false;
+  if (RUNNABLE_EXTENSION.test(name)) return true;
+  return !name.includes('.') && /[\\/]/.test(body);
+}
+
+// Whether a simple quoted string with this content is a kill program being run.
+function isQuotedKillProgram(body, textBefore, seen) {
+  if (isKillScript(body)) return true;
+  if (!KILL_PROGRAM.test(body)) return false;
+  return /[\\/]|\.exe$/i.test(body) || atCommandStart(textBefore, seen);
+}
+
+// Whether `text` (quotes already emptied) runs a variable as a command:
+// CMD="taskkill //F //IM x.exe"; $CMD. The kill is inside the quotes, so
+// without this it would pass. A $VAR glued to other text (X=$HOME) or used as
+// an argument (grep "kill" $FILE) is not a command.
+function runsVariable(text) {
+  const chars = text.split('');
+  const seen = new Map();
+  const variable = /\$\{?[A-Za-z_]/g;
+  let match;
+  while ((match = variable.exec(text)) !== null) {
+    const at = match.index;
+    if (at > 0 && !WORD_BREAK.includes(text[at - 1])) continue;
+    if (atCommandStart(chars, seen, at)) return true;
+  }
+  return false;
+}
+
+// Index of the closing double quote from `from`, honouring backslash escapes;
+// -1 if it never closes.
+function findClosingDoubleQuote(text, from) {
+  for (let j = from; j < text.length; j++) {
+    if (text[j] === '\\') { j++; continue; }
+    if (text[j] === '"') return j;
+  }
+  return -1;
+}
+
+/**
+ * Returns the command with the inside of its simple quoted strings removed
+ * (the quotes are kept, empty). Stops at the first quote that is not simple
+ * and keeps the rest as it is (see FAIL SAFE above).
+ */
+function removeSimpleQuotes(command) {
+  const seen = new Map();
+  const out = []; // one character per element (see atCommandStart)
+  const append = (s) => { for (let n = 0; n < s.length; n++) out.push(s[n]); };
+  let i = 0;
+  while (i < command.length) {
+    const c = command[i];
+    if (c === '\\') { append(command.slice(i, i + 2)); i += 2; continue; }
+    if (c === "'") {
+      const close = command.indexOf("'", i + 1);
+      if (command[i - 1] === '$' || close < 0 || command.slice(i + 1, close).includes('\n')) {
+        return out.join('') + command.slice(i);
+      }
+      const body = command.slice(i + 1, close);
+      append(isQuotedKillProgram(body, out, seen) ? `'${body}'` : "''");
+      i = close + 1;
+      continue;
+    }
+    if (c === '"') {
+      const close = findClosingDoubleQuote(command, i + 1);
+      const body = close < 0 ? '' : command.slice(i + 1, close);
+      if (close < 0 || body.includes('\n') || /\$[({]|`/.test(body)) {
+        return out.join('') + command.slice(i);
+      }
+      append(isQuotedKillProgram(body, out, seen) ? `"${body}"` : '""');
+      i = close + 1;
+      continue;
+    }
+    out.push(c);
+    i++;
+  }
+  return out.join('');
+}
+
+function isProcessKill(command) {
+  if (!KILL_WORD.test(command)) return false;
+  const stripped = removeSimpleQuotes(command);
+  if (KILL_WORD.test(stripped)) return true;
+  return runsVariable(stripped) || RUNS_CODE.test(command);
+}
+
 // ── Rule Definitions ────────────────────────────────────────────────
 
 /**
  * Bash command rules. Checked in order; first match wins.
- * pattern: regex tested against the full command string.
+ * pattern: regex tested against the full command string, OR
+ * test:    a function (command) => boolean, for a rule a regex cannot express.
  * action:  "deny" or "ask".
  * reason:  shown to the agent (and user, for "ask").
  */
@@ -152,9 +363,11 @@ const BASH_RULES = [
     action: 'ask',
     reason: 'git branch -D force-deletes a branch even if unmerged. Are you sure?'
   },
-  // Gate process killing — could take down MultiTerminal or other critical apps
+  // Gate process killing — could take down MultiTerminal or other critical apps.
+  // Matches a kill that is RUN, not the word appearing in a grep pattern or a
+  // message (ticket 24a72aa1); see isProcessKill below.
   {
-    pattern: /\b(taskkill|kill|Stop-Process|stop-process)\b/i,
+    test: isProcessKill,
     action: 'ask',
     reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
   },
@@ -315,7 +528,7 @@ function ask(reason) {
 function checkBash(command) {
   if (!command) return null;
   for (const rule of BASH_RULES) {
-    if (rule.pattern.test(command)) {
+    if (rule.test ? rule.test(command) : rule.pattern.test(command)) {
       return rule.action === 'deny' ? deny(rule.reason) : ask(rule.reason);
     }
   }
