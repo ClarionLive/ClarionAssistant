@@ -15,7 +15,8 @@ namespace ClarionAssistant.Services
         public bool Authoritative;
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
-        /// deadline. Never set together with <see cref="Authoritative"/>.</summary>
+        /// deadline. Also set for module data and GROUP/QUEUE/CLASS structures declared in the buffer, whose server
+        /// card carries scope, field count and a link to the declaration. Never set together with <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
         public string Kind;
@@ -928,7 +929,16 @@ namespace ClarionAssistant.Services
                         string detail, doc;
                         BuildVarDetail(rest, null, out detail, out doc);
                         string sig = string.IsNullOrEmpty(detail) ? word : word + "  " + detail;
-                        return Card(sig, "local", fileName, "local");
+                        var card = Card(sig, "local", fileName, "local");
+                        // Module data and GROUP/QUEUE/CLASS structures: the server's card says more (scope, field
+                        // count, a link to the declaration), so this one is only its FALLBACK (GH #250 semantics).
+                        // Procedure/routine locals that are not structures stay authoritative - instant, no LSP call.
+                        if (r.Kind == "module" || IsStructureDecl(word, rest))
+                        {
+                            card.Authoritative = false;
+                            card.Fallback = true;
+                        }
+                        return card;
                     }
                     var ps = r.Kind == "proc" ? _params : (r.Kind == "owner" ? _ownerParams : null);
                     if (ps != null)
@@ -991,6 +1001,13 @@ namespace ClarionAssistant.Services
         }
 
         private static bool IsEnd(string ln) { return EndLine.IsMatch(ln) || PeriodEnd.IsMatch(ln); }
+
+        /// <summary>A depth-0 declaration (label + rest-of-line) that opens a GROUP/QUEUE/CLASS/INTERFACE.</summary>
+        private static bool IsStructureDecl(string label, string rest)
+        {
+            string ln = label + " " + rest;
+            return GroupQueueOpen.IsMatch(ln) || ClassOpen.IsMatch(ln);
+        }
 
         /// <summary>Depth-0 labels of one DATA range matching <paramref name="prefix"/>: plain locals plus a
         /// GROUP/QUEUE/CLASS container's own label, never its fields or members.</summary>
