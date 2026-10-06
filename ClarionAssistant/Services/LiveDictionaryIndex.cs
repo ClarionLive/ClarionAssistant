@@ -262,6 +262,36 @@ namespace ClarionAssistant.Services
             return _all = list;
         }
 
+        private static Dictionary<string, DeclKind> _declKeywords;
+
+        /// <summary>How <paramref name="word"/> can open a declaration: <see cref="DeclKind.Reserved"/> for a
+        /// data type or data structure (LONG, QUEUE, WINDOW: reserved, never a user symbol's name),
+        /// <see cref="DeclKind.Control"/> for a window/report control (TEXT, BUTTON: only meaningful at the start
+        /// of a control declaration, and not reserved elsewhere), <see cref="DeclKind.Other"/> for a program or
+        /// report structure keyword (PROCEDURE, ROUTINE, DETAIL), <see cref="DeclKind.None"/> for anything else -
+        /// built-ins, attributes, directives, statements.</summary>
+        internal static DeclKind DeclarationKind(string word)
+        {
+            if (string.IsNullOrEmpty(word)) return DeclKind.None;
+            var map = _declKeywords;
+            if (map == null)
+            {
+                map = new Dictionary<string, DeclKind>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in ClarionBuiltins.KeywordsWithCategory())
+                    switch (kv.Value)
+                    {
+                        case "Data type": case "Data structure": map[kv.Key] = DeclKind.Reserved; break;
+                        case "Control": map[kv.Key] = DeclKind.Control; break;
+                        case "Program structure": case "Report structure": map[kv.Key] = DeclKind.Other; break;
+                    }
+                _declKeywords = map;
+            }
+            DeclKind k;
+            return map.TryGetValue(word, out k) ? k : DeclKind.None;
+        }
+
+        internal enum DeclKind { None, Other, Reserved, Control }
+
         private static Dictionary<string, KeyValuePair<string, string>> ByName()
         {
             var byName = _byName;
