@@ -36,10 +36,13 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w.:]+)\s+FUNCTION\b\s*(\([^)]*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex RoutineDefRegex = new Regex(
             @"^([\w:]+)\s+ROUTINE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // CLASS / INTERFACE labels may carry colons ("ctQ_ActiveThreads:ThreadSafe CLASS(...),TYPE")
+        // exactly like procedure labels (d90f175) — \w+ alone left such a class with no row, its
+        // prototypes unqualified, and its "Owner:Name.Method" implementations nothing to link to (GH #246).
         private static readonly Regex ClassDefRegex = new Regex(
-            @"^(\w+)\s+CLASS\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w:]+)\s+CLASS\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex InterfaceDefRegex = new Regex(
-            @"^(\w+)\s+INTERFACE\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            @"^([\w:]+)\s+INTERFACE\s*(\([^)]*\))?\s*(,.*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex IncludeRegex = new Regex(
             @"INCLUDE\s*\(\s*'([^']+)'\s*(?:,\s*'([^']+)')?\s*\)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex DoCallRegex = new Regex(
@@ -67,9 +70,9 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w:]+)\s+(BYTE|SHORT|USHORT|LONG|ULONG|SIGNED|UNSIGNED|SREAL|REAL|BFLOAT4|BFLOAT8|DECIMAL|PDECIMAL|STRING|ASTRING|CSTRING|PSTRING|DATE|TIME|BOOL|ANY)\s*(\((?:[^()]|\([^)]*\))*\))?\s*(,.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // Reference variable: VarName &TYPE
+        // Reference variable: VarName &TYPE  (TYPE may be a colon-labelled class, GH #246)
         private static readonly Regex RefVariableDeclRegex = new Regex(
-            @"^([\w:]+)\s+&(\w+)\s*(,.*)?$",
+            @"^([\w:]+)\s+&([\w:]+)\s*(,.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // EQUATE constant: ConstName EQUATE(value)
@@ -136,9 +139,10 @@ namespace ClarionCodeGraph.Parsing
         public bool LibraryMode { get; set; }
 
         // Class/interface instance: VarName ClassName [,attributes] [!comment]
-        // Catch-all for declarations where the type is not a built-in Clarion type
+        // Catch-all for declarations where the type is not a built-in Clarion type.
+        // ClassName may be a colon-labelled class ("Obj  ctQ_ActiveThreads:ThreadSafe", GH #246).
         private static readonly Regex ClassInstanceDeclRegex = new Regex(
-            @"^([\w:]+)\s+(\w+)\s*(,[^!]*)?\s*(!.*)?$",
+            @"^([\w:]+)\s+([\w:]+)\s*(,[^!]*)?\s*(!.*)?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         // EXTERNAL attribute on a data declaration: the symbol is declared here but OWNED by
