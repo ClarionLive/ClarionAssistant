@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.8 &middot; for Clarion.Assistant 5.9</div>
+  <div class="version-badge">User Guide &middot; v1.9 &middot; for Clarion.Assistant 6.0</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-60" class="sub">v6.0</a>
     <a href="#whats-new-59" class="sub">v5.9</a>
     <a href="#whats-new-58" class="sub">v5.8</a>
     <a href="#whats-new-55" class="sub">v5.5</a>
@@ -530,6 +531,51 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-60">v6.0 &mdash; Claude Edits What You See, Language Server v1.0.8, Keymap Profiles</h3>
+
+  <p>
+    With a file open in the <a href="#ca-monaco-editor"><strong>CA Editor</strong></a> or a procedure
+    open in the <a href="#ca-embeditor"><strong>CA Embeditor</strong></a>, Claude's
+    <a href="#tools-editor-operations">editor and embed tools</a> now read and write the text in front
+    of you, your unsaved edits included, instead of the native document hidden underneath. Claude's
+    edits appear at once as one undo step, <code>save_file</code> and
+    <code>save_and_close_embeditor</code> do what your Save button does, and every edit names the file
+    and line it changed. Tools that would discard your work (<code>cancel_embeditor</code>,
+    <code>close_file</code> with unsaved changes, <code>apply_embed_edits</code>) refuse and leave it
+    to you. A CA Embeditor save that can't go through now keeps the embeditor open with your text
+    instead of losing it.
+  </p>
+
+  <p>
+    The bundled <a href="#lsp-integration">language server</a> is now <strong>v1.0.8</strong>, and
+    edits reach it as the one changed range instead of the whole file: on a 61,000-line module a change
+    goes from about 1.4 seconds to about 21 ms. <code>lsp_diagnostics</code> checks the editor's
+    current text and returns partial results when time runs out. Hover shows the language server's
+    card where it says more (structure keywords, module data, GROUP/QUEUE/CLASS declarations), and
+    completion reopens after a colon (<code>glo:</code>, <code>PROP:</code>) and offers equates from
+    included <code>.inc</code> files.
+  </p>
+
+  <p>
+    The CA Editor gains <a href="#ca-keymap-profiles"><strong>keymap profiles</strong></a> (Clarion,
+    VS Code, Visual Studio, Notepad++) with every key in one table and clashes shown. Large procedures
+    use far less memory, and a notice warns before Clarion runs short of it. Home gets tabs for COM
+    controls and IDE addins, and the standalone server reads the settings of the Clarion it is
+    installed in when several are installed.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>Windows 10 version 1809 or Windows Server 2019 is the minimum.</strong> Clarion
+    Assistant's terminals need the ConPTY API that first shipped there. Older Windows, such as Server
+    2016, now gets a message saying so instead of a blank tab, and the installer checks before
+    installing.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v6.0.0.md">v6.0.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-59">v5.9 &mdash; Instant Completion, Header Tabs, an Embeditor That Behaves Like Clarion</h3>
 
@@ -2834,7 +2880,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.8 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.9 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->
