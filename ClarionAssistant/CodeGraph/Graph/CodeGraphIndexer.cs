@@ -1245,8 +1245,9 @@ namespace ClarionCodeGraph.Graph
             // CLASS,TYPE definition lives in an .inc file, never inline in a .clw's own text. Used
             // to skip such a declaration's body (see below) so its own overridden-method prototype
             // line doesn't get misread by procDefRegex as an unrelated procedure implementation.
+            // Label accepts colons — kept identical to ClarionParser.ClassDefRegex (GH #246).
             var classDefRegex = new System.Text.RegularExpressions.Regex(
-                @"^(\w+)\s+CLASS\s*(\([^)]*\))?\s*(,.*)?$",
+                @"^([\w:]+)\s+CLASS\s*(\([^)]*\))?\s*(,.*)?$",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             var endOrPeriodRegex = new System.Text.RegularExpressions.Regex(
                 @"^\s*(END\s*([!].*)?|\.)\s*$",
