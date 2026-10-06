@@ -81,6 +81,15 @@ namespace ClarionAssistant.Services
         internal const string ExactSqlNoIndex = CodeGraphProvider.SymbolSelect +
             "WHERE LOWER(s.name) = LOWER(@name) AND " + ReachableScope + "LIMIT 1";
 
+        // Every same-named candidate, for a lookup that filters out-of-scope equates after the query. Bounded
+        // generously: one exact name rarely has more than a handful of rows, but a common one ("Text") is
+        // declared in many library include files, and a cap hit would hide the one in-scope row.
+        internal const string ExactSqlAll = CodeGraphProvider.SymbolSelect +
+            "WHERE s.name = @name COLLATE NOCASE AND " + ReachableScope + "LIMIT 500";
+
+        internal const string ExactSqlAllNoIndex = CodeGraphProvider.SymbolSelect +
+            "WHERE LOWER(s.name) = LOWER(@name) AND " + ReachableScope + "LIMIT 500";
+
         // ================================================================== registry and test hooks
 
         private static readonly object _registryLock = new object();
@@ -220,15 +229,17 @@ namespace ClarionAssistant.Services
         /// <summary>The most pages one filtered <see cref="ByPrefix"/> reads (bounds a one-letter prefix).</summary>
         private const int MaxPrefixPages = 40;
 
-        /// <summary>True for a file-level EQUATE declared in a .inc whose file name is not in
-        /// <paramref name="includedFiles"/> - an equate the current file cannot see. Everything else
+        /// <summary>True for a file-level EQUATE declared in an include file (.inc or .equ) whose file name is
+        /// not in <paramref name="includedFiles"/> - an equate the current file cannot see. Everything else
         /// (procedures, variables, equates in .clw files, class members) is never excluded.</summary>
         internal static bool IsEquateOutside(CodeGraphSymbol s, ISet<string> includedFiles)
         {
             if (s == null || !string.Equals(s.Params, "EQUATE", StringComparison.OrdinalIgnoreCase)) return false;
             if (!string.Equals(s.Scope, "global", StringComparison.OrdinalIgnoreCase)) return false;
             string file = s.FilePath;
-            if (string.IsNullOrEmpty(file) || !file.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) return false;
+            if (string.IsNullOrEmpty(file) ||
+                !(file.EndsWith(".inc", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".equ", StringComparison.OrdinalIgnoreCase)))
+                return false;
             string name = BaseName(file);
             return name != null && !includedFiles.Contains(name);
         }
@@ -404,10 +415,25 @@ namespace ClarionAssistant.Services
         /// name="name"/> (case-insensitive), or null.</summary>
         public CodeGraphSymbol FindByName(string name, bool fastOnly = false)
         {
+            return FindByName(name, fastOnly, null);
+        }
+
+        /// <summary>As <see cref="FindByName(string, bool)"/>, skipping a file-level EQUATE from a .inc that is
+        /// not in <paramref name="equateFiles"/> (see <see cref="IncludeClosure"/>; null = no filtering), the
+        /// same scope rule <see cref="ByPrefix"/> applies to completion.</summary>
+        public CodeGraphSymbol FindByName(string name, bool fastOnly, ISet<string> equateFiles)
+        {
             if (string.IsNullOrEmpty(name)) return null;
             var results = new List<CodeGraphSymbol>();
-            Query(noIndex => noIndex ? ExactSqlNoIndex : ExactSql, cmd => cmd.Parameters.AddWithValue("@name", name), results, fastOnly);
-            return results.Count > 0 ? results[0] : null;
+            if (equateFiles == null)
+            {
+                Query(noIndex => noIndex ? ExactSqlNoIndex : ExactSql, cmd => cmd.Parameters.AddWithValue("@name", name), results, fastOnly);
+                return results.Count > 0 ? results[0] : null;
+            }
+            Query(noIndex => noIndex ? ExactSqlAllNoIndex : ExactSqlAll, cmd => cmd.Parameters.AddWithValue("@name", name), results, fastOnly);
+            foreach (var s in results)
+                if (!IsEquateOutside(s, equateFiles)) return s;
+            return null;
         }
 
         /// <summary>The base class named on <paramref name="className"/>'s own class row, or null.</summary>

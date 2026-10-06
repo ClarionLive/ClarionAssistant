@@ -326,6 +326,220 @@ static class LocalLayerHandlersTest
         }
     }
 
+    // ------------------------------------------------------------------ hover: keyword slots and equate scope
+
+    // A WINDOW whose control keywords share their names with index symbols, reserved types in reference and
+    // prototype slots, a procedure named like an attribute, and code that hovers equates from included and
+    // not-included include files.
+    static readonly string[] SlotLines = {
+        "  MEMBER('app')",                              // 1
+        "  MAP",                                        // 2
+        "    Other()",                                  // 3  (Password is NOT here: a MAP entry resolves in the buffer)
+        "    UseWin(*WINDOW pW),LONG",                  // 4  a reserved type as a parameter type
+        "  END",                                        // 5
+        "Win  WINDOW('x'),AT(0,0,100,100)",             // 6  labelled slot: WINDOW
+        "       TEXT,AT(1,1,10,10),USE(?T)",            // 7  unlabelled slot, ',' after: TEXT
+        "       BUTTON('Ok'),AT(1,20),USE(?Ok)",        // 8  unlabelled slot, '(...)' then ',': BUTTON
+        "     END",                                     // 9
+        "q    &MyQType",                                // 10 a user type in the type slot
+        "w    &WINDOW",                                 // 11 a reserved type behind a reference marker
+        "TestProc PROCEDURE",                           // 12
+        "  CODE",                                       // 13
+        "  x# = Seen + Hidden + Gone + Dup",            // 14 equates: included .inc / other .inc / other .equ / both
+        "  x# = Text",                                  // 15 'Text' in code: an INCLUDED equate of that name
+        "  Button(1)",                                  // 16 a call, not a declaration
+        "  Password",                                   // 17 a bare call of the attribute-named procedure
+        "testval LONG(entry)",                          // 18 an undeclared control-named word in an expression
+        "       TAB('General')",                        // 19 a control declaration with no attribute list
+        "  x# = Window{PROP:Text}" };                   // 20 a property name, not a control
+    static readonly string SlotBuffer = string.Join("\r\n", SlotLines);
+
+    static Dictionary<string, object> SlotHover(int line, string word, LocalLayerOptions o)
+    {
+        int col = SlotLines[line - 1].IndexOf(word, StringComparison.Ordinal) + 2;   // 1-based, inside the word
+        return LocalLayerHandlers.Handle("localHover", SlotBuffer, Req("{\"line\":" + line + ",\"column\":" + col + "}"), o);
+    }
+
+    static bool Slot(string line, string word)
+    {
+        return LocalLayerHandlers.IsDeclarationKeywordSlot(line, line.IndexOf(word, StringComparison.Ordinal) + 1, word);
+    }
+
+    static string Kind(Dictionary<string, object> h) { return h["kind"] as string; }
+    static string Contents(Dictionary<string, object> h) { return h["contents"] as string ?? ""; }
+
+    static void Sym(System.Data.SQLite.SQLiteConnection cn, string name, string type, string file, string scope, string prms)
+    {
+        using (var cmd = new System.Data.SQLite.SQLiteCommand(
+            "INSERT INTO symbols (name, type, file_path, line_number, project_id, params, scope) VALUES (@n, @t, @f, 1, 1, @p, @s)", cn))
+        {
+            cmd.Parameters.AddWithValue("@n", name); cmd.Parameters.AddWithValue("@t", type);
+            cmd.Parameters.AddWithValue("@f", file); cmd.Parameters.AddWithValue("@s", scope);
+            cmd.Parameters.AddWithValue("@p", (object)prms ?? DBNull.Value);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    static void KeywordSlotAndEquateScope(List<string> log)
+    {
+        Console.WriteLine("\nhover: a keyword in a declaration slot, and equates scoped to the include closure");
+        string work = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ca-locallayer-slot-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        System.IO.Directory.CreateDirectory(work);
+        string proj = System.IO.Path.Combine(work, "proj.codegraph.db"), lib = System.IO.Path.Combine(work, "ClarionGraph_t.db");
+        string modFile = System.IO.Path.Combine(work, "mod.clw");
+        BuildDb(proj, true);
+        BuildDb(lib, true);
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + proj + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "seen.inc", "include", modFile, "global", null);            // mod.clw INCLUDEs seen.inc
+            Sym(cn, "Seen", "variable", @"C:\src\seen.inc", "global", "EQUATE");
+            // An INCLUDED equate named like the TEXT control: only the slot rule keeps it off line 7.
+            Sym(cn, "Text", "variable", @"C:\src\seen.inc", "global", "EQUATE");
+            // Two equates of one name in one DB, the out-of-scope one first.
+            Sym(cn, "Dup", "variable", @"C:\src\other.inc", "global", "EQUATE");
+            Sym(cn, "Dup", "variable", @"C:\src\seen.inc", "global", "EQUATE");
+            Sym(cn, "MyQType", "variable", @"C:\src\types.clw", "global", "QUEUE,TYPE");
+            Sym(cn, "Password", "procedure", @"C:\src\pw.clw", "global", "(STRING pX)");
+        }
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + lib + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "Hidden", "variable", @"C:\lib\other.inc", "global", "EQUATE");   // not included
+            Sym(cn, "Gone", "variable", @"C:\lib\other.equ", "global", "EQUATE");     // not included, .equ
+            Sym(cn, "Window", "variable", @"C:\lib\lib.clw", "global", "LONG");
+            Sym(cn, "Button", "procedure", @"C:\lib\lib.clw", "global", "(LONG pId)");
+        }
+
+        // PASSWORD has a keyword card only once the attribute data is loaded.
+        string kwDir = System.IO.Path.Combine(work, "kw");
+        System.IO.Directory.CreateDirectory(kwDir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(kwDir, "clarion-attributes.json"),
+            "{\"attributes\":[{\"name\":\"PASSWORD\",\"description\":\"Specifies a password entry field.\",\"category\":\"Control\"}]}");
+        string oldKwDir = ClarionKeywordIndex.DataDirOverride;
+        ClarionKeywordIndex.DataDirOverride = kwDir;
+        ClarionKeywordIndex.ResetForTest();
+        ClarionKeywordIndex.WaitForLoad(5000);
+
+        var o = new LocalLayerOptions { Log = log.Add, FileName = modFile };
+        LocalLayerHandlers.ProjectDbPath = () => proj;
+        LocalLayerHandlers.LibraryDbPath = () => lib;
+        try
+        {
+            LocalLayerHandlers.ResetPathCache();
+            int logStart = log.Count;   // the log is shared: only this section's lines are checked below
+            Check("(PASSWORD has a keyword card in this section)", ClarionKeywordIndex.HoverWord("PASSWORD") != null);
+
+            // Declaration slots: the keyword card, never a same-named index row.
+            var hText = SlotHover(7, "TEXT", o);
+            Check("TEXT,AT(...) in a WINDOW -> the keyword card (a fallback), not the INCLUDED 'Text' EQUATE",
+                Kind(hText) == "keyword" && (bool)hText["fallback"] && !(bool)hText["authoritative"] &&
+                !Contents(hText).Contains("EQUATE"), Json(hText));
+            var hBtn = SlotHover(8, "BUTTON", o);
+            Check("BUTTON('Ok'),AT(...) -> the keyword card, not the same-named procedure",
+                Kind(hBtn) == "keyword" && !Contents(hBtn).Contains("pId"), Json(hBtn));
+            var hWin = SlotHover(6, "WINDOW", o);
+            Check("Win  WINDOW(...) (after a label) -> the keyword card, not the index's 'Window' variable",
+                Kind(hWin) == "keyword", Json(hWin));
+            var hRef = SlotHover(11, "WINDOW", o);
+            Check("w  &WINDOW (a reserved type behind '&') -> the keyword card",
+                Kind(hRef) == "keyword", Json(hRef));
+            var hParm = SlotHover(4, "WINDOW", o);
+            Check("UseWin(*WINDOW pW),LONG (a prototype's parameter type) -> the keyword card",
+                Kind(hParm) == "keyword", Json(hParm));
+
+            // Not slots: the index still answers.
+            var hType = SlotHover(10, "MyQType", o);
+            Check("q  &MyQType (a user type in the type slot) -> still the index card",
+                Kind(hType) == "index" && Contents(hType).Contains("MyQType"), Json(hType));
+            var hCall = SlotHover(16, "Button", o);
+            Check("Button(1) in CODE (a control name is not reserved: a call) -> still the procedure from the index",
+                Kind(hCall) == "index" && Contents(hCall).Contains("pId"), Json(hCall));
+            var hPwBare = SlotHover(17, "Password", o);
+            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index",
+                Kind(hPwBare) == "index" && (bool)hPwBare["authoritative"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
+            var hTextRef = SlotHover(15, "Text", o);
+            Check("'Text' in CODE -> the INCLUDED equate (the slot rule is position-specific)",
+                Kind(hTextRef) == "index" && Contents(hTextRef).Contains("seen.inc"), Json(hTextRef));
+
+            // An undeclared control-named word is not a control.
+            var hEntry = SlotHover(18, "entry", o);
+            Check("LONG(entry), nothing named Entry declared -> no hover at all (not a control card)",
+                hEntry["contents"] == null && hEntry["kind"] == null, Json(hEntry));
+            var hTab = SlotHover(19, "TAB", o);
+            Check("TAB('General') (a control declaration shaped like a call) keeps its keyword card",
+                Kind(hTab) == "keyword", Json(hTab));
+            var hPropText = SlotHover(20, "PROP:Text", o);
+            Check("PROP:Text -> not the TEXT control card",
+                Kind(hPropText) != "keyword" || !Contents(hPropText).Contains("Control"), Json(hPropText));
+            Check("IsFirstOnLine: '  TAB(' yes; 'x = TAB' and 'a LONG(entry)' (entry) no",
+                LocalLayerHandlers.IsFirstOnLine("  TAB('x')", 3, "TAB") &&
+                !LocalLayerHandlers.IsFirstOnLine("x = TAB", 6, "TAB") &&
+                !LocalLayerHandlers.IsFirstOnLine("a LONG(entry)", 10, "entry"));
+
+            // Equate scope: the include closure.
+            var hSeen = SlotHover(14, "Seen", o);
+            Check("an EQUATE from an included .inc -> its index card, authoritative",
+                Kind(hSeen) == "index" && (bool)hSeen["authoritative"], Json(hSeen));
+            Check("...and its location is a clickable link: [seen.inc:1](file:///C:/src/seen.inc#L1)",
+                Contents(hSeen).Contains("[seen.inc:1](file:///C:/src/seen.inc#L1)"), Json(hSeen));
+            Check("LocationLink: an absolute path -> a file: link with the 1-based line as #L<n>",
+                LocalLayerHandlers.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
+            Check("LocationLink: a space and a '#' in the path are escaped, and the link keeps one fragment",
+                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
+                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3));
+            Check("LocationLink: a relative path, no line, or a malformed path -> plain text, never a broken link",
+                LocalLayerHandlers.LocationLink("x.clw", 1) == "x.clw:1" &&
+                LocalLayerHandlers.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
+                !LocalLayerHandlers.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+            var hHidden = SlotHover(14, "Hidden", o);
+            Check("an EQUATE from a .inc this file never includes -> no card at all",
+                hHidden["contents"] == null && hHidden["kind"] == null, Json(hHidden));
+            var hGone = SlotHover(14, "Gone", o);
+            Check("an EQUATE from a .equ this file never includes -> no card at all",
+                hGone["contents"] == null && hGone["kind"] == null, Json(hGone));
+            var hDup = SlotHover(14, "Dup", o);
+            Check("two same-named equates in one DB, the out-of-scope one first -> the included one",
+                Kind(hDup) == "index" && Contents(hDup).Contains("seen.inc"), Json(hDup));
+            var mine = log.Skip(logStart).ToList();
+            Check("...and no hover in this section logged an error",
+                mine.Count > 0 && !mine.Any(l => l.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0),
+                string.Join(" | ", mine.Where(l => l.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0)));
+
+            var oNoFile = new LocalLayerOptions { Log = log.Add };
+            var hUnfiltered = LocalLayerHandlers.Handle("localHover", SlotBuffer,
+                Req("{\"line\":14,\"column\":" + (SlotLines[13].IndexOf("Hidden", StringComparison.Ordinal) + 2) + "}"), oNoFile);
+            Check("no module path -> no include closure, so no filtering (the old behaviour)",
+                Kind(hUnfiltered) == "index", Json(hUnfiltered));
+
+            Check("IsDeclarationKeywordSlot: '  TEXT' alone, '  TEXT ! c', '  TEXT,|' yes; '  TEXT = 1', 'TEXT,AT' (column 1), '  x = TEXT' no",
+                Slot("  TEXT", "TEXT") && Slot("  TEXT ! c", "TEXT") && Slot("  TEXT,|", "TEXT") &&
+                !Slot("  TEXT = 1", "TEXT") && !Slot("TEXT,AT(1,1)", "TEXT") && !Slot("  x = TEXT", "TEXT"));
+            Check("IsDeclarationKeywordSlot: a ')' inside a string does not end the parameter list",
+                Slot("  BUTTON('a)b'),AT(1,1)", "BUTTON") && !Slot("  BUTTON('a)b')", "BUTTON"));
+            Check("IsDeclarationKeywordSlot: '  STRING(20)' and '  GROUP(''x'')' (reserved, bare '(...)') yes; '  Button(1)' (control) no",
+                Slot("  STRING(20)", "STRING") && Slot("  GROUP('x')", "GROUP") && !Slot("  Button(1)", "Button"));
+            Check("IsDeclarationKeywordSlot: 'Rtn  ROUTINE', 'P  PROCEDURE(LONG pX),LONG' (both LONGs) yes",
+                Slot("Rtn  ROUTINE", "ROUTINE") && Slot("P  PROCEDURE(LONG pX)", "LONG") &&
+                LocalLayerHandlers.IsDeclarationKeywordSlot("P  PROCEDURE(LONG pX),LONG", 24, "LONG"));
+            Check("IsDeclarationKeywordSlot: attributes and built-ins never ('  Password(STRING),BYTE', '  MESSAGE(''x'')')",
+                !Slot("  Password(STRING),BYTE", "Password") && !Slot("  MESSAGE('x')", "MESSAGE"));
+            Check("IsDeclarationKeywordSlot: part of a longer or prefixed name never ('x = CREATE:Text', '  TextBox,AT')",
+                !Slot("  x = CREATE:Text", "Text") && !LocalLayerHandlers.IsDeclarationKeywordSlot("  TextBox,AT(1,1)", 3, "TEXT"));
+        }
+        finally
+        {
+            LocalLayerHandlers.ProjectDbPath = null;
+            LocalLayerHandlers.LibraryDbPath = null;
+            LocalLayerHandlers.ResetPathCache();
+            SymbolIndex.ReleaseAll();
+            ClarionKeywordIndex.DataDirOverride = oldKwDir;
+            ClarionKeywordIndex.ResetForTest();
+            ClarionKeywordIndex.WaitForLoad(5000);
+            try { System.IO.Directory.Delete(work, true); } catch { }
+        }
+    }
+
     // ------------------------------------------------------------------ R11b: span map + slice requests
 
     static string Lines(int first, int last) { return string.Join("\r\n", ModLines.Skip(first - 1).Take(last - first + 1)); }
@@ -505,6 +719,7 @@ static class LocalLayerHandlersTest
         }
 
         CompletionAndHover(log);
+        KeywordSlotAndEquateScope(log);
 
         Console.WriteLine("\n4.8 one [local-timing] line per call");
         {
