@@ -25,6 +25,17 @@ namespace ClarionAssistant.Services
         private McpToolRegistry _toolRegistry;
         private int _port;
 
+        // The port Start() was asked for. When it is taken - typically by the previous IDE
+        // still shutting down while the new one starts (upgrade, restart) - the server runs
+        // on a fallback port and keeps trying to add the preferred one, so clients that are
+        // configured with the stable URL (http://localhost:19372/mcp + external token in
+        // ~/.claude.json, e.g. MultiTerminal or Claude Desktop) reconnect without anyone
+        // editing their config. The fallback port stays bound for the sessions launched with it.
+        private int _preferredPort;
+        private volatile int _reclaimedPort;
+        private System.Threading.Timer _reclaimTimer;
+        private const int ReclaimIntervalMs = 10000;
+
         // (The UI-thread tool timeout moved to McpDispatcher with the dispatch it guards. Left
         // here it would have read as the live knob and silently done nothing when tuned.)
 
@@ -127,6 +138,12 @@ namespace ClarionAssistant.Services
                     // text (get_live_text). Removed in Stop.
                     IdeEndpointRecord.Publish(port, _sessionToken);
 
+                    _preferredPort = preferredPort;
+                    _reclaimedPort = 0;
+                    if (port != preferredPort)
+                        _reclaimTimer = new System.Threading.Timer(_ => TryReclaimPreferredPort(), null,
+                                                                   ReclaimIntervalMs, ReclaimIntervalMs);
+
                     RaiseStatusChanged(true, port);
                     return true;
                 }
@@ -218,6 +235,61 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// Port the server also answers on after reclaiming the preferred port, or 0.
+        /// </summary>
+        public int ReclaimedPort { get { return _reclaimedPort; } }
+
+        /// <summary>
+        /// Timer callback while the server sits on a fallback port: add the preferred port
+        /// to the running listener as soon as nothing else holds it. HttpListener accepts new
+        /// prefixes while listening; a prefix another process still owns throws and is retried
+        /// on the next tick.
+        /// </summary>
+        private void TryReclaimPreferredPort()
+        {
+            if (!_running || _reclaimedPort != 0) { StopReclaimTimer(); return; }
+            string prefix = string.Format("http://localhost:{0}/", _preferredPort);
+            try
+            {
+                _listener.Prefixes.Add(prefix);
+                _reclaimedPort = _preferredPort;
+                StopReclaimTimer();
+            }
+            catch (HttpListenerException)
+            {
+                try { _listener.Prefixes.Remove(prefix); } catch { }
+            }
+            catch (Exception)
+            {
+                // Listener stopped/disposed between the check and the call - nothing to reclaim.
+                StopReclaimTimer();
+            }
+        }
+
+        private void StopReclaimTimer()
+        {
+            var timer = Interlocked.Exchange(ref _reclaimTimer, null);
+            if (timer != null) { try { timer.Dispose(); } catch { } }
+        }
+
+        private bool IsServedPort(int port)
+        {
+            return port == _port || (port != 0 && port == _reclaimedPort);
+        }
+
+        /// <summary>"localhost:&lt;port&gt;" or "127.0.0.1:&lt;port&gt;" for a port this server listens on.</summary>
+        private bool IsLoopbackAuthority(string authority)
+        {
+            if (string.IsNullOrEmpty(authority)) return false;
+            int colon = authority.LastIndexOf(':');
+            if (colon <= 0) return false;
+            int port;
+            if (!int.TryParse(authority.Substring(colon + 1), out port) || !IsServedPort(port)) return false;
+            string name = authority.Substring(0, colon);
+            return string.Equals(name, "localhost", StringComparison.OrdinalIgnoreCase) || name == "127.0.0.1";
+        }
+
+        /// <summary>
         /// Reject requests whose Host header isn't one of our expected loopback
         /// aliases — defends against DNS rebinding where an attacker-controlled
         /// hostname resolves to 127.0.0.1 after the browser has already committed
@@ -226,8 +298,7 @@ namespace ClarionAssistant.Services
         private bool ValidateHost(HttpListenerContext context)
         {
             string host = context.Request.Headers["Host"] ?? "";
-            if (string.Equals(host, "localhost:" + _port, StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(host, "127.0.0.1:" + _port, StringComparison.OrdinalIgnoreCase)) return true;
+            if (IsLoopbackAuthority(host)) return true;
             try
             {
                 context.Response.StatusCode = 403;
@@ -247,10 +318,9 @@ namespace ClarionAssistant.Services
         {
             string origin = context.Request.Headers["Origin"];
             if (string.IsNullOrEmpty(origin)) return true;
-            string expected1 = "http://localhost:" + _port;
-            string expected2 = "http://127.0.0.1:" + _port;
-            if (string.Equals(origin, expected1, StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(origin, expected2, StringComparison.OrdinalIgnoreCase)) return true;
+            const string scheme = "http://";
+            if (origin.StartsWith(scheme, StringComparison.OrdinalIgnoreCase)
+                && IsLoopbackAuthority(origin.Substring(scheme.Length))) return true;
             try
             {
                 context.Response.StatusCode = 403;
@@ -265,6 +335,8 @@ namespace ClarionAssistant.Services
             bool wasRunning = _running;
             _running = false;
             _sessionToken = null;
+            StopReclaimTimer();
+            _reclaimedPort = 0;
             if (wasRunning) IdeEndpointRecord.Remove(_port);   // 44a1b10c: withdraw the endpoint before the port closes
 
             // Close all SSE connections
