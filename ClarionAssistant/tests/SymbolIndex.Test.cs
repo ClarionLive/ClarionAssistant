@@ -252,6 +252,40 @@ static class SymbolIndexTest
         Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }, fastOnly: true) == null, "E.12", "fastOnly on a DB without the NOCASE indexes -> null");
         Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }) != null, "E.13", "the same DB is still usable off the keystroke lane");
 
+        // ScopeEquateToIncludes: an unfiltered exact-name hit (a provider's FindByName-style first row), scoped to
+        // what the context file can see. Own name prefixes so the E.3-E.5 counts above stay as they are.
+        using (var cn = new SQLiteConnection("Data Source=" + db + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "DUP_X", "variable", dir + "C.inc", "global", "EQUATE", 1);       // not included, declared first
+            Sym(cn, "DUP_X", "variable", dir + "A.inc", "global", "EQUATE", 1);       // included by Mem.clw
+            Sym(cn, "ONLYC_Y", "variable", dir + "C.inc", "global", "EQUATE", 1);     // only in a not-included .inc
+            Sym(cn, "ONLYEQU_Z", "variable", dir + "Std.equ", "global", "EQUATE", 1); // only in a not-included .equ
+            Sym(cn, "SEEN_W", "variable", dir + "B.inc", "global", "EQUATE", 1);      // included (transitively)
+        }
+        SymbolIndex.Release(db);
+        var idx2 = SymbolIndex.For(db);
+        var memClosureDbs = new[] { db };
+        Func<string, CodeGraphSymbol> scoped = n =>
+            SymbolIndex.ScopeEquateToIncludes(idx2.FindByName(n), n, db, dir + "Mem.clw", memClosureDbs);
+
+        var dup = scoped("DUP_X");
+        Check(dup != null && string.Equals(Path.GetFileName(dup.FilePath), "A.inc", StringComparison.OrdinalIgnoreCase), "E.14",
+              "two same-named equates, whichever the unfiltered lookup returns first -> the one from the INCLUDED file: " + (dup == null ? "null" : dup.FilePath));
+        Check(scoped("ONLYC_Y") == null, "E.15", "an equate only in a .inc this file never includes -> null (no hover)");
+        Check(scoped("ONLYEQU_Z") == null, "E.16", "an equate only in a .equ this file never includes -> null: .equ files are filtered like .inc");
+        var seenW = scoped("SEEN_W");
+        Check(seenW != null && seenW.Name == "SEEN_W", "E.17", "an equate in a transitively included .inc is kept");
+
+        var proc = idx2.FindByName("EQ_PROC");
+        Check(ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(proc, "EQ_PROC", db, dir + "Mem.clw", memClosureDbs), proc), "E.18",
+              "a non-equate row is returned unchanged");
+        var onlyC = idx2.FindByName("ONLYC_Y");
+        Check(ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(onlyC, "ONLYC_Y", db, null, memClosureDbs), onlyC) &&
+              ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(onlyC, "ONLYC_Y", db, dir + "Mem.clw", new string[] { null, db }), onlyC),
+              "E.19", "no context file, or no project DB to build a closure from -> unchanged (do not filter)");
+        Check(SymbolIndex.ScopeEquateToIncludes(null, "X", db, dir + "Mem.clw", memClosureDbs) == null, "E.20", "no symbol -> null");
+
         Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.14", "a malformed include row is skipped, the rest of the closure is intact");
     }
 
