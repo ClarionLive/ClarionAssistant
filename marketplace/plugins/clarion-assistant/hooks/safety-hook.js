@@ -249,6 +249,12 @@ function isProcessKill(command) {
 // quote, which PowerShell also accepts as a quote — reading stops and the rest
 // stays as it is, so a misread asks rather than staying silent.
 //
+// Comments (# to the end of the line, <# ... #>) are kept as written and not
+// searched for quotes: PowerShell reads an apostrophe there as text, so
+// "# the app's window" followed by Stop-Process on the next line must not open
+// a string that swallows the kill (pipeline run 1). A kill word in a comment
+// therefore still asks.
+//
 // A quoted string still counts when & or . runs it (& 'taskkill.exe' /F), when
 // & or . runs a variable ($c = 'taskkill'; & $c), and when the command runs
 // code from text (Invoke-Expression, Start-Process, powershell -Command,
@@ -256,22 +262,29 @@ function isProcessKill(command) {
 // and all.
 //
 // Kill forms: the Bash kill words plus PowerShell's own (spps and kill are
-// aliases of Stop-Process; .Kill() and ForEach-Object Kill on a process; a WMI
-// or CIM Terminate; Remove-CimInstance / Remove-WmiObject; wmic process ...
-// delete). Accepted, as for Bash: an unquoted mention (Select-String -Pattern
-// kill) still asks, and this guards against accidents, not evasion.
+// aliases of Stop-Process; .Kill() and ForEach-Object Kill on a process;
+// .CloseMainWindow(); a WMI or CIM Terminate; Remove-CimInstance /
+// Remove-WmiObject; wmic process ... delete; tskill and Sysinternals pskill).
+// A method name is an ordinary string argument, and the documented form quotes
+// it (Invoke-CimMethod -MethodName "Terminate", ForEach-Object -MemberName
+// 'Kill'), so those two are matched in the command as written (pipeline run 1).
+// Accepted, as for Bash: an unquoted mention (Select-String -Pattern kill)
+// still asks, and this guards against accidents, not evasion.
 
-const PS_KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps|Terminate|Remove-CimInstance|Remove-WmiObject|rwmi)\b/i;
+const PS_KILL_WORD = /\b(taskkill|tskill|pskill|kill|pkill|killall|fkill|Stop-Process|spps|CloseMainWindow|Terminate|Remove-CimInstance|Remove-WmiObject|rwmi)\b/i;
 const WMIC_PROCESS_DELETE = /\bwmic(?:\.exe)?\b[^;|\n]*\bprocess\b[^;|\n]*\b(?:delete|terminate)\b/i;
+const QUOTED_METHOD_KILL =
+  /(?:\bInvoke-(?:Cim|Wmi)Method\b[^;|\n]*\bTerminate|(?:\bForEach-Object|\bforeach|%)\s[^;|\n]*-MemberName\b[^;|\n]*\bKill)\b/i;
 
 function namesPowerShellKill(text) {
   return PS_KILL_WORD.test(text) || WMIC_PROCESS_DELETE.test(text);
 }
 
 // A program or cmdlet that runs code handed to it as text: a whole word with an
-// optional path and .exe.
+// optional path and .exe. The path part stops at every character a match may
+// start after, so a long token is scanned once, not once per comma.
 const PS_RUNS_CODE = new RegExp(
-  String.raw`(?:^|[\s;&|(){}\[\]"'=,])(?:[^\s;&|(){}"']*[\\/])?` +
+  String.raw`(?:^|[\s;&|(){}\[\]"'=,])(?:[^\s;&|(){}\[\]"'=,]*[\\/])?` +
   String.raw`(?:powershell|pwsh|cmd|bash|sh|zsh|wsl|iex|Invoke-Expression|Invoke-Command|icm|` +
   String.raw`Start-Process|saps|Start-Job|sajb|Start-ThreadJob|scriptblock|NewScriptBlock|InvokeScript|` +
   String.raw`node|deno|bun|python[\d.]*|py|perl|ruby|php|ssh|schtasks|Register-ScheduledTask)` +
@@ -282,32 +295,34 @@ const PS_RUNS_CODE = new RegExp(
 // & or . (call or dot-source) in front of a variable: $c = 'taskkill'; & $c.
 const PS_RUNS_VARIABLE = /(?:^|[\s;|({])[&.]\s*\$/;
 
-const CURLY_QUOTES = '‘’‚‛“”„';
+const CURLY_QUOTE = /[‘’‚‛“”„]/;
 
 /**
  * Returns the command with the inside of its simple quoted strings removed
  * (an empty '' or "" is left in their place), except a string that & or .
- * runs, which is kept as written. Stops at the first quote that is not simple
- * and keeps the rest as it is (see FAIL SAFE above).
+ * runs, which is kept as written. Comments are kept as written. Stops at the
+ * first quote that is not simple and keeps the rest as it is (see FAIL SAFE
+ * above).
  */
 function removePowerShellSimpleQuotes(command) {
   const out = [];
-  // The last non-blank character written and the character just before it,
-  // kept as we go so finding the call operator costs nothing per quote.
+  // The last non-blank character written, and the character (blank or not)
+  // just before it, kept as we go so finding the call operator costs nothing
+  // per quote.
   let lastRaw;
   let lastSolid;
-  let beforeSolid;
+  let charBeforeSolid;
   const append = (s) => {
     for (let n = 0; n < s.length; n++) {
       const ch = s[n];
-      if (!/\s/.test(ch)) { beforeSolid = lastRaw; lastSolid = ch; }
+      if (!/\s/.test(ch)) { charBeforeSolid = lastRaw; lastSolid = ch; }
       lastRaw = ch;
       out.push(ch);
     }
   };
   const isRun = () =>
-    (lastSolid === '&' && beforeSolid !== '&') ||
-    (lastSolid === '.' && (beforeSolid === undefined || /[\s;|{(]/.test(beforeSolid)));
+    (lastSolid === '&' && charBeforeSolid !== '&') ||
+    (lastSolid === '.' && (charBeforeSolid === undefined || /[\s;|{(]/.test(charBeforeSolid)));
   const rest = (from) => out.join('') + command.slice(from);
   // Index of the quote closing a string that opened before `from`, treating a
   // doubled quote as one quote inside the string; -1 if it never closes.
@@ -323,8 +338,22 @@ function removePowerShellSimpleQuotes(command) {
   let i = 0;
   while (i < command.length) {
     const c = command[i];
-    if (CURLY_QUOTES.includes(c)) return rest(i);
+    if (CURLY_QUOTE.test(c)) return rest(i);
     if (c === '`') { append(command.slice(i, i + 2)); i += 2; continue; }
+    if (c === '<' && command[i + 1] === '#') {
+      const close = command.indexOf('#>', i + 2);
+      if (close < 0) return rest(i);
+      append(command.slice(i, close + 2));
+      i = close + 2;
+      continue;
+    }
+    if (c === '#' && (lastRaw === undefined || /[\s;|&({]/.test(lastRaw))) {
+      const lineEnd = command.indexOf('\n', i);
+      const end = lineEnd < 0 ? command.length : lineEnd;
+      append(command.slice(i, end));
+      i = end;
+      continue;
+    }
     if (c === '@' && (command[i + 1] === "'" || command[i + 1] === '"')) {
       const quote = command[i + 1];
       const lineEnd = command.indexOf('\n', i + 2);
@@ -332,7 +361,7 @@ function removePowerShellSimpleQuotes(command) {
       const close = command.indexOf('\n' + quote + '@', lineEnd);
       if (close < 0) return rest(i);
       const body = command.slice(lineEnd + 1, close);
-      if ([...CURLY_QUOTES].some((q) => body.includes(q))) return rest(i);
+      if (CURLY_QUOTE.test(body)) return rest(i);
       if (quote === '"' && /[$`]/.test(body)) return rest(i);
       append(isRun() ? command.slice(i, close + 3) : '@' + quote + quote + '@');
       i = close + 3;
@@ -342,7 +371,7 @@ function removePowerShellSimpleQuotes(command) {
       const close = closing(c, i + 1);
       if (close < 0) return rest(i);
       const body = command.slice(i + 1, close);
-      if ([...CURLY_QUOTES].some((q) => body.includes(q))) return rest(i);
+      if (CURLY_QUOTE.test(body)) return rest(i);
       if (c === '"' && /[$`]/.test(body)) return rest(i);
       append(isRun() ? command.slice(i, close + 1) : c + c);
       i = close + 1;
@@ -356,6 +385,7 @@ function removePowerShellSimpleQuotes(command) {
 
 function isPowerShellKill(command) {
   if (!namesPowerShellKill(command)) return false;
+  if (QUOTED_METHOD_KILL.test(command)) return true;
   const stripped = removePowerShellSimpleQuotes(command);
   if (namesPowerShellKill(stripped)) return true;
   return PS_RUNS_VARIABLE.test(stripped) || PS_RUNS_CODE.test(command);
@@ -459,14 +489,12 @@ const BASH_RULES = [
   {
     pattern: /\b(cat|less|more|head|tail|type|get-content)\b.*\.env\b/i,
     action: 'deny',
-    reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.',
-    powershell: true
+    reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.'
   },
   {
     pattern: /\b(echo|printf|tee)\b.*>\s*.*\.env\b/i,
     action: 'deny',
-    reason: 'Blocked: writing to .env files via shell is not allowed.',
-    powershell: true
+    reason: 'Blocked: writing to .env files via shell is not allowed.'
   },
   // Gate destructive git operations — user can approve
   {
@@ -560,9 +588,29 @@ const BASH_RULES = [
 ];
 
 // Where a PowerShell command starts: the beginning, or after ; | & { ( or a
-// newline. The PowerShell-only rules below match only there, so a quoted
-// mention (git commit -m 'never run Format-Volume') does not trip a deny.
+// newline. The Remove-Item, disk, shutdown and email rules below match only
+// there, so a quoted mention (git commit -m 'never run Format-Volume') does not
+// trip a deny. The .env rules work differently: see psEnvFileAccess.
 const PS_START = String.raw`(?:^|[;|&{(\n])\s*`;
+
+// A .env file name as an argument: .env or .env.<suffix>, at the start of a
+// word or after a path separator, quote, = or :, and ending the word. So
+// "process.env" or 'import.meta.env' in a search pattern is not one
+// (pipeline run 1: Select-String -Pattern 'process.env' used to be denied).
+const PS_ENV_FILE = /(?:^|[\s'"\\/=:,])\.env(?:\.[\w.-]+)?(?=$|[\s'";|,)])/i;
+const PS_ENV_READ = /\b(?:gc|Get-Content|cat|type|more|Select-String|sls|Import-Csv)\b/i;
+const PS_ENV_WRITE = /\b(?:Set-Content|Add-Content|Out-File|Tee-Object|New-Item)\b/i;
+const PS_ENV_REDIRECT = /\d?>>?\s*['"]?(?:[^\s;|'"<>]*[\\/])?\.env(?:\.[\w.-]+)?(?=$|[\s'";|,)])/i;
+
+// Whether one segment of the command (split at ; | and newline) uses a reader
+// or writer cmdlet on a .env file, or redirects into one. Checked per segment,
+// so Get-Content x.js; node -e "...process.env..." is two segments and neither
+// reads a .env file. A test, not one regex, so no input makes it backtrack.
+function psEnvFileAccess(command, verb) {
+  return command.split(/[;|\n]/).some((segment) =>
+    (verb === PS_ENV_WRITE && PS_ENV_REDIRECT.test(segment)) ||
+    (verb.test(segment) && PS_ENV_FILE.test(segment)));
+}
 
 // A drive root or the user's home, as Remove-Item's target: C:\ C:/ C: \ / ~
 // $HOME $env:USERPROFILE $env:SystemDrive ..., optionally followed by a slash
@@ -600,15 +648,16 @@ const POWERSHELL_RULES = [
     action: 'deny',
     reason: 'Blocked: system shutdown/reboot is not allowed from agents.'
   },
-  // .env files: reading through PowerShell's own aliases, and writing by
-  // cmdlet or redirection. The Bash .env rules below cover cat/type/Get-Content.
+  // .env files: reading or writing one (see psEnvFileAccess). These replace the
+  // Bash .env rules for PowerShell, whose .* would cross a ; and whose \.env\b
+  // matches process.env in a search pattern.
   {
-    pattern: /\b(gc|Select-String|sls|Import-Csv)\b[^;|\n]*\.env\b/i,
+    test: (command) => psEnvFileAccess(command, PS_ENV_READ),
     action: 'deny',
     reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.'
   },
   {
-    pattern: /(?:\b(?:Set-Content|Add-Content|Out-File|Tee-Object|New-Item)\b[^;|\n]*|>>?\s*['"]?[^\s;|'"]*)\.env\b/i,
+    test: (command) => psEnvFileAccess(command, PS_ENV_WRITE),
     action: 'deny',
     reason: 'Blocked: writing to .env files via shell is not allowed.'
   },
@@ -756,8 +805,11 @@ function checkBash(command) {
   return checkCommand(command, BASH_RULES);
 }
 
+// A backtick at the end of a line continues the command on the next one, so it
+// is read as a space first: otherwise a rule that stops at a newline misses
+// Remove-Item -Path C:\ `<newline> -Recurse (pipeline run 1).
 function checkPowerShell(command) {
-  return checkCommand(command, POWERSHELL_RULES);
+  return checkCommand(command && command.replace(/`\r?\n/g, ' '), POWERSHELL_RULES);
 }
 
 function checkFile(filePath) {

@@ -18,6 +18,13 @@
  * 3, no & $var check 1, "..." holding $ treated as data 1, curly quotes as
  * ordinary characters 1, no here-string handling 1.
  *
+ * Pipeline run 1 fixes, falsified the same way. Against the hook before them,
+ * the 14 new non-timing cases went red as predicted, plus two timing shapes
+ * (the long comma list and the run of = [ ]). Mutations: no comment handling
+ * 3, no quoted method-name check 2, no backtick-continuation join 2, .env
+ * matched as any text 3, no per-command split for .env 1, the old runner path
+ * class 2 (both timing). With the cases added, no quote stripping is now 18.
+ *
  * The cases are kept identical to the MultiTerminal plugin's copy of this test
  * (multiterminal-marketplace, hooks/dispatch-test/unit-safety-powershell.js),
  * whose hook carries the same rules; the falsification figures above are that
@@ -90,6 +97,15 @@ const ALLOW = [
   'Get-Process | Where-Object CPU -gt 100',
   '$env:PATH',
   'Get-Content .\\.environment.md',
+  // Pipeline run 1. An apostrophe in a comment is text, not a quote.
+  "# it's fine\nSelect-String -Pattern 'kill' x.cs",
+  // A search for an environment variable is not a .env file.
+  "Select-String -Path src\\*.js -Pattern 'process.env'",
+  "sls -Path *.ts 'process.env.API_URL'",
+  "Get-ChildItem -Recurse | Select-String 'import.meta.env'",
+  'Get-Content x.js; node -e "console.log(process.env.X)"',
+  // A reader in one command and a .env name in the next is not a read of it.
+  'Get-Content a.txt; Test-Path .env',
 ];
 
 // Must ask with the kill reason.
@@ -113,6 +129,16 @@ const KILLS = [
   `wmic process where "name='x.exe'" call terminate`,
   'pkill node',
   'killall node',
+  'tskill MultiTerminal',
+  'pskill MultiTerminal',
+  '(Get-Process MultiTerminal).CloseMainWindow()',
+  // Pipeline run 1. A method name is a string argument, and the documented
+  // forms quote it.
+  `Get-CimInstance Win32_Process -Filter "Name='MultiTerminal.exe'" | Invoke-CimMethod -MethodName "Terminate"`,
+  "Get-Process notepad | ForEach-Object -MemberName 'Kill'",
+  // An apostrophe in a comment must not open a string that hides the next line.
+  "# Close the app's window first\nStop-Process -Name MultiTerminal -Force\n# it's done",
+  "<# here's the plan #>\nStop-Process -Name MultiTerminal\n<# it's ok #>",
   // A quoted program or script run by & or . is not data.
   "& 'C:\\Windows\\System32\\taskkill.exe' /F /IM x.exe",
   '& "taskkill" /F /IM x.exe',
@@ -154,6 +180,9 @@ const DENY = [
   'ri -r C:\\*',
   'Remove-Item -Path $HOME\\* -Recurse',
   'cd x; del -Recurse D:',
+  // Pipeline run 1: a backtick continues the command on the next line.
+  'Remove-Item -Path C:\\ `\n  -Recurse -Force',
+  'Remove-Item -Recurse -Force `\r\n  C:\\',
   'Format-Volume -DriveLetter D',
   'Clear-Disk -Number 1 -RemoveData',
   'Get-Disk 1 | Clear-Disk -RemoveData',
@@ -164,7 +193,11 @@ const DENY = [
   'shutdown /r /t 0',
   'gc .env',
   'Get-Content .env',
+  'Get-Content -Path "C:\\proj\\.env"',
+  'cat .env.local',
   'Select-String KEY .env',
+  'Select-String -Path .env KEY',
+  "'X=1' | Out-File -FilePath .env",
   "Set-Content .env 'X=1'",
   "'X=1' > .env",
   "'X=1' >> .\\.env",
@@ -210,6 +243,19 @@ if (decisionFor('Stop-Computer', 'Bash').decision !== 'allow') failures.push('Ba
 checked++;
 if (!decisionFor('kill -9 123', 'Bash').reason.startsWith(KILL)) failures.push('Bash: kill -9 no longer asks');
 
+// In a ClarionAssistant tab this hook is the only safety check (MultiTerminal
+// skips its own there), and Claude Code runs it only for the tools its
+// hooks.json matcher names, so the matcher must cover PowerShell. Every case
+// above feeds the hook directly and would stay green without it.
+checked++;
+{
+  const hooksJson = JSON.parse(require('fs').readFileSync(path.join(path.dirname(hookPath), 'hooks.json'), 'utf8'));
+  const covered = (hooksJson.hooks.PreToolUse || []).some((entry) =>
+    new RegExp('^(?:' + entry.matcher + ')$').test('PowerShell') &&
+    entry.hooks.some((h) => /safety-hook\.js/.test(h.command)));
+  if (!covered) failures.push('hooks.json: no PreToolUse matcher runs safety-hook.js for PowerShell');
+}
+
 // The hook runs before every PowerShell call, so a long command must not make
 // it slow. Each shape names a kill word so the reader is reached, and runs in a
 // child process with a hard limit, so a regression fails instead of hanging.
@@ -222,6 +268,15 @@ const LONG_SHAPES = {
   'unclosed here-strings': "@'\n".repeat(20000) + "Select-String 'kill'",
   'many unclosed quotes': "x '".repeat(1) + "a ".repeat(100000) + 'kill',
   'long runner-like path': 'a/'.repeat(50000) + "b Select-String 'kill'",
+  // Pipeline run 1: a match could start after each of these, and the path part
+  // of the runner check, or the .env redirect check, used to read past them.
+  'long comma list': '$a=@(' + '1,'.repeat(50000) + "1); Select-String 'kill'",
+  'long run of = [ ]': '[a]='.repeat(50000) + " Select-String 'kill'",
+  'long run of >': "'x' " + '>'.repeat(50000) + " y; Select-String 'kill'",
+  'many comment lines': "# it's here\n".repeat(20000) + "Select-String 'kill'",
+  'many block comments': "<# it's #>".repeat(50000) + " Select-String 'kill'",
+  'many unclosed block comments': '<#'.repeat(50000) + " Select-String 'kill'",
+  'many segments': 'gc x; '.repeat(50000) + "Select-String 'kill'",
 };
 for (const [shape, long] of Object.entries(LONG_SHAPES)) {
   checked++;
