@@ -2,12 +2,12 @@
 /**
  * safety-hook.js — PreToolUse safety guard for Claude Code agents.
  *
- * Intercepts Bash, Read, Write, Edit, and MCP SQL tool calls to block
- * or gate dangerous operations. Designed for multi-agent environments
+ * Intercepts Bash, PowerShell, Read, Write, Edit, and MCP SQL tool calls to
+ * block or gate dangerous operations. Designed for multi-agent environments
  * where one rogue command can cause real damage.
  *
- * Matchers registered in settings.local.json:
- *   - Bash                                    (shell commands)
+ * Matchers registered in hooks.json:
+ *   - Bash|PowerShell                         (shell commands; PowerShell: ticket 50ede38a)
  *   - Read                                    (file reads)
  *   - Write|Edit                              (file writes)
  *   - mcp__sqlite__write_query|mcp__mssql__query  (SQL execution)
@@ -230,6 +230,137 @@ function isProcessKill(command) {
   return runsVariable(stripped) || RUNS_CODE.test(command);
 }
 
+// ── Process-kill detection for the PowerShell tool (ticket 50ede38a) ─
+//
+// The PowerShell tool used to pass every command unchecked, so
+// Stop-Process -Name MultiTerminal ran without a prompt. The Bash reader above
+// cannot be reused: PowerShell quotes differently (no backslash escapes, ''
+// and "" inside a string stand for one quote, the backtick escapes, @'...'@
+// here-strings), and a quoted program name is not run unless & or . calls it.
+//
+// Same shape as isProcessKill: no kill word, allow. Otherwise empty the inside
+// of SIMPLE quoted strings and ask if a kill word is left. A simple string is
+// '...' (literal), or "..." or @"..."@ holding no $ and no backtick (PowerShell
+// expands or escapes those), or @'...'@. Strings may span lines: PowerShell
+// reads them literally, unlike a bash heredoc.
+//
+// FAIL SAFE: at the first quote that is not simple — unclosed, holding $ or a
+// backtick, a here-string opener with text after it on its line, or a curly
+// quote, which PowerShell also accepts as a quote — reading stops and the rest
+// stays as it is, so a misread asks rather than staying silent.
+//
+// A quoted string still counts when & or . runs it (& 'taskkill.exe' /F), when
+// & or . runs a variable ($c = 'taskkill'; & $c), and when the command runs
+// code from text (Invoke-Expression, Start-Process, powershell -Command,
+// [scriptblock]::Create, ...): that check reads the command as written, quotes
+// and all.
+//
+// Kill forms: the Bash kill words plus PowerShell's own (spps and kill are
+// aliases of Stop-Process; .Kill() and ForEach-Object Kill on a process; a WMI
+// or CIM Terminate; Remove-CimInstance / Remove-WmiObject; wmic process ...
+// delete). Accepted, as for Bash: an unquoted mention (Select-String -Pattern
+// kill) still asks, and this guards against accidents, not evasion.
+
+const PS_KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps|Terminate|Remove-CimInstance|Remove-WmiObject|rwmi)\b/i;
+const WMIC_PROCESS_DELETE = /\bwmic(?:\.exe)?\b[^;|\n]*\bprocess\b[^;|\n]*\b(?:delete|terminate)\b/i;
+
+function namesPowerShellKill(text) {
+  return PS_KILL_WORD.test(text) || WMIC_PROCESS_DELETE.test(text);
+}
+
+// A program or cmdlet that runs code handed to it as text: a whole word with an
+// optional path and .exe.
+const PS_RUNS_CODE = new RegExp(
+  String.raw`(?:^|[\s;&|(){}\[\]"'=,])(?:[^\s;&|(){}"']*[\\/])?` +
+  String.raw`(?:powershell|pwsh|cmd|bash|sh|zsh|wsl|iex|Invoke-Expression|Invoke-Command|icm|` +
+  String.raw`Start-Process|saps|Start-Job|sajb|Start-ThreadJob|scriptblock|NewScriptBlock|InvokeScript|` +
+  String.raw`node|deno|bun|python[\d.]*|py|perl|ruby|php|ssh|schtasks|Register-ScheduledTask)` +
+  String.raw`(?:\.exe)?(?=[\s;&|()}\]"'.,]|$)`,
+  'i'
+);
+
+// & or . (call or dot-source) in front of a variable: $c = 'taskkill'; & $c.
+const PS_RUNS_VARIABLE = /(?:^|[\s;|({])[&.]\s*\$/;
+
+const CURLY_QUOTES = '‘’‚‛“”„';
+
+/**
+ * Returns the command with the inside of its simple quoted strings removed
+ * (an empty '' or "" is left in their place), except a string that & or .
+ * runs, which is kept as written. Stops at the first quote that is not simple
+ * and keeps the rest as it is (see FAIL SAFE above).
+ */
+function removePowerShellSimpleQuotes(command) {
+  const out = [];
+  // The last non-blank character written and the character just before it,
+  // kept as we go so finding the call operator costs nothing per quote.
+  let lastRaw;
+  let lastSolid;
+  let beforeSolid;
+  const append = (s) => {
+    for (let n = 0; n < s.length; n++) {
+      const ch = s[n];
+      if (!/\s/.test(ch)) { beforeSolid = lastRaw; lastSolid = ch; }
+      lastRaw = ch;
+      out.push(ch);
+    }
+  };
+  const isRun = () =>
+    (lastSolid === '&' && beforeSolid !== '&') ||
+    (lastSolid === '.' && (beforeSolid === undefined || /[\s;|{(]/.test(beforeSolid)));
+  const rest = (from) => out.join('') + command.slice(from);
+  // Index of the quote closing a string that opened before `from`, treating a
+  // doubled quote as one quote inside the string; -1 if it never closes.
+  const closing = (quote, from) => {
+    for (let j = from; ;) {
+      const at = command.indexOf(quote, j);
+      if (at < 0) return -1;
+      if (command[at + 1] !== quote) return at;
+      j = at + 2;
+    }
+  };
+
+  let i = 0;
+  while (i < command.length) {
+    const c = command[i];
+    if (CURLY_QUOTES.includes(c)) return rest(i);
+    if (c === '`') { append(command.slice(i, i + 2)); i += 2; continue; }
+    if (c === '@' && (command[i + 1] === "'" || command[i + 1] === '"')) {
+      const quote = command[i + 1];
+      const lineEnd = command.indexOf('\n', i + 2);
+      if (lineEnd < 0 || command.slice(i + 2, lineEnd).trim() !== '') return rest(i);
+      const close = command.indexOf('\n' + quote + '@', lineEnd);
+      if (close < 0) return rest(i);
+      const body = command.slice(lineEnd + 1, close);
+      if ([...CURLY_QUOTES].some((q) => body.includes(q))) return rest(i);
+      if (quote === '"' && /[$`]/.test(body)) return rest(i);
+      append(isRun() ? command.slice(i, close + 3) : '@' + quote + quote + '@');
+      i = close + 3;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const close = closing(c, i + 1);
+      if (close < 0) return rest(i);
+      const body = command.slice(i + 1, close);
+      if ([...CURLY_QUOTES].some((q) => body.includes(q))) return rest(i);
+      if (c === '"' && /[$`]/.test(body)) return rest(i);
+      append(isRun() ? command.slice(i, close + 1) : c + c);
+      i = close + 1;
+      continue;
+    }
+    append(c);
+    i++;
+  }
+  return out.join('');
+}
+
+function isPowerShellKill(command) {
+  if (!namesPowerShellKill(command)) return false;
+  const stripped = removePowerShellSimpleQuotes(command);
+  if (namesPowerShellKill(stripped)) return true;
+  return PS_RUNS_VARIABLE.test(stripped) || PS_RUNS_CODE.test(command);
+}
+
 // ── Rule Definitions ────────────────────────────────────────────────
 
 /**
@@ -238,6 +369,10 @@ function isProcessKill(command) {
  * test:    a function (command) => boolean, for a rule a regex cannot express.
  * action:  "deny" or "ask".
  * reason:  shown to the agent (and user, for "ask").
+ * powershell: true when the rule reads the same in a PowerShell command, so
+ *          POWERSHELL_RULES uses it too (ticket 50ede38a). The others are
+ *          bash syntax that never matches PowerShell, so they are left off
+ *          rather than appearing to cover it.
  */
 const BASH_RULES = [
   // ── Obfuscation / Interpreter Evasion ──────────────────────────────
@@ -275,7 +410,8 @@ const BASH_RULES = [
   {
     pattern: /\bgit\s+add\s+(-A|--all|\.\s*$|\.(?:\s+|&&|\||\;))/,
     action: 'deny',
-    reason: 'Blocked: "git add ." / "git add -A" stages everything including secrets. Stage specific files instead.'
+    reason: 'Blocked: "git add ." / "git add -A" stages everything including secrets. Stage specific files instead.',
+    powershell: true
   },
   // Block catastrophic rm -rf targets
   {
@@ -323,12 +459,14 @@ const BASH_RULES = [
   {
     pattern: /\b(cat|less|more|head|tail|type|get-content)\b.*\.env\b/i,
     action: 'deny',
-    reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.'
+    reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.',
+    powershell: true
   },
   {
     pattern: /\b(echo|printf|tee)\b.*>\s*.*\.env\b/i,
     action: 'deny',
-    reason: 'Blocked: writing to .env files via shell is not allowed.'
+    reason: 'Blocked: writing to .env files via shell is not allowed.',
+    powershell: true
   },
   // Gate destructive git operations — user can approve
   {
@@ -336,32 +474,38 @@ const BASH_RULES = [
     // "git push -q && rm -f x" must not read rm's -f as a force-push (GitHub #67).
     pattern: /\bgit\s+push\s+[^&;|]*(-f\b|--force\b)/,
     action: 'ask',
-    reason: 'Force-push detected. This rewrites remote history and can destroy others\' work.'
+    reason: 'Force-push detected. This rewrites remote history and can destroy others\' work.',
+    powershell: true
   },
   {
     pattern: /\bgit\s+reset\s+--hard\b/,
     action: 'ask',
-    reason: 'git reset --hard discards all uncommitted changes. Are you sure?'
+    reason: 'git reset --hard discards all uncommitted changes. Are you sure?',
+    powershell: true
   },
   {
     pattern: /\bgit\s+clean\s+-f/,
     action: 'ask',
-    reason: 'git clean -f permanently deletes untracked files. Are you sure?'
+    reason: 'git clean -f permanently deletes untracked files. Are you sure?',
+    powershell: true
   },
   {
     pattern: /\bgit\s+checkout\s+--\s*\./,
     action: 'ask',
-    reason: 'git checkout -- . discards all unstaged changes. Are you sure?'
+    reason: 'git checkout -- . discards all unstaged changes. Are you sure?',
+    powershell: true
   },
   {
     pattern: /\bgit\s+restore\s+\.\s*$/,
     action: 'ask',
-    reason: 'git restore . discards all unstaged changes. Are you sure?'
+    reason: 'git restore . discards all unstaged changes. Are you sure?',
+    powershell: true
   },
   {
     pattern: /\bgit\s+branch\s+-D\b/,
     action: 'ask',
-    reason: 'git branch -D force-deletes a branch even if unmerged. Are you sure?'
+    reason: 'git branch -D force-deletes a branch even if unmerged. Are you sure?',
+    powershell: true
   },
   // Gate process killing — could take down MultiTerminal or other critical apps.
   // Matches a kill that is RUN, not the word appearing in a grep pattern or a
@@ -375,31 +519,36 @@ const BASH_RULES = [
   {
     pattern: /\breg\s+(add|delete|import)\b/i,
     action: 'ask',
-    reason: 'Windows registry modification detected. This changes system configuration. Are you sure?'
+    reason: 'Windows registry modification detected. This changes system configuration. Are you sure?',
+    powershell: true
   },
   {
     pattern: /\b(New-ItemProperty|Set-ItemProperty|Remove-ItemProperty|Remove-Item)\b.*\b(HKLM|HKCU|HKCR|Registry)\b/i,
     action: 'ask',
-    reason: 'PowerShell registry modification detected. This changes system configuration. Are you sure?'
+    reason: 'PowerShell registry modification detected. This changes system configuration. Are you sure?',
+    powershell: true
   },
 
   // ── Package Publishing (irreversible public release) ───────────────
   {
     pattern: /\b(npm\s+publish|cargo\s+publish|twine\s+upload|gem\s+push|dotnet\s+nuget\s+push)\b/,
     action: 'deny',
-    reason: 'Blocked: package publishing is irreversible. Agents must not publish packages.'
+    reason: 'Blocked: package publishing is irreversible. Agents must not publish packages.',
+    powershell: true
   },
 
   // ── GitHub Account Operations ──────────────────────────────────────
   {
     pattern: /\bgh\s+repo\s+delete\b/,
     action: 'deny',
-    reason: 'Blocked: deleting GitHub repositories is not allowed from agents.'
+    reason: 'Blocked: deleting GitHub repositories is not allowed from agents.',
+    powershell: true
   },
   {
     pattern: /\bgh\s+repo\s+edit\s+.*--visibility\s+public\b/,
     action: 'deny',
-    reason: 'Blocked: making repositories public is not allowed from agents.'
+    reason: 'Blocked: making repositories public is not allowed from agents.',
+    powershell: true
   },
 
   // ── Email Sending (agents should never send real emails) ───────────
@@ -407,6 +556,74 @@ const BASH_RULES = [
     pattern: /\b(sendmail|mailx?|mutt)\s/,
     action: 'deny',
     reason: 'Blocked: agents must not send real emails.'
+  },
+];
+
+// Where a PowerShell command starts: the beginning, or after ; | & { ( or a
+// newline. The PowerShell-only rules below match only there, so a quoted
+// mention (git commit -m 'never run Format-Volume') does not trip a deny.
+const PS_START = String.raw`(?:^|[;|&{(\n])\s*`;
+
+// A drive root or the user's home, as Remove-Item's target: C:\ C:/ C: \ / ~
+// $HOME $env:USERPROFILE $env:SystemDrive ..., optionally followed by a slash
+// and *, quoted or not, ending the word.
+const PS_ROOT_TARGET = String.raw`\s['"]?(?:(?:[A-Za-z]:|~|\$HOME|\$env:(?:USERPROFILE|HOMEDRIVE|HOMEPATH|SystemDrive|SystemRoot|windir))[\\/]?|[\\/])\*?['"]?(?=\s|$|[;|])`;
+
+/**
+ * PowerShell command rules: the PowerShell-only rules, then every Bash rule
+ * marked powershell: true, then the PowerShell kill rule. Checked in order;
+ * first match wins, as for BASH_RULES.
+ */
+const POWERSHELL_RULES = [
+  // Remove-Item (or an alias) with -Recurse on a drive root or the home folder.
+  // -r, -rec, -Recurse and bash-style -rf all start with -r.
+  {
+    pattern: new RegExp(
+      PS_START + String.raw`(?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b(?=[^;|\n]*\s-r)[^;|\n]*?` + PS_ROOT_TARGET,
+      'i'
+    ),
+    action: 'deny',
+    reason: 'Blocked: recursive delete of a drive root or the home folder is not allowed.'
+  },
+  // Disk formatting and partitioning
+  {
+    pattern: new RegExp(
+      PS_START + String.raw`(?:Format-Volume|Format-Disk|Clear-Disk|Initialize-Disk|Remove-Partition|diskpart(?:\.exe)?|format(?:\.com)?\s+[A-Za-z]:)(?=\s|$|[;|])`,
+      'i'
+    ),
+    action: 'deny',
+    reason: 'Blocked: disk formatting/partitioning is not allowed.'
+  },
+  // Shutdown / restart
+  {
+    pattern: new RegExp(PS_START + String.raw`(?:Stop-Computer|Restart-Computer|shutdown(?:\.exe)?)(?=\s|$|[;|])`, 'i'),
+    action: 'deny',
+    reason: 'Blocked: system shutdown/reboot is not allowed from agents.'
+  },
+  // .env files: reading through PowerShell's own aliases, and writing by
+  // cmdlet or redirection. The Bash .env rules below cover cat/type/Get-Content.
+  {
+    pattern: /\b(gc|Select-String|sls|Import-Csv)\b[^;|\n]*\.env\b/i,
+    action: 'deny',
+    reason: 'Blocked: reading .env files via shell is not allowed. Environment secrets must stay protected.'
+  },
+  {
+    pattern: /(?:\b(?:Set-Content|Add-Content|Out-File|Tee-Object|New-Item)\b[^;|\n]*|>>?\s*['"]?[^\s;|'"]*)\.env\b/i,
+    action: 'deny',
+    reason: 'Blocked: writing to .env files via shell is not allowed.'
+  },
+  // Email
+  {
+    pattern: new RegExp(PS_START + String.raw`Send-MailMessage\b`, 'i'),
+    action: 'deny',
+    reason: 'Blocked: agents must not send real emails.'
+  },
+  ...BASH_RULES.filter((rule) => rule.powershell),
+  // Process killing (see isPowerShellKill).
+  {
+    test: isPowerShellKill,
+    action: 'ask',
+    reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
   },
 ];
 
@@ -525,14 +742,22 @@ function ask(reason) {
   };
 }
 
-function checkBash(command) {
+function checkCommand(command, rules) {
   if (!command) return null;
-  for (const rule of BASH_RULES) {
+  for (const rule of rules) {
     if (rule.test ? rule.test(command) : rule.pattern.test(command)) {
       return rule.action === 'deny' ? deny(rule.reason) : ask(rule.reason);
     }
   }
   return null;
+}
+
+function checkBash(command) {
+  return checkCommand(command, BASH_RULES);
+}
+
+function checkPowerShell(command) {
+  return checkCommand(command, POWERSHELL_RULES);
 }
 
 function checkFile(filePath) {
@@ -581,6 +806,9 @@ async function main() {
   switch (toolName) {
     case 'Bash':
       result = checkBash(toolInput.command);
+      break;
+    case 'PowerShell':
+      result = checkPowerShell(toolInput.command);
       break;
     case 'Read':
       result = checkFile(toolInput.file_path);
