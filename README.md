@@ -787,7 +787,7 @@ The installer includes 22 Clarion-specific skills for Claude Code (installed as 
 - Visual Studio 2022 (Community or higher)
 - .NET Framework 4.8 SDK
 - Clarion IDE (for reference assemblies in `{Clarion}\bin\`)
-- [Inno Setup 6](https://jrsoftware.org/isdownload.php) (for building the installer)
+- [Inno Setup 6](https://jrsoftware.org/isdl.php) (for building the installer)
 
 ### Configuring your Clarion path
 
