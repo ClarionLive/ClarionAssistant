@@ -3426,9 +3426,10 @@ namespace ClarionAssistant
 
             // Annotate the tab with the backend abbreviation so the tab strip
             // makes it obvious at a glance which assistant is driving each tab.
-            // Built from the undecorated name, so a relaunch never stacks labels. A Claude
-            // tab is relabelled again with its MultiTerminal name once that is resolved, and
-            // drops the CC suffix then (every registered tab is Claude, so it says nothing).
+            // Built from the undecorated name, so a relaunch never stacks labels. Each builder
+            // relabels the tab again with its short name once that is resolved - CA<n> (Claude,
+            // also its MultiTerminal name), CP<n> (Copilot) or CX<n> (Codex) - which carries the
+            // backend itself, so the suffix is dropped then (ticket cfb63b58).
             // Captured as is, not stripped: nothing has decorated the name before the first
             // launch, so stripping could only eat real text (a solution named "Billing CO").
             if (tab.BaseName == null) tab.BaseName = tab.Name;
@@ -3972,6 +3973,8 @@ namespace ClarionAssistant
         /// </summary>
         private BuiltBackendCommand BuildCopilotCommand(TerminalTab tab, LaunchContext ctx)
         {
+            AssignTabShortName(tab, "Copilot");
+
             string copilotHome = GetCopilotHomeDir();
             string mcpConfig = null;
             try
@@ -4061,11 +4064,7 @@ namespace ClarionAssistant
             // via the preceding `cd`, but `--add-dir` additionally puts the path
             // on Copilot's allowed-paths list for cross-directory tool operations.
             // The two are intentionally both set, not redundant.
-            string cmd =
-                $"cd '{ctx.SafeWorkDir}'; " +
-                "$env:CLARION_ASSISTANT_EMBEDDED='1'; " +
-                $"$env:COPILOT_HOME='{safeCopilotHome}'; " +
-                (string.IsNullOrEmpty(safeInstrDir) ? "" : $"$env:COPILOT_CUSTOM_INSTRUCTIONS_DIRS='{safeInstrDir}'; ") +
+            string copilotInvocation =
                 copilotBase +
                 $" --config-dir '{safeCopilotHome}'" +
                 mcpConfigArg +
@@ -4073,6 +4072,14 @@ namespace ClarionAssistant
                 modelFlag +
                 permissionFlags +
                 extraFlags;
+            // Wrapped like Claude's: the -NoExit shell outlives the CLI, so its end is signalled
+            // from the command and the tab's CP<n> name is released then (ticket cfb63b58).
+            string cmd =
+                $"cd '{ctx.SafeWorkDir}'; " +
+                "$env:CLARION_ASSISTANT_EMBEDDED='1'; " +
+                $"$env:COPILOT_HOME='{safeCopilotHome}'; " +
+                (string.IsNullOrEmpty(safeInstrDir) ? "" : $"$env:COPILOT_CUSTOM_INSTRUCTIONS_DIRS='{safeInstrDir}'; ") +
+                Services.CaAgentIdentity.WrapWithExitSignal(copilotInvocation, tab.Id);
 
             System.Diagnostics.Debug.WriteLine("[LaunchCopilot] mcpConfig=" + (mcpConfig ?? "(none)") + ", home=" + copilotHome);
             return new BuiltBackendCommand { Cmd = cmd, ModelNotice = copilotModelNotice };
@@ -4129,6 +4136,8 @@ namespace ClarionAssistant
         /// </summary>
         private BuiltBackendCommand BuildCodexCommand(TerminalTab tab, LaunchContext ctx)
         {
+            AssignTabShortName(tab, "Codex");
+
             // MCP wiring: write CA's HTTP endpoint + bearer token into ~/.codex/config.toml.
             // Best-effort — if the write fails or the server isn't running yet, Codex
             // launches in a bare shell. The terminal surfaces the specific reason so
@@ -4226,13 +4235,13 @@ namespace ClarionAssistant
                 mcpStatusMarker = $"Write-Host 'WARNING: {reason}' -ForegroundColor Yellow; ";
             }
 
+            // Wrapped like Claude's: the -NoExit shell outlives the CLI, so its end is signalled
+            // from the command and the tab's CX<n> name is released then (ticket cfb63b58).
             string cmd =
                 $"cd '{ctx.SafeWorkDir}'; " +
                 "$env:CLARION_ASSISTANT_EMBEDDED='1'; " +
                 mcpStatusMarker +
-                codexBase +
-                modelFlag +
-                effortFlag;
+                Services.CaAgentIdentity.WrapWithExitSignal(codexBase + modelFlag + effortFlag, tab.Id);
 
             System.Diagnostics.Debug.WriteLine("[LaunchCodex] codexConfig=" + (codexConfigPath ?? "(not written)") + ", workDir=" + ctx.WorkDir);
             return new BuiltBackendCommand { Cmd = cmd, ModelNotice = codexModelNotice };
@@ -4302,6 +4311,16 @@ namespace ClarionAssistant
         /// </summary>
         private string ResolveUniqueAgentName(TerminalTab tab)
         {
+            return ResolveUniqueAgentName(tab, Services.CaAgentIdentity.ClaudePrefix);
+        }
+
+        /// <summary>
+        /// The lowest free <paramref name="prefix"/>&lt;n&gt; across every tab in this IDE. Only
+        /// CA names also check MultiTerminal's roster: Copilot (CP) and Codex (CX) tabs never
+        /// register there, so their names need only be unique here (ticket cfb63b58).
+        /// </summary>
+        private string ResolveUniqueAgentName(TerminalTab tab, string prefix)
+        {
             var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             List<AssistantChatControl> pads;
             lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
@@ -4313,19 +4332,35 @@ namespace ClarionAssistant
                         taken.Add(t.AgentName);
             }
 
-            try
+            if (prefix == Services.CaAgentIdentity.ClaudePrefix)
             {
-                var roster = new Services.MultiTerminalApiClient(timeoutMs: 1500).ListTerminals();
-                if (roster != null && roster.Success && roster.Data != null)
-                    foreach (var row in roster.Data)
-                        if (!string.IsNullOrEmpty(row.Name)) taken.Add(row.Name);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
+                try
+                {
+                    var roster = new Services.MultiTerminalApiClient(timeoutMs: 1500).ListTerminals();
+                    if (roster != null && roster.Success && roster.Data != null)
+                        foreach (var row in roster.Data)
+                            if (!string.IsNullOrEmpty(row.Name)) taken.Add(row.Name);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
+                }
             }
 
-            return Services.CaAgentIdentity.NextFreeName(taken.Contains);
+            return Services.CaAgentIdentity.NextFreeName(prefix, taken.Contains);
+        }
+
+        /// <summary>
+        /// Give a Copilot or Codex tab its CP&lt;n&gt; / CX&lt;n&gt; name and label it like a Claude
+        /// tab ("CP1", or "CP1 · MySolution"), so the tab strip says which assistant is in each
+        /// terminal (ticket cfb63b58). Stored in tab.AgentName, so the exit signal and
+        /// ReleaseAgentName free it exactly as they do a CA name.
+        /// </summary>
+        private void AssignTabShortName(TerminalTab tab, string backend)
+        {
+            string name = ResolveUniqueAgentName(tab, Services.CaAgentIdentity.PrefixForBackend(backend));
+            tab.AgentName = name;
+            _tabManager.RenameTab(tab, Services.CaAgentIdentity.TabLabel(name, tab.BaseName));
         }
 
         private static int _dataRecvCount;
@@ -4350,7 +4385,8 @@ namespace ClarionAssistant
                 if (exited)
                 {
                     tab.ExitSignalCarry = null;
-                    Action release = () => { ReleaseAgentName(tab); UpdateStatus("Claude Code exited"); };
+                    string exitedLabel = AssistantExitedLabel(tab.AssistantBackend);
+                    Action release = () => { ReleaseAgentName(tab); UpdateStatus(exitedLabel); };
                     if (InvokeRequired) BeginInvoke(release); else release();
                 }
             }
@@ -4398,6 +4434,13 @@ namespace ClarionAssistant
                 tab.Terminal.Resize(e.Columns, e.Rows);
         }
 
+        private static string AssistantExitedLabel(string backend)
+        {
+            if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase)) return "Copilot CLI exited";
+            if (string.Equals(backend, "Codex", StringComparison.OrdinalIgnoreCase)) return "Codex CLI exited";
+            return "Claude Code exited";
+        }
+
         private void OnTabTerminalProcessExited(TerminalTab tab)
         {
             tab.AssistantLaunched = false;
@@ -4408,13 +4451,7 @@ namespace ClarionAssistant
                 catch { }
             }
 
-            string label;
-            if (string.Equals(tab.AssistantBackend, "Copilot", StringComparison.OrdinalIgnoreCase))
-                label = "Copilot CLI exited";
-            else if (string.Equals(tab.AssistantBackend, "Codex", StringComparison.OrdinalIgnoreCase))
-                label = "Codex CLI exited";
-            else
-                label = "Claude Code exited";
+            string label = AssistantExitedLabel(tab.AssistantBackend);
             if (InvokeRequired)
                 BeginInvoke((Action)(() => { ReleaseAgentName(tab); UpdateStatus(label); }));
             else

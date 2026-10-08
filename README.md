@@ -59,6 +59,10 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 <!-- Entries for the next release go here, in the same shape as the release blocks below. -->
 
+### Copilot and Codex terminals get short names too
+
+Claude terminals are already named **CA1**, **CA2** and so on. Copilot terminals are now **CP1**, **CP2**, ... and Codex terminals **CX1**, **CX2**, ..., instead of `Terminal 1 CP`, so the tab strip shows which assistant is in each terminal. Each kind is numbered on its own, so a Copilot terminal opened beside CA1 is CP1. Like a Claude tab, the tab keeps whatever it was opened on (`CP1 · MySolution`), and it gives its number back when the assistant in it exits.
+
 ### Current models in Settings, and retired ones replaced for you
 
 The model lists in **Settings > Models** were last checked in April and had fallen well behind. They're now current as of October 2026:

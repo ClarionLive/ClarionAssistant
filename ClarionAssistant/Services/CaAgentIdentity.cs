@@ -4,14 +4,27 @@ using System.Text;
 namespace ClarionAssistant.Services
 {
     /// <summary>
-    /// Identity helpers for CA-spawned Claude Code terminals that register
-    /// with the MultiTerminal broker. Each tab is known by a short numbered agent name
-    /// (CA1, CA2, ...) - by name alone, with no docId: a docId identifies a pane
-    /// MultiTerminal itself launched (ticket b24bcaf4).
+    /// Identity helpers for CA-spawned assistant terminals. Each tab is known by a short
+    /// numbered name whose prefix says which assistant is in it: CA1 (Claude Code), CP1
+    /// (Copilot CLI), CX1 (Codex CLI). A Claude tab's name is also its MultiTerminal identity -
+    /// by name alone, with no docId: a docId identifies a pane MultiTerminal itself launched
+    /// (ticket b24bcaf4). Copilot and Codex tabs don't register with MultiTerminal; their names
+    /// are labels only (ticket cfb63b58).
     /// </summary>
     public static class CaAgentIdentity
     {
-        private const string NamePrefix = "CA";
+        public const string ClaudePrefix  = "CA";
+        public const string CopilotPrefix = "CP";
+        public const string CodexPrefix   = "CX";
+        private const string NamePrefix = ClaudePrefix;
+
+        /// <summary>CP for Copilot, CX for Codex, and CA for Claude or anything unrecognised.</summary>
+        public static string PrefixForBackend(string backend)
+        {
+            if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase)) return CopilotPrefix;
+            if (string.Equals(backend, "Codex",   StringComparison.OrdinalIgnoreCase)) return CodexPrefix;
+            return ClaudePrefix;
+        }
 
         /// <summary>
         /// The lowest-numbered CA1, CA2, CA3, ... that <paramref name="isTaken"/> does not
@@ -32,12 +45,23 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string NextFreeName(Func<string, bool> isTaken)
         {
+            return NextFreeName(NamePrefix, isTaken);
+        }
+
+        /// <summary>
+        /// The lowest-numbered <paramref name="prefix"/>1, 2, 3, ... that
+        /// <paramref name="isTaken"/> does not reject. Each prefix numbers on its own, so a
+        /// Copilot tab opened beside CA1 is CP1, not CP2.
+        /// </summary>
+        public static string NextFreeName(string prefix, Func<string, bool> isTaken)
+        {
+            if (string.IsNullOrEmpty(prefix)) prefix = NamePrefix;
             for (int n = 1; n < 1000; n++)
             {
-                string candidate = NamePrefix + n;
+                string candidate = prefix + n;
                 if (isTaken == null || !isTaken(candidate)) return candidate;
             }
-            return NamePrefix + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+            return prefix + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
         }
 
         /// <summary>

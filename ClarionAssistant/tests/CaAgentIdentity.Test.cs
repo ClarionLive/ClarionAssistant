@@ -70,6 +70,21 @@ static class CaAgentIdentityTest
         Ok("all numbers taken -> random fallback, still CA-prefixed", exhausted.StartsWith("CA-") && exhausted.Length == 9, exhausted);
         Ok("name is short (fits tab and prompt label)", CaAgentIdentity.NextFreeName(null).Length <= 5);
 
+        // ---- Per-backend prefixes (cfb63b58): CP1 Copilot, CX1 Codex, each numbered on its own ----
+        Ok("Claude -> CA", CaAgentIdentity.PrefixForBackend("Claude") == "CA");
+        Ok("Copilot -> CP", CaAgentIdentity.PrefixForBackend("Copilot") == "CP");
+        Ok("Codex -> CX", CaAgentIdentity.PrefixForBackend("codex") == "CX");
+        Ok("unknown / null -> CA", CaAgentIdentity.PrefixForBackend(null) == "CA" && CaAgentIdentity.PrefixForBackend("Gemini") == "CA");
+        held.Clear(); held.Add("CA1"); held.Add("CA2");
+        Ok("Copilot beside CA1+CA2 -> CP1 (own sequence)", CaAgentIdentity.NextFreeName("CP", held.Contains) == "CP1");
+        held.Add("CP1");
+        Ok("CP1 taken -> CP2", CaAgentIdentity.NextFreeName("CP", held.Contains) == "CP2");
+        Ok("Codex unaffected by CA/CP -> CX1", CaAgentIdentity.NextFreeName("CX", held.Contains) == "CX1");
+        Ok("CA numbering unaffected by CP1 -> CA3", CaAgentIdentity.NextFreeName(held.Contains) == "CA3");
+        Ok("empty prefix falls back to CA", CaAgentIdentity.NextFreeName("", null) == "CA1");
+        string cxExhausted = CaAgentIdentity.NextFreeName("CX", n => true);
+        Ok("exhausted CX fallback keeps its prefix", cxExhausted.StartsWith("CX-"), cxExhausted);
+
         // ---- TabLabel / IsDefaultTabName ----
         Ok("plain Terminal tab -> name alone", CaAgentIdentity.TabLabel("CA2", "Terminal 2") == "CA2");
         Ok("Terminal 12 -> name alone", CaAgentIdentity.TabLabel("CA2", "Terminal 12") == "CA2");
@@ -195,6 +210,36 @@ static class CaAgentIdentityTest
                 Ok("Claude command wrapped with the exit signal", wrap >= 0, "wrap@" + wrap);
                 Ok("output handler watches for the exit signal and releases the name",
                     sees >= 0 && seesRelease > sees && seesRelease < dataEnd, "sees@" + sees + " release@" + seesRelease + " end@" + dataEnd);
+
+                // cfb63b58: Copilot and Codex tabs get CP<n> / CX<n>, assigned at the top of their
+                // builders (before any abort, which releases it), and their CLIs are wrapped with
+                // the exit signal so the name is released when the CLI exits.
+                foreach (var be in new[] { new[] { "Copilot", "copilotInvocation" }, new[] { "Codex", "codexBase + modelFlag + effortFlag" } })
+                {
+                    int build = src.IndexOf("private BuiltBackendCommand Build" + be[0] + "Command(", StringComparison.Ordinal);
+                    int buildEnd = build < 0 ? -1 : src.IndexOf("\n        }", build, StringComparison.Ordinal);
+                    int assign = build < 0 ? -1 : src.IndexOf("AssignTabShortName(tab, \"" + be[0] + "\");", build, StringComparison.Ordinal);
+                    int firstAbort = build < 0 ? -1 : src.IndexOf("AbortLaunch(tab)", build, StringComparison.Ordinal);
+                    int beWrap = build < 0 ? -1 : src.IndexOf("CaAgentIdentity.WrapWithExitSignal(" + be[1] + ", tab.Id)", build, StringComparison.Ordinal);
+                    Ok(be[0] + " builder assigns its short name", assign >= 0 && assign < buildEnd, "assign@" + assign + " end@" + buildEnd);
+                    Ok(be[0] + " name assigned before any abort", assign >= 0 && (firstAbort < 0 || firstAbort > buildEnd || assign < firstAbort),
+                        "assign@" + assign + " abort@" + firstAbort);
+                    Ok(be[0] + " CLI wrapped with the exit signal", beWrap >= 0 && beWrap < buildEnd, "wrap@" + beWrap + " end@" + buildEnd);
+                }
+                int assignHelper = src.IndexOf("private void AssignTabShortName(TerminalTab tab, string backend)", StringComparison.Ordinal);
+                int assignHelperEnd = assignHelper < 0 ? -1 : src.IndexOf("\n        }", assignHelper, StringComparison.Ordinal);
+                int usesPrefix = assignHelper < 0 ? -1 : src.IndexOf("CaAgentIdentity.PrefixForBackend(backend)", assignHelper, StringComparison.Ordinal);
+                int storesName = assignHelper < 0 ? -1 : src.IndexOf("tab.AgentName = name;", assignHelper, StringComparison.Ordinal);
+                int relabels = assignHelper < 0 ? -1 : src.IndexOf("CaAgentIdentity.TabLabel(name, tab.BaseName)", assignHelper, StringComparison.Ordinal);
+                Ok("AssignTabShortName uses the backend's prefix", usesPrefix >= 0 && usesPrefix < assignHelperEnd);
+                Ok("AssignTabShortName stores the name on the tab (exit signal + release key on it)",
+                    storesName >= 0 && storesName < assignHelperEnd);
+                Ok("AssignTabShortName relabels the tab", relabels >= 0 && relabels < assignHelperEnd);
+                int resolvePrefixed = src.IndexOf("private string ResolveUniqueAgentName(TerminalTab tab, string prefix)", StringComparison.Ordinal);
+                int rosterGate = resolvePrefixed < 0 ? -1 : src.IndexOf("if (prefix == Services.CaAgentIdentity.ClaudePrefix)", resolvePrefixed, StringComparison.Ordinal);
+                int roster = resolvePrefixed < 0 ? -1 : src.IndexOf("ListTerminals()", resolvePrefixed, StringComparison.Ordinal);
+                Ok("only CA names consult the MultiTerminal roster", rosterGate >= 0 && roster > rosterGate,
+                    "gate@" + rosterGate + " roster@" + roster);
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");

@@ -32,8 +32,10 @@ namespace ClarionAssistant.Terminal
         public string SolutionPath { get; set; }
 
         /// <summary>
-        /// The CA1/CA2/... identity this tab's assistant is known by in MultiTerminal (its
-        /// MULTITERMINAL_NAME and -n), captured at launch. Null until an assistant is launched.
+        /// The tab's short name, captured at launch: CA1/CA2/... for Claude - also the identity
+        /// it is known by in MultiTerminal (its MULTITERMINAL_NAME and -n) - CP1/CP2/... for
+        /// Copilot and CX1/CX2/... for Codex, which are labels only (ticket cfb63b58). Null until
+        /// an assistant is launched, and again once it exits.
         ///
         /// Read by AssistantChatControl.ResolveUniqueAgentName: other tabs' launches treat it as
         /// taken. It has to be STORED rather than recomputed: the number depends on what else
