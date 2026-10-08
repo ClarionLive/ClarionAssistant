@@ -52,6 +52,8 @@ static class TabManagerCloseTest
             B = Tabs.CreateContentTab("Bravo", new Label());
             C = Tabs.CreateContentTab("Charlie", new Label());
             Tabs.ActivateTab(A.Id);
+            // Load-bearing: the first paint creates the strip's window handle, and Control.Invalidate
+            // raises Invalidated (what the repaint checks count) only once a handle exists.
             Paint();
         }
 
@@ -124,15 +126,27 @@ static class TabManagerCloseTest
         r3.Tabs.CloseTab(r3.A.Id);
         Check(r3.Tabs.ActiveTab == r3.Home, "closing the active tab activates the first tab");
 
-        // ---- A TabRemoved handler that throws must not leave the strip stale ----
+        // ---- A TabRemoved handler that throws must not leave the strip stale, or the tab's terminal
+        //      running (pipeline run 1: a throw skipped tab.Dispose, orphaning the ConPTY process) ----
         var r4 = new Rig();
+        var pty = new ConPtyTerminal();
+        r4.A.Terminal = pty;
         r4.Tabs.TabRemoved += (s, t) => { throw new InvalidOperationException("handler failed"); };
         int inv4 = r4.Invalidations;
         Exception handlerError = null;
         try { r4.Tabs.CloseTab(r4.A.Id); } catch (InvalidOperationException ex) { handlerError = ex; }
-        Check(handlerError != null, "setup: the throwing handler did throw");
+        Check(handlerError != null, "the handler's exception still reaches the caller");
         Check(r4.Invalidations > inv4, "strip repainted even though the handler threw");
         Check(r4.Tabs.ActiveTab == r4.Home, "active tab moved off the closed tab even though the handler threw");
+        Check(pty.StopCalls == 1 && pty.DisposeCalls == 1, "the closed tab's terminal is stopped and disposed even though the handler threw");
+        Check(r4.A.Terminal == null, "...and released by the tab");
+
+        // ---- The normal close also stops the tab's terminal ----
+        var r6 = new Rig();
+        var pty6 = new ConPtyTerminal();
+        r6.B.Terminal = pty6;
+        r6.Tabs.CloseTab(r6.B.Id);
+        Check(pty6.StopCalls == 1 && pty6.DisposeCalls == 1, "a normal close stops and disposes the tab's terminal");
 
         // ---- Adding a tab repaints without relying on the caller activating it ----
         var r5 = new Rig();

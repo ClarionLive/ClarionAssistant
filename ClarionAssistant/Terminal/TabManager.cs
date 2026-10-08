@@ -63,7 +63,7 @@ namespace ClarionAssistant.Terminal
 
             _tabs.Insert(0, tab);
             _activeTab = tab;
-            UpdateTabStripVisibility();
+            RefreshTabStrip();
 
             System.Diagnostics.Debug.WriteLine("[TabManager] CreateHomeTab: tabs=" + _tabs.Count + " tabStrip.Visible=" + _tabStrip.Visible);
             TabAdded?.Invoke(this, tab);
@@ -86,7 +86,7 @@ namespace ClarionAssistant.Terminal
             _contentArea.Controls.Add(content);
 
             _tabs.Add(tab);
-            UpdateTabStripVisibility();
+            RefreshTabStrip();
 
             System.Diagnostics.Debug.WriteLine("[TabManager] CreateContentTab: " + tab.Name + " tabs=" + _tabs.Count + " tabStrip.Visible=" + _tabStrip.Visible);
             TabAdded?.Invoke(this, tab);
@@ -112,7 +112,7 @@ namespace ClarionAssistant.Terminal
             _contentArea.Controls.Add(renderer);
 
             _tabs.Add(tab);
-            UpdateTabStripVisibility();
+            RefreshTabStrip();
 
             System.Diagnostics.Debug.WriteLine("[TabManager] CreateTerminalTab: " + tab.Name + " tabs=" + _tabs.Count + " tabStrip.Visible=" + _tabStrip.Visible);
             TabAdded?.Invoke(this, tab);
@@ -161,14 +161,16 @@ namespace ClarionAssistant.Terminal
             _tabs.Remove(tab);
             try
             {
-                TabRemoved?.Invoke(this, tab);
-                tab.Dispose();
+                // Disposal runs even if a handler throws: the tab is already unreachable, so a skipped
+                // Dispose would leave its ConPTY process running with no tab to close it from.
+                try { TabRemoved?.Invoke(this, tab); }
+                finally { tab.Dispose(); }
             }
             finally
             {
                 // The tab is gone from _tabs whatever a handler or Dispose does: the strip and the
                 // active tab must follow, or the display is left showing a tab that no longer exists.
-                UpdateTabStripVisibility();
+                RefreshTabStrip();
 
                 if (wasActive)
                 {
@@ -185,13 +187,9 @@ namespace ClarionAssistant.Terminal
             return _tabs.FirstOrDefault(t => t.Id == tabId);
         }
 
-        // Called after every add and close. It always repaints: the strip is custom-painted, and the
-        // hit areas a click is tested against are rebuilt only by OnTabStripPaint. Closing a tab that
-        // was not the active one used to repaint nothing (only ActivateTab invalidated), so the strip
-        // went on drawing the closed tab and clicks went to stale areas: its X did nothing and the
-        // other tabs seemed dead until something else - opening Settings - forced a repaint
-        // (ticket 6a4b4d71).
-        private void UpdateTabStripVisibility()
+        // Called after every add and close. Always repaints: the strip is custom-painted and the hit
+        // areas clicks are tested against are rebuilt only by OnTabStripPaint (ticket 6a4b4d71).
+        private void RefreshTabStrip()
         {
             // Always shown once Home exists (d4e941e3): hiding it while Home was the only tab made the strip
             // appear with the first opened tab and vanish again with the last closed one.
@@ -264,7 +262,9 @@ namespace ClarionAssistant.Terminal
             foreach (var hit in _hitAreas)
             {
                 // A hit area from before the last paint can name a tab that has since closed: repaint
-                // rather than act on it, so the next click lands on the strip as it really is.
+                // rather than act on it, so the next click lands on the strip as it really is. Areas
+                // are in paint order, so tabs LEFT of the closed one (whose positions haven't moved)
+                // are matched before this point and still work.
                 if (!_tabs.Contains(hit.Tab))
                 {
                     _tabStrip.Invalidate();

@@ -8,8 +8,10 @@ namespace ClarionAssistant.Terminal
 
     public class ConPtyTerminal : System.IDisposable
     {
-        public void Stop() { }
-        public void Dispose() { }
+        // Counted so the test can prove a closed tab's terminal is stopped and disposed.
+        public int StopCalls, DisposeCalls;
+        public void Stop() { StopCalls++; }
+        public void Dispose() { DisposeCalls++; }
     }
 }
 
