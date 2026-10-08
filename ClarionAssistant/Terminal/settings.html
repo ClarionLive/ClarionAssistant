@@ -574,6 +574,7 @@
                  placeholder="Type custom model id...">
           <div class="field-desc" id="modelFieldDesc">Model used for new sessions with the selected backend.</div>
           <div class="field-desc" id="modelMismatchNote" style="display:none;color:var(--warning);margin-top:4px"></div>
+          <div class="field-desc" id="modelCliNote" style="min-height:1.3em;margin-top:4px"></div>
         </div>
       </div>
     </div>
@@ -1256,6 +1257,17 @@
       return (m.plans || []).indexOf(plan) >= 0;
     });
     var savedModel = _modelByBackend[backend];
+    // A saved id the provider has retired → its replacement from the registry's
+    // retired map (the launcher applies the same map, so both agree).
+    var retiredNote = '';
+    var retired = info.retired || {};
+    var trimmedSaved = (savedModel || '').trim();
+    if (trimmedSaved && Object.prototype.hasOwnProperty.call(retired, trimmedSaved)) {
+      savedModel = retired[trimmedSaved];
+      _modelByBackend[backend] = savedModel;
+      retiredNote = '"' + trimmedSaved + '" has been retired; switched to '
+        + (savedModel ? '"' + savedModel + '"' : 'Default') + '.';
+    }
     var savedInList = false;
     for (var i = 0; i < allowed.length; i++) {
       var m = allowed[i];
@@ -1311,6 +1323,50 @@
       if (custom) { custom.value = savedModel || ''; custom.style.display = 'inline-block'; }
       if (note) note.style.display = 'none';
     }
+    if (retiredNote && note) {
+      note.textContent = retiredNote;
+      note.style.display = 'block';
+    }
+    updateModelCliNote();
+  }
+
+  // Installed Claude Code version from the host ("" = not found; null = not known yet).
+  var _claudeCliVersion = null;
+
+  // -1 / 0 / 1 for dotted numeric versions ("2.1.280" vs "2.1.293").
+  function compareVersions(a, b) {
+    var pa = String(a).split('.'), pb = String(b).split('.');
+    for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+      var x = parseInt(pa[i] || '0', 10) || 0, y = parseInt(pb[i] || '0', 10) || 0;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
+
+  // "Needs Claude Code X or later" for the selected Claude model, turned into a
+  // warning when the installed CLI is older. The line keeps its space when empty
+  // so the dialog doesn't jump as the selection changes.
+  function updateModelCliNote() {
+    var el = document.getElementById('modelCliNote');
+    if (!el) return;
+    el.textContent = '';
+    el.style.color = '';
+    if (_viewBackend !== 'Claude') return;
+    var info = getBackendInfo('Claude');
+    var id = _modelByBackend['Claude'];
+    var entry = null;
+    for (var i = 0; info && i < (info.models || []).length; i++)
+      if (info.models[i].id === id) { entry = info.models[i]; break; }
+    if (!entry || !entry.minCliVersion) return;
+    var need = entry.minCliVersion;
+    if (_claudeCliVersion && compareVersions(_claudeCliVersion, need) < 0) {
+      el.textContent = 'Needs Claude Code ' + need + ' or later; you have ' + _claudeCliVersion
+        + '. Run "claude update", then restart the terminal.';
+      el.style.color = 'var(--warning)';
+    } else {
+      el.textContent = 'Needs Claude Code ' + need + ' or later'
+        + (_claudeCliVersion ? ' (installed: ' + _claudeCliVersion + ').' : '.');
+    }
   }
 
   function onPlanChanged() {
@@ -1338,12 +1394,14 @@
       if (custom) { custom.style.display = 'none'; custom.value = ''; }
       _modelByBackend[_viewBackend] = sel.value;
     }
+    updateModelCliNote();
   }
 
   function onModelCustomInput() {
     var custom = document.getElementById('modelCustom');
     if (!custom) return;
     _modelByBackend[_viewBackend] = custom.value;
+    updateModelCliNote();
   }
 
   function setAsDefault() {
@@ -1790,6 +1848,11 @@
       }
     }
 
+    if (msg.type === 'claudeCliVersion') {
+      _claudeCliVersion = msg.version || '';
+      updateModelCliNote();
+      return;
+    }
     if (msg.type === 'setClassModels') {
       _classModels = msg.models || [];
       renderClassModels();

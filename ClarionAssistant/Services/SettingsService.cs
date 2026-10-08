@@ -602,6 +602,58 @@ namespace ClarionAssistant.Services
             return MinimalRegistryJson;
         }
 
+        /// <summary>
+        /// Maps a model id the provider has retired to its replacement, using the
+        /// backend's <c>retired</c> map in models.json ({ "oldId": "newId" }).
+        /// Returns <paramref name="modelId"/> unchanged when it is not retired or the
+        /// registry can't be read. A replacement of "" means the backend's Default.
+        /// </summary>
+        public string ResolveRetiredModel(string backend, string modelId)
+        {
+            return ResolveRetiredModel(GetModelRegistryJson(), backend, modelId);
+        }
+
+        /// <summary>Registry-text overload, so the lookup is testable without a deploy.</summary>
+        public static string ResolveRetiredModel(string registryJson, string backend, string modelId)
+        {
+            string id = (modelId ?? "").Trim();
+            if (id.Length == 0 || string.IsNullOrEmpty(backend)) return modelId;
+            try
+            {
+                var root = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(registryJson) as Dictionary<string, object>;
+                object backends, info, retired, replacement;
+                if (root != null && root.TryGetValue("backends", out backends)
+                    && backends is Dictionary<string, object>
+                    && ((Dictionary<string, object>)backends).TryGetValue(backend, out info)
+                    && info is Dictionary<string, object>
+                    && ((Dictionary<string, object>)info).TryGetValue("retired", out retired)
+                    && retired is Dictionary<string, object>
+                    && ((Dictionary<string, object>)retired).TryGetValue(id, out replacement)
+                    && replacement is string)
+                    return (string)replacement;
+            }
+            catch { }
+            return modelId;
+        }
+
+        /// <summary>
+        /// Reads <paramref name="settingsKey"/> and, if it names a retired model,
+        /// saves the replacement in its place. <paramref name="retiredFrom"/> is the
+        /// old id when a swap happened, else null. A failed save (settings locked by
+        /// another process) still returns the replacement for this launch.
+        /// </summary>
+        public string GetModelRemappingRetired(string backend, string settingsKey, out string retiredFrom)
+        {
+            retiredFrom = null;
+            string saved = Get(settingsKey) ?? "";
+            string resolved = ResolveRetiredModel(backend, saved);
+            if (string.Equals(resolved, saved, StringComparison.Ordinal)) return saved;
+            retiredFrom = saved.Trim();
+            try { Set(settingsKey, resolved); } catch { }
+            return resolved;
+        }
+
         // Minimal registry used only when both the deployed file and the embedded
         // resource are unavailable — keeps the settings dialog functional.
         private const string MinimalRegistryJson =

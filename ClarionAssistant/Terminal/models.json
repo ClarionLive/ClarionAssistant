@@ -1,50 +1,65 @@
 {
   "version": "1",
-  "lastVerified": "2026-04-26",
+  "lastVerified": "2026-10-08",
   "backends": {
     "Claude": {
       "plans": [
-        { "id": "Pro",    "label": "Pro" },
-        { "id": "Max5x",  "label": "Max 5x" },
-        { "id": "Max20x", "label": "Max 20x" }
+        { "id": "Pro",        "label": "Pro" },
+        { "id": "Max5x",      "label": "Max 5x" },
+        { "id": "Max20x",     "label": "Max 20x" },
+        { "id": "Team",       "label": "Team" },
+        { "id": "Enterprise", "label": "Enterprise" }
       ],
       "defaultPlan": "Pro",
       "models": [
-        { "id": "default",    "label": "Default (recommended)", "plans": ["Pro", "Max5x", "Max20x"] },
-        { "id": "haiku",      "label": "Haiku 4.5",  "plans": ["Pro", "Max5x", "Max20x"] },
-        { "id": "sonnet",     "label": "Sonnet 4.6", "plans": ["Pro", "Max5x", "Max20x"] },
-        { "id": "sonnet[1m]", "label": "Sonnet 4.6", "tags": ["1M context"], "plans": ["Pro", "Max5x", "Max20x"], "billedExtraFor": ["Pro", "Max5x", "Max20x"] },
-        { "id": "opus",       "label": "Opus 4.7",   "plans": ["Pro", "Max5x", "Max20x"], "notRecommendedFor": ["Pro"] },
-        { "id": "opus[1m]",   "label": "Opus 4.7",   "tags": ["1M context"], "plans": ["Pro", "Max5x", "Max20x"], "billedExtraFor": ["Pro"], "notRecommendedFor": ["Pro"] }
-      ]
+        { "id": "default", "label": "Default (recommended)", "plans": ["Pro", "Max5x", "Max20x", "Team", "Enterprise"] },
+        { "id": "haiku",   "label": "Haiku 5.5",  "minCliVersion": "2.1.293", "plans": ["Pro", "Max5x", "Max20x", "Team", "Enterprise"] },
+        { "id": "sonnet",  "label": "Sonnet 5.5", "minCliVersion": "2.1.284", "plans": ["Pro", "Max5x", "Max20x", "Team", "Enterprise"] },
+        { "id": "opus",    "label": "Opus 5.5",   "minCliVersion": "2.1.280", "plans": ["Pro", "Max5x", "Max20x", "Team", "Enterprise"] },
+        { "id": "fable",   "label": "Fable 5.1",  "minCliVersion": "2.1.257", "plans": ["Pro", "Max5x", "Max20x", "Team", "Enterprise"] }
+      ],
+      "retired": {
+        "opus[1m]":   "opus",
+        "sonnet[1m]": "sonnet"
+      }
     },
     "Copilot": {
       "plans": [
         { "id": "Free",       "label": "Free" },
         { "id": "Pro",        "label": "Pro" },
         { "id": "ProPlus",    "label": "Pro+" },
+        { "id": "Max",        "label": "Max" },
         { "id": "Business",   "label": "Business" },
         { "id": "Enterprise", "label": "Enterprise" }
       ],
       "defaultPlan": "Pro",
       "models": [
-        { "id": "",                  "label": "Default (recommended)", "group": "Default", "plans": ["Free", "Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-haiku-4.5",  "label": "Claude Haiku 4.5",  "group": "Claude", "plans": ["Free", "Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-sonnet-4",   "label": "Claude Sonnet 4",   "group": "Claude", "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "group": "Claude", "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-sonnet-4.6", "label": "Claude Sonnet 4.6", "group": "Claude", "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-opus-4.7",   "label": "Claude Opus 4.7",   "group": "Claude", "plans": ["ProPlus", "Business", "Enterprise"] },
-        { "id": "claude-opus-4.6",   "label": "Claude Opus 4.6",   "group": "Claude", "plans": ["Business", "Enterprise"] },
-        { "id": "claude-opus-4.5",   "label": "Claude Opus 4.5",   "group": "Claude", "plans": ["Business", "Enterprise"] },
-        { "id": "gpt-5.4",           "label": "GPT-5.4",           "group": "GPT",    "plans": ["ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-5.4-mini",      "label": "GPT-5.4 mini",      "group": "GPT",    "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-5.3-codex",     "label": "GPT-5.3 Codex",     "group": "GPT",    "plans": ["ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-5.2-codex",     "label": "GPT-5.2 Codex",     "group": "GPT",    "plans": ["ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-5.2",           "label": "GPT-5.2",           "group": "GPT",    "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-5-mini",        "label": "GPT-5 mini",        "group": "GPT",    "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "gpt-4.1",           "label": "GPT-4.1",           "group": "GPT",    "plans": ["Pro", "ProPlus", "Business", "Enterprise"] },
-        { "id": "gemini-2.5-pro",    "label": "Gemini 2.5 Pro",    "group": "Gemini", "plans": ["Pro", "ProPlus", "Business", "Enterprise"] }
-      ]
+        { "id": "",                  "label": "Default (recommended)", "group": "Default", "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "auto",              "label": "Auto",                  "group": "Default", "plans": ["Free", "Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "claude-haiku-4.5",  "label": "Claude Haiku 4.5",  "group": "Claude", "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "claude-sonnet-5.5", "label": "Claude Sonnet 5.5", "group": "Claude", "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "claude-opus-5.5",   "label": "Claude Opus 5.5",   "group": "Claude", "plans": ["ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-6.1-sol",       "label": "GPT-6.1 Sol",       "group": "GPT",    "plans": ["ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-6-astra",       "label": "GPT-6 Astra",       "group": "GPT",    "plans": ["ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-6-luna",        "label": "GPT-6 Luna",        "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-5.6-luna",      "label": "GPT-5.6 Luna",      "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-5.4",           "label": "GPT-5.4",           "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-5.4-mini",      "label": "GPT-5.4 mini",      "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-5.3-codex",     "label": "GPT-5.3 Codex",     "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] },
+        { "id": "gpt-5-mini",        "label": "GPT-5 mini",        "group": "GPT",    "plans": ["Pro", "ProPlus", "Max", "Business", "Enterprise"] }
+      ],
+      "retired": {
+        "claude-sonnet-4":   "claude-sonnet-5.5",
+        "claude-sonnet-4.5": "claude-sonnet-5.5",
+        "claude-sonnet-4.6": "claude-sonnet-5.5",
+        "claude-opus-4.5":   "claude-opus-5.5",
+        "claude-opus-4.6":   "claude-opus-5.5",
+        "claude-opus-4.7":   "claude-opus-5.5",
+        "gpt-5.2":           "gpt-5.4",
+        "gpt-5.2-codex":     "gpt-5.3-codex",
+        "gpt-4.1":           "gpt-5-mini",
+        "gemini-2.5-pro":    ""
+      }
     },
     "Codex": {
       "plans": [
@@ -56,12 +71,18 @@
       ],
       "defaultPlan": "Plus",
       "models": [
-        { "id": "gpt-5.5",       "label": "GPT-5.5 (Default)", "group": "Frontier", "tags": ["recommended"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
-        { "id": "gpt-5.4",       "label": "GPT-5.4",           "group": "General",                           "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
-        { "id": "gpt-5.4-mini",  "label": "GPT-5.4 mini",      "group": "General",                           "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
-        { "id": "gpt-5.3-codex", "label": "GPT-5.3 Codex",     "group": "Codex",    "tags": ["coding-tuned"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
-        { "id": "gpt-5.2",       "label": "GPT-5.2",           "group": "Agents",   "tags": ["long-running"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] }
-      ]
+        { "id": "gpt-6.1-sol", "label": "GPT-6.1 Sol (Default)", "group": "Frontier", "tags": ["recommended"],    "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-6-sol",   "label": "GPT-6 Sol",             "group": "Frontier",                            "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-6-astra", "label": "GPT-6 Astra",           "group": "Frontier", "tags": ["most capable"],  "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] },
+        { "id": "gpt-6-luna",  "label": "GPT-6 Luna",            "group": "General",  "tags": ["focused tasks"], "plans": ["Plus", "Pro", "Business", "Edu", "Enterprise"] }
+      ],
+      "retired": {
+        "gpt-5.5":       "gpt-6.1-sol",
+        "gpt-5.4":       "gpt-6.1-sol",
+        "gpt-5.4-mini":  "gpt-6-luna",
+        "gpt-5.3-codex": "gpt-6.1-sol",
+        "gpt-5.2":       "gpt-6.1-sol"
+      }
     }
   }
 }

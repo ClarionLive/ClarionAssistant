@@ -122,6 +122,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # 0f928849: models.json went stale (no Opus 5.5, retired Copilot/Codex ids). Checks the
+            # registry's internal consistency and the retired-model remap. Gets the project dir to
+            # read the shipped models.json and the Codex launcher's hard-coded default.
+            @{ Name = "ModelRegistry.Test"
+               Sources = @("tests\ModelRegistry.Test.cs", "Services\SettingsService.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll")
+               Args = @($RepoDir) }
             # c175492a: two IDEs' CA tabs could not tell which MultiTerminal name was theirs. Gets the
             # project dir so it can check the launch resolves the name before composing the prompt.
             @{ Name = "CaAgentIdentity.Test"

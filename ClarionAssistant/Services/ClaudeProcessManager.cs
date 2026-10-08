@@ -386,6 +386,51 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The installed Claude Code CLI's version ("2.1.293"), from <c>claude --version</c>,
+        /// or null when the CLI can't be found, doesn't answer within
+        /// <paramref name="timeoutMs"/>, or prints nothing recognisable. Blocks: call it
+        /// off the UI thread.
+        /// </summary>
+        public static string GetInstalledClaudeVersion(int timeoutMs)
+        {
+            try
+            {
+                string path = FindClaudePath();
+                if (path == null) return null;
+                // claude.cmd (npm) and extensionless shims need cmd.exe to run.
+                bool isExe = path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+                var psi = new ProcessStartInfo
+                {
+                    FileName = isExe ? path : "cmd.exe",
+                    Arguments = isExe ? "--version" : "/d /s /c \"\"" + path + "\" --version\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+                using (var proc = Process.Start(psi))
+                {
+                    var read = proc.StandardOutput.ReadToEndAsync();
+                    if (!proc.WaitForExit(timeoutMs))
+                    {
+                        try { proc.Kill(); } catch { }
+                        return null;
+                    }
+                    return ParseCliVersion(read.Result);
+                }
+            }
+            catch { return null; }
+        }
+
+        /// <summary>First "major.minor.patch" in <paramref name="text"/>, or null.</summary>
+        public static string ParseCliVersion(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"\b(\d+)\.(\d+)\.(\d+)\b");
+            return m.Success ? m.Value : null;
+        }
+
+        /// <summary>
         /// Finds the Clarion Assistant plugin directory.
         /// Checks marketplace source first, then cache.
         /// </summary>

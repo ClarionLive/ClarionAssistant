@@ -3865,9 +3865,10 @@ namespace ClarionAssistant
             string colorfgbg = _isDarkTheme ? "$env:COLORFGBG='15;0'" : "$env:COLORFGBG='0;15'";
 
             // Pass the user's selected model via --model. Empty value means "no
-            // override" — the CLI will use the account's default (Sonnet 4.6 on
-            // Pro, Opus 4.7 on Max). Single-quote any apostrophes for safety.
-            string claudeModelVal = (_settings.Get("Claude.Model") ?? "").Trim();
+            // override" — the CLI will use the account's default (Opus 5.5 on every
+            // plan as of 2026-10). A saved id the provider has retired is swapped for
+            // its replacement from models.json. Single-quote any apostrophes for safety.
+            string claudeModelVal = GetLaunchModel("Claude", "Claude.Model");
             string claudeModelFlag = string.IsNullOrEmpty(claudeModelVal)
                 ? string.Empty
                 : $" --model '{claudeModelVal.Replace("'", "''")}'";
@@ -4004,7 +4005,7 @@ namespace ClarionAssistant
                 return null;
             }
 
-            string copilotModelVal = (_settings.Get("Copilot.Model") ?? "").Trim();
+            string copilotModelVal = GetLaunchModel("Copilot", "Copilot.Model");
             string modelFlag = string.IsNullOrEmpty(copilotModelVal)
                 ? string.Empty
                 : $" --model '{copilotModelVal.Replace("'", "''")}'";
@@ -4061,7 +4062,20 @@ namespace ClarionAssistant
         // Update CodexDefaultModelId together with the matching first entry in
         // Terminal\models.json when the recommended default shifts (Oracle DMs
         // John when this happens — see reference_oracle_model_watch memory).
-        private const string CodexDefaultModelId = "gpt-5.5";
+        private const string CodexDefaultModelId = "gpt-6.1-sol";
+
+        // The saved model for a backend, trimmed, with a retired id swapped for its
+        // replacement (saved back, and announced on the status line) so a model the
+        // provider has withdrawn doesn't leave the terminal failing to start.
+        private string GetLaunchModel(string backend, string settingsKey)
+        {
+            string retiredFrom;
+            string model = (_settings.GetModelRemappingRetired(backend, settingsKey, out retiredFrom) ?? "").Trim();
+            if (retiredFrom != null)
+                UpdateStatus(backend + " model '" + retiredFrom + "' has been retired; using "
+                    + (model.Length == 0 ? "Default" : "'" + model + "'") + " instead.");
+            return model;
+        }
 
         private static string BuildCodexModelFlag(string codexModelVal)
         {
@@ -4139,7 +4153,7 @@ namespace ClarionAssistant
                 }
             }
 
-            string modelFlag = BuildCodexModelFlag(_settings.Get("Codex.Model"));
+            string modelFlag = BuildCodexModelFlag(GetLaunchModel("Codex", "Codex.Model"));
 
             // Codex CLI takes -c / --config key=value pairs to override config.toml
             // entries at launch time. We use this to pin model_reasoning_effort when

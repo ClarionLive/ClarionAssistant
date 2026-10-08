@@ -59,6 +59,18 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 <!-- Entries for the next release go here, in the same shape as the release blocks below. -->
 
+### Current models in Settings, and retired ones replaced for you
+
+The model lists in **Settings > Models** were last checked in April and had fallen well behind. They're now current as of October 2026:
+
+- **Claude** offers Opus 5.5, Sonnet 5.5, Haiku 5.5 and Fable 5.1, and lists the **Team** and **Enterprise** plans alongside Pro and Max. The separate 1M-context entries are gone: current models have the 1M window without them.
+- **Copilot** offers Claude Opus 5.5 and Sonnet 5.5 and the GPT-6 models, and adds the Max plan. Ten models Copilot has retired, including every Opus 4.x, are removed.
+- **Codex** defaults to GPT-6.1 Sol. Its previous default, GPT-5.5, is retired on 14 October 2026; before this release, a Codex terminal left on Default would have stopped starting that day.
+
+If your saved model is one the provider has retired, Clarion Assistant now switches it to its replacement when the terminal starts (Copilot's Opus 4.7 becomes Opus 5.5, for example) and says so on the status line. Settings shows the same note. A model you typed in under **Custom...** is left alone unless it is one of those retired names.
+
+Each Claude model also needs a recent enough Claude Code. Settings now shows the version a model needs, and warns you when the Claude Code installed on your machine is older. A too-old Claude Code is why choosing Opus 5.5, even with `/model`, could fail to reach the AI. Run `claude update` and restart the terminal.
+
 ## What's New in v6.0
 
 6.0 is a major release. Claude's editor and embed tools now work on the text you see in the CA Editor and CA Embeditor, the bundled language server moves to v1.0.8 with incremental sync, hover, completion and diagnostics are more accurate, and the CA Editor gains keymap profiles. Full notes: **[docs/releases/v6.0.0.md](docs/releases/v6.0.0.md)**.

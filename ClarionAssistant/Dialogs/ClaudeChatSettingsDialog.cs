@@ -379,6 +379,38 @@ namespace ClarionAssistant.Dialogs
 
             // Send GitHub accounts (separate message — keeps setSettings clean)
             SendGitHubAccounts();
+
+            SendClaudeCliVersionOnce();
+        }
+
+        private bool _cliVersionRequested;
+
+        // The page shows "needs Claude Code X or later" per model (minCliVersion in
+        // models.json) and warns when the installed CLI is older. `claude --version`
+        // takes a second or two, so it runs off the UI thread, once per dialog.
+        private void SendClaudeCliVersionOnce()
+        {
+            if (_cliVersionRequested) return;
+            _cliVersionRequested = true;
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string version = Services.ClaudeProcessManager.GetInstalledClaudeVersion(10000) ?? "";
+                try
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        try
+                        {
+                            if (_webView != null && _webView.CoreWebView2 != null)
+                                _webView.CoreWebView2.PostWebMessageAsString(
+                                    "{\"type\":\"claudeCliVersion\",\"version\":\"" + EscapeJson(version) + "\"}");
+                        }
+                        catch { }
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void SendGitHubAccounts()
