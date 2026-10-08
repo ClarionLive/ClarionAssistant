@@ -3571,8 +3571,12 @@ namespace ClarionAssistant
             public System.Collections.Generic.List<string> TempFiles = new System.Collections.Generic.List<string>();
             // "model X was retired; using Y" when GetLaunchModel swapped a retired id.
             // Printed in the terminal itself, ahead of the CLI: the header no longer
-            // displays UpdateStatus text, so the status line would never show it.
+            // displays UpdateStatus text, so the status line would never show it. Then a
+            // short pause, because Copilot's and Codex's full-screen UIs clear the screen
+            // as they start (seen live 2026-10-08). The swap is saved, so this happens on
+            // one launch only.
             public string ModelNotice;
+            private const int ModelNoticePauseSeconds = 5;
 
             // Cmd, preceded by a yellow Write-Host of ModelNotice when there is one.
             // Same sanitising as the Codex MCP warning: CR/LF and double quotes would
@@ -3582,10 +3586,12 @@ namespace ClarionAssistant
                 get
                 {
                     if (string.IsNullOrEmpty(ModelNotice)) return Cmd;
-                    string text = ("Clarion Assistant: " + ModelNotice)
+                    string text = ("Clarion Assistant: " + ModelNotice
+                            + ". Continuing in " + ModelNoticePauseSeconds + " seconds...")
                         .Replace("\r", " ").Replace("\n", " ")
                         .Replace("\"", "'").Replace("'", "''");
-                    return $"Write-Host '{text}' -ForegroundColor Yellow; " + Cmd;
+                    return $"Write-Host '{text}' -ForegroundColor Yellow; "
+                        + $"Start-Sleep -Seconds {ModelNoticePauseSeconds}; " + Cmd;
                 }
             }
         }

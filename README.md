@@ -67,7 +67,7 @@ The model lists in **Settings > Models** were last checked in April and had fall
 - **Copilot** offers Claude Opus 5.5 and Sonnet 5.5 and the GPT-6 models, and adds the Max plan. Ten models Copilot has retired, including every Opus 4.x, are removed.
 - **Codex** defaults to GPT-6.1 Sol. Its previous default, GPT-5.5, is retired on 14 October 2026; before this release, a Codex terminal left on Default would have stopped starting that day.
 
-If your saved model is one the provider has retired, Clarion Assistant now switches it to its replacement when the terminal starts (Copilot's Opus 4.7 becomes Opus 5.5, for example) and says so in yellow in the terminal before the assistant starts. Settings shows the same note. A model you typed in under **Custom...** is left alone unless it is one of those retired names.
+If your saved model is one the provider has retired, Clarion Assistant now switches it to its replacement when the terminal starts (Copilot's Opus 4.7 becomes Opus 5.5, for example) and says so in yellow in the terminal, pausing for a few seconds so you can read it before the assistant starts. Settings shows the same note. A model you typed in under **Custom...** is left alone unless it is one of those retired names.
 
 Each Claude model also needs a recent enough Claude Code. Settings now shows the version a model needs, and warns you when the Claude Code installed on your machine is older. A too-old Claude Code is why choosing Opus 5.5, even with `/model`, could fail to reach the AI. Run `claude update` and restart the terminal.
 
