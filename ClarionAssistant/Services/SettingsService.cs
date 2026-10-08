@@ -583,7 +583,16 @@ namespace ClarionAssistant.Services
             {
                 string asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? "";
                 string path = Path.Combine(asmDir, "Terminal", "models.json");
-                if (File.Exists(path)) return File.ReadAllText(path);
+                // The deployed copy is user-editable, so a hand edit can break it. The
+                // caller splices this text into the Settings page's JSON message and the
+                // retired-model remap parses it, so a broken copy falls through to the
+                // embedded one rather than breaking both.
+                if (File.Exists(path))
+                {
+                    string deployed = File.ReadAllText(path);
+                    if (IsUsableRegistry(deployed)) return deployed;
+                    System.Diagnostics.Debug.WriteLine("[Settings] " + path + " is not a valid model registry; using the embedded copy");
+                }
             }
             catch { }
 
@@ -594,12 +603,43 @@ namespace ClarionAssistant.Services
                 {
                     if (s != null)
                         using (var reader = new StreamReader(s))
-                            return reader.ReadToEnd();
+                        {
+                            string embedded = reader.ReadToEnd();
+                            if (IsUsableRegistry(embedded)) return embedded;
+                        }
                 }
             }
             catch { }
 
             return MinimalRegistryJson;
+        }
+
+        /// <summary>
+        /// True when <paramref name="json"/> parses and has a "backends" object whose
+        /// every entry is an object with "plans" and "models" arrays.
+        /// </summary>
+        public static bool IsUsableRegistry(string json)
+        {
+            try
+            {
+                var root = new System.Web.Script.Serialization.JavaScriptSerializer()
+                    .DeserializeObject(json) as Dictionary<string, object>;
+                object backendsObj;
+                if (root == null || !root.TryGetValue("backends", out backendsObj)) return false;
+                var backends = backendsObj as Dictionary<string, object>;
+                if (backends == null || backends.Count == 0) return false;
+                foreach (var b in backends.Values)
+                {
+                    var info = b as Dictionary<string, object>;
+                    object plans, models;
+                    if (info == null
+                        || !info.TryGetValue("plans", out plans) || !(plans is object[])
+                        || !info.TryGetValue("models", out models) || !(models is object[]))
+                        return false;
+                }
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -622,16 +662,13 @@ namespace ClarionAssistant.Services
             {
                 var root = new System.Web.Script.Serialization.JavaScriptSerializer()
                     .DeserializeObject(registryJson) as Dictionary<string, object>;
-                object backends, info, retired, replacement;
-                if (root != null && root.TryGetValue("backends", out backends)
-                    && backends is Dictionary<string, object>
-                    && ((Dictionary<string, object>)backends).TryGetValue(backend, out info)
-                    && info is Dictionary<string, object>
-                    && ((Dictionary<string, object>)info).TryGetValue("retired", out retired)
-                    && retired is Dictionary<string, object>
-                    && ((Dictionary<string, object>)retired).TryGetValue(id, out replacement)
-                    && replacement is string)
-                    return (string)replacement;
+                object o;
+                if (root != null && root.TryGetValue("backends", out o)
+                    && o is Dictionary<string, object> backends && backends.TryGetValue(backend, out o)
+                    && o is Dictionary<string, object> info && info.TryGetValue("retired", out o)
+                    && o is Dictionary<string, object> retired && retired.TryGetValue(id, out o)
+                    && o is string replacement)
+                    return replacement;
             }
             catch { }
             return modelId;
@@ -655,7 +692,9 @@ namespace ClarionAssistant.Services
         }
 
         // Minimal registry used only when both the deployed file and the embedded
-        // resource are unavailable — keeps the settings dialog functional.
+        // resource are unavailable — keeps the settings dialog functional. It has no
+        // "retired" maps, so retired ids pass through unchanged in that (broken-install)
+        // case; BuildCodexModelFlag still keeps an empty Codex model off gpt-5.5.
         private const string MinimalRegistryJson =
             "{\"version\":\"1\",\"backends\":{" +
             "\"Claude\":{\"plans\":[{\"id\":\"Pro\",\"label\":\"Pro\"}],\"defaultPlan\":\"Pro\",\"models\":[{\"id\":\"sonnet\",\"label\":\"Sonnet\",\"plans\":[\"Pro\"]}]}," +

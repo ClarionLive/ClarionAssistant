@@ -19,6 +19,7 @@ namespace ClarionAssistant.Dialogs
         private readonly bool _isDark;
 
         private WebView2 _webView;
+        private bool _cliVersionRequested;  // SendClaudeCliVersionOnce has run
 
         private static readonly string MultiTerminalMcpPath =
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -382,8 +383,6 @@ namespace ClarionAssistant.Dialogs
 
             SendClaudeCliVersionOnce();
         }
-
-        private bool _cliVersionRequested;
 
         // The page shows "needs Claude Code X or later" per model (minCliVersion in
         // models.json) and warns when the installed CLI is older. `claude --version`

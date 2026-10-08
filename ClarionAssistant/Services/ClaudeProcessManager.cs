@@ -347,6 +347,13 @@ namespace ClarionAssistant.Services
 
         private static string FindClaudePath()
         {
+            return FindClaudePath(allowPathSearch: true);
+        }
+
+        // allowPathSearch=false stops after the three known install locations and never
+        // asks `where`, whose search includes the current directory and every PATH entry.
+        private static string FindClaudePath(bool allowPathSearch)
+        {
             string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -362,6 +369,8 @@ namespace ClarionAssistant.Services
             // 3. WinGet install
             string wingetLink = Path.Combine(localAppData, "Microsoft", "WinGet", "Links", "claude.exe");
             if (File.Exists(wingetLink)) return wingetLink;
+
+            if (!allowPathSearch) return null;
 
             // 4. Try PATH via where command (catches any install location added to PATH)
             try
@@ -391,21 +400,27 @@ namespace ClarionAssistant.Services
         /// <paramref name="timeoutMs"/>, or prints nothing recognisable. Blocks: call it
         /// off the UI thread.
         /// </summary>
+        /// <remarks>
+        /// Settings calls this just for opening, so it only runs a CLI from the known
+        /// install locations (npm global, ~/.claude/local, WinGet), never one found by
+        /// searching PATH: a PATH-only install reports null ("version unknown").
+        /// </remarks>
         public static string GetInstalledClaudeVersion(int timeoutMs)
         {
             try
             {
-                string path = FindClaudePath();
+                string path = FindClaudePath(allowPathSearch: false);
                 if (path == null) return null;
-                // claude.cmd (npm) and extensionless shims need cmd.exe to run.
+                // claude.cmd (npm) needs cmd.exe to run; the other two locations are .exe.
                 bool isExe = path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
                 var psi = new ProcessStartInfo
                 {
-                    FileName = isExe ? path : "cmd.exe",
+                    FileName = isExe ? path : Path.Combine(Environment.SystemDirectory, "cmd.exe"),
                     Arguments = isExe ? "--version" : "/d /s /c \"\"" + path + "\" --version\"",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
-                    RedirectStandardError = true,
+                    // stderr is left alone: redirected and never read, a CLI that writes
+                    // much to it would fill the pipe and stall until the timeout.
                     CreateNoWindow = true
                 };
                 using (var proc = Process.Start(psi))
@@ -413,13 +428,32 @@ namespace ClarionAssistant.Services
                     var read = proc.StandardOutput.ReadToEndAsync();
                     if (!proc.WaitForExit(timeoutMs))
                     {
-                        try { proc.Kill(); } catch { }
+                        KillProcessTree(proc.Id);
                         return null;
                     }
-                    return ParseCliVersion(read.Result);
+                    // Exited, but a grandchild can still hold stdout open: don't wait on it.
+                    return read.Wait(2000) ? ParseCliVersion(read.Result) : null;
                 }
             }
             catch { return null; }
+        }
+
+        // Process.Kill on .NET Framework stops only cmd.exe, leaving the node process it
+        // started running (and holding our stdout pipe). taskkill /T takes the tree.
+        private static void KillProcessTree(int pid)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.SystemDirectory, "taskkill.exe"),
+                    Arguments = "/T /F /PID " + pid,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (var p = Process.Start(psi)) p.WaitForExit(5000);
+            }
+            catch { }
         }
 
         /// <summary>First "major.minor.patch" in <paramref name="text"/>, or null.</summary>

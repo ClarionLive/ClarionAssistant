@@ -3487,7 +3487,7 @@ namespace ClarionAssistant
                 var built = BuildClaudeCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, "Claude Code running", "[LaunchClaude]");
+                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Claude Code running"), "[LaunchClaude]");
 
                 // Clean up temp prompt files after Claude Code has read them
                 if (built.TempFiles.Count > 0)
@@ -3521,7 +3521,7 @@ namespace ClarionAssistant
                 var built = BuildCopilotCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, "Copilot CLI running", "[LaunchCopilot]");
+                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Copilot CLI running"), "[LaunchCopilot]");
             }
             catch (Exception ex)
             {
@@ -3544,7 +3544,7 @@ namespace ClarionAssistant
                 var built = BuildCodexCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, "Codex CLI running", "[LaunchCodex]");
+                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Codex CLI running"), "[LaunchCodex]");
             }
             catch (Exception ex)
             {
@@ -3569,6 +3569,15 @@ namespace ClarionAssistant
         {
             public string Cmd;
             public System.Collections.Generic.List<string> TempFiles = new System.Collections.Generic.List<string>();
+            // "model X has been retired; using Y" when GetLaunchModel swapped a retired id.
+            // Shown on the final "running" status line: a status posted earlier is
+            // overwritten by StartTabTerminal's before anyone can read it.
+            public string ModelNotice;
+
+            public string StatusLabel(string running)
+            {
+                return ModelNotice == null ? running : running + " | " + ModelNotice;
+            }
         }
 
         /// <summary>
@@ -3868,7 +3877,8 @@ namespace ClarionAssistant
             // override" — the CLI will use the account's default (Opus 5.5 on every
             // plan as of 2026-10). A saved id the provider has retired is swapped for
             // its replacement from models.json. Single-quote any apostrophes for safety.
-            string claudeModelVal = GetLaunchModel("Claude", "Claude.Model");
+            string claudeModelNotice;
+            string claudeModelVal = GetLaunchModel("Claude", "Claude.Model", out claudeModelNotice);
             string claudeModelFlag = string.IsNullOrEmpty(claudeModelVal)
                 ? string.Empty
                 : $" --model '{claudeModelVal.Replace("'", "''")}'";
@@ -3935,7 +3945,7 @@ namespace ClarionAssistant
             string claudeCmd = $"cd '{ctx.SafeWorkDir}'; $env:CLARION_ASSISTANT_EMBEDDED='1'; {tabEnv}; {mtEnv}; {colorfgbg}; {updatePrefix}"
                 + Services.CaAgentIdentity.WrapWithExitSignal(claudeInvocation, tab.Id);
 
-            return new BuiltBackendCommand { Cmd = claudeCmd, TempFiles = tempFiles };
+            return new BuiltBackendCommand { Cmd = claudeCmd, TempFiles = tempFiles, ModelNotice = claudeModelNotice };
         }
 
         /// <summary>
@@ -4005,7 +4015,8 @@ namespace ClarionAssistant
                 return null;
             }
 
-            string copilotModelVal = GetLaunchModel("Copilot", "Copilot.Model");
+            string copilotModelNotice;
+            string copilotModelVal = GetLaunchModel("Copilot", "Copilot.Model", out copilotModelNotice);
             string modelFlag = string.IsNullOrEmpty(copilotModelVal)
                 ? string.Empty
                 : $" --model '{copilotModelVal.Replace("'", "''")}'";
@@ -4048,7 +4059,7 @@ namespace ClarionAssistant
                 extraFlags;
 
             System.Diagnostics.Debug.WriteLine("[LaunchCopilot] mcpConfig=" + (mcpConfig ?? "(none)") + ", home=" + copilotHome);
-            return new BuiltBackendCommand { Cmd = cmd };
+            return new BuiltBackendCommand { Cmd = cmd, ModelNotice = copilotModelNotice };
         }
 
         // Build the --model flag for the Codex CLI.
@@ -4065,15 +4076,16 @@ namespace ClarionAssistant
         private const string CodexDefaultModelId = "gpt-6.1-sol";
 
         // The saved model for a backend, trimmed, with a retired id swapped for its
-        // replacement (saved back, and announced on the status line) so a model the
-        // provider has withdrawn doesn't leave the terminal failing to start.
-        private string GetLaunchModel(string backend, string settingsKey)
+        // replacement (saved back) so a model the provider has withdrawn doesn't leave
+        // the terminal failing to start. notice is the status-line text announcing the
+        // swap, or null; the builder hands it on in BuiltBackendCommand.ModelNotice.
+        private string GetLaunchModel(string backend, string settingsKey, out string notice)
         {
             string retiredFrom;
             string model = (_settings.GetModelRemappingRetired(backend, settingsKey, out retiredFrom) ?? "").Trim();
-            if (retiredFrom != null)
-                UpdateStatus(backend + " model '" + retiredFrom + "' has been retired; using "
-                    + (model.Length == 0 ? "Default" : "'" + model + "'") + " instead.");
+            notice = retiredFrom == null ? null
+                : "model '" + retiredFrom + "' was retired; using "
+                    + (model.Length == 0 ? "Default" : "'" + model + "'");
             return model;
         }
 
@@ -4153,7 +4165,8 @@ namespace ClarionAssistant
                 }
             }
 
-            string modelFlag = BuildCodexModelFlag(GetLaunchModel("Codex", "Codex.Model"));
+            string codexModelNotice;
+            string modelFlag = BuildCodexModelFlag(GetLaunchModel("Codex", "Codex.Model", out codexModelNotice));
 
             // Codex CLI takes -c / --config key=value pairs to override config.toml
             // entries at launch time. We use this to pin model_reasoning_effort when
@@ -4205,7 +4218,7 @@ namespace ClarionAssistant
                 effortFlag;
 
             System.Diagnostics.Debug.WriteLine("[LaunchCodex] codexConfig=" + (codexConfigPath ?? "(not written)") + ", workDir=" + ctx.WorkDir);
-            return new BuiltBackendCommand { Cmd = cmd };
+            return new BuiltBackendCommand { Cmd = cmd, ModelNotice = codexModelNotice };
         }
 
         /// <summary>

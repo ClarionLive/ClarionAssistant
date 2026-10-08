@@ -17,6 +17,14 @@ using ClarionAssistant.Services;
 // This file is NOT in ClarionAssistant.csproj and must never be added to it - it has its own Main().
 //
 // Argument 1 (required, passed by Run-Tests.ps1): the ClarionAssistant project dir.
+//
+// PROVEN ABLE TO FAIL, each mutation applied alone to a copy:
+//   Copilot claude-opus-4.7 -> nonexistent model + CodexDefaultModelId back to gpt-5.5  -> 4 red
+//   Copilot gemini-2.5-pro -> "" (Default, not offered on Free)                          -> 1 red
+//   IsUsableRegistry skipping its schema checks                                           -> 4 red
+//   GetInstalledClaudeVersion calling FindClaudePath() (PATH search allowed)              -> 1 red
+// (Truncated / trailing-comma registries stay rejected under the schema mutant: the parser
+// throws first. That is correct, not a gap.)
 static class ModelRegistryTest
 {
     static int pass = 0, fail = 0;
@@ -105,6 +113,30 @@ static class ModelRegistryTest
             SettingsService.ResolveRetiredModel(json, "Claude", "gpt-5.5") == "gpt-5.5");
         Ok("bad registry -> unchanged",
             SettingsService.ResolveRetiredModel("{not json", "Codex", "gpt-5.5") == "gpt-5.5");
+
+        // A Free Copilot user's retired model must land on a model Free actually offers.
+        Ok("Copilot gemini-2.5-pro -> a model offered on Free",
+            OffersOnPlan(backends, "Copilot", SettingsService.ResolveRetiredModel(json, "Copilot", "gemini-2.5-pro"), "Free"));
+
+        // A hand-broken deployed models.json must be rejected so the loader falls back to the
+        // embedded copy (the Settings page splices the text into its JSON message as-is).
+        Ok("shipped registry is usable", SettingsService.IsUsableRegistry(json));
+        Ok("truncated registry rejected", !SettingsService.IsUsableRegistry(json.Substring(0, json.Length / 2)));
+        Ok("trailing-comma registry rejected", !SettingsService.IsUsableRegistry(json.TrimEnd().TrimEnd('}') + ",}"));
+        Ok("empty registry rejected", !SettingsService.IsUsableRegistry(""));
+        Ok("no-backends registry rejected", !SettingsService.IsUsableRegistry("{\"version\":\"1\"}"));
+        Ok("empty-backends registry rejected", !SettingsService.IsUsableRegistry("{\"backends\":{}}"));
+        Ok("backend without models rejected",
+            !SettingsService.IsUsableRegistry("{\"backends\":{\"Claude\":{\"plans\":[]}}}"));
+
+        // Opening Settings runs `claude --version`; that probe must never take a binary from a
+        // PATH / current-directory search (Codex security gate, run 1).
+        string cpm = File.ReadAllText(Path.Combine(projectDir, "Services", "ClaudeProcessManager.cs"));
+        var probe = Regex.Match(cpm, @"public static string GetInstalledClaudeVersion\(.*?\n        }\r?\n", RegexOptions.Singleline);
+        Ok("GetInstalledClaudeVersion found", probe.Success);
+        Ok("version probe resolves with allowPathSearch: false",
+            probe.Success && probe.Value.Contains("FindClaudePath(allowPathSearch: false)")
+            && !Regex.IsMatch(probe.Value, @"FindClaudePath\(\s*\)"));
 
         // The Codex launcher's hard-coded default must be the registry's first (Default) Codex entry,
         // and never an id the registry has retired.
