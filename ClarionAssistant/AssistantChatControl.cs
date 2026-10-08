@@ -3487,7 +3487,7 @@ namespace ClarionAssistant
                 var built = BuildClaudeCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Claude Code running"), "[LaunchClaude]");
+                StartTabTerminal(tab, ctx, built.LaunchCmd, "Claude Code running", "[LaunchClaude]");
 
                 // Clean up temp prompt files after Claude Code has read them
                 if (built.TempFiles.Count > 0)
@@ -3521,7 +3521,7 @@ namespace ClarionAssistant
                 var built = BuildCopilotCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Copilot CLI running"), "[LaunchCopilot]");
+                StartTabTerminal(tab, ctx, built.LaunchCmd, "Copilot CLI running", "[LaunchCopilot]");
             }
             catch (Exception ex)
             {
@@ -3544,7 +3544,7 @@ namespace ClarionAssistant
                 var built = BuildCodexCommand(tab, ctx);
                 if (built == null) return; // abort already handled inside the builder
 
-                StartTabTerminal(tab, ctx, built.Cmd, built.StatusLabel("Codex CLI running"), "[LaunchCodex]");
+                StartTabTerminal(tab, ctx, built.LaunchCmd, "Codex CLI running", "[LaunchCodex]");
             }
             catch (Exception ex)
             {
@@ -3569,14 +3569,24 @@ namespace ClarionAssistant
         {
             public string Cmd;
             public System.Collections.Generic.List<string> TempFiles = new System.Collections.Generic.List<string>();
-            // "model X has been retired; using Y" when GetLaunchModel swapped a retired id.
-            // Shown on the final "running" status line: a status posted earlier is
-            // overwritten by StartTabTerminal's before anyone can read it.
+            // "model X was retired; using Y" when GetLaunchModel swapped a retired id.
+            // Printed in the terminal itself, ahead of the CLI: the header no longer
+            // displays UpdateStatus text, so the status line would never show it.
             public string ModelNotice;
 
-            public string StatusLabel(string running)
+            // Cmd, preceded by a yellow Write-Host of ModelNotice when there is one.
+            // Same sanitising as the Codex MCP warning: CR/LF and double quotes would
+            // break out of the outer pwsh -Command "..." payload; ' is doubled.
+            public string LaunchCmd
             {
-                return ModelNotice == null ? running : running + " | " + ModelNotice;
+                get
+                {
+                    if (string.IsNullOrEmpty(ModelNotice)) return Cmd;
+                    string text = ("Clarion Assistant: " + ModelNotice)
+                        .Replace("\r", " ").Replace("\n", " ")
+                        .Replace("\"", "'").Replace("'", "''");
+                    return $"Write-Host '{text}' -ForegroundColor Yellow; " + Cmd;
+                }
             }
         }
 
@@ -4077,8 +4087,9 @@ namespace ClarionAssistant
 
         // The saved model for a backend, trimmed, with a retired id swapped for its
         // replacement (saved back) so a model the provider has withdrawn doesn't leave
-        // the terminal failing to start. notice is the status-line text announcing the
-        // swap, or null; the builder hands it on in BuiltBackendCommand.ModelNotice.
+        // the terminal failing to start. notice is the text announcing the swap, or null;
+        // the builder hands it on in BuiltBackendCommand.ModelNotice, which LaunchCmd
+        // prints in the terminal.
         private string GetLaunchModel(string backend, string settingsKey, out string notice)
         {
             string retiredFrom;
