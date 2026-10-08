@@ -159,16 +159,23 @@ namespace ClarionAssistant.Terminal
                 _contentArea.Controls.Remove(tab.ContentControl);
 
             _tabs.Remove(tab);
-            TabRemoved?.Invoke(this, tab);
-            tab.Dispose();
-
-            UpdateTabStripVisibility();
-
-            if (wasActive)
+            try
             {
-                _activeTab = null;
-                if (_tabs.Count > 0)
-                    ActivateTab(_tabs[0].Id);
+                TabRemoved?.Invoke(this, tab);
+                tab.Dispose();
+            }
+            finally
+            {
+                // The tab is gone from _tabs whatever a handler or Dispose does: the strip and the
+                // active tab must follow, or the display is left showing a tab that no longer exists.
+                UpdateTabStripVisibility();
+
+                if (wasActive)
+                {
+                    _activeTab = null;
+                    if (_tabs.Count > 0)
+                        ActivateTab(_tabs[0].Id);
+                }
             }
         }
 
@@ -178,6 +185,12 @@ namespace ClarionAssistant.Terminal
             return _tabs.FirstOrDefault(t => t.Id == tabId);
         }
 
+        // Called after every add and close. It always repaints: the strip is custom-painted, and the
+        // hit areas a click is tested against are rebuilt only by OnTabStripPaint. Closing a tab that
+        // was not the active one used to repaint nothing (only ActivateTab invalidated), so the strip
+        // went on drawing the closed tab and clicks went to stale areas: its X did nothing and the
+        // other tabs seemed dead until something else - opening Settings - forced a repaint
+        // (ticket 6a4b4d71).
         private void UpdateTabStripVisibility()
         {
             // Always shown once Home exists (d4e941e3): hiding it while Home was the only tab made the strip
@@ -185,6 +198,7 @@ namespace ClarionAssistant.Terminal
             bool shouldShow = _tabs.Count > 0;
             if (_tabStrip.Visible != shouldShow)
                 _tabStrip.Visible = shouldShow;
+            _tabStrip.Invalidate();
         }
 
         // -----------------------------------------------------------------
@@ -249,6 +263,13 @@ namespace ClarionAssistant.Terminal
         {
             foreach (var hit in _hitAreas)
             {
+                // A hit area from before the last paint can name a tab that has since closed: repaint
+                // rather than act on it, so the next click lands on the strip as it really is.
+                if (!_tabs.Contains(hit.Tab))
+                {
+                    _tabStrip.Invalidate();
+                    return;
+                }
                 if (hit.Tab.IsClosable && hit.CloseRect.Contains(e.Location))
                 {
                     CloseTab(hit.Tab.Id);

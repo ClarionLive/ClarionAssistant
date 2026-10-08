@@ -59,6 +59,10 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 <!-- Entries for the next release go here, in the same shape as the release blocks below. -->
 
+### Closing a tab no longer leaves the tab strip stuck
+
+With several tabs open, closing one that wasn't the tab you were looking at left it drawn on the tab strip, and the other tabs' close buttons seemed to stop working until something refreshed the pane, such as opening Settings. The tab had in fact closed; only the strip hadn't been redrawn. It now redraws whenever a tab is closed or added.
+
 ### Copilot and Codex terminals get short names too
 
 Claude terminals are already named **CA1**, **CA2** and so on. Copilot terminals are now **CP1**, **CP2**, ... and Codex terminals **CX1**, **CX2**, ..., instead of `Terminal 1 CP`, so the tab strip shows which assistant is in each terminal. Each kind is numbered on its own, so a Copilot terminal opened beside CA1 is CP1. Like a Claude tab, the tab keeps whatever it was opened on (`CP1 · MySolution`), and it gives its number back when the assistant in it exits.

@@ -122,6 +122,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # 6a4b4d71: closing a tab that was not the active one never repainted the custom-painted strip,
+            # so the closed tab stayed drawn and the other tabs' X buttons seemed dead until a refresh.
+            @{ Name = "TabManager.Close.Test"
+               Sources = @("tests\TabManager.Close.Test.cs", "tests\TabManager.Close.Stubs.cs", "Terminal\TerminalTab.cs", "Terminal\TabManager.cs")
+               Refs = @("System.dll", "System.Drawing.dll", "System.Windows.Forms.dll") }
             # 0f928849: models.json went stale (no Opus 5.5, retired Copilot/Codex ids). Checks the
             # registry's internal consistency and the retired-model remap. Gets the project dir to
             # read the shipped models.json and the Codex launcher's hard-coded default.
