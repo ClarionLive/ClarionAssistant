@@ -4374,8 +4374,9 @@ namespace ClarionAssistant
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
 
-            // The assistant (Claude, Copilot or Codex) ended but the -NoExit shell lives on: the command's finally block retitles
-            // the console with this tab's exit marker (CaAgentIdentity.WrapWithExitSignal).
+            // The assistant (Claude, Copilot or Codex) ended but the -NoExit shell lives on: the
+            // command's finally block retitles the console with this tab's exit marker
+            // (CaAgentIdentity.WrapWithExitSignal).
             // ASCII decode: the marker is ASCII, and a multibyte character split across reads
             // must not throw or shift it.
             if (tab.AgentName != null)

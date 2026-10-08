@@ -108,7 +108,9 @@ static class CaAgentIdentityTest
         int tryAt = wrapped.IndexOf("try {", StringComparison.Ordinal);
         Ok("title reset to a non-marker value before the try", reset >= 0 && reset < tryAt, "reset@" + reset + " try@" + tryAt);
         Ok("finally drops MULTITERMINAL_NAME", wrapped.Contains("Remove-Item Env:MULTITERMINAL_NAME"));
-        Ok("finally retitles the console", wrapped.Contains("$Host.UI.RawUI.WindowTitle = '"));
+        int finallyAt = wrapped.IndexOf("finally {", StringComparison.Ordinal);
+        Ok("finally retitles the console",
+            finallyAt >= 0 && wrapped.IndexOf("$Host.UI.RawUI.WindowTitle = '", finallyAt, StringComparison.Ordinal) > finallyAt);
         Ok("finally's title concatenates to the tab's marker",
             wrapped.Replace("' + '", "").Contains("WindowTitle = 'ca-assistant-exited:ab12cd34'"));
         // Pipeline run 3 (debugger): the command line itself must not carry the marker verbatim.
