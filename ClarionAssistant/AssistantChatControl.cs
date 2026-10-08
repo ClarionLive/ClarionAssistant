@@ -3448,7 +3448,7 @@ namespace ClarionAssistant
         {
             if (string.Equals(backend, "Claude",  StringComparison.OrdinalIgnoreCase)) return "CC";
             if (string.Equals(backend, "Copilot", StringComparison.OrdinalIgnoreCase)) return "CP";
-            if (string.Equals(backend, "Codex",   StringComparison.OrdinalIgnoreCase)) return "CO";
+            if (string.Equals(backend, "Codex",   StringComparison.OrdinalIgnoreCase)) return "CX";
             return "";
         }
 
@@ -3462,11 +3462,12 @@ namespace ClarionAssistant
             return StripBackendSuffix(currentName) + " " + suffix;
         }
 
-        /// <summary>The tab name without a trailing backend suffix (" CC", " CP", " CO").</summary>
+        /// <summary>The tab name without a trailing backend suffix (" CC", " CP", " CX", and
+        /// " CO", Codex's suffix before ticket cfb63b58, so an older label is cleaned up too).</summary>
         private static string StripBackendSuffix(string name)
         {
             if (string.IsNullOrEmpty(name)) return name;
-            foreach (string prior in new[] { " CC", " CP", " CO" })
+            foreach (string prior in new[] { " CC", " CP", " CX", " CO" })
                 if (name.EndsWith(prior, StringComparison.Ordinal))
                     return name.Substring(0, name.Length - prior.Length);
             return name;
@@ -4343,7 +4344,7 @@ namespace ClarionAssistant
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine("[LaunchClaude] MT roster check skipped: " + ex.Message);
+                    System.Diagnostics.Debug.WriteLine("[ResolveAgentName] MT roster check skipped: " + ex.Message);
                 }
             }
 
@@ -4373,7 +4374,7 @@ namespace ClarionAssistant
             if (renderer != null && !renderer.IsDisposed)
                 renderer.WriteToTerminal(data);
 
-            // Claude ended but the -NoExit shell lives on: the command's finally block retitles
+            // The assistant (Claude, Copilot or Codex) ended but the -NoExit shell lives on: the command's finally block retitles
             // the console with this tab's exit marker (CaAgentIdentity.WrapWithExitSignal).
             // ASCII decode: the marker is ASCII, and a multibyte character split across reads
             // must not throw or shift it.
@@ -4462,7 +4463,7 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// Give up the tab's CA&lt;n&gt; name and its label once no session holds it - an aborted
+        /// Give up the tab's CA&lt;n&gt; / CP&lt;n&gt; / CX&lt;n&gt; name and its label once no session holds it - an aborted
         /// launch, or the assistant exiting (ticket 7792e3e0). Without this a dead tab keeps
         /// showing CA2, so the developer is sent to message an address nobody answers; once the
         /// broker reaps the row another IDE can take CA2, and two tabs show one name. UI thread

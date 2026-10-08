@@ -101,7 +101,12 @@ static class CaAgentIdentityTest
 
         // ---- Exit signal (7792e3e0 live test: pwsh -NoExit outlives Claude) ----
         string wrapped = CaAgentIdentity.WrapWithExitSignal("& 'claude' -n 'CA4'", "ab12cd34");
-        Ok("invocation sits inside try", wrapped.StartsWith("try { & 'claude' -n 'CA4' } finally { "));
+        Ok("invocation sits inside try", wrapped.Contains("try { & 'claude' -n 'CA4' } finally { "));
+        // cfb63b58 (Codex adversary): the title is reset BEFORE the try, so the finally's marker is
+        // always a change, even when a tab is relaunched in a console that already carries it.
+        int reset = wrapped.IndexOf("$Host.UI.RawUI.WindowTitle = 'Clarion Assistant';", StringComparison.Ordinal);
+        int tryAt = wrapped.IndexOf("try {", StringComparison.Ordinal);
+        Ok("title reset to a non-marker value before the try", reset >= 0 && reset < tryAt, "reset@" + reset + " try@" + tryAt);
         Ok("finally drops MULTITERMINAL_NAME", wrapped.Contains("Remove-Item Env:MULTITERMINAL_NAME"));
         Ok("finally retitles the console", wrapped.Contains("$Host.UI.RawUI.WindowTitle = '"));
         Ok("finally's title concatenates to the tab's marker",

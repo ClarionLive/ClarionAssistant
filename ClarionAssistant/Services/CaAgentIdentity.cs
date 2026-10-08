@@ -16,7 +16,6 @@ namespace ClarionAssistant.Services
         public const string ClaudePrefix  = "CA";
         public const string CopilotPrefix = "CP";
         public const string CodexPrefix   = "CX";
-        private const string NamePrefix = ClaudePrefix;
 
         /// <summary>CP for Copilot, CX for Codex, and CA for Claude or anything unrecognised.</summary>
         public static string PrefixForBackend(string backend)
@@ -45,7 +44,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string NextFreeName(Func<string, bool> isTaken)
         {
-            return NextFreeName(NamePrefix, isTaken);
+            return NextFreeName(ClaudePrefix, isTaken);
         }
 
         /// <summary>
@@ -55,7 +54,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string NextFreeName(string prefix, Func<string, bool> isTaken)
         {
-            if (string.IsNullOrEmpty(prefix)) prefix = NamePrefix;
+            if (string.IsNullOrEmpty(prefix)) prefix = ClaudePrefix;
             for (int n = 1; n < 1000; n++)
             {
                 string candidate = prefix + n;
@@ -79,6 +78,7 @@ namespace ClarionAssistant.Services
         }
 
         private const string ExitTitlePrefix = "ca-assistant-exited:";
+        private const string RunningTitle = "Clarion Assistant";
 
         /// <summary>
         /// Wrap the backend invocation so the tab learns when the assistant has ended.
@@ -97,7 +97,12 @@ namespace ClarionAssistant.Services
         public static string WrapWithExitSignal(string invocation, string tabId)
         {
             int split = ExitTitlePrefix.Length / 2;
-            return "try { " + invocation + " } finally { "
+            // Reset the title first, so the finally's marker is always a CHANGE. Setting a title
+            // to the value it already has may produce no title-change sequence at all, and a tab
+            // relaunched in the same console would then never see its exit (Codex adversary gate,
+            // ticket cfb63b58).
+            return "$Host.UI.RawUI.WindowTitle = '" + RunningTitle + "'; "
+                + "try { " + invocation + " } finally { "
                 + "Remove-Item Env:MULTITERMINAL_NAME -ErrorAction SilentlyContinue; "
                 + "$Host.UI.RawUI.WindowTitle = '" + ExitTitlePrefix.Substring(0, split) + "' + '"
                 + ExitTitlePrefix.Substring(split) + EscapeForPowerShellSingleQuote(tabId) + "' }";
