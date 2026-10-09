@@ -378,6 +378,20 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\ParseResult.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # ITEMIZE members are indexed as Prefix:Name (PRE / empty PRE / no PRE), value-less members
+            # included, across ParseIncFile, ParseMemberFile DATA and the library .EQU scan (x86 SQLite).
+            @{ Name = "ClarionParser.Itemize.Test"
+               Sources = @("tests\ClarionParser.Itemize.Test.cs", "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\CodeGraphProvider.cs",
+                           "Services\ClarionGraphService.cs", "Services\LibraryIndexer.cs", "Services\SymbolIndex.cs", "Services\IndexRunGate.cs",
+                           "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs", "Services\EffectiveClarionVersion.cs",
+                           "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # A CLASS / INTERFACE whose label contains a colon must be indexed, with its methods and
             # the instances/references typed by it (GH #246).
             @{ Name = "ClarionParser.ColonClass.Test"

@@ -14,8 +14,10 @@
     <Compile Include="ExternalRef.clw" />
     <Compile Include="RoutineData.clw" />
     <Compile Include="DualMapLib.clw" />
+    <Compile Include="ItemizeEquates.clw" />
     <None Include="WorkerLib.inc" />
     <None Include="DualMapProtos.inc" />
+    <None Include="ItemizeEquates.inc" />
   </ItemGroup>
   <Import Project="$(ClarionBinPath)\SoftVelocity.Build.Clarion.targets" />
 </Project>

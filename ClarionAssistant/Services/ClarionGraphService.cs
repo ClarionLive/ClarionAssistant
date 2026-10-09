@@ -48,7 +48,8 @@ namespace ClarionAssistant.Services
         // a parser change). v2: capture CLASS data members (dotted "Class.Member"); member queries dotted-only.
         // v3: index keycodes.clw + errors.clw equates (MouseRight, NoFileErr, …) so F12/hover resolve them.
         // v4: index file-level EQUATEs in library .inc files (declared outside any CLASS body).
-        private const int ParserVersion = 4;
+        // v5: ITEMIZE members named Prefix:Name under PRE (were bare), value-less members indexed.
+        private const int ParserVersion = 5;
 
         // Flat equate files (no class structure) — ingested via the dedicated EQUATE scan. keycodes.clw
         // (MouseRight, Key* …) and errors.clw (NoFileErr, …) added so their equates resolve for F12/hover. (task 37e2079f)
@@ -434,6 +435,7 @@ namespace ClarionAssistant.Services
             try { lines = EncodingHelper.ReadAllLines(filePath, out _); }
             catch { return 0; }
 
+            var itemize = new ClarionParser.ItemizeScope();
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i].Trim();
@@ -442,6 +444,30 @@ namespace ClarionAssistant.Services
 
                 int commentIdx = line.IndexOf('!');
                 string codePart = commentIdx >= 0 ? line.Substring(0, commentIdx).Trim() : line;
+
+                // ITEMIZE members are named Prefix:Name under PRE(Prefix) and may omit their value.
+                if (itemize.TryClose(codePart) || itemize.TryOpen(codePart))
+                    continue;
+                if (itemize.IsOpen)
+                {
+                    string itemName = itemize.MemberName(codePart);
+                    if (itemName != null)
+                    {
+                        db.InsertSymbol(new ClarionSymbol
+                        {
+                            Name = itemName,
+                            Type = "variable",
+                            FilePath = filePath,
+                            LineNumber = i + 1,
+                            ProjectId = projectId,
+                            Params = "EQUATE",
+                            Scope = "global",
+                            SourcePreview = codePart
+                        });
+                        count++;
+                    }
+                    continue;
+                }
 
                 var match = EquateRegex.Match(codePart);
                 if (match.Success)
