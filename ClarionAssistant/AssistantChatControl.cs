@@ -1215,7 +1215,7 @@ namespace ClarionAssistant
                 int peerCount = _instanceCoord.GetPeers().Count;
                 if (_mcpServer != null && _mcpServer.IsRunning)
                 {
-                    string status = "MCP: port " + _mcpServer.Port + " | " + _toolRegistry.GetToolCount() + " tools";
+                    string status = "MCP: port " + _mcpServer.PortsLabel + " | " + _toolRegistry.GetToolCount() + " tools";
                     if (peerCount > 0)
                         status += " | " + peerCount + " peer" + (peerCount > 1 ? "s" : "");
                     _header?.SetStatus(status, "connected");
@@ -3312,7 +3312,7 @@ namespace ClarionAssistant
 
             _mcpServer.OnStatusChanged += (running, port) =>
             {
-                UpdateStatus(running ? "MCP: port " + port : "MCP stopped");
+                UpdateStatus(running ? "MCP: port " + _mcpServer.PortsLabel : "MCP stopped");
             };
 
             _mcpServer.OnError += error =>
@@ -3334,7 +3334,7 @@ namespace ClarionAssistant
             if (_mcpServer.Start())
             {
                 _mcpConfigPath = _mcpServer.WriteMcpConfigFile();
-                string status = "MCP: port " + _mcpServer.Port + " | " + _toolRegistry.GetToolCount() + " tools";
+                string status = "MCP: port " + _mcpServer.PortsLabel + " | " + _toolRegistry.GetToolCount() + " tools";
                 if (mtEnabled) status += " | MT";
                 UpdateStatus(status);
             }

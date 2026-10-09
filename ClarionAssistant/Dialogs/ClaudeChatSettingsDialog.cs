@@ -312,7 +312,7 @@ namespace ClarionAssistant.Dialogs
             // External MCP client access (issue #24)
             bool mcpExternalEnabled = _settings.GetMcpExternalAccessEnabled();
             string mcpExternalToken = _settings.GetMcpExternalToken();
-            int mcpPort = (_mcpServer != null && _mcpServer.IsRunning) ? _mcpServer.Port : 0;
+            int mcpPort = (_mcpServer != null && _mcpServer.IsRunning) ? _mcpServer.ExternalPort : 0;   // the reclaimed stable port when there is one (PR #260)
 
             string modelRegistryJson = _settings.GetModelRegistryJson();
 

@@ -634,7 +634,7 @@
         <div class="field">
           <div class="field-label">Endpoint</div>
           <input type="text" id="mcpEndpointUrl" readonly style="font-family:Cascadia Mono,Consolas,monospace;font-size:11px">
-          <div class="field-desc">The MCP server picks an available port at IDE startup (base 19372). Update your external tool's config if the port shifts.</div>
+          <div class="field-desc">The MCP server prefers port 19372. If another program holds it at IDE startup, the server starts on the next free port and takes 19372 back as soon as it frees up, so a config using 19372 keeps working.</div>
         </div>
 
         <div class="field">

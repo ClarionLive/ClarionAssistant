@@ -35,6 +35,11 @@ namespace ClarionAssistant.Services
         private volatile int _reclaimedPort;
         private System.Threading.Timer _reclaimTimer;
         private const int ReclaimIntervalMs = 10000;
+        // Serialises a reclaim tick against Start/Stop. A tick runs on a pool thread; without this,
+        // one already in flight across a restart could add the port to the NEW listener and then
+        // have Start's reset clear _reclaimedPort (403s on the preferred port), or dispose the new
+        // timer through StopReclaimTimer.
+        private readonly object _reclaimLock = new object();
 
         // (The UI-thread tool timeout moved to McpDispatcher with the dispatch it guards. Left
         // here it would have read as the live knob and silently done nothing when tuned.)
@@ -138,11 +143,16 @@ namespace ClarionAssistant.Services
                     // text (get_live_text). Removed in Stop.
                     IdeEndpointRecord.Publish(port, _sessionToken);
 
-                    _preferredPort = preferredPort;
-                    _reclaimedPort = 0;
-                    if (port != preferredPort)
-                        _reclaimTimer = new System.Threading.Timer(_ => TryReclaimPreferredPort(), null,
-                                                                   ReclaimIntervalMs, ReclaimIntervalMs);
+                    lock (_reclaimLock)
+                    {
+                        _preferredPort = preferredPort;
+                        _reclaimedPort = 0;
+                        // The listener rides along as the timer state, so a tick can tell it belongs
+                        // to this run and not to one a restart has since replaced.
+                        if (port != preferredPort)
+                            _reclaimTimer = new System.Threading.Timer(TryReclaimPreferredPort, _listener,
+                                                                       ReclaimIntervalMs, ReclaimIntervalMs);
+                    }
 
                     RaiseStatusChanged(true, port);
                     return true;
@@ -240,30 +250,52 @@ namespace ClarionAssistant.Services
         public int ReclaimedPort { get { return _reclaimedPort; } }
 
         /// <summary>
+        /// The port to give external MCP clients: the preferred port once reclaimed (the stable
+        /// URL they are configured with), else the port the server started on.
+        /// </summary>
+        public int ExternalPort { get { int r = _reclaimedPort; return r != 0 ? r : _port; } }
+
+        /// <summary>Every port the server answers on, for status text: "19373" or "19373 + 19372".</summary>
+        public string PortsLabel
+        {
+            get { int r = _reclaimedPort; return r != 0 ? _port + " + " + r : _port.ToString(); }
+        }
+
+        /// <summary>
         /// Timer callback while the server sits on a fallback port: add the preferred port
         /// to the running listener as soon as nothing else holds it. HttpListener accepts new
         /// prefixes while listening; a prefix another process still owns throws and is retried
         /// on the next tick.
         /// </summary>
-        private void TryReclaimPreferredPort()
+        private void TryReclaimPreferredPort(object state)
         {
-            if (!_running || _reclaimedPort != 0) { StopReclaimTimer(); return; }
-            string prefix = string.Format("http://localhost:{0}/", _preferredPort);
-            try
+            bool reclaimed = false;
+            lock (_reclaimLock)
             {
-                _listener.Prefixes.Add(prefix);
-                _reclaimedPort = _preferredPort;
-                StopReclaimTimer();
+                // A tick from a run that has since been stopped/restarted: the current _reclaimTimer
+                // is not ours (Stop disposed ours), so leave it and the reclaim state alone.
+                if (!ReferenceEquals(state, _listener)) return;
+                if (!_running || _reclaimedPort != 0) { StopReclaimTimer(); return; }
+                string prefix = string.Format("http://localhost:{0}/", _preferredPort);
+                try
+                {
+                    _listener.Prefixes.Add(prefix);
+                    _reclaimedPort = _preferredPort;
+                    StopReclaimTimer();
+                    reclaimed = true;
+                }
+                catch (HttpListenerException)
+                {
+                    try { _listener.Prefixes.Remove(prefix); } catch { }
+                }
+                catch (Exception)
+                {
+                    // Listener stopped/disposed under us - nothing to reclaim.
+                    StopReclaimTimer();
+                }
             }
-            catch (HttpListenerException)
-            {
-                try { _listener.Prefixes.Remove(prefix); } catch { }
-            }
-            catch (Exception)
-            {
-                // Listener stopped/disposed between the check and the call - nothing to reclaim.
-                StopReclaimTimer();
-            }
+            // Outside the lock: RaiseStatusChanged only BeginInvokes, but keep UI work off it anyway.
+            if (reclaimed) RaiseStatusChanged(true, _port);
         }
 
         private void StopReclaimTimer()
@@ -335,8 +367,11 @@ namespace ClarionAssistant.Services
             bool wasRunning = _running;
             _running = false;
             _sessionToken = null;
-            StopReclaimTimer();
-            _reclaimedPort = 0;
+            lock (_reclaimLock)
+            {
+                StopReclaimTimer();
+                _reclaimedPort = 0;
+            }
             if (wasRunning) IdeEndpointRecord.Remove(_port);   // 44a1b10c: withdraw the endpoint before the port closes
 
             // Close all SSE connections
