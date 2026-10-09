@@ -286,7 +286,7 @@ static class SymbolIndexTest
               "E.19", "no context file, or no project DB to build a closure from -> unchanged (do not filter)");
         Check(SymbolIndex.ScopeEquateToIncludes(null, "X", db, dir + "Mem.clw", memClosureDbs) == null, "E.20", "no symbol -> null");
 
-        Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.14", "a malformed include row is skipped, the rest of the closure is intact");
+        Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.21", "a malformed include row is skipped, the rest of the closure is intact");
     }
 
     static HashSet<string> Names(IEnumerable<CodeGraphSymbol> syms) { return new HashSet<string>(syms.Select(s => s.Name), StringComparer.Ordinal); }
