@@ -204,6 +204,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\RedFileService.FailClosed.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # GH #261: {include} lines are followed (a local .red that includes %BIN%\clarion110.red resolved
+            # none of the app's .\clw modules), repeated sections add up, and IsStale sees an edited .red.
+            @{ Name = "RedFileService.Include.Test"
+               Sources = @("tests\RedFileService.Include.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
             @{ Name = "InstanceCoordination.ReRegister.Test"

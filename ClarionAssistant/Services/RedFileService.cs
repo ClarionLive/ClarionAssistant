@@ -132,9 +132,11 @@ namespace ClarionAssistant.Services
             if (!_macros.ContainsKey("REDDIR") && _macros.ContainsKey("reddir"))
                 _macros["REDDIR"] = _macros["reddir"];
 
+            _loadedFiles.Clear();
+            _skippedIncludes.Clear();
             try
             {
-                Parse(EncodingHelper.ReadAllLines(redFilePath, out _));
+                ParseFile(redFilePath, 0);
                 if (makeActive) Active = this;
                 return true;
             }
@@ -143,6 +145,41 @@ namespace ClarionAssistant.Services
                 return false;
             }
         }
+
+        /// <summary>
+        /// Every .red file this instance read (the loaded file first, then each {include}d one) with its
+        /// last-write time at load. A host that caches the instance calls <see cref="IsStale"/> to know
+        /// when to load again (GH #261: an edit to the .red changed nothing until the server restarted).
+        /// </summary>
+        public IReadOnlyList<string> LoadedFiles => _loadedFiles.ConvertAll(f => f.Key);
+
+        /// <summary>{include} lines that could not be followed, with the reason: missing file, cycle,
+        /// too deep. Clarion reports these as errors; we skip the line and carry on, so say so here.</summary>
+        public IReadOnlyList<string> SkippedIncludes => _skippedIncludes;
+
+        /// <summary>
+        /// True when a file this instance was loaded from has changed, vanished or appeared since (its
+        /// last-write time differs). False for an instance that never loaded. Never throws.
+        /// </summary>
+        public bool IsStale()
+        {
+            foreach (var f in _loadedFiles)
+            {
+                try
+                {
+                    DateTime now = File.Exists(f.Key) ? File.GetLastWriteTimeUtc(f.Key) : DateTime.MinValue;
+                    if (now != f.Value) return true;
+                }
+                catch { return true; }
+            }
+            return false;
+        }
+
+        private readonly List<KeyValuePair<string, DateTime>> _loadedFiles = new List<KeyValuePair<string, DateTime>>();
+        private readonly List<string> _skippedIncludes = new List<string>();
+
+        /// <summary>Nesting limit for {include}; Clarion has none, but a cycle it would hang on must not hang us.</summary>
+        private const int MaxIncludeDepth = 8;
 
         /// <summary>
         /// Load from a ClarionVersionConfig (convenience method).
@@ -306,11 +343,28 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private void Parse(string[] lines)
+        /// <summary>
+        /// Parse one .red file into the sections, following its {include} lines. Mirrors Clarion's own
+        /// parser (Clarion.Core RedirectionFile.Load, GH #261):
+        /// - {include path} reads the other file IN PLACE, so its entries sit in the search order exactly
+        ///   where the line is. The path's macros are expanded (%THISDIR% = the INCLUDING file's folder),
+        ///   and a relative path is relative to the including file's folder.
+        /// - A section named twice ([Common] in the included file and again here) ADDS to the search
+        ///   order; it does not replace the earlier entries. Clarion keeps a list of sections and walks
+        ///   them all; appending to one section per name gives the same order for each name.
+        /// - Entries before any [section] header belong to [Common].
+        /// - The included file's own lines start with no section (so its headerless lines are Common);
+        ///   after it, this file carries on in the section it was in.
+        /// An include that can't be followed (missing file, cycle, too deep) is skipped and recorded in
+        /// <see cref="SkippedIncludes"/> - Clarion raises an error; a headless parser must not throw.
+        /// </summary>
+        private void ParseFile(string filePath, int depth)
         {
+            _loadedFiles.Add(new KeyValuePair<string, DateTime>(filePath, File.GetLastWriteTimeUtc(filePath)));
+            string thisDir = Path.GetDirectoryName(filePath);
             RedSection current = null;
 
-            foreach (string rawLine in lines)
+            foreach (string rawLine in EncodingHelper.ReadAllLines(filePath, out _))
             {
                 string line = rawLine.Trim();
 
@@ -318,18 +372,40 @@ namespace ClarionAssistant.Services
                 if (string.IsNullOrEmpty(line) || line.StartsWith("--"))
                     continue;
 
+                // %THISDIR% is the folder of the file the line is IN, not of the top-level .red.
+                if (line.IndexOf("%THISDIR%", StringComparison.OrdinalIgnoreCase) >= 0)
+                    line = Regex.Replace(line, "%THISDIR%", (thisDir ?? "").Replace("$", "$$"), RegexOptions.IgnoreCase);
+
                 // Section header: [SectionName]
                 if (line.StartsWith("[") && line.EndsWith("]"))
                 {
                     string name = line.Substring(1, line.Length - 2).Trim();
-                    current = new RedSection { Name = name };
-                    _sections[name] = current;
+                    if (!_sections.TryGetValue(name, out current))
+                    {
+                        current = new RedSection { Name = name };
+                        _sections[name] = current;
+                    }
+                    continue;
+                }
+
+                // Command: {include path}
+                if (line.StartsWith("{"))
+                {
+                    FollowInclude(line, thisDir, depth);
                     continue;
                 }
 
                 // Entry: pattern = path1;path2;...
-                if (current != null && line.Contains("="))
+                if (line.Contains("="))
                 {
+                    if (current == null)
+                    {
+                        if (!_sections.TryGetValue("Common", out current))
+                        {
+                            current = new RedSection { Name = "Common" };
+                            _sections["Common"] = current;
+                        }
+                    }
                     int eqIdx = line.IndexOf('=');
                     string pattern = line.Substring(0, eqIdx).Trim();
                     string pathsPart = line.Substring(eqIdx + 1).Trim().TrimEnd(';');
@@ -351,6 +427,52 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
+        }
+
+        private void FollowInclude(string line, string thisDir, int depth)
+        {
+            int close = line.IndexOf('}');
+            Match m = Regex.Match(close > 0 ? line.Substring(1, close - 1) : line.Substring(1),
+                                  @"^\s*include\s+(.+?)\s*$", RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                _skippedIncludes.Add(line + "  (not an {include} command)");
+                return;
+            }
+
+            string target = ExpandMacros(m.Groups[1].Value.Trim().Trim('"'));
+            string full;
+            try
+            {
+                full = Path.GetFullPath(Path.IsPathRooted(target) || string.IsNullOrEmpty(thisDir)
+                    ? target : Path.Combine(thisDir, target));
+            }
+            catch
+            {
+                _skippedIncludes.Add(line + "  (invalid path: " + target + ")");
+                return;
+            }
+
+            if (_loadedFiles.Exists(f => string.Equals(f.Key, full, StringComparison.OrdinalIgnoreCase)))
+            {
+                // Includes itself, directly or round a loop. A local Clarion110.red with
+                // {include %BIN%\clarion110.red} lands here when %BIN% is the local folder.
+                _skippedIncludes.Add(line + "  (already loaded: " + full + ")");
+                return;
+            }
+            if (depth + 1 > MaxIncludeDepth)
+            {
+                _skippedIncludes.Add(line + "  (nested deeper than " + MaxIncludeDepth + ")");
+                return;
+            }
+            if (!File.Exists(full))
+            {
+                _skippedIncludes.Add(line + "  (file not found: " + full + ")");
+                return;
+            }
+
+            try { ParseFile(full, depth + 1); }
+            catch (Exception ex) { _skippedIncludes.Add(line + "  (could not read: " + ex.Message + ")"); }
         }
 
         private string ExpandMacros(string path)

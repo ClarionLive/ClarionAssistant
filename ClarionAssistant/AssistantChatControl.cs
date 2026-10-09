@@ -2412,6 +2412,9 @@ namespace ClarionAssistant
             // Index against the IDE's CURRENT Build > Set Clarion Version (16d140e9): re-check it now rather
             // than trust the .red loaded at the last solution change.
             SyncVersionWithIde();
+            // GH #261: and re-read the .red when it (or a file it {include}s) changed since it was loaded:
+            // an edit to the redirection must show in the next index, not after an IDE restart.
+            if (_redFileService != null && _redFileService.IsStale()) LoadRedFile();
 
             // Build library paths from RED file .inc search paths
             List<string> libPaths = BuildIndexLibraryPaths();
