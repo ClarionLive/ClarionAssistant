@@ -133,6 +133,7 @@ namespace ClarionAssistant.Services
                 _macros["REDDIR"] = _macros["reddir"];
 
             _loadedFiles.Clear();
+            _watched.Clear();
             _skippedIncludes.Clear();
             try
             {
@@ -147,35 +148,52 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Every .red file this instance read (the loaded file first, then each {include}d one) with its
-        /// last-write time at load. A host that caches the instance calls <see cref="IsStale"/> to know
-        /// when to load again (GH #261: an edit to the .red changed nothing until the server restarted).
+        /// Every .red file this instance read: the loaded file first, then each {include}d one, as full paths.
         /// </summary>
-        public IReadOnlyList<string> LoadedFiles => _loadedFiles.ConvertAll(f => f.Key);
+        public IReadOnlyList<string> LoadedFiles => _loadedFiles;
 
         /// <summary>{include} lines that could not be followed, with the reason: missing file, cycle,
         /// too deep. Clarion reports these as errors; we skip the line and carry on, so say so here.</summary>
         public IReadOnlyList<string> SkippedIncludes => _skippedIncludes;
 
         /// <summary>
-        /// True when a file this instance was loaded from has changed, vanished or appeared since (its
-        /// last-write time differs). False for an instance that never loaded. Never throws.
+        /// True when the redirection on disk may no longer be what this instance holds, so a host that caches
+        /// it should load again (GH #261: an edit to the .red changed nothing until the server restarted):
+        /// a file it read has changed or vanished, a file it could NOT read (locked mid-save) is readable now,
+        /// or a file it looked for and did not find has appeared (an {include} target, a project-local .red).
+        /// False for an instance that never loaded. Never throws.
         /// </summary>
         public bool IsStale()
         {
-            foreach (var f in _loadedFiles)
+            foreach (var w in _watched)
             {
                 try
                 {
-                    DateTime now = File.Exists(f.Key) ? File.GetLastWriteTimeUtc(f.Key) : DateTime.MinValue;
-                    if (now != f.Value) return true;
+                    DateTime now = File.Exists(w.Key) ? File.GetLastWriteTimeUtc(w.Key) : AbsentOrUnread;
+                    if (now != w.Value) return true;
                 }
                 catch { return true; }
             }
             return false;
         }
 
-        private readonly List<KeyValuePair<string, DateTime>> _loadedFiles = new List<KeyValuePair<string, DateTime>>();
+        /// <summary>The watch stamp for a file that was absent, or present but unreadable: any readable file
+        /// then differs from it, so its appearance (or its unlock) makes the instance stale.</summary>
+        private static readonly DateTime AbsentOrUnread = DateTime.MinValue;
+
+        /// <summary>Record a path (absent, unread, or read with this stamp) for <see cref="IsStale"/>.</summary>
+        private void Watch(string path, DateTime stamp)
+        {
+            if (!string.IsNullOrEmpty(path)) _watched.Add(new KeyValuePair<string, DateTime>(path, stamp));
+        }
+
+        private static string FullPathOrSelf(string path)
+        {
+            try { return Path.GetFullPath(path); } catch { return path; }
+        }
+
+        private readonly List<string> _loadedFiles = new List<string>();
+        private readonly List<KeyValuePair<string, DateTime>> _watched = new List<KeyValuePair<string, DateTime>>();
         private readonly List<string> _skippedIncludes = new List<string>();
 
         /// <summary>Nesting limit for {include}; Clarion has none, but a cycle it would hang on must not hang us.</summary>
@@ -270,16 +288,25 @@ namespace ClarionAssistant.Services
             VersionRedFileName = config.RedFileName;
 
             // Check for a local .red file in the project directory
+            string localCandidate = null;
             if (!string.IsNullOrEmpty(projectDirectory) && Directory.Exists(projectDirectory))
             {
                 string localRed = FindLocalRedFile(projectDirectory, config.RedFileName);
                 if (localRed != null)
                     return Load(localRed, macros);
+                if (!string.IsNullOrEmpty(config.RedFileName))
+                    try { localCandidate = Path.Combine(projectDirectory, Path.GetFileName(config.RedFileName)); } catch { }
             }
 
             // Fall back to the version-level .red
             if (!string.IsNullOrEmpty(config.RedFilePath))
-                return Load(config.RedFilePath, macros);
+            {
+                bool ok = Load(config.RedFilePath, macros);
+                // GH #261: a project-local .red created later supersedes this one; watch for it (after Load,
+                // which resets the watch list).
+                Watch(localCandidate, AbsentOrUnread);
+                return ok;
+            }
 
             return false;
         }
@@ -360,11 +387,21 @@ namespace ClarionAssistant.Services
         /// </summary>
         private void ParseFile(string filePath, int depth)
         {
-            _loadedFiles.Add(new KeyValuePair<string, DateTime>(filePath, File.GetLastWriteTimeUtc(filePath)));
+            // Full path, so the cycle check in FollowInclude compares like with like ("..", 8.3 names).
+            filePath = FullPathOrSelf(filePath);
+            // Stamp BEFORE the read (an edit during it then shows as stale), record it only AFTER: a file
+            // held by an editor mid-save throws here, and must stay stale so the next access retries
+            // rather than keeping this empty load as if it were current.
+            DateTime stamp = File.GetLastWriteTimeUtc(filePath);
+            string[] lines;
+            try { lines = EncodingHelper.ReadAllLines(filePath, out _); }
+            catch { Watch(filePath, AbsentOrUnread); throw; }
+            Watch(filePath, stamp);
+            _loadedFiles.Add(filePath);
             string thisDir = Path.GetDirectoryName(filePath);
             RedSection current = null;
 
-            foreach (string rawLine in EncodingHelper.ReadAllLines(filePath, out _))
+            foreach (string rawLine in lines)
             {
                 string line = rawLine.Trim();
 
@@ -379,12 +416,7 @@ namespace ClarionAssistant.Services
                 // Section header: [SectionName]
                 if (line.StartsWith("[") && line.EndsWith("]"))
                 {
-                    string name = line.Substring(1, line.Length - 2).Trim();
-                    if (!_sections.TryGetValue(name, out current))
-                    {
-                        current = new RedSection { Name = name };
-                        _sections[name] = current;
-                    }
+                    current = GetOrAddSection(line.Substring(1, line.Length - 2).Trim());
                     continue;
                 }
 
@@ -398,14 +430,7 @@ namespace ClarionAssistant.Services
                 // Entry: pattern = path1;path2;...
                 if (line.Contains("="))
                 {
-                    if (current == null)
-                    {
-                        if (!_sections.TryGetValue("Common", out current))
-                        {
-                            current = new RedSection { Name = "Common" };
-                            _sections["Common"] = current;
-                        }
-                    }
+                    if (current == null) current = GetOrAddSection("Common");
                     int eqIdx = line.IndexOf('=');
                     string pattern = line.Substring(0, eqIdx).Trim();
                     string pathsPart = line.Substring(eqIdx + 1).Trim().TrimEnd(';');
@@ -427,6 +452,18 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
+        }
+
+        /// <summary>The section of that name, created on first use: a name met again ADDS to it.</summary>
+        private RedSection GetOrAddSection(string name)
+        {
+            RedSection section;
+            if (!_sections.TryGetValue(name, out section))
+            {
+                section = new RedSection { Name = name };
+                _sections[name] = section;
+            }
+            return section;
         }
 
         private void FollowInclude(string line, string thisDir, int depth)
@@ -453,7 +490,7 @@ namespace ClarionAssistant.Services
                 return;
             }
 
-            if (_loadedFiles.Exists(f => string.Equals(f.Key, full, StringComparison.OrdinalIgnoreCase)))
+            if (_loadedFiles.Exists(f => string.Equals(f, full, StringComparison.OrdinalIgnoreCase)))
             {
                 // Includes itself, directly or round a loop. A local Clarion110.red with
                 // {include %BIN%\clarion110.red} lands here when %BIN% is the local folder.
@@ -468,6 +505,7 @@ namespace ClarionAssistant.Services
             if (!File.Exists(full))
             {
                 _skippedIncludes.Add(line + "  (file not found: " + full + ")");
+                Watch(full, AbsentOrUnread);   // its creation later makes the instance stale
                 return;
             }
 

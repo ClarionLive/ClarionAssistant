@@ -129,6 +129,45 @@ static class RedFileServiceIncludeTest
                misc.GetSearchPaths(".inc").SequenceEqual(new[] { "C:\\First", "C:\\Second" }), Show(misc.GetSearchPaths(".inc")));
             Ok("an included file's headerless lines don't land in the includer's current section",
                misc.GetSearchPaths(".lib", "Debug").SequenceEqual(new[] { "C:\\Dbg" }), Show(misc.GetSearchPaths(".lib", "Debug")));
+
+            // ---- pipeline run 1 (debugger): what IsStale must notice ----
+            // A .red held by an editor mid-save can't be read: the failed load must stay stale, so the next
+            // access retries, instead of recording the new time and keeping the empty load as current.
+            string lockedRed = Path.Combine(sln, "Clarion110.red");
+            var locked = new RedFileService();
+            bool lockedOk;
+            using (new FileStream(lockedRed, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                lockedOk = locked.LoadForProject(sln, Config(clarion));
+            Ok("a .red locked mid-save fails to load", !lockedOk);
+            Ok("...and stays stale once it is readable again, so the next access retries", locked.IsStale());
+            locked.LoadForProject(sln, Config(clarion));
+            Ok("...and the retry loads it", locked.GetSearchPaths(".clw").Contains(lib) && !locked.IsStale(),
+               Show(locked.GetSearchPaths(".clw")));
+
+            // A missing {include} target that is created later.
+            Ok("a missing include is not itself stale", !misc.IsStale());
+            Write(Path.Combine(dir, "missing.red"), "[Common]\r\n*.ico = C:\\Icons\r\n");
+            Ok("...creating the missing include makes it stale", misc.IsStale());
+
+            // A project-local version-named .red added after the version-level one was loaded.
+            string sln2 = Path.Combine(root, "NoLocalYet");
+            Directory.CreateDirectory(sln2);
+            var noLocal = new RedFileService();
+            noLocal.LoadForProject(sln2, Config(clarion));
+            Ok("no local .red: the version-level one loads, not stale",
+               noLocal.RedFilePath.EndsWith(Path.Combine("bin", "Clarion110.red"), StringComparison.OrdinalIgnoreCase) && !noLocal.IsStale(),
+               noLocal.RedFilePath);
+            Write(Path.Combine(sln2, "Clarion110.red"), "[Common]\r\n*.clw = .\\mine\r\n");
+            Ok("...a local Clarion110.red created later makes it stale", noLocal.IsStale());
+
+            // A top-level path with ".." must still catch a self-include the first time (no duplicate entries).
+            Write(Path.Combine(dir, "self.red"), "{include %THISDIR%\\self.red}\r\n[Common]\r\n*.self = C:\\Once\r\n");
+            var dotted = new RedFileService();
+            dotted.Load(Path.Combine(dir, "sub", "..", "self.red"), null);
+            Ok("a '..' top-level path catches its self-include at once (entries not duplicated)",
+               dotted.SkippedIncludes.Count == 1 && dotted.Sections.ContainsKey("Common")
+               && dotted.Sections["Common"].Entries.Count(e => e.Pattern == "*.self") == 1,
+               Show(dotted.SkippedIncludes));
         }
         catch (Exception ex)
         {
