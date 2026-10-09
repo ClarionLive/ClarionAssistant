@@ -109,6 +109,12 @@ namespace ClarionAssistant.Services
             return new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = McpJsonRpc.GetString(args, "file_path"), NativeLine = nativeLine };
         }
         private const string WriteFilePathHelp = "Optional. Absolute path of the file you mean to change: refused (nothing changed) unless it is the active editor. Pass it after open_file.";
+        // GH #262: the column rules replace_range / delete_range / select_range share (EditorTextOps.ColumnIndex, both editors).
+        private const string RangeColumnRules = "Columns count characters (a tab is 1). end_col is EXCLUSIVE: the character AT end_col is kept. " +
+            "Omit start_col for column 1; omit end_col to go to the end of end_line, its line break kept (a column past a line's end " +
+            "is clamped to that end).";
+        private const string RangeStartColHelp = "Start column (1-based, characters; a tab is 1). Default 1.";
+        private const string RangeEndColHelp = "End column, EXCLUSIVE (the character at end_col is kept). Default: end of end_line. Clamped to the line's end.";
         private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui, () => _editorService.GetActiveDocumentPath())); } }
         // 73bd1f03 fix (2): the embed tools, routed to the CA Embeditor's Monaco buffer while it holds the procedure.
         private EmbedToolRouter _embedRouterField;
@@ -487,14 +493,17 @@ IdeOnly = true,
             {
                 Name = "replace_range",
 IdeOnly = true,
-                Description = "Replace text between two positions (line/column, 1-based) in the active editor. Use to replace a specific region of code.",
+                Description = "Replace text between two positions (line/column, 1-based) in the active editor. " + RangeColumnRules +
+                              " So to replace through the last character of a line of length L, end_col = L+1 (or omit it). " +
+                              "To replace whole lines N-M: start_line=N, end_line=M, omit start_col/end_col, and do not end new_text " +
+                              "with a line break (the line break after line M is kept).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "start_line", "Start line (1-based)" },
-                        { "start_col", "Start column (1-based)" },
+                        { "start_col", RangeStartColHelp },
                         { "end_line", "End line (1-based)" },
-                        { "end_col", "End column (1-based)" },
+                        { "end_col", RangeEndColHelp },
                         { "new_text", "Replacement text (empty string to delete)" },
                         { "file_path?", WriteFilePathHelp }
                     },
@@ -519,14 +528,15 @@ IdeOnly = true,
             {
                 Name = "select_range",
 IdeOnly = true,
-                Description = "Select a range of text in the active editor (line/column, 1-based). The selected text will be highlighted.",
+                Description = "Select a range of text in the active editor (line/column, 1-based). The selected text will be highlighted. " +
+                              RangeColumnRules + " (The character AT end_col is not selected.)",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "start_line", "Start line (1-based)" },
-                        { "start_col", "Start column (1-based)" },
+                        { "start_col", RangeStartColHelp },
                         { "end_line", "End line (1-based)" },
-                        { "end_col", "End column (1-based)" }
+                        { "end_col", RangeEndColHelp }
                     },
                     new[] { "start_line", "end_line" }),
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
@@ -548,14 +558,16 @@ IdeOnly = true,
             {
                 Name = "delete_range",
 IdeOnly = true,
-                Description = "Delete text between two positions (line/column, 1-based) in the active editor.",
+                Description = "Delete text between two positions (line/column, 1-based) in the active editor. " + RangeColumnRules +
+                              " To delete whole lines N-M with their line breaks: start_line=N, start_col=1, end_line=M+1, end_col=1 " +
+                              "(omitting end_col instead keeps line M's line break, leaving an empty line).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "start_line", "Start line (1-based)" },
-                        { "start_col", "Start column (1-based)" },
+                        { "start_col", RangeStartColHelp },
                         { "end_line", "End line (1-based)" },
-                        { "end_col", "End column (1-based)" },
+                        { "end_col", RangeEndColHelp },
                         { "file_path?", WriteFilePathHelp }
                     },
                     new[] { "start_line", "end_line" }),

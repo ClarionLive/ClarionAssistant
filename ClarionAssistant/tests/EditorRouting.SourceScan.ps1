@@ -99,6 +99,22 @@ Check ($tabHas.Contains('if (inst._editor != null) return true;') -and
 Check ($prov.Contains('MonacoClarionEditor.IsOpenInNativeEditor(path)') -and $prov.Contains('open in the native Clarion editor') -and
        $prov.Contains('not visible to the tool')) 'get_live_text says a native-mode tab''s unsaved edits are not visible'
 
+# GH #262: the native range tools use the shared column rule and put the caret after the text actually inserted (its
+# CRLF-normalized form; EditorToolRouter.Test checks the helpers themselves).
+$rr = $svc.IndexOf('public InsertResult ReplaceRange(')
+$rrBody = if ($rr -ge 0) { $svc.Substring($rr, [Math]::Min(3000, $svc.Length - $rr)) } else { '' }
+Check ($rrBody.Contains('EditorTextOps.ReplacementText(newText, startOffset, out caretOffset)') -and
+       $rrBody.Contains('SetProperty(caret, "Offset", caretOffset)') -and -not $rrBody.Contains('(newText ?? "").Length')) `
+    'replace_range (native) sets the caret from the inserted, CRLF-normalized text'
+Check ($svc.Contains('return lineOffset + EditorTextOps.ColumnIndex(col, lineLength);')) `
+    'the native range tools clamp columns by EditorTextOps.ColumnIndex (the CA Editor''s rule)'
+$rangeRules = $src.Contains('end_col is EXCLUSIVE')
+foreach ($t in @('replace_range', 'delete_range', 'select_range')) {
+    $b = Block $t
+    Check ($rangeRules -and $null -ne $b -and $b.Contains('RangeColumnRules') -and $b.Contains('{ "end_col", RangeEndColHelp }')) `
+        "$t documents its column rules (end_col exclusive)"
+}
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host "PASS - $pass checks" -ForegroundColor Green; exit 0 }
 Write-Host "FAIL - $fail of $($pass + $fail) checks" -ForegroundColor Red

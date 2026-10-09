@@ -156,8 +156,43 @@ static class EditorToolRouterTest
         return r.Run(tool, () => Native(tool), ov);
     }
 
+    // GH #262: the column rules replace_range / delete_range / select_range document, as EditorTextOps computes them for
+    // both editors, and the native caret after a replace_range whose new_text has LF-only line breaks.
+    static void ColumnRules()
+    {
+        Console.WriteLine("\nGH #262: range column rules (both editors) and the native caret after replace_range");
+        Check("end_col is exclusive: col L+1 is the end of a line of length L", EditorTextOps.ColumnIndex(6, 5) == 5 && EditorTextOps.ColumnIndex(5, 5) == 4);
+        Check("a column past the end clamps to the end (end_col 999 default)", EditorTextOps.ColumnIndex(999, 5) == 5);
+        Check("a column below 1 clamps to the line's start", EditorTextOps.ColumnIndex(0, 5) == 0 && EditorTextOps.ColumnIndex(-3, 5) == 0);
+        string t = "\tab\r\nxy\r\n";
+        Check("columns count characters: a tab is 1", EditorTextOps.Offset(t, 1, 2) == 1 && t[EditorTextOps.Offset(t, 1, 2)] == 'a');
+        Check("end of a CRLF line stops before its \\r", EditorTextOps.Offset(t, 1, 999) == 3);
+        Check("a column below 1 never reaches the previous line's break", EditorTextOps.Offset(t, 2, 0) == 5);
+
+        // The reporter's case: an end_col one short leaves the last character behind.
+        string line = "  Resize:LockSize )";
+        int L = line.Length;
+        string shortEnd = line.Substring(0, EditorTextOps.Offset(line, 1, 3)) + "X" + line.Substring(EditorTextOps.Offset(line, 1, L));
+        string fullEnd = line.Substring(0, EditorTextOps.Offset(line, 1, 3)) + "X" + line.Substring(EditorTextOps.Offset(line, 1, L + 1));
+        Check("end_col = L keeps the last character; L+1 replaces it", shortEnd == "  X)" && fullEnd == "  X", shortEnd + " | " + fullEnd);
+
+        // Whole lines N-M: start_col 1, end_col omitted (999), new_text without a trailing break: line M's break survives.
+        string doc = "a\r\nb\r\nc\r\nd\r\n";
+        int s = EditorTextOps.Offset(doc, 2, 1), e = EditorTextOps.Offset(doc, 3, 999);
+        string whole = doc.Substring(0, s) + "X" + doc.Substring(e);
+        Check("whole lines 2-3 (cols omitted) become one line; the break after line 3 is kept", whole == "a\r\nX\r\nd\r\n", whole.Replace("\r\n", "|"));
+
+        int caret;
+        string inserted = EditorTextOps.ReplacementText("a\nb\nc", 10, out caret);
+        Check("native replace_range inserts the CRLF-normalized text", inserted == "a\r\nb\r\nc", inserted.Replace("\r\n", "|"));
+        Check("...and the caret lands after it (not one short per LF)", caret == 10 + inserted.Length, "caret " + caret + ", expected " + (10 + inserted.Length));
+        inserted = EditorTextOps.ReplacementText(null, 4, out caret);
+        Check("...a null new_text inserts nothing, caret at the start", inserted == "" && caret == 4);
+    }
+
     static int Main()
     {
+        ColumnRules();
         var ui = new FakeUi();
         EditorToolRouter.UiThreadId = ui.Thread.ManagedThreadId;
         var router = new EditorToolRouter(() => ui);
