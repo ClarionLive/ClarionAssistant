@@ -150,7 +150,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Every .red file this instance read: the loaded file first, then each {include}d one, as full paths.
         /// </summary>
-        public IReadOnlyList<string> LoadedFiles => _loadedFiles;
+        public IReadOnlyList<string> LoadedFiles => _loadedFiles.AsReadOnly();
 
         /// <summary>{include} lines that could not be followed, with the reason: missing file, cycle,
         /// too deep. Clarion reports these as errors; we skip the line and carry on, so say so here.</summary>
@@ -387,7 +387,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         private void ParseFile(string filePath, int depth)
         {
-            // Full path, so the cycle check in FollowInclude compares like with like ("..", 8.3 names).
+            // Full path, so the cycle check in FollowInclude compares like with like (".." segments).
             filePath = FullPathOrSelf(filePath);
             // Stamp BEFORE the read (an edit during it then shows as stale), record it only AFTER: a file
             // held by an editor mid-save throws here, and must stay stale so the next access retries
