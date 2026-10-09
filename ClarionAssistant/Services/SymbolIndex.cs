@@ -436,6 +436,34 @@ namespace ClarionAssistant.Services
             return null;
         }
 
+        /// <summary>
+        /// Scopes an exact-name hit from an UNFILTERED lookup (a provider's own FindSymbolByName, whose first
+        /// same-named row can be any equate in the library) to what <paramref name="contextFile"/> can see. A
+        /// file-level EQUATE from an include file the context file does not include (see
+        /// <see cref="IncludeClosure"/>; <paramref name="dbPaths"/> = project DB first, then library) is not
+        /// visible there, so the next visible same-named row of <paramref name="db"/> is returned, or null when
+        /// there is none. Anything else - not an equate, no context file, no closure to filter by - is returned
+        /// unchanged. The closure is built only for an equate hit. Never throws.
+        /// </summary>
+        public static CodeGraphSymbol ScopeEquateToIncludes(CodeGraphSymbol sym, string word, string db,
+                                                            string contextFile, string[] dbPaths, bool fastOnly = false)
+        {
+            try
+            {
+                if (sym == null || string.IsNullOrEmpty(contextFile)) return sym;
+                if (!string.Equals(sym.Params, "EQUATE", StringComparison.OrdinalIgnoreCase)) return sym;
+                var included = IncludeClosure(contextFile, dbPaths, fastOnly);
+                if (included == null || !IsEquateOutside(sym, included)) return sym;
+                var idx = For(db);
+                return idx == null ? null : idx.FindByName(word, fastOnly, included);
+            }
+            catch (Exception ex)
+            {
+                LspTrace.Write("[SymbolIndex] equate scoping failed: " + ex.Message);
+                return sym;
+            }
+        }
+
         /// <summary>The base class named on <paramref name="className"/>'s own class row, or null.</summary>
         public string BaseClassOf(string className, bool fastOnly = false)
         {

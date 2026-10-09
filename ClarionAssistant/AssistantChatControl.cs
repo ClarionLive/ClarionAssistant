@@ -1215,7 +1215,7 @@ namespace ClarionAssistant
                 int peerCount = _instanceCoord.GetPeers().Count;
                 if (_mcpServer != null && _mcpServer.IsRunning)
                 {
-                    string status = "MCP: port " + _mcpServer.Port + " | " + _toolRegistry.GetToolCount() + " tools";
+                    string status = "MCP: port " + _mcpServer.PortsLabel + " | " + _toolRegistry.GetToolCount() + " tools";
                     if (peerCount > 0)
                         status += " | " + peerCount + " peer" + (peerCount > 1 ? "s" : "");
                     _header?.SetStatus(status, "connected");
@@ -2412,6 +2412,9 @@ namespace ClarionAssistant
             // Index against the IDE's CURRENT Build > Set Clarion Version (16d140e9): re-check it now rather
             // than trust the .red loaded at the last solution change.
             SyncVersionWithIde();
+            // GH #261: and re-read the .red when it (or a file it {include}s) changed since it was loaded:
+            // an edit to the redirection must show in the next index, not after an IDE restart.
+            if (_redFileService != null && _redFileService.IsStale()) LoadRedFile();
 
             // Build library paths from RED file .inc search paths
             List<string> libPaths = BuildIndexLibraryPaths();
@@ -3312,7 +3315,7 @@ namespace ClarionAssistant
 
             _mcpServer.OnStatusChanged += (running, port) =>
             {
-                UpdateStatus(running ? "MCP: port " + port : "MCP stopped");
+                UpdateStatus(running ? "MCP: port " + _mcpServer.PortsLabel : "MCP stopped");
             };
 
             _mcpServer.OnError += error =>
@@ -3334,7 +3337,7 @@ namespace ClarionAssistant
             if (_mcpServer.Start())
             {
                 _mcpConfigPath = _mcpServer.WriteMcpConfigFile();
-                string status = "MCP: port " + _mcpServer.Port + " | " + _toolRegistry.GetToolCount() + " tools";
+                string status = "MCP: port " + _mcpServer.PortsLabel + " | " + _toolRegistry.GetToolCount() + " tools";
                 if (mtEnabled) status += " | MT";
                 UpdateStatus(status);
             }

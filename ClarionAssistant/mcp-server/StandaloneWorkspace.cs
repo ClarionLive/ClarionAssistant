@@ -314,7 +314,10 @@ namespace ClarionAssistant.McpServer
                 string name = cfg != null ? cfg.Name : null;
                 lock (_lock)
                 {
-                    if (!_redResolved || !string.Equals(name, _redVersionName, StringComparison.Ordinal))
+                    // GH #261: also when the .red (or a file it {include}s) changed on disk since it was read -
+                    // an edit to it used to change nothing until this server restarted.
+                    if (!_redResolved || !string.Equals(name, _redVersionName, StringComparison.Ordinal)
+                        || (_redFile != null && _redFile.IsStale()))
                     {
                         _redResolved = true;
                         _redVersionName = name;

@@ -2327,6 +2327,11 @@ COMMON QUERIES:
                         // Include CLW and INC search paths so the AI knows where classes live
                         result["clwSearchPaths"] = red.GetSearchPaths(".clw");
                         result["incSearchPaths"] = red.GetSearchPaths(".inc");
+                        // GH #261: the {include}d files followed, and any that could not be.
+                        if (red.LoadedFiles.Count > 1)
+                            result["redIncludes"] = red.LoadedFiles.Skip(1).ToArray();
+                        if (red.SkippedIncludes.Count > 0)
+                            result["redSkippedIncludes"] = red.SkippedIncludes.ToArray();
                     }
 
                     return result;

@@ -80,6 +80,72 @@ namespace ClarionCodeGraph.Parsing
             @"^([\w:]+)\s+EQUATE\s*\(",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        /// <summary>
+        /// Tracks an ITEMIZE structure while scanning declarations, so its member EQUATEs are named the
+        /// way the compiler names them:
+        ///   <c>ITEMIZE,PRE(Px)</c>                → <c>Px:Name</c> (the prefix may contain colons: <c>PRE(IC:RESET)</c>)
+        ///   <c>Label ITEMIZE,PRE</c> / <c>,PRE()</c> → <c>Label:Name</c> (empty prefix: the ITEMIZE label is used)
+        ///   no PRE, or blank label + empty PRE  → <c>Name</c>
+        /// A member already spelled <c>Prefix:Name</c> is not prefixed twice (libsrc declares
+        /// <c>BUTTONSTATE ITEMIZE,PRE()</c> / <c>BUTTONSTATE:Normal EQUATE(1)</c>); any other
+        /// colon-qualified member label still gets the prefix. Members may omit their value
+        /// (<c>Name EQUATE</c>, auto-numbered). ITEMIZE cannot nest, so one block is tracked at a time.
+        /// Callers pass a comment-stripped line; leading whitespace is ignored.
+        /// </summary>
+        internal sealed class ItemizeScope
+        {
+            // "[label] ITEMIZE[(seed)][,PRE[(prefix)]]" — the label is optional (blank-label blocks are indented).
+            private static readonly Regex OpenRegex = new Regex(
+                @"^\s*(?:([A-Za-z_][\w:]*)\s+)?ITEMIZE\b(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex PreRegex = new Regex(
+                @",\s*PRE\b(?:\s*\(\s*([A-Za-z_][\w:]*)?\s*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            private static readonly Regex CloseRegex = new Regex(
+                @"^\s*(END|\.)\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+            // Member: "Name EQUATE" or "Name EQUATE(value)".
+            private static readonly Regex MemberRegex = new Regex(
+                @"^\s*([A-Za-z_][\w:]*)\s+EQUATE\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+            private string _prefix; // effective prefix of the open block; null = members keep their own label
+
+            public bool IsOpen { get; private set; }
+
+            public void Reset() { IsOpen = false; _prefix = null; }
+
+            /// <summary>True when the line opens an ITEMIZE block.</summary>
+            public bool TryOpen(string code)
+            {
+                var m = OpenRegex.Match(code);
+                if (!m.Success) return false;
+                var pre = PreRegex.Match(m.Groups[2].Value);
+                _prefix = !pre.Success ? null
+                    : pre.Groups[1].Success ? pre.Groups[1].Value
+                    : m.Groups[1].Success ? m.Groups[1].Value
+                    : null;
+                IsOpen = true;
+                return true;
+            }
+
+            /// <summary>True when the open block is closed by this line (END or a lone period).</summary>
+            public bool TryClose(string code)
+            {
+                if (!IsOpen || !CloseRegex.IsMatch(code)) return false;
+                Reset();
+                return true;
+            }
+
+            /// <summary>The qualified member name if the line declares an EQUATE inside the open block, else null.</summary>
+            public string MemberName(string code)
+            {
+                if (!IsOpen) return null;
+                var m = MemberRegex.Match(code);
+                if (!m.Success) return null;
+                string name = m.Groups[1].Value;
+                if (_prefix == null || name.StartsWith(_prefix + ":", StringComparison.OrdinalIgnoreCase))
+                    return name;
+                return _prefix + ":" + name;
+            }
+        }
+
         // GROUP/QUEUE declaration: GrpName GROUP/QUEUE [(NamedType)] [,PRE(xx)] | [END | .]
         // The optional parenthesized group captures a named GROUP/QUEUE,TYPE instantiated
         // inline (e.g. "PersonData GROUP(PTJ_PersonDataGroupType)") -- without it, this line
@@ -401,6 +467,7 @@ namespace ClarionCodeGraph.Parsing
             bool inCode = false;
             bool inData = false; // True when between PROCEDURE def and CODE keyword
             int dataGroupDepth = 0; // Track nested GROUP/QUEUE/RECORD in DATA sections
+            var itemize = new ItemizeScope(); // ITEMIZE blocks in DATA sections (members named Prefix:Name)
             var localRoutines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             // Track CLASS bodies to extract method prototypes
             string currentClassName = null;
@@ -463,6 +530,7 @@ namespace ClarionCodeGraph.Parsing
                     memberOf = memberMatch.Groups[1].Value;
                     inData = true; // module-level DATA section starts after MEMBER
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     continue;
                 }
                 if (MemberEmptyRegex.IsMatch(line) && memberOf == null)
@@ -470,6 +538,7 @@ namespace ClarionCodeGraph.Parsing
                     memberOf = ""; // universal member
                     inData = true;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     continue;
                 }
 
@@ -485,6 +554,7 @@ namespace ClarionCodeGraph.Parsing
                     isProgramFile = true;
                     inData = true;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     continue;
                 }
 
@@ -547,6 +617,7 @@ namespace ClarionCodeGraph.Parsing
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     localRoutines.Clear();
                     string procParams = procMatch.Groups[2].Success ? procMatch.Groups[2].Value : null;
 
@@ -576,6 +647,7 @@ namespace ClarionCodeGraph.Parsing
                     inCode = false;
                     inData = true;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     localRoutines.Clear();
                     string funcParams = funcMatch.Groups[2].Success ? funcMatch.Groups[2].Value : null;
 
@@ -733,6 +805,7 @@ namespace ClarionCodeGraph.Parsing
                     inCode = true;
                     inData = false;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     continue;
                 }
 
@@ -746,6 +819,7 @@ namespace ClarionCodeGraph.Parsing
                 {
                     inData = true;
                     dataGroupDepth = 0;
+                    itemize.Reset();
                     continue;
                 }
 
@@ -806,6 +880,32 @@ namespace ClarionCodeGraph.Parsing
                     // regexes below, since they all anchor at end-of-line (issue: trailing-comment
                     // member capture gap).
                     string dataForTypeMatch = StripInlineComment(trimmedData);
+
+                    // ITEMIZE: members are named Prefix:Name under PRE(Prefix), and may omit their
+                    // value ("Name EQUATE"), which the EQUATE matcher below would never see. Only
+                    // EQUATEs are legal inside, so the block is consumed here.
+                    if (itemize.TryClose(dataForTypeMatch) || itemize.TryOpen(dataForTypeMatch))
+                        continue;
+                    if (itemize.IsOpen)
+                    {
+                        string itemName = itemize.MemberName(dataForTypeMatch);
+                        if (itemName != null)
+                        {
+                            result.Symbols.Add(new ClarionSymbol
+                            {
+                                Name = itemName,
+                                Type = "variable",
+                                FilePath = filePath,
+                                LineNumber = lineNum,
+                                ProjectId = projectId,
+                                Params = "EQUATE",
+                                ParentName = varOwner,
+                                Scope = varScope,
+                                SourcePreview = Preview(line)
+                            });
+                        }
+                        continue;
+                    }
 
                     // GROUP/QUEUE declaration
                     var gqMatch = GroupQueueDeclRegex.Match(dataForTypeMatch);
@@ -1029,6 +1129,7 @@ namespace ClarionCodeGraph.Parsing
             string currentClassName = null;
             bool inClassBody = false;
             int classEndDepth = 0;
+            var itemize = new ItemizeScope();
 
             for (int i = 0; i < lines.Length; i++)
             {
@@ -1246,6 +1347,33 @@ namespace ClarionCodeGraph.Parsing
                                 Scope = "class"
                             });
                         }
+                    }
+                    continue;
+                }
+
+                // File-level ITEMIZE: members are named Prefix:Name under PRE(Prefix), and may omit
+                // their value ("Name EQUATE"). Without this, a member was emitted under its bare label
+                // by the file-level EQUATE check below (a name that does not exist in the language),
+                // and a value-less member was not indexed at all.
+                string incCode = StripInlineComment(line);
+                if (itemize.TryClose(incCode) || itemize.TryOpen(incCode))
+                    continue;
+                if (itemize.IsOpen)
+                {
+                    string itemName = itemize.MemberName(incCode);
+                    if (itemName != null)
+                    {
+                        result.Symbols.Add(new ClarionSymbol
+                        {
+                            Name = itemName,
+                            Type = "variable",
+                            FilePath = filePath,
+                            LineNumber = lineNum,
+                            ProjectId = projectId,
+                            Params = "EQUATE",
+                            Scope = "global",
+                            SourcePreview = Preview(line)
+                        });
                     }
                     continue;
                 }

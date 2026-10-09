@@ -132,9 +132,12 @@ namespace ClarionAssistant.Services
             if (!_macros.ContainsKey("REDDIR") && _macros.ContainsKey("reddir"))
                 _macros["REDDIR"] = _macros["reddir"];
 
+            _loadedFiles.Clear();
+            _watched.Clear();
+            _skippedIncludes.Clear();
             try
             {
-                Parse(EncodingHelper.ReadAllLines(redFilePath, out _));
+                ParseFile(redFilePath, 0);
                 if (makeActive) Active = this;
                 return true;
             }
@@ -143,6 +146,58 @@ namespace ClarionAssistant.Services
                 return false;
             }
         }
+
+        /// <summary>
+        /// Every .red file this instance read: the loaded file first, then each {include}d one, as full paths.
+        /// </summary>
+        public IReadOnlyList<string> LoadedFiles => _loadedFiles.AsReadOnly();
+
+        /// <summary>{include} lines that could not be followed, with the reason: missing file, cycle,
+        /// too deep. Clarion reports these as errors; we skip the line and carry on, so say so here.</summary>
+        public IReadOnlyList<string> SkippedIncludes => _skippedIncludes;
+
+        /// <summary>
+        /// True when the redirection on disk may no longer be what this instance holds, so a host that caches
+        /// it should load again (GH #261: an edit to the .red changed nothing until the server restarted):
+        /// a file it read has changed or vanished, a file it could NOT read (locked mid-save) is readable now,
+        /// or a file it looked for and did not find has appeared (an {include} target, a project-local .red).
+        /// False for an instance that never loaded. Never throws.
+        /// </summary>
+        public bool IsStale()
+        {
+            foreach (var w in _watched)
+            {
+                try
+                {
+                    DateTime now = File.Exists(w.Key) ? File.GetLastWriteTimeUtc(w.Key) : AbsentOrUnread;
+                    if (now != w.Value) return true;
+                }
+                catch { return true; }
+            }
+            return false;
+        }
+
+        /// <summary>The watch stamp for a file that was absent, or present but unreadable: any readable file
+        /// then differs from it, so its appearance (or its unlock) makes the instance stale.</summary>
+        private static readonly DateTime AbsentOrUnread = DateTime.MinValue;
+
+        /// <summary>Record a path (absent, unread, or read with this stamp) for <see cref="IsStale"/>.</summary>
+        private void Watch(string path, DateTime stamp)
+        {
+            if (!string.IsNullOrEmpty(path)) _watched.Add(new KeyValuePair<string, DateTime>(path, stamp));
+        }
+
+        private static string FullPathOrSelf(string path)
+        {
+            try { return Path.GetFullPath(path); } catch { return path; }
+        }
+
+        private readonly List<string> _loadedFiles = new List<string>();
+        private readonly List<KeyValuePair<string, DateTime>> _watched = new List<KeyValuePair<string, DateTime>>();
+        private readonly List<string> _skippedIncludes = new List<string>();
+
+        /// <summary>Nesting limit for {include}; Clarion has none, but a cycle it would hang on must not hang us.</summary>
+        private const int MaxIncludeDepth = 8;
 
         /// <summary>
         /// Load from a ClarionVersionConfig (convenience method).
@@ -233,16 +288,25 @@ namespace ClarionAssistant.Services
             VersionRedFileName = config.RedFileName;
 
             // Check for a local .red file in the project directory
+            string localCandidate = null;
             if (!string.IsNullOrEmpty(projectDirectory) && Directory.Exists(projectDirectory))
             {
                 string localRed = FindLocalRedFile(projectDirectory, config.RedFileName);
                 if (localRed != null)
                     return Load(localRed, macros);
+                if (!string.IsNullOrEmpty(config.RedFileName))
+                    try { localCandidate = Path.Combine(projectDirectory, Path.GetFileName(config.RedFileName)); } catch { }
             }
 
             // Fall back to the version-level .red
             if (!string.IsNullOrEmpty(config.RedFilePath))
-                return Load(config.RedFilePath, macros);
+            {
+                bool ok = Load(config.RedFilePath, macros);
+                // GH #261: a project-local .red created later supersedes this one; watch for it (after Load,
+                // which resets the watch list).
+                Watch(localCandidate, AbsentOrUnread);
+                return ok;
+            }
 
             return false;
         }
@@ -306,8 +370,35 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private void Parse(string[] lines)
+        /// <summary>
+        /// Parse one .red file into the sections, following its {include} lines. Mirrors Clarion's own
+        /// parser (Clarion.Core RedirectionFile.Load, GH #261):
+        /// - {include path} reads the other file IN PLACE, so its entries sit in the search order exactly
+        ///   where the line is. The path's macros are expanded (%THISDIR% = the INCLUDING file's folder),
+        ///   and a relative path is relative to the including file's folder.
+        /// - A section named twice ([Common] in the included file and again here) ADDS to the search
+        ///   order; it does not replace the earlier entries. Clarion keeps a list of sections and walks
+        ///   them all; appending to one section per name gives the same order for each name.
+        /// - Entries before any [section] header belong to [Common].
+        /// - The included file's own lines start with no section (so its headerless lines are Common);
+        ///   after it, this file carries on in the section it was in.
+        /// An include that can't be followed (missing file, cycle, too deep) is skipped and recorded in
+        /// <see cref="SkippedIncludes"/> - Clarion raises an error; a headless parser must not throw.
+        /// </summary>
+        private void ParseFile(string filePath, int depth)
         {
+            // Full path, so the cycle check in FollowInclude compares like with like (".." segments).
+            filePath = FullPathOrSelf(filePath);
+            // Stamp BEFORE the read (an edit during it then shows as stale), record it only AFTER: a file
+            // held by an editor mid-save throws here, and must stay stale so the next access retries
+            // rather than keeping this empty load as if it were current.
+            DateTime stamp = File.GetLastWriteTimeUtc(filePath);
+            string[] lines;
+            try { lines = EncodingHelper.ReadAllLines(filePath, out _); }
+            catch { Watch(filePath, AbsentOrUnread); throw; }
+            Watch(filePath, stamp);
+            _loadedFiles.Add(filePath);
+            string thisDir = Path.GetDirectoryName(filePath);
             RedSection current = null;
 
             foreach (string rawLine in lines)
@@ -318,18 +409,28 @@ namespace ClarionAssistant.Services
                 if (string.IsNullOrEmpty(line) || line.StartsWith("--"))
                     continue;
 
+                // %THISDIR% is the folder of the file the line is IN, not of the top-level .red.
+                if (line.IndexOf("%THISDIR%", StringComparison.OrdinalIgnoreCase) >= 0)
+                    line = Regex.Replace(line, "%THISDIR%", (thisDir ?? "").Replace("$", "$$"), RegexOptions.IgnoreCase);
+
                 // Section header: [SectionName]
                 if (line.StartsWith("[") && line.EndsWith("]"))
                 {
-                    string name = line.Substring(1, line.Length - 2).Trim();
-                    current = new RedSection { Name = name };
-                    _sections[name] = current;
+                    current = GetOrAddSection(line.Substring(1, line.Length - 2).Trim());
+                    continue;
+                }
+
+                // Command: {include path}
+                if (line.StartsWith("{"))
+                {
+                    FollowInclude(line, thisDir, depth);
                     continue;
                 }
 
                 // Entry: pattern = path1;path2;...
-                if (current != null && line.Contains("="))
+                if (line.Contains("="))
                 {
+                    if (current == null) current = GetOrAddSection("Common");
                     int eqIdx = line.IndexOf('=');
                     string pattern = line.Substring(0, eqIdx).Trim();
                     string pathsPart = line.Substring(eqIdx + 1).Trim().TrimEnd(';');
@@ -351,6 +452,65 @@ namespace ClarionAssistant.Services
                     }
                 }
             }
+        }
+
+        /// <summary>The section of that name, created on first use: a name met again ADDS to it.</summary>
+        private RedSection GetOrAddSection(string name)
+        {
+            RedSection section;
+            if (!_sections.TryGetValue(name, out section))
+            {
+                section = new RedSection { Name = name };
+                _sections[name] = section;
+            }
+            return section;
+        }
+
+        private void FollowInclude(string line, string thisDir, int depth)
+        {
+            int close = line.IndexOf('}');
+            Match m = Regex.Match(close > 0 ? line.Substring(1, close - 1) : line.Substring(1),
+                                  @"^\s*include\s+(.+?)\s*$", RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                _skippedIncludes.Add(line + "  (not an {include} command)");
+                return;
+            }
+
+            string target = ExpandMacros(m.Groups[1].Value.Trim().Trim('"'));
+            string full;
+            try
+            {
+                full = Path.GetFullPath(Path.IsPathRooted(target) || string.IsNullOrEmpty(thisDir)
+                    ? target : Path.Combine(thisDir, target));
+            }
+            catch
+            {
+                _skippedIncludes.Add(line + "  (invalid path: " + target + ")");
+                return;
+            }
+
+            if (_loadedFiles.Exists(f => string.Equals(f, full, StringComparison.OrdinalIgnoreCase)))
+            {
+                // Includes itself, directly or round a loop. A local Clarion110.red with
+                // {include %BIN%\clarion110.red} lands here when %BIN% is the local folder.
+                _skippedIncludes.Add(line + "  (already loaded: " + full + ")");
+                return;
+            }
+            if (depth + 1 > MaxIncludeDepth)
+            {
+                _skippedIncludes.Add(line + "  (nested deeper than " + MaxIncludeDepth + ")");
+                return;
+            }
+            if (!File.Exists(full))
+            {
+                _skippedIncludes.Add(line + "  (file not found: " + full + ")");
+                Watch(full, AbsentOrUnread);   // its creation later makes the instance stale
+                return;
+            }
+
+            try { ParseFile(full, depth + 1); }
+            catch (Exception ex) { _skippedIncludes.Add(line + "  (could not read: " + ex.Message + ")"); }
         }
 
         private string ExpandMacros(string path)

@@ -495,3 +495,43 @@ reported at end of run (`WARNING: N file(s) skipped by the body scan`).
   zero-incoming is dominated by the documented round-4 residual (cross-file global
   references — declared in the main file, used in member files — are still a follow-up),
   not by external absorption, which is now structurally impossible.
+
+### ITEMIZE member naming — `ItemizeEquates.clw` + `ItemizeEquates.inc`
+
+Equates inside an `ITEMIZE` are named the way the compiler names them, not by their bare
+label. A new MEMBER module (own local MAP, like `RoutineData.clw`) plus the `.inc` it
+includes; no pre-existing fixture line moved. `ItemizeTest` references every expected
+name, so the module compiling is the proof that each name below is real (and that the
+bare labels are not):
+
+| Block | Members indexed as |
+|---|---|
+| `ITEMIZE, PRE(FixFormat)` (blank label, space after the comma) | `FixFormat:Text`, `FixFormat:Base64`, `FixFormat:CData` |
+| `ITEMIZE,PRE(FX:RESET)` (colon in the prefix) | `FX:RESET:None`, `FX:RESET:Value` |
+| `FixColor ITEMIZE(0),PRE` (empty prefix: the label is used) | `FixColor:Red`, `FixColor:White` |
+| `FixState ITEMIZE,PRE()` (members already qualified) | `FixState:Normal`, `FixState:Hot` (not `FixState:FixState:…`) |
+| `FixMode ITEMIZE` (no PRE) | `FixModeA`, `FixModeB` |
+| `ITEMIZE(10),PRE(FxP)` closed by `.` | `FxP:First`, `FxP:Second` |
+| module-level DATA `ITEMIZE,PRE(FxMod)` | `FxMod:ModA`, `FxMod:ModB` (`scope='module'`) |
+| procedure-local `LocColor ITEMIZE(1),PRE(LocC)` closed by `.` | `LocC:Blue`, `LocC:Green` (`scope='local'`, parent `ItemizeTest`) |
+
+`FixPlain EQUATE(7)` after the blocks is the control: ordinary file-level handling resumes.
+Before the fix the same files produced bare `Text` / `None` / `Value` symbols (names that do
+not exist) and nothing at all for the 11 members without a value or inside a DATA section.
+
+Totals become **172 symbols / 8 files / 2 projects**. `scope='global'` variables are now
+**24**: the 15 from `ItemizeEquates.inc` plus 9 elsewhere (the 8 pinned in round 5 plus
+`SmallHandleType`, a file-level `.inc` equate since those became symbols). Re-verified
+unchanged: 22/5 callers of `Sign`/`Ask`, 3 `do` edges, 11 classes, 4 prototypes, 6 ambiguous.
+
+```sql
+-- ITEMIZE pin: expect 19 rows (the 17 names in the table above plus FixFormat and FixPlain),
+-- and no bare Text/None/Value/Red/Blue.
+SELECT name, scope, parent_name, line_number FROM symbols
+WHERE params='EQUATE' AND (file_path LIKE '%ItemizeEquates.inc' OR file_path LIKE '%ItemizeEquates.clw')
+ORDER BY file_path, line_number;
+
+-- ITEMIZE pin: every reference in ItemizeTest's body resolves. Expect 18.
+SELECT COUNT(*) FROM relationships r JOIN symbols v ON r.to_id=v.id
+WHERE r.type='references' AND v.params='EQUATE' AND v.file_path LIKE '%ItemizeEquates%';
+```
