@@ -304,12 +304,170 @@ function registerClarionFolding() {
     });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Omitted-code dimming (GH #264). The native Clarion editor paints code that OMIT/COMPILE excludes
+// from the build in its "OmittedCode" colour, so conditional code reads as conditional at a glance;
+// the CA Editor used to colour it exactly like live code.
+//
+// What counts as omitted mirrors the IDE's own parser (ClarionParser.dll, CAnalyzer.omitcompile1/2
+// and CLexAnalyzer.Omit), which is what drives the native shading:
+//   OMIT('t')              omitted.
+//   COMPILE('t')           compiled — never dimmed.
+//   OMIT('t', expr)        omitted when expr is true (an integer > 0).
+//   COMPILE('t', expr)     omitted when expr is false.
+//   The block runs from the directive line THROUGH the line containing the terminator (the native
+//   CustomLine spans both), the terminator found anywhere in the raw text of a later line.
+//   An omitted block is skipped wholesale: directives inside it are not directives. A COMPILED
+//   block's body is ordinary code, so directives inside it still count (blocks nest that way).
+//   An unterminated OMIT is a compile error (355) and the native editor shades nothing for it —
+//   same here, which also keeps a half-typed OMIT('**') from greying out the rest of the file.
+//
+// Conditional directives — the one deliberate divergence. The native parser evaluates expr with the
+// project's defines in hand; an editor buffer only has the EQUATEs it declares itself. So expr is
+// evaluated here only when every name in it resolves: integer literals, TRUE/FALSE, and
+// "Name EQUATE(value)" declared earlier in this buffer, optionally compared with = <> ~= < > <= >=.
+// Anything else (the usual _DEBUG_, _ABCDllMode_, _C55_ project defines) is UNKNOWN and left
+// undimmed for both OMIT and COMPILE. The native parser instead falls back to "omitted" for an
+// unresolvable COMPILE — right for it, because it knows the defines and an unresolved name really is
+// undefined; wrong here, where it would grey out code the project in fact compiles. Showing excluded
+// code as live is the lesser error than showing live code as excluded.
+//
+// Terminator matching is case-insensitive, matching clarionFoldingRanges() above, so the fold and the
+// shading always cover the same lines.
+
+var OMIT_PREFILTER = /OMIT|COMPILE|EQUATE/i;
+// The condition runs to the LAST ')' on the line, so a parenthesised condition survives intact.
+var OMIT_DIRECTIVE = /^(OMIT|COMPILE)\s*\(\s*'((?:[^']|'')*)'\s*(?:,\s*(.*?))?\s*\)\s*$/i;
+var EQUATE_DECL = /^([A-Za-z_][A-Za-z0-9_:]*)\s+EQUATE\s*\(\s*([^)]*?)\s*\)/i;
+
+// Value of one operand, or undefined when it can't be known from this buffer.
+function omitAtom(s, equates) {
+    s = s.trim();
+    while (/^\(.*\)$/.test(s)) s = s.slice(1, -1).trim();
+    if (/^[+-]?\d+$/.test(s)) return parseInt(s, 10);
+    var u = s.toUpperCase();
+    if (u === 'TRUE') return 1;
+    if (u === 'FALSE') return 0;
+    if (Object.prototype.hasOwnProperty.call(equates, u)) return equates[u];
+    return undefined;
+}
+
+// Truth of an OMIT/COMPILE condition: true, false, or undefined (unknown → caller leaves it undimmed).
+function evalOmitCondition(expr, equates) {
+    var e = expr.trim();
+    while (/^\(.*\)$/.test(e)) e = e.slice(1, -1).trim();
+    var cmp = /^(.+?)\s*(<>|~=|<=|>=|=<|=>|=|<|>)\s*(.+)$/.exec(e);
+    if (cmp) {
+        var a = omitAtom(cmp[1], equates), b = omitAtom(cmp[3], equates);
+        if (a === undefined || b === undefined) return undefined;
+        switch (cmp[2]) {
+            case '=': return a === b;
+            case '<>': case '~=': return a !== b;
+            case '<': return a < b;
+            case '>': return a > b;
+            case '<=': case '=<': return a <= b;
+            default: return a >= b;   // '>=' / '=>'
+        }
+    }
+    var v = omitAtom(e, equates);
+    return v === undefined ? undefined : v > 0;   // the native rule: an integer > 0 is true
+}
+
+// The omitted blocks of a buffer: [{start, end, directive}], 1-based inclusive line numbers. Takes
+// anything with getLineCount()/getLineContent(i), like clarionFoldingRanges — the real model in the
+// browser, a stub under Node (Terminal/test/clarion-omit-dimming.test.js).
+// One linear pass. Lines that can't hold a directive or an EQUATE are rejected by a single regex
+// test before any parsing, and the lines inside an omitted block are only searched for the
+// terminator, so an 86k-line generated module costs one cheap test per line.
+function clarionOmittedRegions(model) {
+    var out = [];
+    var equates = {};
+    var n = model.getLineCount();
+    for (var i = 1; i <= n; i++) {
+        var raw = model.getLineContent(i);
+        if (!OMIT_PREFILTER.test(raw)) continue;
+        var code = splitClarionLine(raw).code;
+        var eq = EQUATE_DECL.exec(code);   // labels sit in column 1, so this runs on the untrimmed line
+        if (eq) {
+            var ev = omitAtom(eq[2], equates);
+            if (ev !== undefined) equates[eq[1].toUpperCase()] = ev;
+            continue;
+        }
+        var m = OMIT_DIRECTIVE.exec(code.trim());
+        if (!m) continue;
+        var isOmit = m[1].toUpperCase() === 'OMIT';
+        var omitted;
+        if (m[3] === undefined || m[3] === '') {
+            omitted = isOmit;
+        } else {
+            var truth = evalOmitCondition(m[3], equates);
+            omitted = truth === undefined ? false : (isOmit ? truth : !truth);
+        }
+        if (!omitted) continue;   // compiled: its body is ordinary code, scanned as usual
+        var term = m[2].replace(/''/g, "'").toUpperCase();
+        if (!term) continue;
+        for (var j = i + 1; j <= n; j++) {
+            if (model.getLineContent(j).toUpperCase().indexOf(term) >= 0) {
+                out.push({ start: i, end: j, directive: m[1].toUpperCase() });
+                i = j;   // skip the block: nothing inside an omitted block is a directive
+                break;
+            }
+        }
+        // No terminator: compile error 355; the native editor shades nothing and parses on.
+    }
+    return out;
+}
+
+// Paint clarionOmittedRegions() onto an editor's model and keep it current. Model-level decorations
+// (ownerId 0), like the embed shading, so a split pane sharing the model shows them too. Recomputed
+// on a short debounce after edits — one pass per typing pause, not per keystroke — and on language
+// or model changes; cleared for any language other than Clarion (file mode can open plaintext).
+// The look lives in the page's CSS (.ca-omitted-line / .ca-omitted-text) so it can follow the theme.
+var OMIT_DIM_DEBOUNCE_MS = 250;
+function installClarionOmitDimming(editor) {
+    var ids = [], idsModel = null, timer = null;
+    function refresh() {
+        timer = null;
+        var model = editor.getModel();
+        if (idsModel && idsModel !== model) {
+            try { if (!idsModel.isDisposed()) idsModel.deltaDecorations(ids, []); } catch (e) { }
+            ids = [];
+        }
+        idsModel = model;
+        if (!model) return;
+        var regions = model.getLanguageId() === 'clarion' ? clarionOmittedRegions(model) : [];
+        ids = model.deltaDecorations(ids, regions.map(function (r) {
+            return {
+                range: new monaco.Range(r.start, 1, r.end, model.getLineMaxColumn(r.end)),
+                options: {
+                    isWholeLine: true,
+                    className: 'ca-omitted-line',
+                    inlineClassName: 'ca-omitted-text',
+                    stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+                }
+            };
+        }));
+    }
+    function schedule(delay) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(refresh, delay);
+    }
+    editor.onDidChangeModelContent(function () { schedule(OMIT_DIM_DEBOUNCE_MS); });
+    editor.onDidChangeModelLanguage(function () { schedule(0); });
+    editor.onDidChangeModel(function () { schedule(0); });
+    schedule(0);
+    return { refresh: refresh };
+}
+
 // Node-visible surface for Terminal/test/clarion-folding.test.js. Guarded exactly like
 // clarion-formatter.js — `module` is undefined in the WebView2 pages, so this is inert there.
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         splitClarionLine: splitClarionLine,
         clarionFoldingRanges: clarionFoldingRanges,
-        setClarionLspFolding: setClarionLspFolding
+        setClarionLspFolding: setClarionLspFolding,
+        clarionOmittedRegions: clarionOmittedRegions,
+        evalOmitCondition: evalOmitCondition,
+        installClarionOmitDimming: installClarionOmitDimming
     };
 }

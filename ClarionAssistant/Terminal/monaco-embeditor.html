@@ -433,6 +433,30 @@
         }
     }
 
+    /* Code excluded by OMIT/COMPILE (GH #264; installClarionOmitDimming in clarion-language.js). Greyed
+       the way the native editor shows it: the text fades toward the background (opacity, so every
+       token colour dims evenly in either theme) over a faint wash like the native WhiteSmoke band.
+       The wash stacks on .embed-readonly-line in the embeditor, so omitted generated code still reads
+       as both generated and omitted. */
+    .ca-omitted-text { opacity: 0.5; }
+    .ca-omitted-line { background: rgba(0, 0, 0, 0.035); }
+    body:not(.light) .ca-omitted-text { opacity: 0.45; }
+    body:not(.light) .ca-omitted-line { background: rgba(255, 255, 255, 0.03); }
+    /* High contrast: a 50% fade on pure black/white is still legible, but the alpha wash vanishes —
+       swap it for the dotted left edge, distinct from the read-only line's solid one. */
+    .monaco-editor.hc-black .ca-omitted-text,
+    .monaco-editor.hc-light .ca-omitted-text { opacity: 0.6; }
+    .monaco-editor.hc-black .ca-omitted-line,
+    .monaco-editor.hc-light .ca-omitted-line {
+        background: none;
+        box-sizing: border-box;
+        border-left: 3px dotted rgba(127, 127, 127, 0.9);
+    }
+    @media (forced-colors: active) {
+        .ca-omitted-text { forced-color-adjust: none; opacity: 0.6; }
+        .ca-omitted-line { forced-color-adjust: none; box-sizing: border-box; border-left: 3px dotted rgba(127, 127, 127, 0.9); }
+    }
+
     /* ---------- Find & Replace panel (Clarion-style: results grid of every match) ---------- */
     :root { --find-accent: #89b4fa; --find-hit: rgba(137,180,250,0.35); --find-hit-border: #89b4fa; --on-fg: #1e1e2e; --find-fz: 12px; }
     body.light { --find-accent: #1e66f5; --find-hit: rgba(30,102,245,0.22); --find-hit-border: #1e66f5; --on-fg: #eff1f5; }
@@ -1599,6 +1623,9 @@
                 installColonSuggest(editor);    // "glo:" / "PROP:" opens completion (ticket 38158e98)
                 installFormatOnEnter(editor);   // format the completed line on Enter (Clarion-style)
                 installCaretBehindEol(editor);  // Clarion "Can move caret behind EOL" (inert until settings arm it)
+                // GH #264: grey out OMIT/COMPILE-excluded code like the native editor. Model-level, so the
+                // split pane (same model) shows it too; covers the CA Editor (fileMode) and the CA Embeditor.
+                if (typeof installClarionOmitDimming === 'function') installClarionOmitDimming(editor);
                 // GH #206: list Monaco's own actions in the gear panel's Keyboard table and apply any moved keys.
                 // After every addAction above, so this page's own right-click actions are listed too.
                 if (loadEditorActions(editor)) buildKeybindTable();
