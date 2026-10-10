@@ -1134,6 +1134,11 @@ namespace ClarionAssistant
             DetectFromIde();
             if (!string.Equals(_currentSlnPath, path, StringComparison.OrdinalIgnoreCase)) return;
 
+            // 9e1bd280: the tabs' tools follow the IDE (the standalone servers read this record), so publish the
+            // switch now - the refresh button reaches here between polls - and relabel the tabs to match.
+            Services.IdeSolutionRecord.Publish(path);
+            RetitleSolutionTabs(path);
+
             // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
             // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
             // solution rather than something the developer asked for, so it gets no
@@ -1146,6 +1151,41 @@ namespace ClarionAssistant
                 RunIndexAutomatic(false); // full index
             else
                 RunIndexAutomatic(true); // incremental update
+        }
+
+        /// <summary>
+        /// The IDE switched to <paramref name="newPath"/>: every tab opened on a solution now shows it (ticket 9e1bd280).
+        /// Its tools already answer for the IDE's solution - the standalone server follows IdeSolutionRecord, and the
+        /// in-process tools (Copilot, Codex) read _currentSlnPath - so "CA1 · v61POSitive" after the IDE opened
+        /// UltimateSQLTest named a solution none of them served. Only the context part moves: CA1 is the tab's
+        /// MultiTerminal identity, and a tab opened on a project or class keeps its name. Claude, Copilot and Codex
+        /// tabs alike. UI thread (called from OnSolutionChanged).
+        /// </summary>
+        private void RetitleSolutionTabs(string newPath)
+        {
+            if (_tabManager == null) return;
+            foreach (var tab in _tabManager.Tabs)
+            {
+                if (tab.IsHome) continue;
+                // BaseName is captured at the first launch; before it, the tab's name is still the bare context.
+                string context = tab.BaseName ?? tab.Name;
+                string followed = Services.CaAgentIdentity.FollowedContextName(context, tab.SolutionPath, newPath);
+                if (followed == null) continue;
+
+                tab.SolutionPath = newPath;
+                tab.VersionConfig = _currentVersionConfig;
+                if (tab.BaseName == null)
+                {
+                    _tabManager.RenameTab(tab, followed);
+                    continue;
+                }
+                tab.BaseName = followed;
+                // The same labels the launch and ReleaseAgentName build: "CA1 · name" while an agent name is held,
+                // else the name with its backend suffix ("name CP").
+                _tabManager.RenameTab(tab, tab.AgentName != null
+                    ? Services.CaAgentIdentity.TabLabel(tab.AgentName, followed)
+                    : ApplyBackendSuffix(followed, tab.AssistantBackend ?? tab.RequestedBackend));
+            }
         }
 
         /// <summary>The IDE has a solution open that is not CA's: a switch OnSolutionChanged must handle.</summary>

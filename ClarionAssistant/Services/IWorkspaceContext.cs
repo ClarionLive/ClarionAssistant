@@ -111,4 +111,44 @@ namespace ClarionAssistant.Services
     {
         string VersionNote { get; }
     }
+
+    /// <summary>
+    /// Optional, for a workspace whose solution can move under it (the standalone MCP server follows the IDE, 9e1bd280):
+    /// everything keyed on the solution, for a solution the CALLER snapshotted. An operation reads the solution ONCE and
+    /// derives its version, .red, library paths and database from that, so a switch mid-operation cannot mix two
+    /// solutions - pipeline run 1 found an index run writing A's database with B's .red. The current-solution members
+    /// of <see cref="IWorkspaceContext"/> re-read the followed solution on every access, so two of them can disagree.
+    /// </summary>
+    public interface ISolutionScopedWorkspace
+    {
+        /// <summary>One read of the followed solution and everything keyed on it. Never null.</summary>
+        SolutionScope Snapshot();
+
+        /// <summary>
+        /// The same for a solution the caller NAMES (index_codegraph's sln_path, run 2), which need not be the followed
+        /// one: its own version, .red, library paths and database. Never null.
+        /// </summary>
+        SolutionScope ScopeFor(string solutionPath);
+    }
+
+    /// <summary>
+    /// An immutable per-operation view of one solution (9e1bd280 run 1): built from ONE read of the IDE's record, so its
+    /// version (the IDE's choice for THIS solution), .red, library paths and database cannot belong to two solutions.
+    /// </summary>
+    public sealed class SolutionScope
+    {
+        /// <summary>Where the solution came from, and the record it was read from.</summary>
+        public SolutionSourceSnapshot Source { get; internal set; }
+        /// <summary>The solution, or null when there is none.</summary>
+        public string SolutionPath { get; internal set; }
+        public ClarionVersionConfig Version { get; internal set; }
+        /// <summary>Which tier chose <see cref="Version"/>, or why there is none.</summary>
+        public string VersionNote { get; internal set; }
+        /// <summary>The solution's .red: its folder's own version-named one, else its version's. Null without a version.</summary>
+        public RedFileService Red { get; internal set; }
+        /// <summary>The library (.inc) paths an index of the solution uses, or null.</summary>
+        public List<string> IndexLibraryPaths { get; internal set; }
+        /// <summary>The CodeGraph database beside the solution, or null.</summary>
+        public string DbPath { get; internal set; }
+    }
 }

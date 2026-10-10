@@ -13,7 +13,8 @@ a Clarion codebase, and it is what you will default to if you skip this.
 
 ## First moves
 
-1. **`get_solution_info`** — which solution, which Clarion version, which redirection file, and
+1. **`get_solution_info`** — which solution, which Clarion version the build uses (`clarionRoot`;
+   it can differ from the IDE's own install), which redirection file (`activeRedFile`), and
    crucially whether a CodeGraph database already exists (`isIndexed`).
 2. **If `isIndexed` is false, run `index_solution`.** It parses every `.clw`/`.inc` the redirection
    file can reach — typically thousands of files including the ABC library — into a queryable
@@ -29,6 +30,8 @@ registered. The user needs to know, because the difference in what you can do is
 
 | Need | Tool |
 |---|---|
+| Where is this file (`.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.lib`, ...) | `resolve_red_path` |
+| Which template / include writes X (search inside Clarion files) | `get_red_search_paths` → Grep its `absoluteSearchPaths`, in order |
 | Where is this symbol defined / who calls it, across the whole solution | `query_codegraph` (SQL) |
 | Same question, but the file was edited this session | `lsp_definition` / `lsp_references` / `lsp_hover` |
 | How do I use this third-party template or class | `query_docs` |
@@ -40,6 +43,10 @@ registered. The user needs to know, because the difference in what you can do is
 moment you edit. LSP reads live buffers and is authoritative for a file you just changed, but is
 per-file rather than solution-wide. Use CodeGraph for "find everything", LSP for "is this correct
 right now".
+
+**ALWAYS find Clarion files through the active .red** (`resolve_red_path`; `get_red_search_paths`
+to search inside them). Never use a path from memory or an earlier answer, and never search drives:
+files move, and the .red is the only source of truth. Stale copies elsewhere on disk give wrong answers.
 
 ## Three things that will otherwise waste your time
 

@@ -98,7 +98,7 @@ scripts\New-ClarionApp.ps1 -SpecPath <folder> -Clean -Run
 | `scripts\Invoke-ClarionCL.ps1` | ClarionCL wrapper: modal capture, timeout, child-tree kill, artifact freshness. |
 | `scripts\Sync-SpecFromApp.ps1` | Capture a live `.app` back to spec text (drift detection). |
 
-All three take `-ClarionRoot` (default `C:\Clarion12`) — **set it if your install differs.**
+All three take `-ClarionRoot` (default `C:\Clarion12`) — **set it if your install differs.** Take it from `get_solution_info`'s `clarionRoot`, not from memory; and ALWAYS find a `.tpl`/`.inc`/`.clw` through the active .red (`resolve_red_path`), never by searching drives — files move, and stale copies give wrong answers.
 
 `New-ClarionApp.ps1 -Force` guards against rebuilding when the `.app` is newer than its spec, which is the guard that stops you discarding IDE-added embeds.
 

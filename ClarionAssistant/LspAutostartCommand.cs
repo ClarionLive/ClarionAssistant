@@ -181,6 +181,11 @@ namespace ClarionAssistant
                     ? ClarionVersionSelector.NormalizeIdeChoice(live) : null;
             };
             IdeSolutionRecord.ConfigDirProvider = ClarionConfigDirectory.Resolve;
+            // 5a5581e6: and the live build configuration, so .red sections follow Build > Set Configuration; re-published
+            // on ProjectService.SolutionConfigurationChanged (and on every solution poll, which compares it too).
+            IdeSolutionRecord.BuildConfigurationProvider = EditorService.GetOpenSolutionConfiguration;
+            try { SubscribeSolutionConfigurationChanged(); }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] SolutionConfigurationChanged subscribe failed: " + ex.Message); }
 
             // Run() is a /Workspace/Autostart command, so this is the UI thread with the workbench's
             // WindowsFormsSynchronizationContext installed. Without one the handler below runs inline
@@ -203,6 +208,33 @@ namespace ClarionAssistant
                 catch { }
             };
             PropertyService.PropertyChanged += _versionHandler;
+        }
+
+        private static Delegate _configurationChangedHandler;
+
+        /// <summary>5a5581e6: ProjectService.SolutionConfigurationChanged (a static event; args ignored) re-publishes
+        /// the record, so the standalone sees a Debug/Release switch at once.</summary>
+        private static void SubscribeSolutionConfigurationChanged()
+        {
+            var asm = Assembly.Load("ICSharpCode.SharpDevelop");
+            var type = asm != null ? asm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService") : null;
+            var evt = type != null ? type.GetEvent("SolutionConfigurationChanged", BindingFlags.Public | BindingFlags.Static) : null;
+            MethodInfo handler = typeof(LspAutostartCommand).GetMethod("OnSolutionConfigurationChanged", BindingFlags.NonPublic | BindingFlags.Static);
+            if (evt == null || handler == null) return;
+            _configurationChangedHandler = Delegate.CreateDelegate(evt.EventHandlerType, handler);
+            evt.AddEventHandler(null, _configurationChangedHandler);
+        }
+
+        private static void OnSolutionConfigurationChanged(object sender, EventArgs e)
+        {
+            try
+            {
+                // Posted: run after the IDE has stored the new configuration.
+                var ctx = _uiContext;
+                if (ctx != null) ctx.Post(_ => IdeSolutionRecord.Republish(), null);
+                else IdeSolutionRecord.Republish();
+            }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] configuration republish failed: " + ex.Message); }
         }
 
         /// <summary>One PropertyService read; raises OnIdeVersionChanged when the choice moved. Never throws.</summary>

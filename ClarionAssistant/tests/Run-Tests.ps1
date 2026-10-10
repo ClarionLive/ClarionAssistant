@@ -136,6 +136,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "IdeSolutionRecord.Test"
                Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # 9e1bd280: every tool in a tab follows the IDE's open solution - --solution only until the IDE publishes,
+            # none once it closes it, the switch reported - and the standalone/LSP/addin wiring reads that one follower.
+            @{ Name = "SolutionFollower.Test"
+               Sources = @("tests\SolutionFollower.Test.cs", "Services\SolutionFollower.cs",
+                           "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll")
+               Args = @($RepoDir) }
             # 0ce0b5e2: a solution's Clarion version - pins, then the IDE's own choice for it (live record, then its
             # saved preferences file, chosen by content with the name hash only as a tiebreak), then the host
             # install. x86 like the IDE, so the hash tiebreak is checked as the IDE computes it.
@@ -209,6 +216,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "RedFileService.Include.Test"
                Sources = @("tests\RedFileService.Include.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
+            # 5a5581e6: template search paths (*.tp?/*.tpl/*.tpw in .red order) and relative entries anchored at the
+            # solution folder - what get_solution_info / get_red_search_paths hand the agent instead of a drive search.
+            @{ Name = "RedFileService.SearchPaths.Test"
+               Sources = @("tests\RedFileService.SearchPaths.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs",
+                           "Services\RedResolution.cs", "CodeGraph\Parsing\SolutionParser.cs", "CodeGraph\Parsing\Models\SolutionProject.cs")
                Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.

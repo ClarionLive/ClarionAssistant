@@ -51,6 +51,10 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static System.Func<string, SolutionVersionChoice> SolutionVersionProvider;
 
+        /// <summary>The build configuration the server is started with (updatePaths): always this one. 5a5581e6: a .red
+        /// answer from the server is that configuration's, so resolve_red_path only asks it when the IDE's is the same.</summary>
+        public const string LspConfiguration = "Debug";
+
         /// <summary>Which version the running server was given and what chose it, for every answer that depends on
         /// it (lsp_diagnostics). Null when nothing is running.</summary>
         public static string RunningVersionName { get { return RunningSolutionPath != null ? _runningVersionName : null; } }
@@ -129,8 +133,9 @@ namespace ClarionAssistant.Services
         /// running server was started from it, every EnsureRunning re-asks it, restarts the server
         /// on a new answer and stops it on none. Consulted after <see cref="SolutionPathProvider"/>.
         ///
-        /// Set by the standalone server launched by the IDE with no --solution: it returns the
-        /// solution the IDE publishes (IdeSolutionRecord). Without following, a Chat tab's LSP kept
+        /// Set by the standalone server launched by an IDE (with or without --solution, 9e1bd280): it
+        /// returns the same followed solution every tool there uses - the one the IDE publishes
+        /// (IdeSolutionRecord), else --solution until it does. Without following, a Chat tab's LSP kept
         /// serving solution A after the developer switched the IDE to B, or closed A (77aceec5,
         /// pipeline run 1). Must be cheap - it is called on every lsp_* auto-start while following.
         /// The addin leaves it unset.
@@ -358,7 +363,9 @@ namespace ClarionAssistant.Services
                         // wrong: no handshake was ever attempted. Measured against the real .exe
                         // (d051fbd1 item 0) — that misdiagnosis was the ENTIRE observable output.
                         LspTrace.Write("[LspService] no solution - nothing to start. "
-                            + (SolutionPathProvider == null
+                            + (SolutionPathProvider == null && FollowedSolutionProvider != null
+                                ? "The followed solution (the IDE's open one, else --solution) is none."
+                                : SolutionPathProvider == null
                                 ? "The host installed no SolutionPathProvider."
                                 : "SolutionPathProvider returned nothing; pass --solution <path.sln> "
                                   + "or run where exactly one .sln is discoverable."));
@@ -488,7 +495,7 @@ namespace ClarionAssistant.Services
                             { "solutionFilePath", slnPath ?? "" },
                             { "redirectionFile", redirectionFileName },
                             { "clarionVersion", versionConfig != null ? (versionConfig.Name ?? "") : "" },
-                            { "configuration", "Debug" },
+                            { "configuration", LspConfiguration },
                             { "macros", (versionConfig != null ? versionConfig.Macros : null) ?? new Dictionary<string, string>() },
                             { "redirectionPaths", redirectionPaths },
                             { "libsrcPaths", libsrcPaths },

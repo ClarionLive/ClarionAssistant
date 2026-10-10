@@ -67,6 +67,13 @@ namespace ClarionAssistant.Services
 
         // Current state — updated by the host before each heartbeat
         public string SolutionPath { get; set; }
+
+        /// <summary>
+        /// Optional: when set, <see cref="SolutionPath"/> is re-read from it before every registration and
+        /// heartbeat. The standalone server sets it (9e1bd280): its solution follows the IDE, and a row still
+        /// naming the launch solution would match peers on a solution this instance has left.
+        /// </summary>
+        public Func<string> SolutionPathProvider { get; set; }
         public string AppFile { get; set; }
         public string ActiveFile { get; set; }
         public string ActiveProcedure { get; set; }
@@ -191,8 +198,17 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>Refresh <see cref="SolutionPath"/> from <see cref="SolutionPathProvider"/>, when set. Never throws.</summary>
+        private void RefreshSolutionPath()
+        {
+            var provider = SolutionPathProvider;
+            if (provider == null) return;
+            try { SolutionPath = provider(); } catch { }
+        }
+
         private void Register()
         {
+            RefreshSolutionPath();
             using (var conn = OpenConnection())
             using (var cmd = new SQLiteCommand(@"
                 INSERT OR REPLACE INTO instances (pid, solution_path, app_file, active_file, active_procedure, working_on, started_at, heartbeat_at)
@@ -222,6 +238,7 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                RefreshSolutionPath();
                 int rows;
                 using (var conn = OpenConnection())
                 using (var cmd = new SQLiteCommand(@"

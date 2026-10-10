@@ -855,7 +855,8 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// clarion/getSearchPaths — config-aware search directories for a project + extension
-        /// (merges the active configuration section with Common, the way the compiler does).
+        /// (merges the active configuration section with Common, the way the compiler does; the server's active
+        /// configuration is the one it was started with, LspService.LspConfiguration).
         /// Requires the server-side solution to be loaded and a valid projectName. Returns an
         /// empty list when the server is down or the project isn't found.
         /// </summary>
