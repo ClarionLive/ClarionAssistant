@@ -253,19 +253,24 @@ namespace ClarionAssistant.Services
                 if (document == null) return InsertResult.Failed("Cannot access document");
 
                 // Convert line/col to offsets (0-based lines internally)
-                int startOffset = GetOffset(document, startLine - 1, startCol - 1);
-                int endOffset = GetOffset(document, endLine - 1, endCol - 1);
+                int startOffset = GetOffset(document, startLine - 1, startCol);
+                int endOffset = GetOffset(document, endLine - 1, endCol);
                 if (startOffset < 0 || endOffset < 0)
                     return InsertResult.Failed("Invalid line/column range");
+                // GH #262: a reversed range is the same range (as the CA Editor treats it). A negative length threw
+                // inside Document.Replace AFTER DocumentAboutToBeChanged had fired.
+                if (endOffset < startOffset) { int swap = startOffset; startOffset = endOffset; endOffset = swap; }
 
                 int length = endOffset - startOffset;
+                int caretOffset;
+                string inserted = EditorTextOps.ReplacementText(newText, startOffset, out caretOffset);
 
                 // Use Document.Replace(offset, length, text)
                 var replaceMethod = document.GetType().GetMethod("Replace",
                     new[] { typeof(int), typeof(int), typeof(string) });
                 if (replaceMethod != null)
                 {
-                    replaceMethod.Invoke(document, new object[] { startOffset, length, NormalizeCrLf(newText) });
+                    replaceMethod.Invoke(document, new object[] { startOffset, length, inserted });
                 }
                 else
                 {
@@ -278,12 +283,12 @@ namespace ClarionAssistant.Services
                         return InsertResult.Failed("Replace/Remove method not found");
 
                     removeMethod.Invoke(document, new object[] { startOffset, length });
-                    insertMethod.Invoke(document, new object[] { startOffset, NormalizeCrLf(newText) });
+                    insertMethod.Invoke(document, new object[] { startOffset, inserted });
                 }
 
-                // Move caret to end of replacement
+                // Move caret to end of replacement (GH #262: the inserted, CRLF-normalized text's end)
                 if (caret != null)
-                    SetProperty(caret, "Offset", startOffset + (newText ?? "").Length);
+                    SetProperty(caret, "Offset", caretOffset);
 
                 try { textArea.GetType().GetMethod("Invalidate", Type.EmptyTypes)?.Invoke(textArea, null); } catch { }
                 return InsertResult.Succeeded();
@@ -373,8 +378,8 @@ namespace ClarionAssistant.Services
                 var clearMethod = selMgr.GetType().GetMethod("ClearSelection");
                 if (clearMethod != null) clearMethod.Invoke(selMgr, null);
 
-                int startOffset = GetOffset(document, startLine - 1, startCol - 1);
-                int endOffset = GetOffset(document, endLine - 1, endCol - 1);
+                int startOffset = GetOffset(document, startLine - 1, startCol);
+                int endOffset = GetOffset(document, endLine - 1, endCol);
                 if (startOffset < 0 || endOffset < 0)
                     return InsertResult.Failed("Invalid line/column range");
 
@@ -393,9 +398,11 @@ namespace ClarionAssistant.Services
                     var paramTypes = setSelMethod.GetParameters();
                     if (paramTypes.Length == 2)
                     {
+                        // GH #262: the clamped columns behind the offsets above (the rule the CA Editor uses), not
+                        // the raw ones: the omitted end_col (int.MaxValue) or start_col 0 would otherwise reach the selection unclamped.
                         var locType = paramTypes[0].ParameterType;
-                        var startLoc = Activator.CreateInstance(locType, new object[] { startCol - 1, startLine - 1 });
-                        var endLoc = Activator.CreateInstance(locType, new object[] { endCol - 1, endLine - 1 });
+                        var startLoc = Activator.CreateInstance(locType, new object[] { startOffset - LineOffset(document, startLine - 1), startLine - 1 });
+                        var endLoc = Activator.CreateInstance(locType, new object[] { endOffset - LineOffset(document, endLine - 1), endLine - 1 });
                         setSelMethod.Invoke(selMgr, new object[] { startLoc, endLoc });
                     }
                 }
@@ -415,37 +422,40 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Get offset from line/column in a document.
+        /// Get offset from a 0-based line and a 1-based column in a document; the column clamped by
+        /// EditorTextOps.ColumnIndex (GH #262: the CA Editor's rule, so a column below 1 no longer reaches back
+        /// into the previous line's break).
         /// </summary>
-        private int GetOffset(object document, int line, int col)
+        private int GetOffset(object document, int line0, int col1)
         {
             try
             {
-                // Try GetLineSegment(line).Offset + col
+                // Try GetLineSegment(line0).Offset + the clamped column
                 var getLineMethod = document.GetType().GetMethod("GetLineSegment",
                     new[] { typeof(int) });
                 if (getLineMethod != null)
                 {
-                    var segment = getLineMethod.Invoke(document, new object[] { line });
+                    var segment = getLineMethod.Invoke(document, new object[] { line0 });
                     if (segment != null)
                     {
                         int lineOffset = (int)GetProperty(segment, "Offset");
                         int lineLength = (int)GetProperty(segment, "Length");
-                        return lineOffset + Math.Min(col, lineLength);
+                        return lineOffset + EditorTextOps.ColumnIndex(col1, lineLength);
                     }
                 }
 
                 // Fallback: calculate from text
                 string text = (GetProperty(document, "TextContent") ?? GetProperty(document, "Text")) as string;
                 if (text == null) return -1;
-
-                int offset = 0;
-                string[] lines = text.Split('\n');
-                for (int i = 0; i < line && i < lines.Length; i++)
-                    offset += lines[i].Length + 1; // +1 for \n
-                return offset + Math.Min(col, lines.Length > line ? lines[line].Length : 0);
+                return line0 < 0 ? -1 : EditorTextOps.Offset(text, line0 + 1, col1);
             }
             catch { return -1; }
+        }
+
+        /// <summary>Offset where a 0-based line starts (column 1 of it).</summary>
+        private int LineOffset(object document, int line0)
+        {
+            return GetOffset(document, line0, 1);
         }
 
         /// <summary>
