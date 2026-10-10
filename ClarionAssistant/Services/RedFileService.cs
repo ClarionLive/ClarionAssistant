@@ -559,14 +559,11 @@ namespace ClarionAssistant.Services
                 {
                     if (MatchesPattern(fileName, entry.Pattern))
                     {
-                        string candidate = Path.Combine(entry.ResolvedPath, fileName);
                         try
                         {
                             // Redirection relative paths are relative to the project dir, not the IDE's CWD.
-                            if (!Path.IsPathRooted(candidate) && !string.IsNullOrEmpty(baseDir))
-                                candidate = Path.Combine(baseDir, candidate);
-                            candidate = Path.GetFullPath(candidate);
-                            if (File.Exists(candidate))
+                            string candidate = AnchorAt(Path.Combine(entry.ResolvedPath, fileName), baseDir);
+                            if (candidate != null && File.Exists(candidate))
                                 return candidate;
                         }
                         catch { }
@@ -685,6 +682,77 @@ namespace ClarionAssistant.Services
                 }
             }
 
+            return result;
+        }
+
+        /// <summary>
+        /// Like <see cref="GetSearchPaths(string, string)"/> for several extensions at once, in the .red's own entry
+        /// order (= precedence): an entry joins when its pattern matches ANY of them. 5a5581e6: templates are
+        /// <c>.tpl</c> and <c>.tpw</c>, and a .red may name them as <c>*.tp?</c> or one by one.
+        /// </summary>
+        public List<string> GetSearchPathsForAny(IEnumerable<string> extensions, string sectionName = "Common")
+        {
+            // No LINQ: the csc harnesses compile this file against System.dll alone.
+            var result = new List<string>();
+            if (extensions == null) return result;
+            var testNames = new List<string>();
+            foreach (string e in extensions)
+                if (!string.IsNullOrEmpty(e)) testNames.Add("test" + (e.StartsWith(".") ? e : "." + e));
+
+            RedSection section;
+            if (testNames.Count == 0 || !_sections.TryGetValue(sectionName, out section))
+                return result;
+
+            foreach (var entry in section.Entries)
+            {
+                bool matches = false;
+                foreach (string t in testNames)
+                    if (MatchesPattern(t, entry.Pattern)) { matches = true; break; }
+                if (!matches) continue;
+                string resolved = entry.ResolvedPath;
+                if (!string.IsNullOrEmpty(resolved) && !result.Contains(resolved))
+                    result.Add(resolved);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Anchor a .red path the way <see cref="ResolveFrom"/> does: a relative entry (".", ".\Source", "..\x") hangs
+        /// off <paramref name="baseDir"/> (the project/solution dir), not the process CWD (the Clarion bin, in the
+        /// IDE). Absolute entries are only normalised. Returns null for a path that cannot be made full.
+        /// </summary>
+        public static string AnchorAt(string path, string baseDir)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            try
+            {
+                if (!Path.IsPathRooted(path) && !string.IsNullOrEmpty(baseDir))
+                    path = Path.Combine(baseDir, path);
+                string full = Path.GetFullPath(path);
+                // "x\Source\" and "x\Source" are one folder; keep a drive root's own backslash.
+                string root = Path.GetPathRoot(full) ?? "";
+                return full.Length > root.Length ? full.TrimEnd('\\', '/') : full;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// 5a5581e6: <paramref name="paths"/> anchored at <paramref name="baseDir"/> (<see cref="AnchorAt"/>), order
+        /// kept, duplicates and unanchorable entries dropped - what an agent can Grep without knowing the .red's
+        /// relative-path rule. Null when there is no <paramref name="baseDir"/>: a relative entry would otherwise
+        /// silently land on the process CWD.
+        /// </summary>
+        public static List<string> AnchorAll(IEnumerable<string> paths, string baseDir)
+        {
+            if (paths == null || string.IsNullOrEmpty(baseDir)) return null;
+            var result = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string p in paths)
+            {
+                string full = AnchorAt(p, baseDir);
+                if (full != null && seen.Add(full))
+                    result.Add(full);
+            }
             return result;
         }
 

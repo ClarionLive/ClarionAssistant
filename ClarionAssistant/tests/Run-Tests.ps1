@@ -210,6 +210,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\RedFileService.Include.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # 5a5581e6: template search paths (*.tp?/*.tpl/*.tpw in .red order) and relative entries anchored at the
+            # solution folder - what get_solution_info / get_red_search_paths hand the agent instead of a drive search.
+            @{ Name = "RedFileService.SearchPaths.Test"
+               Sources = @("tests\RedFileService.SearchPaths.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
             @{ Name = "InstanceCoordination.ReRegister.Test"

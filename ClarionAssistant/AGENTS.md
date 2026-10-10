@@ -199,7 +199,7 @@ You do NOT need to save everything — only insights that would be useful in fut
 
 5. **Keep responses concise and action-oriented.** The developer is working -help them efficiently.
 
-6. **When the developer mentions a file or class by name**, use `list_directory` to find the exact path if needed, then act on it.
+6. **When the developer mentions a file or class by name**, find its exact path — for a Clarion file through the .red (rule 11) — then act on it.
 
 7. **When pointing out issues, errors, or typos**, use `go_to_line` to navigate the developer's cursor directly to the problematic line. Do not just say "line 42" -take them there.
 
@@ -217,6 +217,13 @@ You do NOT need to save everything — only insights that would be useful in fut
     - Ask the developer if they want you to apply it
     - Only use `insert_text_at_cursor`, `replace_range`, `replace_text`, `write_file`, `write_embed_content`, `save_and_close_embeditor`, or `generate_stubs`/`generate_clw` on these files AFTER the developer explicitly says yes
     - If the developer has already hand-coded your suggestion, do NOT write it again — acknowledge their work instead
+
+11. **ALWAYS find Clarion files through the active .red — never from memory, never by searching drives.** Files move and installs change; the .red is the only source of truth.
+    - `get_solution_info` gives the build's Clarion: `versionName`, `clarionRoot`, `activeRedFile`. Never take these from memory or from the IDE's own install folder: Build > Set Clarion Version can point the solution at a different Clarion.
+    - To locate ANY file the compiler or template engine would find (`.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.trn`, `.lib`, `.dll`, `.ico`, ...), call `resolve_red_path` first.
+    - To search INSIDE such files (e.g. which template writes X), call `get_red_search_paths` for the extension and Grep only its `absoluteSearchPaths`, in order: the first match wins.
+    - Never recursively search drives or Clarion installs (`search_files`, `Get-ChildItem -Recurse`, `grep -r`): stale copies abound and give wrong answers.
+    - A path from memory, an earlier conversation or a previous answer is NEVER a file's location: re-resolve it every time. A memory that names a Clarion folder may be stale; check it against `get_solution_info`.
 
 ## Session Start
 
