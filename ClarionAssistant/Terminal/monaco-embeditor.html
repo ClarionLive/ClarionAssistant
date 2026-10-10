@@ -452,9 +452,17 @@
         box-sizing: border-box;
         border-left: 3px dotted rgba(127, 127, 127, 0.9);
     }
+    /* A block whose condition the editor can't evaluate (project defines such as _DEBUG_): the text
+       keeps its normal colours, and a faint bar in the line-decorations margin, directive line through
+       terminator line, says "this is conditional". */
+    .ca-conditional-margin { box-sizing: border-box; border-left: 3px solid rgba(30, 102, 245, 0.35); }
+    body:not(.light) .ca-conditional-margin { border-left-color: rgba(137, 180, 250, 0.4); }
+    .monaco-editor.hc-black .ca-conditional-margin,
+    .monaco-editor.hc-light .ca-conditional-margin { border-left: 3px dashed rgba(127, 127, 127, 0.9); }
     @media (forced-colors: active) {
         .ca-omitted-text { forced-color-adjust: none; opacity: 0.6; }
         .ca-omitted-line { forced-color-adjust: none; box-sizing: border-box; border-left: 3px dotted rgba(127, 127, 127, 0.9); }
+        .ca-conditional-margin { forced-color-adjust: none; border-left: 3px dashed rgba(127, 127, 127, 0.9); }
     }
 
     /* ---------- Find & Replace panel (Clarion-style: results grid of every match) ---------- */

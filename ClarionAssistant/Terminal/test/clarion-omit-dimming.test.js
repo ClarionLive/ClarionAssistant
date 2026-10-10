@@ -4,8 +4,10 @@
 //
 // The native Clarion editor greys out code that OMIT/COMPILE excludes from the build; the CA Editor
 // and CA Embeditor (both monaco-embeditor.html) coloured it like live code. clarionOmittedRegions()
-// in clarion-language.js decides which lines are excluded, and installClarionOmitDimming() keeps the
-// decorations current as the buffer changes. This guards both, plus the page wiring that uses them.
+// in clarion-language.js decides which lines are excluded (kind 'omitted', dimmed) and which depend on
+// a condition the editor can't evaluate (kind 'conditional', a margin bar), and
+// installClarionOmitDimming() keeps the decorations current as the buffer changes. This guards both,
+// plus the page wiring that uses them.
 
 var fs = require('fs');
 var path = require('path');
@@ -21,14 +23,19 @@ function stubModel(lines) {
     return { getLineCount: function () { return lines.length; },
              getLineContent: function (i) { return lines[i - 1]; } };
 }
-function regions(lines) {
+function blocks(lines, kind) {
     return (L.clarionOmittedRegions ? L.clarionOmittedRegions(stubModel(lines)) : [])
+        .filter(function (r) { return r.kind === kind; })
         .map(function (r) { return r.start + '-' + r.end; });
 }
+function same(got, want) { return JSON.stringify(got) === JSON.stringify(want); }
 function regionsAre(name, lines, expected) {
-    var got = regions(lines);
-    ok(name, JSON.stringify(got) === JSON.stringify(expected),
-       'expected [' + expected + ']  got [' + got + ']');
+    var got = blocks(lines, 'omitted');
+    ok(name, same(got, expected), 'expected [' + expected + ']  got [' + got + ']');
+}
+function conditionalsAre(name, lines, expected) {
+    var got = blocks(lines, 'conditional');
+    ok(name, same(got, expected), 'expected [' + expected + ']  got [' + got + ']');
 }
 
 console.log('Unconditional directives:');
@@ -52,11 +59,12 @@ regionsAre('equate-style terminator found anywhere on a later line', [
     '  _EndOfInclude_',
     'after = 1',
 ], ['1-4']);
-regionsAre('terminator matched case-insensitively (same as the fold)', [
-    "OMIT('_EndOfFile_')",
-    'a = 1',
-    '_ENDOFFILE_',
-], ['1-3']);
+regionsAre('terminator is case-sensitive, as the Clarion 12 compiler reads it', [
+    "OMIT('ENDX')",
+    '! endx does not end it',
+    '  D = POWER(2,3)',
+    '! ENDX',
+], ['1-4']);
 regionsAre("the directive's own terminator literal does not close it on its own line", [
     "OMIT('**')   ! ** ends below",
     'a = 1',
@@ -86,12 +94,16 @@ regionsAre('OMIT inside a comment is not a directive', [
 ], []);
 
 console.log('\nConditional directives:');
-regionsAre('OMIT with an unknown condition is left undimmed', [
-    "OMIT('**',_DEBUG_)", 'a', '**',
-], []);
-regionsAre('COMPILE with an unknown condition is left undimmed', [
-    "COMPILE('**',_ABCDllMode_)", 'a', '**',
-], []);
+(function () {
+    var omitDebug = ["OMIT('**',_DEBUG_)", 'a', '**'];
+    regionsAre('OMIT with an unknown condition is not dimmed', omitDebug, []);
+    conditionalsAre('...it gets the conditional margin, directive through terminator', omitDebug, ['1-3']);
+    var compileDll = ["COMPILE('**',_ABCDllMode_)", 'a', '**'];
+    regionsAre('COMPILE with an unknown condition is not dimmed', compileDll, []);
+    conditionalsAre('...it gets the conditional margin too', compileDll, ['1-3']);
+    conditionalsAre('an unterminated unknown block gets no margin', ["OMIT('**',_DEBUG_)", 'a'], []);
+    conditionalsAre('known blocks get no margin', ["OMIT('**',1)", 'a', '**', "COMPILE('##')", 'b', '##'], []);
+})();
 regionsAre('OMIT(..., 1) dims; OMIT(..., 0) does not', [
     "OMIT('**',1)", 'a', '**', "OMIT('##',0)", 'b', '##',
 ], ['1-3']);
@@ -122,6 +134,33 @@ regionsAre('an EQUATE declared inside an omitted block does not count', [
     'b',
     '##',
 ], ['1-3']);
+(function () {
+    // The debug-switch idiom: exactly one TraceOn exists, and the editor can't tell which.
+    var idiom = [
+        "COMPILE('***',_DEBUG_)",
+        'TraceOn   EQUATE(1)',
+        '***',
+        "OMIT('***',_DEBUG_)",
+        'TraceOn   EQUATE(0)',
+        '***',
+        "COMPILE('!x!',TraceOn)",
+        '  Trace(here)',
+        '!x!',
+    ];
+    regionsAre('an EQUATE declared inside an UNKNOWN block is unknown (debug-switch idiom stays live)', idiom, []);
+    conditionalsAre('...and the block that tests it is marked conditional', idiom, ['1-3', '4-6', '7-9']);
+})();
+(function () {
+    var redefined = [
+        '_F_   EQUATE(0)',
+        "_F_   EQUATE('text')",
+        "COMPILE('**',_F_)",
+        'a',
+        '**',
+    ];
+    regionsAre('redefining an EQUATE to an unreadable value forgets the old value', redefined, []);
+    conditionalsAre('...so a test on it is conditional', redefined, ['3-5']);
+})();
 
 console.log('\nNesting:');
 regionsAre('OMIT inside a COMPILED block still dims (nest by different terminators)', [
@@ -152,6 +191,19 @@ console.log('\nCondition evaluator:');
     ok('unknown name is undefined', ev('_DEBUG_', {}) === undefined);
     ok('<> compares', ev('_A_ <> 1', { _A_: 2 }) === true);
     ok('comparison with an unknown side is undefined', ev('_A_ = 1', {}) === undefined);
+    ok('(A) = (B): only parentheses wrapping the WHOLE expression are stripped', ev('(A) = (B)', { A: 1, B: 1 }) === true);
+    ok('((A = 1)) still strips both wrappers', ev('((A = 1))', { A: 1 }) === true);
+})();
+
+console.log('\nShared directive parser:');
+(function () {
+    var p = L.parseOmitDirective || function () { return null; };
+    var a = p("OMIT('it''s',_X_ = 1)") || {};
+    ok("'' in the terminator unescapes to one quote", a.term === "it's", JSON.stringify(a));
+    ok('terminator keeps its case', (p("omit('EndX')") || {}).term === 'EndX');
+    ok('condition captured to the last )', a.cond === '_X_ = 1', JSON.stringify(a));
+    var open = p("OMIT('**'") || {};
+    ok('a directive still being typed parses, flagged not closed', open.term === '**' && open.closed === false, JSON.stringify(open));
 })();
 
 console.log('\nLive update (installClarionOmitDimming):');
@@ -162,16 +214,19 @@ console.log('\nLive update (installClarionOmitDimming):');
         editor: { TrackedRangeStickiness: { NeverGrowsWhenTypingAtEdges: 1 } }
     };
     var lines = ['a = 1', 'b = 2', 'c = 3'];
-    var lang = 'clarion', applied = [], nextId = 1;
+    var lang = 'clarion', applied = [], live = {}, nextId = 1, calls = 0;
     var model = {
         getLineCount: function () { return lines.length; },
         getLineContent: function (i) { return lines[i - 1]; },
         getLineMaxColumn: function (i) { return lines[i - 1].length + 1; },
         getLanguageId: function () { return lang; },
         isDisposed: function () { return false; },
+        getDecorationRange: function (id) { return live[id] || null; },
         deltaDecorations: function (old, decos) {
-            applied = decos.map(function (d) { return d; });
-            return decos.map(function () { return 'd' + (nextId++); });
+            calls++;
+            old.forEach(function (id) { delete live[id]; });
+            applied = decos.slice();
+            return decos.map(function (d) { var id = 'd' + (nextId++); live[id] = d.range; return id; });
         }
     };
     var handlers = {};
@@ -184,28 +239,47 @@ console.log('\nLive update (installClarionOmitDimming):');
     L.installClarionOmitDimming(editor);
     setTimeout(function () {
         ok('nothing dimmed before an OMIT exists', applied.length === 0, JSON.stringify(applied));
-        lines = ["OMIT('**')", 'b = 2', '**'];   // the user types a block in
+        lines = ["OMIT('**')", 'b = 2', '**', "COMPILE('##',_DEBUG_)", 'c = 3', '##'];   // the user types blocks in
         handlers.content();
         handlers.content();                      // a burst of keystrokes collapses into one pass
         setTimeout(function () {
-            var d = applied[0];
-            ok('typing an OMIT block dims it after the debounce', applied.length === 1 &&
+            var d = applied[0], c = applied[1];
+            ok('typing an OMIT block dims it after the debounce', applied.length === 2 &&
                d.range.startLineNumber === 1 && d.range.endLineNumber === 3 && d.range.endColumn === 3,
                JSON.stringify(applied));
-            ok('decoration carries the line wash and the text fade', d && d.options.isWholeLine &&
+            ok('omitted decoration carries the line wash and the text fade', d && d.options.isWholeLine &&
                d.options.className === 'ca-omitted-line' && d.options.inlineClassName === 'ca-omitted-text',
                JSON.stringify(d && d.options));
-            lang = 'plaintext';                  // file mode can open non-Clarion files
-            handlers.lang();
+            ok('unknown-condition decoration carries the margin class and NOT the dim classes', c &&
+               c.options.linesDecorationsClassName === 'ca-conditional-margin' &&
+               !c.options.inlineClassName && !c.options.className &&
+               c.range.startLineNumber === 4 && c.range.endLineNumber === 6,
+               JSON.stringify(c));
+            var before = calls;
+            lines = lines.slice(); lines[1] = 'b = 22';   // an edit inside a line that changes no block
+            handlers.content();
             setTimeout(function () {
-                ok('non-Clarion language clears the dimming', applied.length === 0, JSON.stringify(applied));
-                done();
-            }, 20);
+                ok('an edit that changes no block leaves the decorations alone', calls === before,
+                   (calls - before) + ' extra deltaDecorations call(s)');
+                lang = 'plaintext';                  // file mode can open non-Clarion files
+                handlers.lang();
+                setTimeout(function () {
+                    ok('non-Clarion language clears the dimming', applied.length === 0, JSON.stringify(applied));
+                    done();
+                }, 20);
+            }, 400);
         }, 400);
     }, 20);
 })(function () {
 
     console.log('\nPerformance (86k-line generated module):');
+    function timed(label, big) {
+        var t0 = Date.now();
+        var r = L.clarionOmittedRegions(stubModel(big));
+        var ms = Date.now() - t0;
+        console.log('    (' + label + ': ' + ms + ' ms for ' + big.length + ' lines, ' + r.length + ' blocks)');
+        return { r: r, ms: ms };
+    }
     (function () {
         if (!L.clarionOmittedRegions) { ok('clarionOmittedRegions is exported', false); return; }
         var big = [];
@@ -215,12 +289,26 @@ console.log('\nLive update (installClarionOmitDimming):');
             else if (i % 2000 === 1010) big.push('!***');
             else big.push('    SELF.AddItem(Toolbar)   ! generated line ' + i);
         }
-        var t0 = Date.now();
-        var r = L.clarionOmittedRegions(stubModel(big));
-        var ms = Date.now() - t0;
-        console.log('    (' + ms + ' ms for ' + big.length + ' lines, ' + r.length + ' regions)');
-        ok('one pass finds every block', r.length === 43, 'got ' + r.length);
-        ok('one pass stays well under a typing pause', ms < 1500, ms + ' ms');
+        var t = timed('typical', big);
+        ok('one pass finds every omitted block', t.r.filter(function (x) { return x.kind === 'omitted'; }).length === 43);
+        ok('one pass stays well under a typing pause', t.ms < 500, t.ms + ' ms');
+
+        // Stress: 2,000 UNTERMINATED OMITs. Scanning ahead per directive re-read the buffer to its end
+        // for each one — quadratic, on the WebView's UI thread, after every typing pause.
+        function stress(termFor) {
+            var s = [];
+            for (var j = 0; j < 86000; j++)
+                s.push(j % 43 === 0 && j / 43 < 2000 ? "  OMIT('" + termFor(j / 43) + "')"
+                    : '    SELF.AddItem(Toolbar)   ! generated line ' + j);
+            return s;
+        }
+        // Sharing one terminator, each directive's own literal ends the one before it (the compiler's
+        // raw IndexOf would find it too), so they pair up into 1,000 blocks and only the last is open.
+        var same1 = timed('2,000 OMITs, one terminator', stress(function () { return '@@NEVER@@'; }));
+        ok('2,000 OMITs sharing a terminator: linear, paired as the compiler pairs them',
+           same1.ms < 500 && same1.r.length === 1000, same1.ms + ' ms, ' + same1.r.length + ' blocks');
+        var distinct = timed('2,000 unterminated, distinct terminators', stress(function (k) { return '@@NEVER' + k + '@@'; }));
+        ok('2,000 unterminated OMITs with distinct terminators: linear', distinct.ms < 500 && distinct.r.length === 0, distinct.ms + ' ms');
     })();
 
     console.log('\nPage wiring (monaco-embeditor.html — the CA Editor AND the CA Embeditor):');
@@ -230,6 +318,9 @@ console.log('\nLive update (installClarionOmitDimming):');
         ok('light theme styles the omitted text', /\n\s*\.ca-omitted-text\s*\{[^}]*opacity/.test(page));
         ok('dark theme styles the omitted text', /body:not\(\.light\)\s*\.ca-omitted-text\s*\{[^}]*opacity/.test(page));
         ok('dark theme styles the omitted line', /body:not\(\.light\)\s*\.ca-omitted-line\s*\{/.test(page));
+        ok('light theme styles the conditional margin', /\n\s*\.ca-conditional-margin\s*\{[^}]*border-left/.test(page));
+        ok('dark theme styles the conditional margin', /body:not\(\.light\)\s*\.ca-conditional-margin\s*\{/.test(page));
+        ok('high contrast styles the conditional margin', /hc-black \.ca-conditional-margin/.test(page));
     })();
 
     console.log('\n' + pass + ' passed, ' + fail + ' failed');
