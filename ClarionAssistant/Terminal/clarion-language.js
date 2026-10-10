@@ -398,15 +398,15 @@ function stripOuterParens(s) {
     return s;
 }
 
-// Value of one operand, or undefined when it can't be known from this buffer.
+// Value of one operand, or undefined when it can't be known from this buffer. `equates` is a Map
+// (UPPERCASE name -> value): a plain object would answer for CONSTRUCTOR, __PROTO__ and friends.
 function omitAtom(s, equates) {
     s = stripOuterParens(s);
     if (/^[+-]?\d+$/.test(s)) return parseInt(s, 10);
     var u = s.toUpperCase();
     if (u === 'TRUE') return 1;
     if (u === 'FALSE') return 0;
-    if (Object.prototype.hasOwnProperty.call(equates, u)) return equates[u];
-    return undefined;
+    return equates.has(u) ? equates.get(u) : undefined;
 }
 
 // Truth of an OMIT/COMPILE condition: true, false, or undefined (unknown → margin bar, not dimmed).
@@ -431,37 +431,102 @@ function evalOmitCondition(expr, equates) {
 
 // For each terminator the buffer's directives use, the ascending list of lines that contain it —
 // built ONCE per pass, so finding a block's end is a binary search rather than a scan. Scanning ahead
-// per directive was quadratic: every unterminated OMIT re-read the buffer to its end. With few
-// distinct terminators (the real case: '***', '**', '_EndOfInclude_') each line is tested with
-// indexOf per term; with many, each line is cut into the substrings that could be a term (by length,
-// only where a term's first character occurs) and looked up in a set, so the cost tracks the text,
-// not the directive count.
-var OMIT_TERM_DIRECT_MAX = 16;
-function buildTerminatorIndex(lines, terms) {
-    var occ = {}, i, k;
-    terms.forEach(function (t) { occ[t] = []; });
-    if (terms.length <= OMIT_TERM_DIRECT_MAX) {
-        for (i = 1; i < lines.length; i++)
-            for (k = 0; k < terms.length; k++)
-                if (lineHasOmitTerminator(lines[i], terms[k])) occ[terms[k]].push(i);
-        return occ;
-    }
-    var lens = [], firsts = {}, seenLen = {};
-    terms.forEach(function (t) {
-        firsts[t.charAt(0)] = true;
-        if (!seenLen[t.length]) { seenLen[t.length] = true; lens.push(t.length); }
+// per directive was quadratic: every unterminated OMIT re-read the buffer to its end.
+//
+// The index is an Aho–Corasick automaton over all the terminators, run once over each line. Its cost
+// does NOT depend on how many terminators there are or how long: per character, one transition
+// (a table read; on the Map path, amortised — the failure walk is paid for by the depth the line
+// built up), and per match, an output walk that stops at the first terminator already recorded for
+// this line. That stop is what
+// keeps it linear: a recorded terminator's own suffix-terminators were recorded with it, so the walk
+// never repeats one, and each terminator is recorded at most once per line. Total work is
+// O(characters + recorded (line, terminator) pairs), with no per-position allocation. The earlier
+// substring-per-length matcher took minutes on 1,500 '*'-run terminators against '!****...' banners.
+// This lookup is a semantic stand-in for lineHasOmitTerminator (a substring test); the tests hold
+// the two to the same answers, on both the table and the Map path.
+// Returns a Map: terminator -> ascending line numbers containing it. maxCells is a test hook (the
+// table-size cap; 0 forces the Map path).
+var OMIT_CHAR_CLASS = typeof Int32Array !== 'undefined' ? new Int32Array(65536) : null;   // char code -> class, all 0 between calls
+var OMIT_DFA_MAX_CELLS = 1 << 22;   // 16 MB of transitions at most
+function buildTerminatorIndex(lines, terms, maxCells) {
+    var dfaMax = maxCells === undefined ? OMIT_DFA_MAX_CELLS : maxCells;
+    // Trie. Node 0 is the root; children keyed by UTF-16 code unit.
+    var next = [new Map()], fail = [0], dict = [0], termAt = [-1];
+    terms.forEach(function (t, ti) {
+        var s = 0;
+        for (var c = 0; c < t.length; c++) {
+            var ch = t.charCodeAt(c), nx = next[s].get(ch);
+            if (nx === undefined) {
+                nx = next.length;
+                next.push(new Map()); fail.push(0); dict.push(0); termAt.push(-1);
+                next[s].set(ch, nx);
+            }
+            s = nx;
+        }
+        termAt[s] = ti;
     });
-    for (i = 1; i < lines.length; i++) {
-        var raw = lines[i];
-        for (var p = 0; p < raw.length; p++) {
-            if (!firsts[raw.charAt(p)]) continue;
-            for (k = 0; k < lens.length; k++) {
-                if (p + lens[k] > raw.length) continue;
-                var list = occ[raw.substr(p, lens[k])];
-                if (list && list[list.length - 1] !== i) list.push(i);
+    // Failure links breadth-first; dict[v] = the nearest proper suffix of v that is a terminator.
+    var queue = [];
+    next[0].forEach(function (v) { queue.push(v); });
+    for (var q = 0; q < queue.length; q++) {
+        var u = queue[q];
+        next[u].forEach(function (v, ch) {
+            var f = fail[u], g;
+            while ((g = next[f].get(ch)) === undefined && f !== 0) f = fail[f];
+            fail[v] = g === undefined ? 0 : g;
+            dict[v] = termAt[fail[v]] >= 0 ? fail[v] : dict[fail[v]];
+            queue.push(v);
+        });
+    }
+    var nodes = next.length, i, p, s, o, raw;
+    var hit = new Int32Array(nodes);   // the longest terminator ending at this node, or 0
+    for (s = 1; s < nodes; s++) hit[s] = termAt[s] >= 0 ? s : dict[s];
+    var found = terms.map(function () { return []; });
+    var stamp = new Int32Array(nodes);   // last line each terminator node was recorded on (lines start at 1)
+
+    // Fast path: a full transition table over the characters the terminators actually use (class 0 =
+    // any other character), so each step is two typed-array reads — no Map, no failure walk. Filled
+    // breadth-first, where every node's failure target is already done. Skipped when the table would
+    // be large (nodes x classes); the Map automaton below is the same algorithm, just slower per step.
+    var cls = OMIT_CHAR_CLASS, used = [];
+    for (s = 0; s < nodes; s++) next[s].forEach(function (v, ch) { if (!cls[ch]) { used.push(ch); cls[ch] = used.length; } });
+    var width = used.length + 1;
+    try {
+        if (nodes * width <= dfaMax) {
+            var delta = new Int32Array(nodes * width);
+            var order = [0].concat(queue);
+            for (var q2 = 0; q2 < order.length; q2++) {
+                var u2 = order[q2], row = u2 * width, frow = fail[u2] * width;
+                for (var c2 = 1; c2 < width; c2++) {
+                    var v2 = next[u2].get(used[c2 - 1]);
+                    delta[row + c2] = v2 !== undefined ? v2 : (u2 === 0 ? 0 : delta[frow + c2]);
+                }
+            }
+            for (i = 1; i < lines.length; i++) {
+                raw = lines[i]; s = 0;   // a terminator never spans lines: restart at the root
+                for (p = 0; p < raw.length; p++) {
+                    s = delta[s * width + cls[raw.charCodeAt(p)]];
+                    o = hit[s];
+                    while (o !== 0 && stamp[o] !== i) { stamp[o] = i; found[termAt[o]].push(i); o = dict[o]; }
+                }
+            }
+        } else {
+            for (i = 1; i < lines.length; i++) {
+                raw = lines[i]; s = 0;
+                for (p = 0; p < raw.length; p++) {
+                    var ch = raw.charCodeAt(p), g;
+                    while ((g = next[s].get(ch)) === undefined && s !== 0) s = fail[s];
+                    s = g === undefined ? 0 : g;
+                    o = hit[s];
+                    while (o !== 0 && stamp[o] !== i) { stamp[o] = i; found[termAt[o]].push(i); o = dict[o]; }
+                }
             }
         }
+    } finally {
+        for (var k = 0; k < used.length; k++) cls[used[k]] = 0;   // the class table is shared: leave it clean
     }
+    var occ = new Map();
+    terms.forEach(function (t, ti) { occ.set(t, found[ti]); });
     return occ;
 }
 
@@ -482,16 +547,16 @@ function nextLineAfter(list, after) {
 function clarionOmittedRegions(model) {
     var out = [];
     var n = model.getLineCount();
-    var lines = new Array(n + 1), terms = [], seen = {};
+    var lines = new Array(n + 1), terms = [], seen = new Set();   // Set/Map: a terminator may be 'constructor'
     for (var r = 1; r <= n; r++) {
         lines[r] = model.getLineContent(r);
         if (!OMIT_DIRECTIVE_PREFILTER.test(lines[r])) continue;
         var d0 = parseOmitDirective(splitClarionLine(lines[r]).code);
-        if (d0 && d0.term && !seen[d0.term]) { seen[d0.term] = true; terms.push(d0.term); }
+        if (d0 && d0.term && !seen.has(d0.term)) { seen.add(d0.term); terms.push(d0.term); }
     }
     if (!terms.length) return out;
     var occ = buildTerminatorIndex(lines, terms);
-    var equates = {};
+    var equates = new Map();
     var unknownUntil = 0;   // last line of the furthest-reaching open UNKNOWN block
     for (var i = 1; i <= n; i++) {
         var raw = lines[i];
@@ -503,7 +568,7 @@ function clarionOmittedRegions(model) {
             // can't read leaves the name unknown, not at its old value: either way, forget it.
             var name = eq[1].toUpperCase();
             var ev = i <= unknownUntil ? undefined : omitAtom(eq[2], equates);
-            if (ev === undefined) delete equates[name]; else equates[name] = ev;
+            if (ev === undefined) equates.delete(name); else equates.set(name, ev);
             continue;
         }
         var d = parseOmitDirective(code);
@@ -517,7 +582,7 @@ function clarionOmittedRegions(model) {
                 : ((d.kind === 'OMIT') === truth ? 'omitted' : 'compiled');
         }
         if (state === 'compiled') continue;   // its body is ordinary code, scanned as usual
-        var end = nextLineAfter(occ[d.term], i);
+        var end = nextLineAfter(occ.get(d.term), i);
         if (end < 0) continue;   // unterminated: compile error; the native editor shades nothing
         out.push({ start: i, end: end, directive: d.kind, kind: state });
         if (state === 'omitted') i = end;   // nothing inside an omitted block is a directive
@@ -591,6 +656,7 @@ if (typeof module !== 'undefined' && module.exports) {
         clarionOmittedRegions: clarionOmittedRegions,
         evalOmitCondition: evalOmitCondition,
         parseOmitDirective: parseOmitDirective,
+        buildTerminatorIndex: buildTerminatorIndex,
         installClarionOmitDimming: installClarionOmitDimming
     };
 }

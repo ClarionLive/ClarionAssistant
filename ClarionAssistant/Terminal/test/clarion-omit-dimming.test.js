@@ -182,17 +182,58 @@ regionsAre('directives inside an OMITTED block are skipped wholesale', [
     'live = 4',
 ], ['1-6']);
 
+console.log('\nTerminators and names that collide with Object.prototype:');
+['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf'].forEach(function (t) {
+    var lines = ["OMIT('" + t + "')", '  dead = 1', '! ' + t];
+    regionsAre("terminator '" + t + "' is indexed like any other", lines, ['1-3']);
+});
+regionsAre("an EQUATE named __proto__ resolves like any other", [
+    '__proto__   EQUATE(1)',
+    "OMIT('**',__proto__)",
+    'a',
+    '**',
+], ['2-4']);
+conditionalsAre("an undeclared name 'constructor' is unknown, not Object's constructor", [
+    "OMIT('**',constructor)", 'a', '**',
+], ['1-3']);
+
+console.log('\nTerminator index (Aho–Corasick) agrees with a plain substring test:');
+(function () {
+    if (!L.buildTerminatorIndex) { ok('buildTerminatorIndex is exported', false); return; }
+    // Seeded, so a failure reproduces. Small alphabet = many overlaps, shared prefixes and suffixes.
+    var seed = 264;
+    function rnd(k) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % k; }
+    function word(min, max) { var s = '', n = min + rnd(max - min + 1); while (n--) s += '*a!b'.charAt(rnd(4)); return s; }
+    [['transition-table path', undefined], ['Map path (table forced off)', 0]].forEach(function (mode) {
+        var bad = 0, firstBad = '';
+        seed = 264;
+        for (var round = 0; round < 200 && !bad; round++) {
+            var terms = [], seenT = new Set();
+            for (var k = 0, nt = 1 + rnd(12); k < nt; k++) { var w = word(1, 5); if (!seenT.has(w)) { seenT.add(w); terms.push(w); } }
+            var lines = [undefined];
+            for (var j = 0; j < 30; j++) lines.push(word(0, 25));
+            var occ = L.buildTerminatorIndex(lines, terms, mode[1]);
+            terms.forEach(function (t) {
+                var want = [];
+                for (var i = 1; i < lines.length; i++) if (lines[i].indexOf(t) >= 0) want.push(i);
+                if (!bad && !same(occ.get(t), want)) { bad++; firstBad = JSON.stringify({ t: t, got: occ.get(t), want: want }); }
+            });
+        }
+        ok(mode[0] + ': 200 random rounds, every terminator on exactly the lines indexOf finds it', !bad, firstBad);
+    });
+})();
+
 console.log('\nCondition evaluator:');
 (function () {
     var ev = L.evalOmitCondition || function () { return 'missing'; };
-    ok('integer > 0 is true', ev('2', {}) === true);
-    ok('0 is false', ev('0', {}) === false);
-    ok('negative is false (native rule: > 0)', ev('-1', {}) === false);
-    ok('unknown name is undefined', ev('_DEBUG_', {}) === undefined);
-    ok('<> compares', ev('_A_ <> 1', { _A_: 2 }) === true);
-    ok('comparison with an unknown side is undefined', ev('_A_ = 1', {}) === undefined);
-    ok('(A) = (B): only parentheses wrapping the WHOLE expression are stripped', ev('(A) = (B)', { A: 1, B: 1 }) === true);
-    ok('((A = 1)) still strips both wrappers', ev('((A = 1))', { A: 1 }) === true);
+    ok('integer > 0 is true', ev('2', new Map()) === true);
+    ok('0 is false', ev('0', new Map()) === false);
+    ok('negative is false (native rule: > 0)', ev('-1', new Map()) === false);
+    ok('unknown name is undefined', ev('_DEBUG_', new Map()) === undefined);
+    ok('<> compares', ev('_A_ <> 1', new Map([['_A_', 2]])) === true);
+    ok('comparison with an unknown side is undefined', ev('_A_ = 1', new Map()) === undefined);
+    ok('(A) = (B): only parentheses wrapping the WHOLE expression are stripped', ev('(A) = (B)', new Map([['A', 1], ['B', 1]])) === true);
+    ok('((A = 1)) still strips both wrappers', ev('((A = 1))', new Map([['A', 1]])) === true);
 })();
 
 console.log('\nShared directive parser:');
@@ -309,6 +350,31 @@ console.log('\nLive update (installClarionOmitDimming):');
            same1.ms < 500 && same1.r.length === 1000, same1.ms + ' ms, ' + same1.r.length + ' blocks');
         var distinct = timed('2,000 unterminated, distinct terminators', stress(function (k) { return '@@NEVER' + k + '@@'; }));
         ok('2,000 unterminated OMITs with distinct terminators: linear', distinct.ms < 500 && distinct.r.length === 0, distinct.ms + ' ms');
+
+        // Banner stress: the matcher's cost must not grow with the number (or LENGTHS) of distinct
+        // terminators. The previous substring-per-length matcher did per character x per distinct
+        // length: 12.5 s at 17 '*' terminators on all-banner lines, about 9 minutes on the last shape.
+        function banners(directives, bannerLen, bannerCount) {
+            var s = directives.slice();
+            var banner = '!' + new Array(bannerLen + 1).join('*');
+            for (var j = 0; j < bannerCount; j++) s.push(banner);
+            while (s.length < 86000) s.push('    SELF.AddItem(Toolbar)   ! generated line ' + s.length);
+            return s;
+        }
+        function starTerms(count, mk) { var d = []; for (var k = 1; k <= count; k++) d.push("  OMIT('" + mk(k) + "')"); return d; }
+        var stars = function (k) { return new Array(k + 1).join('*'); };
+        [17, 60].forEach(function (cnt) {
+            // '*'-prefixed, never present in a banner: every banner character keeps the automaton deep.
+            var b = timed('every line a banner, ' + cnt + " '*'-prefixed terminators",
+                banners(starTerms(cnt, function (k) { return stars(k) + '#' + k; }), 60, 86000));
+            ok('every line a banner, ' + cnt + " distinct '*'-prefixed terminators: under 500 ms", b.ms < 500, b.ms + ' ms');
+        });
+        // 500 distinct LENGTHS, all starting '*', none present: pure matcher cost, no output.
+        var lens = timed("500 terminator LENGTHS sharing '*'", banners(starTerms(500, function (k) { return stars(k) + '#'; }), 200, 40000));
+        ok("500 distinct terminator lengths sharing one first character: under 500 ms", lens.ms < 500, lens.ms + ' ms');
+        // The debugger's extreme shape: 1,500 '*' runs of distinct lengths, then 20,000 lines of '!' + 200 '*'.
+        var extreme = timed("1,500 '*'-run terminators + 20,000 x 200-'*' banners", banners(starTerms(1500, stars), 200, 20000));
+        ok("1,500 '*'-run terminators against 20,000 banners: under 1,000 ms", extreme.ms < 1000, extreme.ms + ' ms');
     })();
 
     console.log('\nPage wiring (monaco-embeditor.html — the CA Editor AND the CA Embeditor):');
