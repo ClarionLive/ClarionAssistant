@@ -334,9 +334,16 @@ namespace ClarionAssistant.Services
             why = null;
             object v;
             DateTime start;
-            if (!rec.TryGetValue("startTime", out v) || !DateTime.TryParse(v as string, null,
-                    System.Globalization.DateTimeStyles.RoundtripKind, out start))
+            // Only an ABSENT start time is the old addin's record. A present but unreadable one (null, not a string,
+            // garbled) is a record that claimed an identity it can't back, so it fails closed too (run 3, Codex).
+            if (!rec.TryGetValue("startTime", out v))
                 return true;
+            if (!DateTime.TryParse(v as string, null, System.Globalization.DateTimeStyles.RoundtripKind, out start))
+            {
+                why = "the record for pid " + pid + " is ignored: its startTime '" + (v ?? "null")
+                    + "' is unreadable, so the IDE identity could not be verified";
+                return false;
+            }
             string recordedName = rec.TryGetValue("processName", out v) ? v as string : null;
             string liveName;
             DateTime liveStart;

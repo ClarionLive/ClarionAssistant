@@ -154,8 +154,19 @@ static class IdeSolutionRecordTest
                 Check(IdeSolutionRecord.Read(self, out note) == null && note.Contains("pid reused"),
                     "another image on the pid -> no record (" + note + ")");
 
+                pub["processName"] = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+                foreach (object bad in new object[] { "not-a-date", null, 12345 })
+                {
+                    pub["startTime"] = bad;
+                    File.WriteAllText(rf, new JavaScriptSerializer().Serialize(pub));
+                    IdeSolutionRecord.ResetForTest();
+                    Check(IdeSolutionRecord.Read(self, out note) == null && note.Contains("could not be verified"),
+                        "a present but unreadable startTime (" + (bad ?? "null") + ") -> no record, fails closed (" + note + ")");
+                }
+
                 pub.Remove("startTime"); pub.Remove("processName");
                 File.WriteAllText(rf, new JavaScriptSerializer().Serialize(pub));
+                IdeSolutionRecord.ResetForTest();
                 Check(string.Equals(IdeSolutionRecord.Read(self, out note), sln, StringComparison.OrdinalIgnoreCase),
                     "a record without a start time (older addin) -> accepted as before (" + note + ")");
 
