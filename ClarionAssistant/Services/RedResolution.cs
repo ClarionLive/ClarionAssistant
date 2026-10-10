@@ -83,6 +83,61 @@ namespace ClarionAssistant.Services
             return answer;
         }
 
+        /// <summary>What resolve_red_path answers: the chosen path, who chose it, and every other match.</summary>
+        public sealed class Decision
+        {
+            public string Path;
+            public string Section;
+            public string Resolver;
+            public List<RedFileService.RedHit> AlsoFoundIn = new List<RedFileService.RedHit>();
+        }
+
+        /// <summary>
+        /// 5a5581e6 run 2: combine the local answer with the language server's. The server resolves as ONE
+        /// configuration (<paramref name="lspConfiguration"/>); its path is chosen only when
+        /// <paramref name="lspMatchesConfiguration"/> - the IDE's configuration is KNOWN to be that one. Otherwise the
+        /// local answer stands (found or not) and the server's path, when different, goes to AlsoFoundIn.
+        /// </summary>
+        public static Decision Decide(Answer local, string lspPath, string lspConfiguration, bool lspMatchesConfiguration)
+        {
+            var d = new Decision();
+            if (lspPath != null && lspMatchesConfiguration)
+            {
+                d.Path = lspPath;
+                d.Section = "language server (" + lspConfiguration + ")";
+                d.Resolver = "lsp";
+                if (local != null)
+                {
+                    if (local.Path != null) AddIfOther(d, new RedFileService.RedHit { Section = local.Section, Path = local.Path });
+                    foreach (var h in local.AlsoFoundIn) AddIfOther(d, h);
+                }
+                return d;
+            }
+            d.Resolver = "redfile";
+            if (local != null)
+            {
+                d.Path = local.Path;
+                d.Section = local.Section;
+                foreach (var h in local.AlsoFoundIn) AddIfOther(d, h);
+            }
+            if (lspPath != null)
+                AddIfOther(d, new RedFileService.RedHit { Section = "language server (" + lspConfiguration + ")", Path = lspPath });
+            return d;
+        }
+
+        private static void AddIfOther(Decision d, RedFileService.RedHit h)
+        {
+            if (h == null || h.Path == null || string.Equals(h.Path, d.Path, StringComparison.OrdinalIgnoreCase)) return;
+            // The same path from two sources (a .red section and the language server) is one entry naming both.
+            foreach (var x in d.AlsoFoundIn)
+                if (string.Equals(x.Path, h.Path, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (x.Section.IndexOf(h.Section, StringComparison.OrdinalIgnoreCase) < 0) x.Section += ", " + h.Section;
+                    return;
+                }
+            d.AlsoFoundIn.Add(h);
+        }
+
         /// <summary>
         /// The search directories for <paramref name="extensions"/> across <paramref name="sections"/>, in order,
         /// duplicates dropped - exactly the entries <see cref="Resolve"/> walks for those sections.

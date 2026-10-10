@@ -383,6 +383,62 @@ namespace ClarionAssistant.Services
             return config;
         }
 
+        /// <summary>
+        /// 5a5581e6 run 2: the build configuration for <paramref name="solutionPath"/>, most live source first: the IDE
+        /// in this process (<paramref name="inProcess"/>, the addin), then the IDE's published record
+        /// (<paramref name="record"/>, the standalone), each only when it is about THIS solution; then the saved
+        /// preferences in <paramref name="configDirs"/>, noted as saved state. Null, with the reason, when none says.
+        /// </summary>
+        public static string ResolveBuildConfiguration(string solutionPath, IdeSolutionRecord.BuildConfiguration inProcess,
+                                                       IdeSolutionRecord.Details record, IEnumerable<string> configDirs,
+                                                       out string platform, out string note)
+        {
+            platform = null;
+            note = null;
+            if (string.IsNullOrEmpty(solutionPath))
+            {
+                note = "no solution: the build configuration is unknown";
+                return null;
+            }
+            if (inProcess != null && !string.IsNullOrEmpty(inProcess.Configuration)
+                && SolutionVersionResolver.SamePath(inProcess.Solution, solutionPath))
+            {
+                platform = inProcess.Platform;
+                note = Describe(inProcess.Configuration, platform, "live from the IDE");
+                return inProcess.Configuration;
+            }
+            if (record != null && !string.IsNullOrEmpty(record.BuildConfiguration)
+                && SolutionVersionResolver.SamePath(record.Solution, solutionPath))
+            {
+                platform = record.BuildPlatform;
+                note = Describe(record.BuildConfiguration, platform, "live from the IDE (pid " + record.Pid + ")");
+                return record.BuildConfiguration;
+            }
+            string why = null;
+            if (configDirs != null)
+                foreach (string dir in configDirs)
+                {
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    string file, prefsNote;
+                    string config = ReadActiveConfiguration(Path.Combine(dir, "preferences"), solutionPath, out platform, out file, out prefsNote);
+                    if (config != null)
+                    {
+                        note = Describe(config, platform, "SAVED state, the IDE's preferences\\" + Path.GetFileName(file)
+                            + (prefsNote != null ? "; " + prefsNote : "") + " - a switch made since it was saved is not seen");
+                        return config;
+                    }
+                    if (prefsNote != null) why = prefsNote;
+                }
+            platform = null;
+            note = "the IDE's build configuration for this solution is unknown (" + (why ?? "no live IDE record and no preferences file for it") + ")";
+            return null;
+        }
+
+        private static string Describe(string config, string platform, string source)
+        {
+            return "configuration '" + config + "'" + (string.IsNullOrEmpty(platform) ? "" : " (" + platform + ")") + " [" + source + "]";
+        }
+
         private static string Read(string prefsDir, string solutionPath, Func<Candidate, string> valueOf,
                                    out string file, out string note)
         {
@@ -405,8 +461,24 @@ namespace ClarionAssistant.Services
                 }
                 if (candidates.Count == 0) return null;
 
+                // 5a5581e6 pipeline run 2: a LONE file is not proof either - it may be another folder's solution of
+                // the same name, the only one ever opened. It must carry the same evidence a choice among several
+                // needs: a recorded path under this solution's folder, or the IDE's name hash.
                 if (candidates.Count == 1)
-                    return Take(candidates[0], valueOf, out file);
+                {
+                    var only = candidates[0];
+                    string onlyHash = HashSuffix(solutionPath);
+                    string onlyDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)).TrimEnd('\\') + "\\";
+                    bool byPath = only.MentionsFolder(onlyDir);
+                    bool byHashMatch = onlyHash != null
+                        && string.Equals(only.Suffix.TrimStart('0'), onlyHash.TrimStart('0'), StringComparison.OrdinalIgnoreCase);
+                    if (byPath || byHashMatch)
+                        return Take(only, valueOf, out file);
+                    note = "the only preference file for " + slnName + " (" + Path.GetFileName(only.Path) + ") records no path "
+                        + "under this solution's folder" + (onlyHash != null ? " and its name hash is not this solution's" : "")
+                        + ", so it may be another folder's " + slnName + " - not used";
+                    return null;
+                }
 
                 // Several files for one solution NAME (other folders' solutions of the same name). When they all say
                 // the same thing, which one is ours does not matter.

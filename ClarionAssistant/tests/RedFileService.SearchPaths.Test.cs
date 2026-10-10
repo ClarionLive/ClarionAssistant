@@ -130,6 +130,38 @@ static class RedFileServiceSearchPathsTest
             Ok("C a file only under [Debug32] is NOT found for a Release build, and is shown in alsoFoundIn",
                dOnly.Path == null && dOnly.AlsoFoundIn.Count == 1 && dOnly.AlsoFoundIn[0].Section == "Debug32", dOnly.Path);
 
+            // ---- U (run 2, item 1): the language server's Debug answer is used only for a KNOWN Debug configuration ----
+            string lspDebug = Path.Combine(dbg, "Both.inc");
+            var unkLocal = RedResolution.Resolve(cfg, "Both.inc", cfgRoot, RedResolution.SectionsFor(null));
+            var dUnknown = RedResolution.Decide(unkLocal, lspDebug, "Debug", false);
+            Ok("U unknown configuration: the local [Common] answer stands, the server's Debug path is in alsoFoundIn",
+               dUnknown.Resolver == "redfile" && dUnknown.Path != null && dUnknown.Path.StartsWith(com, StringComparison.OrdinalIgnoreCase)
+               && dUnknown.AlsoFoundIn.Any(h => h.Section.Contains("language server") && h.Path == lspDebug), dUnknown.Path);
+            var noLocal = RedResolution.Resolve(cfg, "DebugOnly.inc", cfgRoot, RedResolution.SectionsFor(null));
+            var dOnlyLsp = RedResolution.Decide(noLocal, Path.Combine(dbg, "DebugOnly.inc"), "Debug", false);
+            Ok("U unknown configuration and a Debug-only server hit: NOT found, the hit in alsoFoundIn",
+               dOnlyLsp.Path == null && dOnlyLsp.AlsoFoundIn.Any(h => h.Section.Contains("language server")), Show(dOnlyLsp.AlsoFoundIn.Select(h => h.Section)));
+            var dKnown = RedResolution.Decide(RedResolution.Resolve(cfg, "Both.inc", cfgRoot, RedResolution.SectionsFor("Debug")), lspDebug, "Debug", true);
+            Ok("U a KNOWN Debug configuration uses the server's answer", dKnown.Resolver == "lsp" && dKnown.Path == lspDebug, dKnown.Path);
+
+            // ---- N (run 2, item 4): no base folder - relative entries are skipped, never the process CWD ----
+            string nRoot = Path.Combine(root, "N");
+            Write(Path.Combine(nRoot, "rel", "Cwd.inc"), "!\r\n");
+            Write(Path.Combine(nRoot, "abs", "Cwd.inc"), "!\r\n");
+            Write(Path.Combine(nRoot, "n.red"), "[Common]\r\n*.inc = .\\rel;" + Path.Combine(nRoot, "abs") + "\r\n");
+            var nRed = new RedFileService();
+            nRed.Load(Path.Combine(nRoot, "n.red"), null);
+            string cwdBefore = Environment.CurrentDirectory;
+            try
+            {
+                Environment.CurrentDirectory = nRoot;   // where ".\rel" WOULD land
+                var nHits = nRed.FindInSections("Cwd.inc", null, new[] { "Common" });
+                Ok("N no base folder: '.\\rel' is skipped and the absolute entry answers",
+                   nHits.Count == 1 && nHits[0].Path.StartsWith(Path.Combine(nRoot, "abs"), StringComparison.OrdinalIgnoreCase),
+                   Show(nHits.Select(h => h.Path)));
+            }
+            finally { Environment.CurrentDirectory = cwdBefore; }
+
             // ---- S (item 2): search paths walk the same sections, in the same order ----
             Ok("S SearchPaths for Release = [Release32] then [Common] folders, as Resolve walks them",
                RedResolution.SearchPaths(cfg, new[] { ".inc" }, RedResolution.SectionsFor("Release")).SequenceEqual(new[] { rel, com }),

@@ -134,8 +134,9 @@ function Invoke-Scan($p) {
     if ($resolveBody -notmatch 'RedResolution\.LeafNameError\(fileName\)') { $fails.Add('D3 resolve_red_path accepts non-leaf names') }
     if ($resolveBody -match 'BuildSectionOrder' -or $resolveBody -match 'red\.Resolve(From)?\(') { $fails.Add('D3 resolve_red_path still resolves through a fixed section order / ResolveFrom') }
     if ($resolveBody -notmatch 'RedResolution\.Resolve\(scope\.Red, fileName, scope\.BaseDir, scope\.Sections\)') { $fails.Add('D3 resolve_red_path does not resolve through the scope (configuration, project)') }
-    if ($resolveBody -notmatch 'scope\.LspMatchesConfiguration') { $fails.Add('D3 resolve_red_path asks the language server whatever the configuration') }
-    if (([regex]::Matches([string]$resolveBody, 'AddAlsoFoundIn\(')).Count -lt 2) { $fails.Add('D3 resolve_red_path does not report alsoFoundIn') }
+    if ($resolveBody -notmatch 'RedResolution\.Decide\(local, lspPath, LspService\.LspConfiguration, scope\.LspMatchesConfiguration\)') { $fails.Add('D3 resolve_red_path does not let RedResolution.Decide weigh the language server against the configuration') }
+    if ($reg -notmatch 'get \{ return Configuration != null && string\.Equals\(Configuration, LspService\.LspConfiguration') { $fails.Add('D3 LspMatchesConfiguration trusts an UNKNOWN configuration') }
+    if ($resolveBody -notmatch 'AddAlsoFoundIn\(result, decision\.AlsoFoundIn, decision\.Path\)') { $fails.Add('D3 resolve_red_path does not report alsoFoundIn') }
     if ($searchBody -notmatch 'RedResolution\.SearchPaths\(scope\.Red, new\[\] \{ ext \}, scope\.Sections\)') { $fails.Add('D3 get_red_search_paths does not walk the same sections as resolve_red_path') }
     if ($searchBody -notmatch 'scope\.LspMatchesConfiguration') { $fails.Add('D3 get_red_search_paths asks the language server whatever the configuration') }
     if (([regex]::Matches([string]$searchBody, 'WithAbsolutePaths\(')).Count -lt 2) { $fails.Add('D3 get_red_search_paths does not add absoluteSearchPaths to both answers') }
@@ -144,7 +145,8 @@ function Invoke-Scan($p) {
     foreach ($need in 'RedResolution.ProjectDirectory(', 'RedFileService.ForProjectDirectory(scope.BaseDir', 'ActiveBuildConfiguration(sln', 'RedResolution.SectionsFor(scope.Configuration)') {
         if ([string]$scopeFn -notlike "*$need*") { $fails.Add("D3 RedScopeFor does not call $need") }
     }
-    if ($reg -notmatch 'IdeSolutionPreferences\.ReadActiveConfiguration\(') { $fails.Add('D3 the active configuration is not read from the IDE preferences') }
+    if ($reg -notmatch 'IdeSolutionPreferences\.ResolveBuildConfiguration\(slnPath, inProcess, rec, configDirs') { $fails.Add('D3 the active configuration is not resolved live-first (IDE, record, then saved preferences)') }
+    if ($reg -notmatch 'inProcess = p\(\)') { $fails.Add('D3 the in-process IDE configuration is never asked') }
     if ($t.Lsp -notmatch '\{ "configuration", LspConfiguration \}') { $fails.Add('D3 the language server is not started with LspService.LspConfiguration') }
     # D4
     $items = [regex]::Match($t.Deploy, '(?s)\$Items = @\((.*?)\n\)')
@@ -187,10 +189,11 @@ $mutations = @(
     ,@('Registry',  'RedResolution.SectionsFor(scope.Configuration)',  'RedFileService.BuildSectionOrder',        'config-blind fixed section order')
     ,@('Registry',  'string nameError = RedResolution.LeafNameError(fileName);', 'string nameError = null;',      'resolve_red_path accepts any name')
     ,@('Registry',  'var paths = RedResolution.SearchPaths(scope.Red, new[] { ext }, scope.Sections);', 'var paths = scope.Red.GetSearchPaths(ext, "Common");', 'search paths over other sections than resolution')
-    ,@('Registry',  'if (!scope.ExplicitSection && !scope.ExplicitProject && scope.LspMatchesConfiguration)', 'if (!scope.ExplicitSection && !scope.ExplicitProject)', 'language server asked whatever the configuration')
+    ,@('Registry',  'get { return Configuration != null && string.Equals(', 'get { return Configuration == null || string.Equals(', 'unknown configuration trusts the language server')
+    ,@('Registry',  'RedResolution.Decide(local, lspPath, LspService.LspConfiguration, scope.LspMatchesConfiguration)', 'RedResolution.Decide(local, lspPath, LspService.LspConfiguration, true)', 'Decide told the server always matches')
     ,@('Registry',  'scope.Red = RedFileService.ForProjectDirectory(scope.BaseDir, scope.Red);', '',             "the project's own .red ignored")
-    ,@('Registry',  'AddAlsoFoundIn(result, local.AlsoFoundIn, local.Path);', '',                               'alsoFoundIn dropped from the local answer')
-    ,@('Registry',  'IdeSolutionPreferences.ReadActiveConfiguration(', 'IdeSolutionPreferences.ReadActiveVersion(', 'configuration not read from the IDE')
+    ,@('Registry',  'AddAlsoFoundIn(result, decision.AlsoFoundIn, decision.Path);', '',                               'alsoFoundIn dropped from the local answer')
+    ,@('Registry',  'IdeSolutionPreferences.ResolveBuildConfiguration(slnPath, inProcess, rec, configDirs', 'IdeSolutionPreferences.ResolveBuildConfiguration(slnPath, null, null, configDirs', 'live configuration sources dropped')
     ,@('Registry',  'the build is pointed at.',                        'the build is pointed at, the way the build finds it.', 'resolve_red_path overclaims again')
     ,@('ClaudeMd',  'in order: earlier folders take precedence.',      'in order: the first match wins.',         'CLAUDE.md claims first match wins')
     ,@('ClaudeMd',  '    - In a multi-project solution pass `project_name`', '    - In a multi-project solution pass the project', 'CLAUDE.md drops project_name')

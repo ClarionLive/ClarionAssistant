@@ -748,6 +748,14 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>A path that names its folder on its own: "C:\x" or "\\server\share\x".</summary>
+        public static bool IsFullyQualified(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            try { return Path.IsPathRooted(path) && !IsRootRelative(path) && !IsDriveRelative(path); }
+            catch { return false; }
+        }
+
         /// <summary>"\x": rooted, but on whichever drive is current (not "\\server\share").</summary>
         private static bool IsRootRelative(string path)
         {
@@ -852,6 +860,9 @@ namespace ClarionAssistant.Services
                 {
                     if (!MatchesPattern(fileName, entry.Pattern)) continue;
                     if (UnanchorableReason(entry.ResolvedPath, baseDir) != null) continue;
+                    // No base folder (no solution): a relative entry has nothing to hang off - never the process CWD
+                    // (run 2), as AnchorAll already refuses.
+                    if (string.IsNullOrEmpty(baseDir) && !IsFullyQualified(entry.ResolvedPath)) continue;
                     string dir = AnchorAt(entry.ResolvedPath, baseDir);
                     if (dir == null) continue;
                     try

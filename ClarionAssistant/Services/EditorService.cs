@@ -1095,6 +1095,38 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// Gets the file path of the currently loaded solution in the IDE.
         /// </summary>
+        /// <summary>
+        /// 5a5581e6: the open solution's LIVE build configuration - SharpDevelop's OpenSolution.Preferences
+        /// .ActiveConfiguration / .ActivePlatform (verified by reflection over ICSharpCode.SharpDevelop.dll, C12), what
+        /// Build &gt; Set Configuration changes - with the solution it belongs to. Null when none is open or unreadable.
+        /// </summary>
+        public static IdeSolutionRecord.BuildConfiguration GetOpenSolutionConfiguration()
+        {
+            try
+            {
+                var sharpDevelopAsm = Assembly.Load("ICSharpCode.SharpDevelop");
+                var projectServiceType = sharpDevelopAsm != null ? sharpDevelopAsm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService") : null;
+                var openSolution = projectServiceType != null ? projectServiceType.GetProperty("OpenSolution", BindingFlags.Public | BindingFlags.Static) : null;
+                var solution = openSolution != null ? openSolution.GetValue(null, null) : null;
+                if (solution == null) return null;
+                var fileName = solution.GetType().GetProperty("FileName", BindingFlags.Public | BindingFlags.Instance);
+                var prefsProp = solution.GetType().GetProperty("Preferences", BindingFlags.Public | BindingFlags.Instance);
+                var prefs = prefsProp != null ? prefsProp.GetValue(solution, null) : null;
+                if (fileName == null || prefs == null) return null;
+                var config = prefs.GetType().GetProperty("ActiveConfiguration", BindingFlags.Public | BindingFlags.Instance);
+                var platform = prefs.GetType().GetProperty("ActivePlatform", BindingFlags.Public | BindingFlags.Instance);
+                string c = config != null ? config.GetValue(prefs, null) as string : null;
+                if (string.IsNullOrEmpty(c)) return null;
+                return new IdeSolutionRecord.BuildConfiguration
+                {
+                    Solution = fileName.GetValue(solution, null) as string,
+                    Configuration = c,
+                    Platform = platform != null ? platform.GetValue(prefs, null) as string : null
+                };
+            }
+            catch { return null; }
+        }
+
         public static string GetOpenSolutionPath()
         {
             try

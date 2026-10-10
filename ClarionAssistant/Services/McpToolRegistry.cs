@@ -2392,67 +2392,50 @@ COMMON QUERIES:
                         ? RedResolution.Resolve(scope.Red, fileName, scope.BaseDir, scope.Sections) : null;
 
                     // The language server resolves as ONE configuration (LspService.LspConfiguration) for the solution
-                    // folder. Ask it only when that cannot contradict the request: no section or project named, and the
-                    // IDE's configuration is that one or unknown. Every local hit at another path is still shown.
-                    if (!scope.ExplicitSection && !scope.ExplicitProject && scope.LspMatchesConfiguration)
+                    // folder. Asked unless a section or project was named; its answer is USED only when the IDE's
+                    // configuration is KNOWN to be that one - otherwise it goes to alsoFoundIn (RedResolution.Decide).
+                    string lspPath = null, lspSource = null;
+                    if (!scope.ExplicitSection && !scope.ExplicitProject)
                     {
                         EnsureLspRunning();
                         if (_lspClient != null && _lspClient.IsRunning)
                         {
                             var hit = _lspClient.FindFile(fileName);
-                            object p = null;
-                            if (hit != null) hit.TryGetValue("path", out p);
-                            string resolvedPath = p as string;
-                            if (!string.IsNullOrEmpty(resolvedPath))
-                            {
-                                object src; hit.TryGetValue("source", out src);
-                                var fromLsp = new Dictionary<string, object>
-                                {
-                                    { "filename", fileName },
-                                    { "resolvedPath", resolvedPath },
-                                    { "found", true },
-                                    { "source", (src as string) ?? "lsp" },
-                                    { "resolver", "lsp" },
-                                    { "configurationNote", "the language server resolves as configuration '" + LspService.LspConfiguration
-                                        + "'" + (scope.Configuration == null ? "; the IDE's own configuration for this solution is unknown" : "") }
-                                };
-                                if (local != null)
-                                {
-                                    var also = new List<RedFileService.RedHit>();
-                                    if (local.Path != null) also.Add(new RedFileService.RedHit { Section = local.Section, Path = local.Path });
-                                    also.AddRange(local.AlsoFoundIn);
-                                    AddAlsoFoundIn(fromLsp, also, resolvedPath);
-                                }
-                                return WithVersion(fromLsp, true);
-                            }
+                            object p = null, src = null;
+                            if (hit != null) { hit.TryGetValue("path", out p); hit.TryGetValue("source", out src); }
+                            lspPath = p as string;
+                            lspSource = src as string;
+                            if (string.IsNullOrEmpty(lspPath)) lspPath = null;
                         }
                     }
 
-                    if (local == null)
+                    if (local == null && lspPath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
+                    var decision = RedResolution.Decide(local, lspPath, LspService.LspConfiguration, scope.LspMatchesConfiguration);
                     var result = new Dictionary<string, object>
                     {
                         { "filename", fileName },
-                        { "found", local.Path != null },
+                        { "found", decision.Path != null },
                         { "searchedSections", scope.Sections },
-                        { "resolver", "redfile" }
+                        { "resolver", decision.Resolver }
                     };
-                    if (local.Path != null)
+                    if (decision.Path != null)
                     {
-                        result["resolvedPath"] = local.Path;
-                        result["section"] = local.Section;
+                        result["resolvedPath"] = decision.Path;
+                        result["section"] = decision.Section;
+                        if (decision.Resolver == "lsp") result["source"] = lspSource ?? "lsp";
                     }
                     scope.Describe(result);
-                    AddAlsoFoundIn(result, local.AlsoFoundIn, local.Path);
-                    if (local.Path == null)
+                    AddAlsoFoundIn(result, decision.AlsoFoundIn, decision.Path);
+                    if (decision.Path == null && scope.Red != null)
                     {
                         // Not found - say where we looked.
                         var searchPaths = RedResolution.SearchPaths(scope.Red, new[] { Path.GetExtension(fileName) }, scope.Sections);
                         result["searchedPaths"] = searchPaths;
                         WithAbsolutePaths(result, searchPaths, scope.BaseDir, "searchedAbsolutePaths");
                     }
-                    return WithVersion(result, false);
+                    return WithVersion(result, decision.Resolver == "lsp");
                 }
             });
 
@@ -5394,10 +5377,10 @@ IdeOnly = true,
             public bool ExplicitSection;
             public bool ExplicitProject;
 
-            /// <summary>The language server resolves as one configuration; its answer fits only that one (or an unknown one).</summary>
+            /// <summary>The language server resolves as one configuration; its answer fits only when the IDE's is KNOWN to be that one.</summary>
             public bool LspMatchesConfiguration
             {
-                get { return Configuration == null || string.Equals(Configuration, LspService.LspConfiguration, StringComparison.OrdinalIgnoreCase); }
+                get { return Configuration != null && string.Equals(Configuration, LspService.LspConfiguration, StringComparison.OrdinalIgnoreCase); }
             }
 
             public void Describe(Dictionary<string, object> result)
@@ -5437,26 +5420,23 @@ IdeOnly = true,
         }
 
         /// <summary>
-        /// 5a5581e6: the build configuration ("Debug", "Release", ...) the IDE has for <paramref name="slnPath"/>: its
-        /// ActiveConfiguration in ConfigDir\preferences\&lt;sln&gt;.&lt;hash&gt;.xml, the file it restores Build &gt; Set
-        /// Configuration from. ConfigDir comes from the IDE's published record (standalone) or the IDE itself (addin).
-        /// Null, with a note, when that cannot be established - the caller then searches Common only.
+        /// 5a5581e6: the build configuration ("Debug", "Release", ...) the IDE has for <paramref name="slnPath"/>, most
+        /// live first (IdeSolutionPreferences.ResolveBuildConfiguration): the IDE in this process (the addin), the
+        /// record the IDE publishes (the standalone), then its saved preferences\&lt;sln&gt;.&lt;hash&gt;.xml. Null, with a
+        /// note, when none establishes it - the caller then searches Common only.
         /// </summary>
         private static string ActiveBuildConfiguration(string slnPath, out string note)
         {
-            note = null;
-            if (string.IsNullOrEmpty(slnPath))
-            {
-                note = "no solution: the build configuration is unknown, so only [Common] is searched";
-                return null;
-            }
+            IdeSolutionRecord.BuildConfiguration inProcess = null;
+            try { var p = IdeSolutionRecord.BuildConfigurationProvider; if (p != null) inProcess = p(); } catch { }
+            IdeSolutionRecord.Details rec = null;
             var configDirs = new List<string>();
             try
             {
                 if (IdeProcessId.HasValue)
                 {
                     string recNote;
-                    var rec = IdeSolutionRecord.ReadDetailsCached(IdeProcessId.Value, out recNote);
+                    rec = IdeSolutionRecord.ReadDetailsCached(IdeProcessId.Value, out recNote);
                     if (rec != null && !string.IsNullOrEmpty(rec.ConfigDir) && SolutionVersionResolver.SamePath(rec.Solution, slnPath))
                         configDirs.Add(rec.ConfigDir);
                 }
@@ -5469,23 +5449,13 @@ IdeOnly = true,
             }
             catch { }
 
-            foreach (string dir in configDirs)
-            {
-                string platform, file, prefsNote;
-                string config = IdeSolutionPreferences.ReadActiveConfiguration(Path.Combine(dir, "preferences"), slnPath,
-                                                                               out platform, out file, out prefsNote);
-                if (config != null)
-                {
-                    note = "configuration '" + config + "'" + (platform != null ? " (" + platform + ")" : "")
-                         + " [from the IDE's saved preferences\\" + Path.GetFileName(file) + (prefsNote != null ? "; " + prefsNote : "") + "]";
-                    return config;
-                }
-            }
-            note = "the IDE's build configuration for this solution is unknown (no IDE preferences found for it), so only "
-                 + "[Common] is searched; a match under any other section is listed in alsoFoundIn";
-            return null;
+            string platform;
+            string config = IdeSolutionPreferences.ResolveBuildConfiguration(slnPath, inProcess, rec, configDirs, out platform, out note);
+            if (config == null)
+                note += ", so only [Common] is searched; a match under any other section, or the language server's "
+                      + LspService.LspConfiguration + " answer, is listed in alsoFoundIn";
+            return config;
         }
-
         /// <summary>
         /// 0ce0b5e2: every answer that depends on the Clarion version says which one and what chose it - an INCLUDE
         /// "not found" means nothing until you know which Clarion's paths were searched. <paramref name="fromLsp"/>:

@@ -51,6 +51,19 @@ namespace ClarionAssistant.Services
         /// own preferences when the live choice is unavailable.</summary>
         public static Func<string> ConfigDirProvider { get; set; }
 
+        /// <summary>5a5581e6: addin side, the IDE's LIVE build configuration for its open solution (Build &gt; Set
+        /// Configuration; SharpDevelop's OpenSolution.Preferences), or null. Published with the solution so the
+        /// standalone resolves .red sections for the configuration the IDE builds now, not the one it last saved.</summary>
+        public static Func<BuildConfiguration> BuildConfigurationProvider { get; set; }
+
+        /// <summary>5a5581e6: a solution's active build configuration ("Debug", "Release", ...) and platform ("Win32").</summary>
+        public sealed class BuildConfiguration
+        {
+            public string Solution { get; set; }
+            public string Configuration { get; set; }
+            public string Platform { get; set; }
+        }
+
         public static string DirectoryPath
         {
             get
@@ -86,9 +99,17 @@ namespace ClarionAssistant.Services
                     ? solutionPath : "";
                 string version = value.Length == 0 ? null : Ask(VersionChoiceProvider);
                 string configDir = value.Length == 0 ? null : Ask(ConfigDirProvider);
+                BuildConfiguration build = null;
+                if (value.Length > 0)
+                {
+                    try { build = BuildConfigurationProvider != null ? BuildConfigurationProvider() : null; } catch { }
+                    // Only the configuration OF this solution (5a5581e6).
+                    if (build != null && (string.IsNullOrEmpty(build.Configuration) || !SameFile(build.Solution, value))) build = null;
+                }
                 // The change key covers the version too: a Set Clarion Version switch with the same solution
-                // open must reach the standalone (0ce0b5e2).
-                string key = value.Length == 0 ? "" : value + "|" + version + "|" + configDir;
+                // open must reach the standalone (0ce0b5e2). And the build configuration (5a5581e6).
+                string key = value.Length == 0 ? "" : value + "|" + version + "|" + configDir
+                    + (build != null ? "|" + build.Configuration + "|" + build.Platform : "");
                 lock (_lock)
                 {
                     if (_lastPublished != null && string.Equals(_lastPublished, key, StringComparison.OrdinalIgnoreCase))
@@ -111,6 +132,11 @@ namespace ClarionAssistant.Services
                         };
                         if (version != null) rec["clarionVersion"] = version;
                         if (configDir != null) rec["configDir"] = configDir;
+                        if (build != null)
+                        {
+                            rec["buildConfiguration"] = build.Configuration;
+                            if (!string.IsNullOrEmpty(build.Platform)) rec["buildPlatform"] = build.Platform;
+                        }
                         // Write-then-copy so a reader never sees a half-written file.
                         string tmp = file + ".tmp";
                         File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(rec), EncodingHelper.Utf8NoBom);
@@ -137,6 +163,13 @@ namespace ClarionAssistant.Services
             string sln;
             lock (_lock) { sln = _lastSolution; }
             if (!string.IsNullOrEmpty(sln)) Publish(sln);
+        }
+
+        private static bool SameFile(string a, string b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); } catch { }
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
         }
 
         private static string Ask(Func<string> provider)
@@ -185,6 +218,10 @@ namespace ClarionAssistant.Services
             public string ConfigDir { get; internal set; }
             /// <summary>The publishing IDE's process id.</summary>
             public int Pid { get; internal set; }
+            /// <summary>5a5581e6: the IDE's live build configuration for the solution ("Release"), or null.</summary>
+            public string BuildConfiguration { get; internal set; }
+            /// <summary>5a5581e6: its platform ("Win32"), or null.</summary>
+            public string BuildPlatform { get; internal set; }
         }
 
         /// <summary>As <see cref="Read(int, out string, out bool)"/>, with everything the record carries.</summary>
@@ -247,7 +284,9 @@ namespace ClarionAssistant.Services
                     Solution = sln,
                     VersionChoice = rec.TryGetValue("clarionVersion", out v) ? v as string : null,
                     ConfigDir = rec.TryGetValue("configDir", out v) ? v as string : null,
-                    Pid = pid
+                    Pid = pid,
+                    BuildConfiguration = rec.TryGetValue("buildConfiguration", out v) ? v as string : null,
+                    BuildPlatform = rec.TryGetValue("buildPlatform", out v) ? v as string : null
                 };
             }
             catch (Exception ex)
