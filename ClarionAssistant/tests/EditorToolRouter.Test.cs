@@ -162,7 +162,7 @@ static class EditorToolRouterTest
     {
         Console.WriteLine("\nGH #262: range column rules (both editors) and the native caret after replace_range");
         Check("end_col is exclusive: col L+1 is the end of a line of length L", EditorTextOps.ColumnIndex(6, 5) == 5 && EditorTextOps.ColumnIndex(5, 5) == 4);
-        Check("a column past the end clamps to the end (end_col 999 default)", EditorTextOps.ColumnIndex(999, 5) == 5);
+        Check("a column past the end clamps to the end (e.g. 999)", EditorTextOps.ColumnIndex(999, 5) == 5);
         Check("a column below 1 clamps to the line's start", EditorTextOps.ColumnIndex(0, 5) == 0 && EditorTextOps.ColumnIndex(-3, 5) == 0);
         Check("int.MinValue clamps to the start, not (wrapped) to the end", EditorTextOps.ColumnIndex(int.MinValue, 5) == 0, EditorTextOps.ColumnIndex(int.MinValue, 5).ToString());
         Check("int.MaxValue (the omitted end_col) is the end of the line", EditorTextOps.ColumnIndex(int.MaxValue, 5) == 5);

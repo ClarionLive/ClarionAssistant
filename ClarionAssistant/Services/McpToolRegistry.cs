@@ -560,7 +560,7 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Delete text between two positions (line/column, 1-based) in the active editor. " + RangeColumnRules +
                               " To delete whole lines N-M with their line breaks: start_line=N, start_col=1, end_line=M+1, end_col=1 " +
-                              "(omitting end_col instead keeps line M's line break, leaving an empty line). If M is the last line: " +
+                              "(omitting end_col instead keeps line M's line break, leaving an empty line). If M is the last line and N>1: " +
                               "start_line=N-1 with start_col past its end (it clamps to the end of that line), end_line=M, end_col omitted. " +
                               "To empty the whole document: start_line=1, end_line=last, columns omitted.",
                 InputSchema = McpJsonRpc.BuildSchema(
