@@ -104,8 +104,8 @@ Never for a file the compiler or template engine finds: those resolve through th
 **ALWAYS find Clarion files through the active .red — see Critical Rule 12.**
 - `get_solution_info` -Get the currently selected solution, the Clarion version the BUILD uses (`versionName`, `clarionRoot`; may differ from the IDE's own install), the active .red (`activeRedFile`), its search paths for `.clw`/`.inc`/templates (`tplSearchPaths`), and CodeGraph database status.
 - `get_project_source_files` -List all .clw/.inc files in the solution with absolute paths, grouped by project. Use to resolve module names (e.g. 'Main001.clw') to paths for the LSP tools.
-- `resolve_red_path` -Resolve ANY Clarion filename (.tpl, .tpw, .inc, .clw, .equ, .trn, .lib, .dll, .ico, ...) to its full path via the active .red. Returns the first existing match. Use it before any disk search.
-- `get_red_search_paths` -Get the .red's search directories for a file extension (templates included: 'tpl', 'tpw'), in precedence order; `absoluteSearchPaths` anchors relative entries at the solution folder. Grep only these to search inside Clarion files. With `project_name` (and LSP running), results are config-aware the way the compiler resolves them.
+- `resolve_red_path` -Resolve ANY Clarion filename (.tpl, .tpw, .inc, .clw, .equ, .trn, .lib, .dll, .ico, ...) to its full path via the active .red, for the IDE's active build configuration (`buildConfiguration`). Takes a bare file name. Matches under another configuration's section come back in `alsoFoundIn`. Use it before any disk search.
+- `get_red_search_paths` -Get the .red's search directories for a file extension (templates included: 'tpl', 'tpw'), over the same sections and in the same order as `resolve_red_path`; `absoluteSearchPaths` anchors relative entries at the project's folder (`baseDir`). Grep only these to search inside Clarion files. Pass `project_name` in a multi-project solution.
 - `get_ca_project_info` -Get ClarionAssistant project info for a folder (linked GitHub account, repo name). Use instead of asking the developer.
 - `index_solution` -Index/re-index the currently selected solution into its CodeGraph database.
 
@@ -319,7 +319,8 @@ You do NOT need to save everything — only insights that would be useful in fut
 12. **ALWAYS find Clarion files through the active .red — never from memory, never by searching drives.** Files move and installs change; the .red is the only source of truth.
     - `get_solution_info` gives the build's Clarion: `versionName`, `clarionRoot`, `activeRedFile`. Never take these from memory or from the IDE's own install folder: Build > Set Clarion Version can point the solution at a different Clarion.
     - To locate ANY file the compiler or template engine would find (`.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.trn`, `.lib`, `.dll`, `.ico`, ...), call `resolve_red_path` first.
-    - To search INSIDE such files (e.g. which template writes X), call `get_red_search_paths` for the extension and Grep only its `absoluteSearchPaths`, in order: the first match wins.
+    - To search INSIDE such files (e.g. which template writes X), call `get_red_search_paths` for the extension and Grep only its `absoluteSearchPaths`, in order: earlier folders take precedence.
+    - In a multi-project solution pass `project_name`: relative .red entries, and a project's own .red, are per project. If the answer has `alsoFoundIn`, the file resolves elsewhere under another configuration: say which one you used.
     - Never recursively search drives or Clarion installs (`search_files`, `Get-ChildItem -Recurse`, `grep -r`): stale copies abound and give wrong answers.
     - A path from memory, an earlier conversation or a previous answer is NEVER a file's location: re-resolve it every time. A memory that names a Clarion folder may be stale; check it against `get_solution_info`.
 

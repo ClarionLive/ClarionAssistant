@@ -215,6 +215,27 @@ static class SolutionVersionResolverTest
             Check(got == null, "only <sln name>.<hex>.xml files are candidates", f);
             foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
 
+            // 5a5581e6: the build configuration comes from the same file, by the same rules. Two files for the name:
+            // ours (a path under the solution) says Release, the other folder's says Debug.
+            Console.WriteLine("-- the IDE's saved build configuration");
+            File.WriteAllText(Path.Combine(prefs, "v61POSitive.sln.11111111.xml"),
+                "<Properties>\r\n  <Array name=\"OpenFiles\">\r\n    <String value=\"" + Path.Combine(solDir, "a.clw") + "\" />\r\n  </Array>\r\n"
+                + "  <ActiveConfiguration value=\"Release\" />\r\n  <ActivePlatform value=\"Win32\" />\r\n  <ActiveVersion value=\"" + c10.Name + "\" />\r\n</Properties>");
+            File.WriteAllText(Path.Combine(prefs, "v61POSitive.sln.22222222.xml"),
+                "<Properties>\r\n  <Array name=\"OpenFiles\">\r\n    <String value=\"C:\\Elsewhere\\a.clw\" />\r\n  </Array>\r\n"
+                + "  <ActiveConfiguration value=\"Debug\" />\r\n  <ActivePlatform value=\"Win32\" />\r\n  <ActiveVersion value=\"" + c10.Name + "\" />\r\n</Properties>");
+            string platform;
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out platform, out f, out note);
+            Check(got == "Release" && platform == "Win32" && Path.GetFileName(f) == "v61POSitive.sln.11111111.xml",
+                "ActiveConfiguration is read from this solution's file, chosen by content when files disagree", got + " / " + note);
+            got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
+            Check(got == c10.Name, "...and reading it leaves ActiveVersion's answer alone", got);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            WritePrefs(prefs, "v61POSitive.sln.11111111.xml", c10.Name, null);
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out platform, out f, out note);
+            Check(got == null, "no ActiveConfiguration saved: none (the caller searches Common only)", got);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+
             Console.WriteLine("-- the projects' .Version resources (advisory)");
             string warn = SolutionVersionResolver.ProjectVersionWarning(sln, c12);
             Check(warn != null && warn.Contains("PRM002 (Clarion 10)") && warn.StartsWith("WARNING"), "C12 chosen, project says 10000: warned", warn);

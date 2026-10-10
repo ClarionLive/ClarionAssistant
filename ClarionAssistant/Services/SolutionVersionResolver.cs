@@ -363,6 +363,29 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string ReadActiveVersion(string prefsDir, string solutionPath, out string file, out string note)
         {
+            return Read(prefsDir, solutionPath, c => c.ActiveVersion, out file, out note);
+        }
+
+        /// <summary>
+        /// 5a5581e6: the build configuration the IDE saved for <paramref name="solutionPath"/> - ActiveConfiguration
+        /// ("Debug", "Release", ...) with its ActivePlatform ("Win32") - chosen from the same file, by the same rules,
+        /// as <see cref="ReadActiveVersion"/>. Null when there is none.
+        /// </summary>
+        public static string ReadActiveConfiguration(string prefsDir, string solutionPath, out string platform, out string file, out string note)
+        {
+            platform = null;
+            string config = Read(prefsDir, solutionPath, c => c.ActiveConfiguration, out file, out note);
+            if (config != null && file != null)
+            {
+                var c = ReadCandidate(file, "");
+                if (c != null) platform = c.ActivePlatform;
+            }
+            return config;
+        }
+
+        private static string Read(string prefsDir, string solutionPath, Func<Candidate, string> valueOf,
+                                   out string file, out string note)
+        {
             file = null;
             note = null;
             try
@@ -383,16 +406,16 @@ namespace ClarionAssistant.Services
                 if (candidates.Count == 0) return null;
 
                 if (candidates.Count == 1)
-                    return Take(candidates[0], out file);
+                    return Take(candidates[0], valueOf, out file);
 
                 // Several files for one solution NAME (other folders' solutions of the same name). When they all say
                 // the same thing, which one is ours does not matter.
                 var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var c in candidates) distinct.Add(c.ActiveVersion ?? "");
+                foreach (var c in candidates) distinct.Add(valueOf(c) ?? "");
                 if (distinct.Count == 1)
                 {
                     note = candidates.Count + " preference files for " + slnName + ", all saying the same";
-                    return Take(candidates[0], out file);
+                    return Take(candidates[0], valueOf, out file);
                 }
 
                 string hash = HashSuffix(solutionPath);
@@ -409,19 +432,19 @@ namespace ClarionAssistant.Services
                         + " by the paths it records";
                     if (byHash != null && !ReferenceEquals(byHash, pick))
                         note += "; NOTE the name hash points at " + Path.GetFileName(byHash.Path) + " instead";
-                    return Take(pick, out file);
+                    return Take(pick, valueOf, out file);
                 }
 
                 if (byHash != null)
                 {
                     note = "chosen among " + candidates.Count + " preference files for " + slnName
                         + " by the IDE's name hash (their contents do not say which solution they belong to)";
-                    return Take(byHash, out file);
+                    return Take(byHash, valueOf, out file);
                 }
 
                 note = "the IDE has " + candidates.Count + " preference files for " + slnName + " ("
                     + string.Join(", ", candidates.ConvertAll(c => Path.GetFileName(c.Path) + "='"
-                        + (c.ActiveVersion ?? "") + "'").ToArray())
+                        + (valueOf(c) ?? "") + "'").ToArray())
                     + ") that disagree, and nothing says which is this solution's, so none was used";
                 return null;
             }
@@ -443,10 +466,10 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private static string Take(Candidate c, out string file)
+        private static string Take(Candidate c, Func<Candidate, string> valueOf, out string file)
         {
             file = c.Path;
-            return c.ActiveVersion;
+            return valueOf(c);
         }
 
         private sealed class Candidate
@@ -454,6 +477,8 @@ namespace ClarionAssistant.Services
             public string Path;
             public string Suffix;
             public string ActiveVersion;
+            public string ActiveConfiguration;
+            public string ActivePlatform;
             public List<string> Paths = new List<string>();
 
             public bool MentionsFolder(string folderWithSlash)
@@ -464,6 +489,14 @@ namespace ClarionAssistant.Services
             }
         }
 
+        private static string ValueOf(XmlDocument doc, string element)
+        {
+            var e = doc.SelectSingleNode("/Properties/" + element) as XmlElement;
+            if (e == null) return null;
+            string v = e.GetAttribute("value");
+            return string.IsNullOrEmpty(v) ? null : v.Trim();
+        }
+
         private static Candidate ReadCandidate(string file, string suffix)
         {
             try
@@ -471,12 +504,9 @@ namespace ClarionAssistant.Services
                 var doc = new XmlDocument();
                 doc.Load(file);   // honours the BOM the IDE writes
                 var c = new Candidate { Path = file, Suffix = suffix };
-                var av = doc.SelectSingleNode("/Properties/ActiveVersion") as XmlElement;
-                if (av != null)
-                {
-                    string v = av.GetAttribute("value");
-                    c.ActiveVersion = string.IsNullOrEmpty(v) ? null : v.Trim();
-                }
+                c.ActiveVersion = ValueOf(doc, "ActiveVersion");
+                c.ActiveConfiguration = ValueOf(doc, "ActiveConfiguration");   // 5a5581e6
+                c.ActivePlatform = ValueOf(doc, "ActivePlatform");
                 foreach (XmlNode n in doc.SelectNodes("//@value"))
                 {
                     string v = n.Value;

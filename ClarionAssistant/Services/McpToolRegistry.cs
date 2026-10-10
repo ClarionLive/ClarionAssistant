@@ -2262,8 +2262,9 @@ COMMON QUERIES:
                 Name = "get_solution_info",
                 Description = "Get the currently selected Clarion solution, the Clarion version its BUILD uses (versionName, clarionRoot - "
                     + "Build > Set Clarion Version can make this a different Clarion from the IDE's own install), the active .red "
-                    + "(activeRedFile), its search paths for .clw, .inc and templates (clwSearchPaths, incSearchPaths, tplSearchPaths; "
-                    + "tplAbsoluteSearchPaths anchors relative entries at the solution folder), and CodeGraph database status. "
+                    + "(activeRedFile), the IDE's active build configuration for it (buildConfiguration), its search paths for .clw, "
+                    + ".inc and templates (clwSearchPaths, incSearchPaths, tplSearchPaths; tplAbsoluteSearchPaths anchors relative "
+                    + "entries at baseDir), and CodeGraph database status. "
                     + "Take the Clarion root and .red from here, never from memory.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -2332,12 +2333,17 @@ COMMON QUERIES:
                         result["clwSearchPaths"] = red.GetSearchPaths(".clw");
                         result["incSearchPaths"] = red.GetSearchPaths(".inc");
                         // 5a5581e6: and where templates live. Without it the agent searched drives for a .tpl
-                        // and found one of 60 stale copies. Anchored too, so the list can be Grepped as is.
-                        var tplPaths = red.GetSearchPathsForAny(TemplateExtensions);
-                        result["tplSearchPaths"] = tplPaths;
-                        var tplAbsolute = RedFileService.AnchorAll(tplPaths, SolutionDirectoryOf(slnPath));
-                        if (tplAbsolute != null)
-                            result["tplAbsoluteSearchPaths"] = tplAbsolute;
+                        // and found one of 60 stale copies. The same sections and folder resolve_red_path uses,
+                        // anchored too, so the list can be Grepped as is.
+                        var scope = RedScopeFor(new Dictionary<string, object>());
+                        if (scope.Error == null && scope.Red != null)
+                        {
+                            var tplPaths = RedResolution.SearchPaths(scope.Red, TemplateExtensions, scope.Sections);
+                            result["tplSearchPaths"] = tplPaths;
+                            WithAbsolutePaths(result, tplPaths, scope.BaseDir, "tplAbsoluteSearchPaths", "tplUnresolvedEntries");
+                            result["tplSections"] = scope.Sections;
+                            scope.Describe(result);
+                        }
                         // GH #261: the {include}d files followed, and any that could not be.
                         if (red.LoadedFiles.Count > 1)
                             result["redIncludes"] = red.LoadedFiles.Skip(1).ToArray();
@@ -2353,15 +2359,18 @@ COMMON QUERIES:
             {
                 Name = "resolve_red_path",
                 Description = "Resolve ANY file the Clarion compiler or template engine finds - templates (.tpl, .tpw), "
-                    + ".inc, .clw, .equ, .trn, .lib, .dll, .ico, ... - to its full path through the active .red (redirection) file, "
-                    + "the way the build finds it. Use this before any disk search: stale copies of Clarion files abound on disk, "
-                    + "and only the .red says which one the build uses. Search paths are tried in .red order (first match wins); "
-                    + "relative entries are anchored at the solution folder. Returns the first existing match.",
+                    + ".inc, .clw, .equ, .trn, .lib, .dll, .ico, ... - to its full path through the active .red (redirection) file. "
+                    + "Use this before any disk search: stale copies of Clarion files abound on disk, and the .red says which one "
+                    + "the build is pointed at. Searches the sections of the build configuration the IDE has active for the solution "
+                    + "('<config>32', '<config>', then 'Common'; only 'Common' when that is unknown), in .red order; a match under any "
+                    + "OTHER section is listed in 'alsoFoundIn', never chosen. Relative entries are anchored at the project's folder "
+                    + "(pass project_name in a multi-project solution; 'baseDir' says which folder was used). Takes a bare file name.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "filename", "The filename to resolve (e.g. 'UltimateSQL.tpl', 'ABUtil.tpw', 'MyClass.inc', 'StringClass.clw', 'equates.clw')" },
-                        { "section", "Red file section for the local fallback (default: the build sections Debug32, Release32, Debug, Release, then Common). Other options: 'Common', 'Copy'" }
+                        { "filename", "The bare file name to resolve, no folder (e.g. 'UltimateSQL.tpl', 'ABUtil.tpw', 'MyClass.inc', 'StringClass.clw', 'equates.clw')" },
+                        { "project_name", "The project whose .red and folder apply (its local version-named .red, and its folder for relative entries). Needed in a multi-project solution; a single-project solution uses its project." },
+                        { "section", "Search only this .red section (e.g. 'Release32', 'Common') instead of the active configuration's." }
                     },
                     new[] { "filename" }),
                 RequiresUiThread = false,
@@ -2371,75 +2380,79 @@ COMMON QUERIES:
                         return "Error: chat control not initialized";
 
                     string fileName = McpJsonRpc.GetString(args, "filename", "");
-                    if (string.IsNullOrEmpty(fileName))
-                        return "Error: filename is required";
+                    // 5a5581e6: a bare name only - a rooted or "..\" name would "match" outside the .red's folders.
+                    string nameError = RedResolution.LeafNameError(fileName);
+                    if (nameError != null)
+                        return "Error: " + nameError;
 
-                    // Prefer the language server's config-aware resolver: it merges the active
-                    // configuration section with Common (and falls back to libsrc), the way the
-                    // compiler does. The local RedFileService does not know the active configuration, so it
-                    // can pick a different config's path (e.g. .\genfiles\src). Fall back to RedFileService
-                    // only when the LSP is down or the server-side solution hasn't loaded yet.
-                    EnsureLspRunning();
-                    if (_lspClient != null && _lspClient.IsRunning)
+                    var scope = RedScopeFor(args);
+                    if (scope.Error != null)
+                        return "Error: " + scope.Error;
+                    var local = scope.Red != null && scope.Red.RedFilePath != null
+                        ? RedResolution.Resolve(scope.Red, fileName, scope.BaseDir, scope.Sections) : null;
+
+                    // The language server resolves as ONE configuration (LspService.LspConfiguration) for the solution
+                    // folder. Ask it only when that cannot contradict the request: no section or project named, and the
+                    // IDE's configuration is that one or unknown. Every local hit at another path is still shown.
+                    if (!scope.ExplicitSection && !scope.ExplicitProject && scope.LspMatchesConfiguration)
                     {
-                        var hit = _lspClient.FindFile(fileName);
-                        if (hit != null)
+                        EnsureLspRunning();
+                        if (_lspClient != null && _lspClient.IsRunning)
                         {
-                            object p; hit.TryGetValue("path", out p);
+                            var hit = _lspClient.FindFile(fileName);
+                            object p = null;
+                            if (hit != null) hit.TryGetValue("path", out p);
                             string resolvedPath = p as string;
                             if (!string.IsNullOrEmpty(resolvedPath))
                             {
                                 object src; hit.TryGetValue("source", out src);
-                                return WithVersion(new Dictionary<string, object>
+                                var fromLsp = new Dictionary<string, object>
                                 {
                                     { "filename", fileName },
                                     { "resolvedPath", resolvedPath },
                                     { "found", true },
                                     { "source", (src as string) ?? "lsp" },
-                                    { "resolver", "lsp" }
-                                }, true);
+                                    { "resolver", "lsp" },
+                                    { "configurationNote", "the language server resolves as configuration '" + LspService.LspConfiguration
+                                        + "'" + (scope.Configuration == null ? "; the IDE's own configuration for this solution is unknown" : "") }
+                                };
+                                if (local != null)
+                                {
+                                    var also = new List<RedFileService.RedHit>();
+                                    if (local.Path != null) also.Add(new RedFileService.RedHit { Section = local.Section, Path = local.Path });
+                                    also.AddRange(local.AlsoFoundIn);
+                                    AddAlsoFoundIn(fromLsp, also, resolvedPath);
+                                }
+                                return WithVersion(fromLsp, true);
                             }
                         }
                     }
 
-                    // Fallback: local RedFileService. 5a5581e6: anchored at the solution folder (red.Resolve had no
-                    // base dir, so ".\" entries resolved against the process CWD - the Clarion bin), and through the
-                    // build sections when no section is named, as the compiler looks, not Common alone.
-                    var red = _workspace.RedFile;
-                    if (red == null || red.RedFilePath == null)
+                    if (local == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
-                    string section = McpJsonRpc.GetString(args, "section", "");
-                    string[] sections = string.IsNullOrEmpty(section) ? RedFileService.BuildSectionOrder : new[] { section };
-                    string baseDir = SolutionDirectoryOf(_workspace.CurrentSolutionPath);
-                    string resolved = red.ResolveFrom(fileName, baseDir, sections);
-                    if (resolved != null)
-                        return WithVersion(new Dictionary<string, object>
-                        {
-                            { "filename", fileName },
-                            { "resolvedPath", resolved },
-                            { "found", true },
-                            { "resolver", "redfile-fallback" }
-                        }, false);
-
-                    // Not found - return the search paths so the user knows where we looked
-                    string ext = System.IO.Path.GetExtension(fileName);
-                    var searchPaths = new List<string>();
-                    foreach (string s in sections)
-                        foreach (string p in red.GetSearchPaths(ext, s))
-                            if (!searchPaths.Contains(p)) searchPaths.Add(p);
-                    var notFound = new Dictionary<string, object>
+                    var result = new Dictionary<string, object>
                     {
                         { "filename", fileName },
-                        { "found", false },
-                        { "searchedSections", sections },
-                        { "searchedPaths", searchPaths },
-                        { "resolver", "redfile-fallback" }
+                        { "found", local.Path != null },
+                        { "searchedSections", scope.Sections },
+                        { "resolver", "redfile" }
                     };
-                    var searchedAbsolute = RedFileService.AnchorAll(searchPaths, baseDir);
-                    if (searchedAbsolute != null)
-                        notFound["searchedAbsolutePaths"] = searchedAbsolute;
-                    return WithVersion(notFound, false);
+                    if (local.Path != null)
+                    {
+                        result["resolvedPath"] = local.Path;
+                        result["section"] = local.Section;
+                    }
+                    scope.Describe(result);
+                    AddAlsoFoundIn(result, local.AlsoFoundIn, local.Path);
+                    if (local.Path == null)
+                    {
+                        // Not found - say where we looked.
+                        var searchPaths = RedResolution.SearchPaths(scope.Red, new[] { Path.GetExtension(fileName) }, scope.Sections);
+                        result["searchedPaths"] = searchPaths;
+                        WithAbsolutePaths(result, searchPaths, scope.BaseDir, "searchedAbsolutePaths");
+                    }
+                    return WithVersion(result, false);
                 }
             });
 
@@ -2448,18 +2461,19 @@ COMMON QUERIES:
                 Name = "get_red_search_paths",
                 Description = "Get all search directories for ANY file extension from the active .red file - templates "
                     + "('tpl', 'tpw'), 'inc', 'clw', 'equ', 'trn', 'lib', 'dll', 'ico', ... Use this before any disk search: to search "
-                    + "INSIDE Clarion files (e.g. which template writes X), Grep only these directories. The order is precedence: "
-                    + "the build takes the first directory holding the file. 'absoluteSearchPaths' is the same list with relative "
-                    + "entries ('.', '.\\Source') anchored at the solution folder; 'searchPaths' keeps them as the .red writes them. "
-                    + "When 'project_name' is supplied and the language server is running, results are "
-                    + "config-aware (active configuration section merged with Common, the way the compiler "
-                    + "resolves). Without a project_name, falls back to the local single-section lookup (default Common).",
+                    + "INSIDE Clarion files (e.g. which template writes X), Grep only these directories. The list covers the same "
+                    + ".red sections, in the same order, as resolve_red_path (the IDE's active build configuration, then Common; only "
+                    + "Common when that is unknown), so the order is precedence. 'absoluteSearchPaths' is the same list with relative "
+                    + "entries ('.', '.\\Source') anchored at the project's folder ('baseDir'); 'searchPaths' keeps them as the .red writes "
+                    + "them; entries that cannot be anchored (an unexpanded %MACRO%, a drive-relative path) are in 'unresolvedEntries'. "
+                    + "Pass project_name in a multi-project solution. When the language server is running and resolves as the same "
+                    + "configuration, a project_name lookup returns its paths instead.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "extension", "File extension to look up (e.g. 'tpl', 'tpw', 'clw', 'inc', 'equ', 'lib', 'dll')" },
-                        { "section", "Red file section for the local fallback (default: 'Common'). Ignored when project_name drives the config-aware LSP lookup." },
-                        { "project_name", "Project name for config-aware resolution via the language server. When set and the LSP is running, returns active-config + Common search paths." }
+                        { "section", "Search only this .red section (e.g. 'Release32', 'Common') instead of the active configuration's. Skips the language server." },
+                        { "project_name", "The project whose .red and folder apply. Needed in a multi-project solution; also scopes the language server lookup." }
                     },
                     new[] { "extension" }),
                 RequiresUiThread = false,
@@ -2472,12 +2486,13 @@ COMMON QUERIES:
                     if (string.IsNullOrEmpty(ext))
                         return "Error: extension is required";
 
+                    var scope = RedScopeFor(args);
+                    if (scope.Error != null)
+                        return "Error: " + scope.Error;
                     string projectName = McpJsonRpc.GetString(args, "project_name", "");
-                    // 5a5581e6: relative entries are relative to the solution folder; absoluteSearchPaths says so.
-                    string baseDir = SolutionDirectoryOf(_workspace.CurrentSolutionPath);
 
-                    // Config-aware path: delegate to the server when we have a project to scope it to.
-                    if (!string.IsNullOrEmpty(projectName))
+                    // The server's view, when it is the same configuration as the IDE's (or that is unknown).
+                    if (!string.IsNullOrEmpty(projectName) && !scope.ExplicitSection && scope.LspMatchesConfiguration)
                     {
                         EnsureLspRunning();
                         if (_lspClient != null && _lspClient.IsRunning)
@@ -2485,31 +2500,35 @@ COMMON QUERIES:
                             string normalizedExt = ext.StartsWith(".") ? ext : "." + ext;
                             var serverPaths = _lspClient.GetServerSearchPaths(projectName, normalizedExt);
                             if (serverPaths != null && serverPaths.Count > 0)
-                                return WithVersion(WithAbsolutePaths(new Dictionary<string, object>
+                            {
+                                var fromLsp = new Dictionary<string, object>
                                 {
                                     { "extension", ext },
                                     { "projectName", projectName },
                                     { "searchPaths", serverPaths },
-                                    { "resolver", "lsp" }
-                                }, serverPaths, baseDir), true);
+                                    { "resolver", "lsp" },
+                                    { "configurationNote", "the language server resolves as configuration '" + LspService.LspConfiguration + "'" }
+                                };
+                                return WithVersion(WithAbsolutePaths(fromLsp, serverPaths, scope.BaseDir), true);
+                            }
                         }
                     }
 
-                    // Fallback: local RedFileService (single section, default Common).
-                    var red = _workspace.RedFile;
-                    if (red == null || red.RedFilePath == null)
+                    // Local: the same sections, in the same order, as resolve_red_path.
+                    if (scope.Red == null || scope.Red.RedFilePath == null)
                         return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
 
-                    string section = McpJsonRpc.GetString(args, "section", "Common");
-                    var paths = red.GetSearchPaths(ext, section);
-                    return WithVersion(WithAbsolutePaths(new Dictionary<string, object>
+                    var paths = RedResolution.SearchPaths(scope.Red, new[] { ext }, scope.Sections);
+                    var result = new Dictionary<string, object>
                     {
                         { "extension", ext },
-                        { "section", section },
+                        { "sections", scope.Sections },
                         { "searchPaths", paths },
-                        { "redFile", red.RedFilePath },
-                        { "resolver", "redfile-fallback" }
-                    }, paths, baseDir), false);
+                        { "redFile", scope.Red.RedFilePath },
+                        { "resolver", "redfile" }
+                    };
+                    scope.Describe(result);
+                    return WithVersion(WithAbsolutePaths(result, paths, scope.BaseDir), false);
                 }
             });
 
@@ -5326,26 +5345,145 @@ IdeOnly = true,
         /// <summary>5a5581e6: the template extensions get_solution_info's tplSearchPaths covers (.red: *.tp?, *.tpl, *.tpw).</summary>
         internal static readonly string[] TemplateExtensions = { ".tpl", ".tpw" };
 
-        /// <summary>The folder a .red's relative entries hang off: the solution's. Null with no solution.</summary>
-        internal static string SolutionDirectoryOf(string slnPath)
-        {
-            if (string.IsNullOrEmpty(slnPath)) return null;
-            try { return Path.GetDirectoryName(slnPath); } catch { return null; }
-        }
-
         /// <summary>
-        /// 5a5581e6: add 'absoluteSearchPaths' - <paramref name="paths"/> anchored at <paramref name="baseDir"/> the way
-        /// RedFileService.ResolveFrom anchors them - leaving 'searchPaths' as the .red writes it. Omitted with no solution.
+        /// 5a5581e6: add <paramref name="key"/> ('absoluteSearchPaths') - <paramref name="paths"/> anchored at
+        /// <paramref name="baseDir"/> by RedFileService.AnchorAt, the rule resolution uses - leaving 'searchPaths' as the
+        /// .red writes it, and list the entries that cannot be anchored (unexpanded %MACRO%, drive-relative on another
+        /// drive) under <paramref name="unresolvedKey"/>. Omitted with no base folder.
         /// </summary>
-        internal static Dictionary<string, object> WithAbsolutePaths(Dictionary<string, object> result, IEnumerable<string> paths, string baseDir)
+        internal static Dictionary<string, object> WithAbsolutePaths(Dictionary<string, object> result, IEnumerable<string> paths, string baseDir,
+                                                                     string key = "absoluteSearchPaths", string unresolvedKey = "unresolvedEntries")
         {
             var absolute = RedFileService.AnchorAll(paths, baseDir);
             if (absolute != null)
             {
-                result["absoluteSearchPaths"] = absolute;
+                result[key] = absolute;
                 result["baseDir"] = baseDir;
             }
+            var unresolved = RedFileService.Unanchorable(paths, baseDir);
+            if (unresolved.Count > 0)
+                result[unresolvedKey] = unresolved;
             return result;
+        }
+
+        /// <summary>5a5581e6: 'alsoFoundIn' - the matches at a path other than <paramref name="chosen"/>, with their section.</summary>
+        private static void AddAlsoFoundIn(Dictionary<string, object> result, IEnumerable<RedFileService.RedHit> hits, string chosen)
+        {
+            var list = new List<Dictionary<string, object>>();
+            foreach (var h in hits)
+                if (!string.Equals(h.Path, chosen, StringComparison.OrdinalIgnoreCase))
+                    list.Add(new Dictionary<string, object> { { "section", h.Section }, { "path", h.Path } });
+            if (list.Count > 0)
+            {
+                result["alsoFoundIn"] = list;
+                result["alsoFoundInNote"] = "the same file name resolves elsewhere under another .red section or resolver - "
+                    + "check which one the build you mean uses";
+            }
+        }
+
+        /// <summary>5a5581e6: which .red, which folder and which sections a resolve_red_path / get_red_search_paths call means.</summary>
+        private sealed class RedScope
+        {
+            public RedFileService Red;
+            public string BaseDir;
+            public string[] Sections;
+            public string Configuration;
+            public string ConfigurationNote;
+            public string ProjectNote;
+            public string Error;
+            public bool ExplicitSection;
+            public bool ExplicitProject;
+
+            /// <summary>The language server resolves as one configuration; its answer fits only that one (or an unknown one).</summary>
+            public bool LspMatchesConfiguration
+            {
+                get { return Configuration == null || string.Equals(Configuration, LspService.LspConfiguration, StringComparison.OrdinalIgnoreCase); }
+            }
+
+            public void Describe(Dictionary<string, object> result)
+            {
+                result["buildConfiguration"] = Configuration ?? "(unknown)";
+                if (ConfigurationNote != null) result["configurationNote"] = ConfigurationNote;
+                if (BaseDir != null) result["baseDir"] = BaseDir;
+                if (ProjectNote != null) result["projectNote"] = ProjectNote;
+            }
+        }
+
+        /// <summary>
+        /// 5a5581e6: the scope of a .red lookup. Folder: the project's (project_name, or the solution's only project),
+        /// else the solution's with a note. .red: that folder's own version-named one when it has one. Sections: the
+        /// 'section' argument, else the IDE's active build configuration's, else Common only.
+        /// </summary>
+        private RedScope RedScopeFor(Dictionary<string, object> args)
+        {
+            var scope = new RedScope();
+            string sln = _workspace.CurrentSolutionPath;
+            string project = McpJsonRpc.GetString(args, "project_name", "");
+            scope.ExplicitProject = !string.IsNullOrEmpty(project);
+            string projectNote, projectError;
+            scope.BaseDir = RedResolution.ProjectDirectory(sln, project, out projectNote, out projectError);
+            if (projectError != null) { scope.Error = projectError; return scope; }
+            scope.ProjectNote = projectNote;
+
+            scope.Red = _workspace.RedFile;
+            if (scope.Red != null && scope.BaseDir != null)
+                scope.Red = RedFileService.ForProjectDirectory(scope.BaseDir, scope.Red);
+
+            scope.Configuration = ActiveBuildConfiguration(sln, out scope.ConfigurationNote);
+            string section = McpJsonRpc.GetString(args, "section", "");
+            scope.ExplicitSection = !string.IsNullOrEmpty(section);
+            scope.Sections = scope.ExplicitSection ? new[] { section } : RedResolution.SectionsFor(scope.Configuration);
+            return scope;
+        }
+
+        /// <summary>
+        /// 5a5581e6: the build configuration ("Debug", "Release", ...) the IDE has for <paramref name="slnPath"/>: its
+        /// ActiveConfiguration in ConfigDir\preferences\&lt;sln&gt;.&lt;hash&gt;.xml, the file it restores Build &gt; Set
+        /// Configuration from. ConfigDir comes from the IDE's published record (standalone) or the IDE itself (addin).
+        /// Null, with a note, when that cannot be established - the caller then searches Common only.
+        /// </summary>
+        private static string ActiveBuildConfiguration(string slnPath, out string note)
+        {
+            note = null;
+            if (string.IsNullOrEmpty(slnPath))
+            {
+                note = "no solution: the build configuration is unknown, so only [Common] is searched";
+                return null;
+            }
+            var configDirs = new List<string>();
+            try
+            {
+                if (IdeProcessId.HasValue)
+                {
+                    string recNote;
+                    var rec = IdeSolutionRecord.ReadDetailsCached(IdeProcessId.Value, out recNote);
+                    if (rec != null && !string.IsNullOrEmpty(rec.ConfigDir) && SolutionVersionResolver.SamePath(rec.Solution, slnPath))
+                        configDirs.Add(rec.ConfigDir);
+                }
+            }
+            catch { }
+            try
+            {
+                string ide = ClarionConfigDirectory.Resolve();
+                if (!string.IsNullOrEmpty(ide) && !configDirs.Contains(ide)) configDirs.Add(ide);
+            }
+            catch { }
+
+            foreach (string dir in configDirs)
+            {
+                string platform, file, prefsNote;
+                string config = IdeSolutionPreferences.ReadActiveConfiguration(Path.Combine(dir, "preferences"), slnPath,
+                                                                               out platform, out file, out prefsNote);
+                if (config != null)
+                {
+                    note = "configuration '" + config + "'" + (platform != null ? " (" + platform + ")" : "")
+                         + " [from the IDE's saved preferences\\" + Path.GetFileName(file) + (prefsNote != null ? "; " + prefsNote : "") + "]";
+                    return config;
+                }
+            }
+            note = "the IDE's build configuration for this solution is unknown (no IDE preferences found for it), so only "
+                 + "[Common] is searched; a match under any other section is listed in alsoFoundIn";
+            return null;
         }
 
         /// <summary>

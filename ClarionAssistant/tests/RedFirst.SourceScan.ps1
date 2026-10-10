@@ -6,12 +6,16 @@
 # The Owner's directive: ALWAYS find Clarion files through the .red - files move; a remembered path is never one.
 #
 # D1  the runtime CLAUDE.md and the bundled prompt carry the Critical Rule: ALWAYS through the active .red,
-#     resolve_red_path / get_red_search_paths, the root from get_solution_info, never search drives, never from memory.
+#     resolve_red_path / get_red_search_paths, the root from get_solution_info, never search drives, never from memory,
+#     project_name in a multi-project solution, alsoFoundIn - and no "first match wins" (pipeline run 1).
 # D2  the /clarion and clarion-solution skills carry the same directive.
 # D3  the tools say it too (their schemas can be deferred, but not always): resolve_red_path and get_red_search_paths
 #     name templates and "before any disk search"; get_red_search_paths says order is precedence and answers
-#     absoluteSearchPaths; get_solution_info answers tplSearchPaths; resolve_red_path's fallback anchors at the
-#     solution folder (ResolveFrom with a base dir), never the bare Resolve that anchored at the process CWD.
+#     absoluteSearchPaths; get_solution_info answers tplSearchPaths and baseDir. Pipeline run 1 wiring: resolve_red_path
+#     takes a bare name (LeafNameError), resolves through the IDE's configuration's sections (RedScopeFor ->
+#     ActiveBuildConfiguration -> SectionsFor) in the project's folder and .red (ProjectDirectory, ForProjectDirectory),
+#     reports alsoFoundIn, and asks the language server only when it runs the same configuration; get_red_search_paths
+#     walks the SAME sections; no fixed BuildSectionOrder, no "the way the build finds it".
 # D4  deploy.ps1 ships Everything32.dll in $Items, and the installer ships it beside every ClarionAssistant.dll.
 #
 # PROVES IT CAN FAIL: after the real scan passes, the same scan runs on temp copies with one planted mutation each
@@ -25,13 +29,14 @@ param(
     [string]$Skill     = (Join-Path $PSScriptRoot '..\..\marketplace\plugins\clarion-assistant\skills\clarion\SKILL.md'),
     [string]$SolSkill  = (Join-Path $PSScriptRoot '..\..\marketplace\plugins\clarion-assistant\skills\clarion-solution\SKILL.md'),
     [string]$Registry  = (Join-Path $PSScriptRoot '..\Services\McpToolRegistry.cs'),
+    [string]$Lsp       = (Join-Path $PSScriptRoot '..\Services\LspService.cs'),
     [string]$Deploy    = (Join-Path $PSScriptRoot '..\deploy.ps1'),
     [string]$Installer = (Join-Path $PSScriptRoot '..\..\installer\ClarionAssistant.iss')
 )
 
 $ErrorActionPreference = 'Stop'
 $files = [ordered]@{ ClaudeMd = $ClaudeMd; Bundled = $Bundled; Skill = $Skill; SolSkill = $SolSkill
-                     Registry = $Registry; Deploy = $Deploy; Installer = $Installer }
+                     Registry = $Registry; Lsp = $Lsp; Deploy = $Deploy; Installer = $Installer }
 foreach ($f in $files.Values) {
     if (-not (Test-Path $f)) { Write-Host "COULD NOT RUN: missing $f" -ForegroundColor Red; exit 2 }
 }
@@ -61,8 +66,9 @@ function Get-ToolHead([string]$src, [string]$name) {
 # ... and its handler, up to the next registration.
 function Get-ToolBody([string]$src, [string]$name) {
     $start = $src.IndexOf("Name = `"$name`"", [StringComparison]::Ordinal)
+    if ($start -lt 0) { $start = $src.IndexOf($name, [StringComparison]::Ordinal) }
     if ($start -lt 0) { return $null }
-    $end = $src.IndexOf('Register(new McpTool', $start, [StringComparison]::Ordinal)
+    $end = $src.IndexOf('Register(new McpTool', $start + 1, [StringComparison]::Ordinal)
     if ($end -lt 0) { $end = $src.Length }
     return $src.Substring($start, $end - $start)
 }
@@ -81,7 +87,10 @@ function Invoke-Scan($p) {
         }
         if ($rule -notmatch '(?i)never recursively search drives') { $fails.Add("D1 $k rule does not forbid searching drives") }
         if ($rule -notmatch '(?i)memory[^\n]*NEVER a file.s location') { $fails.Add("D1 $k rule does not say a remembered path is never a location") }
-        if ($rule -notmatch '(?i)first match wins') { $fails.Add("D1 $k rule does not say the search-path order is precedence") }
+        if ($rule -notmatch '(?i)precedence') { $fails.Add("D1 $k rule does not say the search-path order is precedence") }
+        if ($rule -match '(?i)first match wins') { $fails.Add("D1 $k rule still claims 'first match wins'") }
+        if ($rule -notmatch 'project_name') { $fails.Add("D1 $k rule does not tell the agent to pass project_name") }
+        if ($rule -notmatch 'alsoFoundIn') { $fails.Add("D1 $k rule does not explain alsoFoundIn") }
         if ($t[$k] -notmatch '(?m)^- `resolve_red_path` -[^\n]*\.tpl') { $fails.Add("D1 $k tools list: resolve_red_path does not mention templates") }
         if ($t[$k] -notmatch '(?m)^- `get_red_search_paths` -[^\n]*tpl') { $fails.Add("D1 $k tools list: get_red_search_paths does not mention templates") }
         if ($t[$k] -notmatch '(?m)^- `get_solution_info` -[^\n]*tplSearchPaths') { $fails.Add("D1 $k tools list: get_solution_info does not mention tplSearchPaths") }
@@ -118,13 +127,25 @@ function Invoke-Scan($p) {
     $infoBody    = Get-ToolBody $reg 'get_solution_info'
     $resolveBody = Get-ToolBody $reg 'resolve_red_path'
     $searchBody  = Get-ToolBody $reg 'get_red_search_paths'
-    if ($infoBody -notmatch 'var tplPaths = red\.GetSearchPathsForAny\(TemplateExtensions\);\s*result\["tplSearchPaths"\] = tplPaths;') { $fails.Add('D3 get_solution_info does not answer tplSearchPaths') }
-    if ($resolveBody -match 'red\.Resolve\(fileName') { $fails.Add('D3 resolve_red_path still calls red.Resolve (anchors at the process CWD)') }
-    if ($resolveBody -notmatch 'red\.ResolveFrom\(fileName, baseDir, sections\)') { $fails.Add('D3 resolve_red_path fallback does not ResolveFrom the solution folder') }
-    if ($resolveBody -notmatch 'RedFileService\.BuildSectionOrder') { $fails.Add('D3 resolve_red_path fallback does not search the build sections by default') }
+    if ($infoBody -notmatch 'var tplPaths = RedResolution\.SearchPaths\(scope\.Red, TemplateExtensions, scope\.Sections\);\s*result\["tplSearchPaths"\] = tplPaths;') { $fails.Add('D3 get_solution_info does not answer tplSearchPaths over the resolution sections') }
+    if ($infoBody -notmatch 'scope\.Describe\(result\)') { $fails.Add('D3 get_solution_info does not report baseDir / buildConfiguration') }
+    if ($resolveHead -match '(?i)the way the build finds it|first match wins') { $fails.Add('D3 resolve_red_path still claims to resolve the way the build does') }
+    if ($resolveHead -notmatch 'alsoFoundIn' -or $resolveHead -notmatch 'project_name') { $fails.Add('D3 resolve_red_path does not describe alsoFoundIn and project_name') }
+    if ($resolveBody -notmatch 'RedResolution\.LeafNameError\(fileName\)') { $fails.Add('D3 resolve_red_path accepts non-leaf names') }
+    if ($resolveBody -match 'BuildSectionOrder' -or $resolveBody -match 'red\.Resolve(From)?\(') { $fails.Add('D3 resolve_red_path still resolves through a fixed section order / ResolveFrom') }
+    if ($resolveBody -notmatch 'RedResolution\.Resolve\(scope\.Red, fileName, scope\.BaseDir, scope\.Sections\)') { $fails.Add('D3 resolve_red_path does not resolve through the scope (configuration, project)') }
+    if ($resolveBody -notmatch 'scope\.LspMatchesConfiguration') { $fails.Add('D3 resolve_red_path asks the language server whatever the configuration') }
+    if (([regex]::Matches([string]$resolveBody, 'AddAlsoFoundIn\(')).Count -lt 2) { $fails.Add('D3 resolve_red_path does not report alsoFoundIn') }
+    if ($searchBody -notmatch 'RedResolution\.SearchPaths\(scope\.Red, new\[\] \{ ext \}, scope\.Sections\)') { $fails.Add('D3 get_red_search_paths does not walk the same sections as resolve_red_path') }
+    if ($searchBody -notmatch 'scope\.LspMatchesConfiguration') { $fails.Add('D3 get_red_search_paths asks the language server whatever the configuration') }
     if (([regex]::Matches([string]$searchBody, 'WithAbsolutePaths\(')).Count -lt 2) { $fails.Add('D3 get_red_search_paths does not add absoluteSearchPaths to both answers') }
-    if ($reg -notmatch 'result\["absoluteSearchPaths"\] = absolute;') { $fails.Add('D3 WithAbsolutePaths does not write absoluteSearchPaths') }
-
+    if ($reg -notmatch 'result\[key\] = absolute;' -or $reg -notmatch 'result\[unresolvedKey\] = unresolved;') { $fails.Add('D3 WithAbsolutePaths does not write absoluteSearchPaths / unresolvedEntries') }
+    $scopeFn = Get-ToolBody $reg 'private RedScope RedScopeFor('
+    foreach ($need in 'RedResolution.ProjectDirectory(', 'RedFileService.ForProjectDirectory(scope.BaseDir', 'ActiveBuildConfiguration(sln', 'RedResolution.SectionsFor(scope.Configuration)') {
+        if ([string]$scopeFn -notlike "*$need*") { $fails.Add("D3 RedScopeFor does not call $need") }
+    }
+    if ($reg -notmatch 'IdeSolutionPreferences\.ReadActiveConfiguration\(') { $fails.Add('D3 the active configuration is not read from the IDE preferences') }
+    if ($t.Lsp -notmatch '\{ "configuration", LspConfiguration \}') { $fails.Add('D3 the language server is not started with LspService.LspConfiguration') }
     # D4
     $items = [regex]::Match($t.Deploy, '(?s)\$Items = @\((.*?)\n\)')
     if (-not $items.Success) { $fails.Add('D4 deploy.ps1 $Items not found (scan broken?)') }
@@ -160,10 +181,20 @@ $mutations = @(
     ,@('SolSkill',  "**$Directive**",                                  '**Use the .red**',                        'clarion-solution directive removed')
     ,@('Registry',  'Use this before any disk search: stale copies',  'Stale copies',                             'resolve_red_path drops "before any disk search"')
     ,@('Registry',  '"Resolve ANY file the Clarion compiler or template engine finds - templates (.tpl, .tpw), "', '"Resolve a Clarion filename "', 'resolve_red_path drops templates')
-    ,@('Registry',  'The order is precedence',                         'The order is arbitrary',                  'get_red_search_paths drops precedence')
+    ,@('Registry',  'so the order is precedence',                      'so the order is arbitrary',                  'get_red_search_paths drops precedence')
     ,@('Registry',  'result["tplSearchPaths"] = tplPaths;', '', 'get_solution_info drops tplSearchPaths')
-    ,@('Registry',  'red.ResolveFrom(fileName, baseDir, sections)',    'red.Resolve(fileName, sections)',        'resolve_red_path back to CWD anchoring')
-    ,@('Registry',  'result["absoluteSearchPaths"] = absolute;',       '',                                        'absoluteSearchPaths never written')
+    ,@('Registry',  'result[key] = absolute;',                         '',                                        'absoluteSearchPaths never written')
+    ,@('Registry',  'RedResolution.SectionsFor(scope.Configuration)',  'RedFileService.BuildSectionOrder',        'config-blind fixed section order')
+    ,@('Registry',  'string nameError = RedResolution.LeafNameError(fileName);', 'string nameError = null;',      'resolve_red_path accepts any name')
+    ,@('Registry',  'var paths = RedResolution.SearchPaths(scope.Red, new[] { ext }, scope.Sections);', 'var paths = scope.Red.GetSearchPaths(ext, "Common");', 'search paths over other sections than resolution')
+    ,@('Registry',  'if (!scope.ExplicitSection && !scope.ExplicitProject && scope.LspMatchesConfiguration)', 'if (!scope.ExplicitSection && !scope.ExplicitProject)', 'language server asked whatever the configuration')
+    ,@('Registry',  'scope.Red = RedFileService.ForProjectDirectory(scope.BaseDir, scope.Red);', '',             "the project's own .red ignored")
+    ,@('Registry',  'AddAlsoFoundIn(result, local.AlsoFoundIn, local.Path);', '',                               'alsoFoundIn dropped from the local answer')
+    ,@('Registry',  'IdeSolutionPreferences.ReadActiveConfiguration(', 'IdeSolutionPreferences.ReadActiveVersion(', 'configuration not read from the IDE')
+    ,@('Registry',  'the build is pointed at.',                        'the build is pointed at, the way the build finds it.', 'resolve_red_path overclaims again')
+    ,@('ClaudeMd',  'in order: earlier folders take precedence.',      'in order: the first match wins.',         'CLAUDE.md claims first match wins')
+    ,@('ClaudeMd',  '    - In a multi-project solution pass `project_name`', '    - In a multi-project solution pass the project', 'CLAUDE.md drops project_name')
+    ,@('Lsp',       '{ "configuration", LspConfiguration },',          '{ "configuration", "Release" },',         'language server started off LspConfiguration')
     ,@('Deploy',    '    "Everything32.dll"',                          '    # "Everything32.dll"',                   'deploy.ps1 drops Everything32.dll')
     ,@('Installer', 'Source: "{#SrcC11}\Everything32.dll"',            '; Source: "{#SrcC11}\Everything32.dll"',  'installer drops Everything32.dll for C11')
 )

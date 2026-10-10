@@ -51,6 +51,10 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static System.Func<string, SolutionVersionChoice> SolutionVersionProvider;
 
+        /// <summary>The build configuration the server is started with (updatePaths): always this one. 5a5581e6: a .red
+        /// answer from the server is that configuration's, so resolve_red_path only asks it when the IDE's is the same.</summary>
+        public const string LspConfiguration = "Debug";
+
         /// <summary>Which version the running server was given and what chose it, for every answer that depends on
         /// it (lsp_diagnostics). Null when nothing is running.</summary>
         public static string RunningVersionName { get { return RunningSolutionPath != null ? _runningVersionName : null; } }
@@ -488,7 +492,7 @@ namespace ClarionAssistant.Services
                             { "solutionFilePath", slnPath ?? "" },
                             { "redirectionFile", redirectionFileName },
                             { "clarionVersion", versionConfig != null ? (versionConfig.Name ?? "") : "" },
-                            { "configuration", "Debug" },
+                            { "configuration", LspConfiguration },
                             { "macros", (versionConfig != null ? versionConfig.Macros : null) ?? new Dictionary<string, string>() },
                             { "redirectionPaths", redirectionPaths },
                             { "libsrcPaths", libsrcPaths },

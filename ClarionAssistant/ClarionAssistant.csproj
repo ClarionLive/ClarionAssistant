@@ -175,6 +175,7 @@
     <Compile Include="Services\IdeVersionFollower.cs" />
     <Compile Include="Services\LspStartGate.cs" />
     <Compile Include="Services\RedFileService.cs" />
+    <Compile Include="Services\RedResolution.cs" />
     <Compile Include="Services\LspTrace.cs" />
     <Compile Include="Services\LspClient.cs" />
     <Compile Include="Services\LspTextDiff.cs" />

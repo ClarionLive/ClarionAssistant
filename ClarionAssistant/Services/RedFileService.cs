@@ -627,15 +627,10 @@ namespace ClarionAssistant.Services
 
                     trace.Add("  Pattern " + entry.Pattern + " matches  (" + entry.RawPath + ")");
 
-                    string candidate = Path.Combine(entry.ResolvedPath, fileName);
-                    try
-                    {
-                        // Same relative-path anchoring as ResolveFrom.
-                        if (!Path.IsPathRooted(candidate) && !string.IsNullOrEmpty(baseDir))
-                            candidate = Path.Combine(baseDir, candidate);
-                        candidate = Path.GetFullPath(candidate);
-                    }
-                    catch
+                    // Same relative-path anchoring as ResolveFrom.
+                    string candidate = null;
+                    try { candidate = AnchorAt(Path.Combine(entry.ResolvedPath, fileName), baseDir); } catch { }
+                    if (candidate == null)
                     {
                         trace.Add("    invalid path, skipped: " + entry.RawPath);
                         continue;
@@ -718,16 +713,33 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// Anchor a .red path the way <see cref="ResolveFrom"/> does: a relative entry (".", ".\Source", "..\x") hangs
-        /// off <paramref name="baseDir"/> (the project/solution dir), not the process CWD (the Clarion bin, in the
-        /// IDE). Absolute entries are only normalised. Returns null for a path that cannot be made full.
+        /// off <paramref name="baseDir"/> (the project dir), not the process CWD (the Clarion bin, in the IDE).
+        /// Absolute entries are only normalised. Drive-relative entries are rooted to Path but not absolute: "\x"
+        /// takes <paramref name="baseDir"/>'s drive, "C:x" is relative to <paramref name="baseDir"/> when that is on
+        /// C: - and with <paramref name="baseDir"/> on another drive it cannot be anchored (null; see
+        /// <see cref="UnanchorableReason"/>). Returns null for a path that cannot be made full. With no
+        /// <paramref name="baseDir"/>, the process's own CWD and drive apply, as they always did.
         /// </summary>
         public static string AnchorAt(string path, string baseDir)
         {
             if (string.IsNullOrEmpty(path)) return null;
             try
             {
-                if (!Path.IsPathRooted(path) && !string.IsNullOrEmpty(baseDir))
-                    path = Path.Combine(baseDir, path);
+                if (!string.IsNullOrEmpty(baseDir))
+                {
+                    if (!Path.IsPathRooted(path))
+                        path = Path.Combine(baseDir, path);
+                    else if (IsRootRelative(path))
+                    {
+                        string drive = Path.GetPathRoot(Path.GetFullPath(baseDir));   // "H:\"
+                        path = drive.TrimEnd('\\', '/') + "\\" + path.TrimStart('\\', '/');
+                    }
+                    else if (IsDriveRelative(path))
+                    {
+                        if (!SameDrive(path, baseDir)) return null;
+                        path = Path.Combine(baseDir, path.Substring(2));
+                    }
+                }
                 string full = Path.GetFullPath(path);
                 // "x\Source\" and "x\Source" are one folder; keep a drive root's own backslash.
                 string root = Path.GetPathRoot(full) ?? "";
@@ -736,11 +748,56 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>"\x": rooted, but on whichever drive is current (not "\\server\share").</summary>
+        private static bool IsRootRelative(string path)
+        {
+            return path.Length > 0 && (path[0] == '\\' || path[0] == '/')
+                && !(path.Length > 1 && (path[1] == '\\' || path[1] == '/'));
+        }
+
+        /// <summary>"C:x": a drive letter without a root, relative to that drive's current folder.</summary>
+        private static bool IsDriveRelative(string path)
+        {
+            return path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0])
+                && !(path.Length > 2 && (path[2] == '\\' || path[2] == '/'));
+        }
+
+        private static bool SameDrive(string driveRelative, string baseDir)
+        {
+            try
+            {
+                string root = Path.GetPathRoot(Path.GetFullPath(baseDir)) ?? "";
+                return root.Length >= 2 && root[1] == ':' && char.ToUpperInvariant(root[0]) == char.ToUpperInvariant(driveRelative[0]);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>An entry whose %MACRO% was never expanded: not a real folder, whatever it looks like.</summary>
+        public static bool HasUnexpandedMacro(string path)
+        {
+            return !string.IsNullOrEmpty(path) && Regex.IsMatch(path, @"%[^%\\/]+%");
+        }
+
+        /// <summary>
+        /// 5a5581e6: why <paramref name="path"/> cannot be anchored at <paramref name="baseDir"/> (an unexpanded
+        /// %MACRO%, a drive-relative "C:x" on a drive other than <paramref name="baseDir"/>'s, an invalid path), or
+        /// null when <see cref="AnchorAt"/> can.
+        /// </summary>
+        public static string UnanchorableReason(string path, string baseDir)
+        {
+            if (string.IsNullOrEmpty(path)) return "empty entry";
+            if (HasUnexpandedMacro(path)) return "unexpanded macro";
+            if (!string.IsNullOrEmpty(baseDir) && IsDriveRelative(path) && !SameDrive(path, baseDir))
+                return "drive-relative entry on another drive than " + baseDir;
+            return AnchorAt(path, baseDir) == null ? "invalid path" : null;
+        }
+
         /// <summary>
         /// 5a5581e6: <paramref name="paths"/> anchored at <paramref name="baseDir"/> (<see cref="AnchorAt"/>), order
-        /// kept, duplicates and unanchorable entries dropped - what an agent can Grep without knowing the .red's
-        /// relative-path rule. Null when there is no <paramref name="baseDir"/>: a relative entry would otherwise
-        /// silently land on the process CWD.
+        /// kept, duplicates dropped - what an agent can Grep without knowing the .red's relative-path rule. Entries
+        /// that cannot be anchored (<see cref="UnanchorableReason"/>) are left out; list them with
+        /// <see cref="Unanchorable"/>. Null when there is no <paramref name="baseDir"/>: a relative entry would
+        /// otherwise silently land on the process CWD.
         /// </summary>
         public static List<string> AnchorAll(IEnumerable<string> paths, string baseDir)
         {
@@ -749,11 +806,66 @@ namespace ClarionAssistant.Services
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (string p in paths)
             {
+                if (UnanchorableReason(p, baseDir) != null) continue;
                 string full = AnchorAt(p, baseDir);
                 if (full != null && seen.Add(full))
                     result.Add(full);
             }
             return result;
+        }
+
+        /// <summary>The entries <see cref="AnchorAll"/> leaves out, each as "entry (reason)". Empty when none.</summary>
+        public static List<string> Unanchorable(IEnumerable<string> paths, string baseDir)
+        {
+            var result = new List<string>();
+            if (paths == null) return result;
+            foreach (string p in paths)
+            {
+                string why = UnanchorableReason(p, baseDir);
+                if (why != null && !result.Contains(p + " (" + why + ")")) result.Add(p + " (" + why + ")");
+            }
+            return result;
+        }
+
+        /// <summary>One existing match for a file: the section and the anchored path.</summary>
+        public sealed class RedHit
+        {
+            public string Section { get; set; }
+            public string Path { get; set; }
+        }
+
+        /// <summary>
+        /// 5a5581e6: the first existing match for the LEAF name <paramref name="fileName"/> in EACH of
+        /// <paramref name="sectionNames"/> that has one, in that order. Entries are anchored with
+        /// <see cref="AnchorAt"/>; an entry that cannot be anchored is skipped, and a candidate that does not sit
+        /// directly in its entry's folder (a name that climbs out with "..\" or is rooted) never matches.
+        /// </summary>
+        public List<RedHit> FindInSections(string fileName, string baseDir, IEnumerable<string> sectionNames)
+        {
+            var hits = new List<RedHit>();
+            if (string.IsNullOrEmpty(fileName) || sectionNames == null) return hits;
+            foreach (string sectionName in sectionNames)
+            {
+                RedSection section;
+                if (string.IsNullOrEmpty(sectionName) || !_sections.TryGetValue(sectionName, out section)) continue;
+                foreach (var entry in section.Entries)
+                {
+                    if (!MatchesPattern(fileName, entry.Pattern)) continue;
+                    if (UnanchorableReason(entry.ResolvedPath, baseDir) != null) continue;
+                    string dir = AnchorAt(entry.ResolvedPath, baseDir);
+                    if (dir == null) continue;
+                    try
+                    {
+                        string candidate = Path.GetFullPath(Path.Combine(dir, fileName));
+                        if (!string.Equals(Path.GetDirectoryName(candidate), dir, StringComparison.OrdinalIgnoreCase)) continue;
+                        if (!File.Exists(candidate)) continue;
+                        hits.Add(new RedHit { Section = sectionName, Path = candidate });
+                        break;
+                    }
+                    catch { }
+                }
+            }
+            return hits;
         }
 
         /// <summary>
@@ -808,15 +920,8 @@ namespace ClarionAssistant.Services
 
                     // Resolve the entry's directory the same way ResolveFrom anchors candidates:
                     // relative paths hang off baseDir (the project dir), not the process CWD.
-                    string dir = entry.ResolvedPath;
-                    if (string.IsNullOrEmpty(dir)) continue;
-                    try
-                    {
-                        if (!Path.IsPathRooted(dir) && !string.IsNullOrEmpty(baseDir))
-                            dir = Path.Combine(baseDir, dir);
-                        dir = Path.GetFullPath(dir);
-                    }
-                    catch { continue; }
+                    string dir = AnchorAt(entry.ResolvedPath, baseDir);
+                    if (dir == null) continue;
 
                     List<string> filesInDir;
                     if (!dirCache.TryGetValue(dir, out filesInDir))

@@ -144,6 +144,7 @@ NOTE: LSP uses 0-based line numbers. The IDE tools (open_file, go_to_line) use 1
 9. **ALWAYS find Clarion files through the active .red — never from memory, never by searching drives.** Files move and installs change; the .red is the only source of truth.
    - `get_solution_info` gives the build's Clarion: `versionName`, `clarionRoot`, `activeRedFile`. Never take these from memory or from the IDE's own install folder: Build > Set Clarion Version can point the solution at a different Clarion.
    - To locate ANY file the compiler or template engine would find (`.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.trn`, `.lib`, `.dll`, `.ico`, ...), call `resolve_red_path` first.
-   - To search INSIDE such files (e.g. which template writes X), call `get_red_search_paths` for the extension and Grep only its `absoluteSearchPaths`, in order: the first match wins.
+   - To search INSIDE such files (e.g. which template writes X), call `get_red_search_paths` for the extension and Grep only its `absoluteSearchPaths`, in order: earlier folders take precedence.
+   - In a multi-project solution pass `project_name`: relative .red entries, and a project's own .red, are per project. If the answer has `alsoFoundIn`, the file resolves elsewhere under another configuration: say which one you used.
    - Never recursively search drives or Clarion installs (`search_files`, `Get-ChildItem -Recurse`, `grep -r`): stale copies abound and give wrong answers.
    - A path from memory, an earlier conversation or a previous answer is NEVER a file's location: re-resolve it every time. A memory that names a Clarion folder may be stale; check it against `get_solution_info`.

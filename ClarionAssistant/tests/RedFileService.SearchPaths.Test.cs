@@ -102,6 +102,123 @@ static class RedFileServiceSearchPathsTest
                usql != null && usql.StartsWith(shared, StringComparison.OrdinalIgnoreCase), usql);
             Ok("R the build sections fall through to Common when Debug32's folder lacks the file",
                svc.ResolveFrom("UltimateSQL.tpl", sln, RedFileService.BuildSectionOrder) == usql);
+
+            // ---- C (pipeline run 1, item 1): the IDE's configuration picks the section; others are shown, never chosen ----
+            string cfgRoot = Path.Combine(root, "Cfg");
+            string dbg = Path.Combine(cfgRoot, "dbg"), rel = Path.Combine(cfgRoot, "rel"), com = Path.Combine(cfgRoot, "com");
+            Write(Path.Combine(cfgRoot, "Clarion110.red"), "[Debug32]\r\n*.inc = " + dbg + "\r\n[Release32]\r\n*.inc = " + rel
+                + "\r\n[Common]\r\n*.inc = " + com + "\r\n[Copy]\r\n*.inc = " + Path.Combine(cfgRoot, "copy") + "\r\n");
+            foreach (string d in new[] { dbg, rel, com, Path.Combine(cfgRoot, "copy") }) Write(Path.Combine(d, "Both.inc"), "!\r\n");
+            Write(Path.Combine(dbg, "DebugOnly.inc"), "!\r\n");
+            var cfg = new RedFileService();
+            cfg.Load(Path.Combine(cfgRoot, "Clarion110.red"), null);
+            Ok("C SectionsFor: Release -> Release32, Release, Common; unknown -> Common only",
+               RedResolution.SectionsFor("Release").SequenceEqual(new[] { "Release32", "Release", "Common" })
+               && RedResolution.SectionsFor(null).SequenceEqual(new[] { "Common" }) && RedResolution.SectionsFor(" ").SequenceEqual(new[] { "Common" }),
+               Show(RedResolution.SectionsFor("Release")));
+            var relAns = RedResolution.Resolve(cfg, "Both.inc", cfgRoot, RedResolution.SectionsFor("Release"));
+            Ok("C a Release build gets the [Release32] copy, not the [Debug32] one",
+               relAns.Path != null && relAns.Path.StartsWith(rel, StringComparison.OrdinalIgnoreCase) && relAns.Section == "Release32", relAns.Path);
+            Ok("C ...and the [Debug32] copy is listed in alsoFoundIn ([Copy] is not searched)",
+               relAns.AlsoFoundIn.Count == 1 && relAns.AlsoFoundIn[0].Section == "Debug32", Show(relAns.AlsoFoundIn.Select(h => h.Section + "=" + h.Path)));
+            var unk = RedResolution.Resolve(cfg, "Both.inc", cfgRoot, RedResolution.SectionsFor(null));
+            Ok("C configuration unknown: [Common] only, both build sections' copies listed",
+               unk.Path != null && unk.Path.StartsWith(com, StringComparison.OrdinalIgnoreCase)
+               && unk.AlsoFoundIn.Select(h => h.Section).OrderBy(s => s).SequenceEqual(new[] { "Debug32", "Release32" }),
+               unk.Path + " / " + Show(unk.AlsoFoundIn.Select(h => h.Section)));
+            var dOnly = RedResolution.Resolve(cfg, "DebugOnly.inc", cfgRoot, RedResolution.SectionsFor("Release"));
+            Ok("C a file only under [Debug32] is NOT found for a Release build, and is shown in alsoFoundIn",
+               dOnly.Path == null && dOnly.AlsoFoundIn.Count == 1 && dOnly.AlsoFoundIn[0].Section == "Debug32", dOnly.Path);
+
+            // ---- S (item 2): search paths walk the same sections, in the same order ----
+            Ok("S SearchPaths for Release = [Release32] then [Common] folders, as Resolve walks them",
+               RedResolution.SearchPaths(cfg, new[] { ".inc" }, RedResolution.SectionsFor("Release")).SequenceEqual(new[] { rel, com }),
+               Show(RedResolution.SearchPaths(cfg, new[] { ".inc" }, RedResolution.SectionsFor("Release"))));
+
+            // ---- P (item 3): relative entries hang off the PROJECT's folder, and its own .red applies ----
+            string psln = Path.Combine(root, "Multi");
+            Write(Path.Combine(psln, "Multi.sln"),
+                "Project(\"{12345678-1234-1234-1234-123456789012}\") = \"ProjA\", \"ProjA\\ProjA.cwproj\", \"{AAAAAAAA-0000-0000-0000-000000000001}\"\r\nEndProject\r\n"
+              + "Project(\"{12345678-1234-1234-1234-123456789012}\") = \"ProjB\", \"Sub\\ProjB\\ProjB.cwproj\", \"{AAAAAAAA-0000-0000-0000-000000000002}\"\r\nEndProject\r\n");
+            Write(Path.Combine(psln, "ProjA", "ProjA.cwproj"), "<Project />");
+            Write(Path.Combine(psln, "Sub", "ProjB", "ProjB.cwproj"), "<Project />");
+            string note, error;
+            string pb = RedResolution.ProjectDirectory(Path.Combine(psln, "Multi.sln"), "projb", out note, out error);
+            Ok("P project_name names the project's folder", string.Equals(pb, Path.Combine(psln, "Sub", "ProjB"), StringComparison.OrdinalIgnoreCase), pb);
+            string none = RedResolution.ProjectDirectory(Path.Combine(psln, "Multi.sln"), "Nope", out note, out error);
+            Ok("P an unknown project is an error naming the real ones", none == null && error != null && error.Contains("ProjA") && error.Contains("ProjB"), error);
+            string multi = RedResolution.ProjectDirectory(Path.Combine(psln, "Multi.sln"), null, out note, out error);
+            Ok("P no project in a multi-project solution: the solution folder, with a per-project note",
+               multi == psln && note != null && note.Contains("project_name"), multi + " / " + note);
+            Write(Path.Combine(root, "Single", "Single.sln"),
+                "Project(\"{12345678-1234-1234-1234-123456789012}\") = \"Only\", \"App\\Only.cwproj\", \"{AAAAAAAA-0000-0000-0000-000000000003}\"\r\nEndProject\r\n");
+            string single = RedResolution.ProjectDirectory(Path.Combine(root, "Single", "Single.sln"), null, out note, out error);
+            Ok("P a single-project solution uses that project's folder",
+               string.Equals(single, Path.Combine(root, "Single", "App"), StringComparison.OrdinalIgnoreCase) && note == null, single);
+            // ProjB has its own version-named .red; relative entries resolve in ProjB's folder.
+            Write(Path.Combine(psln, "Clarion110.red"), "[Common]\r\n*.inc = .\\slnonly\r\n");
+            Write(Path.Combine(pb, "Clarion110.red"), "[Common]\r\n*.inc = .\\mine\r\n");
+            Write(Path.Combine(pb, "mine", "Proj.inc"), "!\r\n");
+            var slnRed = new RedFileService();
+            slnRed.Load(Path.Combine(psln, "Clarion110.red"), null);
+            var projRed = RedFileService.ForProjectDirectory(pb, slnRed);
+            var pAns = RedResolution.Resolve(projRed, "Proj.inc", pb, RedResolution.SectionsFor(null));
+            Ok("P the project's own .red and folder resolve its file",
+               pAns.Path != null && pAns.Path.StartsWith(Path.Combine(pb, "mine"), StringComparison.OrdinalIgnoreCase), pAns.Path);
+
+            // ---- L (item 4): bare names only; a candidate never leaves its entry's folder ----
+            foreach (string bad in new[] { "", ".", "..", "..\\x.tpl", "sub\\x.tpl", "C:\\x.tpl", "C:x.tpl", "\\x.tpl", "x.tpl:ads", "x/y.tpl", "x<.tpl" })
+                Ok("L rejected: '" + bad + "'", RedResolution.LeafNameError(bad) != null);
+            Ok("L a bare name is fine", RedResolution.LeafNameError("UltimateSQL.tpl") == null);
+            Write(Path.Combine(cfgRoot, "Escaped.inc"), "!\r\n");
+            Ok("L FindInSections never matches a name that climbs out of the entry's folder",
+               cfg.FindInSections("..\\Escaped.inc", cfgRoot, new[] { "Common" }).Count == 0);
+
+            // ---- D (item 5): drive-relative entries ----
+            char cwdDrive = char.ToUpperInvariant(Environment.CurrentDirectory[0]);
+            string fakeDrive = cwdDrive == 'Z' ? "Y" : "Z";             // a drive that is NOT the process's
+            string fakeBase = fakeDrive + ":\\Proj\\App";
+            Ok("D '\\x' takes the base folder's drive, not the process's",
+               string.Equals(RedFileService.AnchorAt("\\slsshared\\x", fakeBase), fakeDrive + ":\\slsshared\\x", StringComparison.OrdinalIgnoreCase),
+               RedFileService.AnchorAt("\\slsshared\\x", fakeBase));
+            Ok("D 'Z:foo' on the base folder's drive is relative to the base folder",
+               string.Equals(RedFileService.AnchorAt(fakeDrive + ":foo", fakeBase), fakeBase + "\\foo", StringComparison.OrdinalIgnoreCase),
+               RedFileService.AnchorAt(fakeDrive + ":foo", fakeBase));
+            string otherDrive = (fakeDrive == "Y" ? "X" : "Y") + ":foo";
+            Ok("D a drive-relative entry on another drive is not anchored, and is flagged",
+               RedFileService.AnchorAt(otherDrive, fakeBase) == null
+               && RedFileService.Unanchorable(new[] { otherDrive }, fakeBase).Count == 1
+               && RedFileService.AnchorAll(new[] { otherDrive }, fakeBase).Count == 0);
+            Ok("D a UNC path is untouched", RedFileService.AnchorAt("\\\\server\\share\\x", fakeBase) == "\\\\server\\share\\x",
+               RedFileService.AnchorAt("\\\\server\\share\\x", fakeBase));
+
+            // ---- M (item 6): unexpanded macros are not folders ----
+            var withMacro = new[] { "%NOPE%\\libsrc", "C:\\Real" };
+            Ok("M an unexpanded %MACRO% entry is left out of the anchored list",
+               RedFileService.AnchorAll(withMacro, sln).SequenceEqual(new[] { "C:\\Real" }), Show(RedFileService.AnchorAll(withMacro, sln)));
+            Ok("M ...and listed as unresolved", RedFileService.Unanchorable(withMacro, sln).Count == 1
+               && RedFileService.Unanchorable(withMacro, sln)[0].StartsWith("%NOPE%\\libsrc"), Show(RedFileService.Unanchorable(withMacro, sln)));
+
+            // ---- E (item 7): the trace and the enumerator anchor exactly as AnchorAt does ----
+            // A drive-relative entry tells them apart: AnchorAt puts "<drive>:sub" under the base folder, a bare
+            // GetFullPath under the drive's current folder - which this test sets to somewhere else.
+            string eBase = Path.Combine(root, "E", "proj");
+            Write(Path.Combine(eBase, "sub", "Trace.inc"), "!\r\n");
+            Write(Path.Combine(root, "E", "Clarion110.red"), "[Common]\r\n*.inc = " + eBase.Substring(0, 2) + "sub\r\n");
+            var eRed = new RedFileService();
+            eRed.Load(Path.Combine(root, "E", "Clarion110.red"), null);
+            string savedCwd = Environment.CurrentDirectory;
+            try
+            {
+                Environment.CurrentDirectory = Path.Combine(root, "E");
+                var trace = new List<string>();
+                string traced = eRed.ResolveTrace("Trace.inc", eBase, trace, "Common");
+                Ok("E ResolveTrace anchors a drive-relative entry at the base folder", traced != null, Show(trace));
+                bool truncated;
+                var listed = eRed.EnumerateFiles(eBase, System.Threading.CancellationToken.None, out truncated, "Common");
+                Ok("E EnumerateFiles anchors it the same way", listed.Any(m => m.Name == "Trace.inc"), Show(listed.Select(m => m.FullPath)));
+            }
+            finally { Environment.CurrentDirectory = savedCwd; }
         }
         catch (Exception ex)
         {

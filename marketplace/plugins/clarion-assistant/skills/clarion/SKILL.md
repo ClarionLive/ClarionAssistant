@@ -21,7 +21,8 @@ You are an expert Clarion language programmer. This file holds the most critical
 
 - The build's Clarion comes from `get_solution_info` (`versionName`, `clarionRoot`, `activeRedFile`) — not from memory or the IDE's install folder; Build > Set Clarion Version can point the solution at a different Clarion.
 - `resolve_red_path` finds ANY file the compiler or template engine would: `.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.trn`, `.lib`, `.dll`, `.ico`, ...
-- To search inside them (e.g. which template writes X), Grep only `get_red_search_paths`'s `absoluteSearchPaths` for that extension, in order — the first match wins. Stale copies elsewhere on disk give wrong answers.
+- To search inside them (e.g. which template writes X), Grep only `get_red_search_paths`'s `absoluteSearchPaths` for that extension, in order — earlier folders take precedence. Stale copies elsewhere on disk give wrong answers.
+- In a multi-project solution pass `project_name`. An answer with `alsoFoundIn` means the file also resolves under another build configuration's section: say which one you used.
 
 ## Top Critical Syntax Rules
 
