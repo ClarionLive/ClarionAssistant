@@ -1093,9 +1093,6 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Gets the file path of the currently loaded solution in the IDE.
-        /// </summary>
-        /// <summary>
         /// 5a5581e6: the open solution's LIVE build configuration - SharpDevelop's OpenSolution.Preferences
         /// .ActiveConfiguration / .ActivePlatform (verified by reflection over ICSharpCode.SharpDevelop.dll, C12), what
         /// Build &gt; Set Configuration changes - with the solution it belongs to. Null when none is open or unreadable.
@@ -1127,6 +1124,9 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
+        /// <summary>
+        /// Gets the file path of the currently loaded solution in the IDE.
+        /// </summary>
         public static string GetOpenSolutionPath()
         {
             try

@@ -461,35 +461,34 @@ namespace ClarionAssistant.Services
                 }
                 if (candidates.Count == 0) return null;
 
-                // 5a5581e6 pipeline run 2: a LONE file is not proof either - it may be another folder's solution of
-                // the same name, the only one ever opened. It must carry the same evidence a choice among several
-                // needs: a recorded path under this solution's folder, or the IDE's name hash.
-                if (candidates.Count == 1)
+                // 5a5581e6 pipeline runs 2-3: EVERY candidate must prove it is this solution's - the IDE's name hash
+                // (how the IDE itself picks the file) or a recorded path under the solution's folder - however many
+                // there are. Same-named files that merely agree may all be other folders' solutions of that name.
+                string ownHash = HashSuffix(solutionPath);
+                string ownDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)).TrimEnd('\\') + "\\";
+                var owned = candidates.FindAll(c => c.MentionsFolder(ownDir)
+                    || (ownHash != null && string.Equals(c.Suffix.TrimStart('0'), ownHash.TrimStart('0'), StringComparison.OrdinalIgnoreCase)));
+                if (owned.Count == 0)
                 {
-                    var only = candidates[0];
-                    string onlyHash = HashSuffix(solutionPath);
-                    string onlyDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)).TrimEnd('\\') + "\\";
-                    bool byPath = only.MentionsFolder(onlyDir);
-                    bool byHashMatch = onlyHash != null
-                        && string.Equals(only.Suffix.TrimStart('0'), onlyHash.TrimStart('0'), StringComparison.OrdinalIgnoreCase);
-                    if (byPath || byHashMatch)
-                        return Take(only, valueOf, out file);
-                    note = "the only preference file for " + slnName + " (" + Path.GetFileName(only.Path) + ") records no path "
-                        + "under this solution's folder" + (onlyHash != null ? " and its name hash is not this solution's" : "")
-                        + ", so it may be another folder's " + slnName + " - not used";
+                    var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var c in candidates) values.Add(valueOf(c) ?? "");
+                    note = (candidates.Count == 1
+                            ? "the only preference file for " + slnName + " (" + Path.GetFileName(candidates[0].Path) + ")"
+                            : candidates.Count + " preference files for " + slnName + (values.Count == 1 ? " (all saying the same)" : ""))
+                        + (candidates.Count == 1 ? ": it records no path" : ": none records a path") + " under this solution's folder"
+                        + (ownHash != null ? (candidates.Count == 1 ? " nor carries" : " or carries") + " its name hash (" + ownHash + ")" : "")
+                        + ", so " + (candidates.Count == 1 ? "it may be another folder's " : "they may be other folders' ") + slnName + " - none was used";
                     return null;
                 }
-
-                // Several files for one solution NAME (other folders' solutions of the same name). When they all say
-                // the same thing, which one is ours does not matter.
-                var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var c in candidates) distinct.Add(valueOf(c) ?? "");
-                if (distinct.Count == 1)
+                if (owned.Count == 1)
                 {
-                    note = candidates.Count + " preference files for " + slnName + ", all saying the same";
-                    return Take(candidates[0], valueOf, out file);
+                    if (candidates.Count > 1)
+                        note = "chosen among " + candidates.Count + " preference files for " + slnName
+                            + (owned[0].MentionsFolder(ownDir) ? " by the paths it records" : " by the IDE's name hash");
+                    return Take(owned[0], valueOf, out file);
                 }
-
+                // Several OWNED files (a recorded path in one, the hash in another): the rules below choose.
+                candidates = owned;
                 string hash = HashSuffix(solutionPath);
                 Candidate byHash = hash == null ? null
                     : candidates.Find(c => string.Equals(c.Suffix.TrimStart('0'), hash.TrimStart('0'), StringComparison.OrdinalIgnoreCase));
@@ -512,6 +511,15 @@ namespace ClarionAssistant.Services
                     note = "chosen among " + candidates.Count + " preference files for " + slnName
                         + " by the IDE's name hash (their contents do not say which solution they belong to)";
                     return Take(byHash, valueOf, out file);
+                }
+
+                // Several owned files that say the same: which one does not matter.
+                var ownedValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in candidates) ownedValues.Add(valueOf(c) ?? "");
+                if (ownedValues.Count == 1)
+                {
+                    note = candidates.Count + " preference files for " + slnName + " prove they are this solution's, all saying the same";
+                    return Take(candidates[0], valueOf, out file);
                 }
 
                 note = "the IDE has " + candidates.Count + " preference files for " + slnName + " ("
