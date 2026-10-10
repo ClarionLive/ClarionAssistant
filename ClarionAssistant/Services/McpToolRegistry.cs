@@ -5722,18 +5722,26 @@ IdeOnly = true,
                     // PARITY with RunIndex/index_solution: same active .red, same library
                     // paths. This handler used to pass neither, so the same db was more or
                     // less complete depending on which tool indexed last (ticket d1a0aea6).
-                    // 9e1bd280 run 1: from the snapshot taken at the top of this call. The addin keeps its per-project
-                    // ActiveRedFileService; an explicit sln_path other than the workspace's keeps the old behaviour.
+                    // 9e1bd280 run 1: from the snapshot taken at the top of this call. Run 2: an explicit sln_path that
+                    // is not the followed solution gets ITS OWN scope (version, .red, library paths) in the standalone,
+                    // never the followed one's. The addin keeps its per-project ActiveRedFileService.
                     IndexRunGate.PauseBeforeSetUpForTest();
                     RedFileService red = null;
                     List<string> libPaths = null;
                     if (snap != null)
                     {
-                        bool fromSnap = _workspace is ISolutionScopedWorkspace
-                            && SolutionVersionResolver.SamePath(slnPath, snap.SolutionPath);
-                        red = fromSnap ? snap.Red : _workspace.ActiveRedFileService;
-                        libPaths = fromSnap ? snap.IndexLibraryPaths
-                            : (SolutionVersionResolver.SamePath(slnPath, snap.SolutionPath) ? snap.IndexLibraryPaths : _workspace.BuildIndexLibraryPaths());
+                        var scopedWs = _workspace as ISolutionScopedWorkspace;
+                        if (scopedWs != null)
+                        {
+                            var own = SolutionVersionResolver.SamePath(slnPath, snap.SolutionPath) ? snap : scopedWs.ScopeFor(slnPath);
+                            red = own.Red;
+                            libPaths = own.IndexLibraryPaths;
+                        }
+                        else
+                        {
+                            red = _workspace.ActiveRedFileService;
+                            libPaths = snap.IndexLibraryPaths;
+                        }
                         indexer.RedService = red;
                     }
                     runLog.WriteLine("Redirection file: " + (red != null && red.RedFilePath != null ? red.RedFilePath : "(none)")

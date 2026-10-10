@@ -19,7 +19,8 @@
 #   S6  A's record says 'Profile'  -> 'Profile': the configuration is always the FOLLOWED solution's
 #   S7  index_codegraph on A, the IDE switches to B between the run's snapshot and its set-up -> A's db, A's .red
 #   S8  index_solution on B, the IDE switches to A at the same point -> the run log names B's .red
-#   S4  the IDE closes A           -> solutionSource none, switchedFrom A; the solution tools and the LSP say so
+#   S9  index_codegraph sln_path=B while A is followed -> B's own .red
+#   S4  the IDE closes A          -> solutionSource none, switchedFrom A; the solution tools and the LSP say so
 #
 # MUST BE ABLE TO GO RED: before 9e1bd280 S1-S4 fail (the tools stay on A; the LSP, started from --solution, never
 # follows).
@@ -266,6 +267,16 @@ try {
     Assert-That ($redLine -and $redLine -match [regex]::Escape($redB)) "S8: B's run must use B's .red '$redB' though the IDE switched to A, log line: '$redLine'"
     $i8 = Json (Tool 'get_solution_info' @{})
     Assert-That ((SamePath $i8.solutionPath $slnA) -and (SamePath $i8.activeRedFile $redA)) "S8: after the run the tab follows A with A's .red, got '$($i8.solutionPath)' / '$($i8.activeRedFile)'"
+
+    # ---- S9 (run 2): index_codegraph with an explicit sln_path that is NOT the followed solution (A) uses B's own .red ----
+    $r9 = Tool 'index_codegraph' @{ sln_path = $slnB }
+    Show 'S9 index_codegraph(B)' $r9
+    # B is not open in the IDE, so the IDE's version choice (V1) is A's, not B's; this test server sits outside any
+    # Clarion tree, so B has no version and no .red here - but NEVER the followed A's .red. (In a Clarion tree B gets
+    # the host version and its own local .red.)
+    $red9 = if ($r9 -match 'Redirection: ([^\r\n]+)') { $Matches[1].Trim() } else { '' }
+    Show 'S9 redirection' $red9
+    Assert-That ($red9 -ne '' -and -not (SamePath $red9 $redA)) "S9: an explicit sln_path B must not index with the followed A's .red '$redA', got: '$red9'"
 
     # ---- S4: the IDE closes A: none, never the old solution ----
     Publish $null

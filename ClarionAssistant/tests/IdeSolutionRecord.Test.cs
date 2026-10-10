@@ -167,6 +167,28 @@ static class IdeSolutionRecordTest
                 Check(IdeSolutionRecord.Read(self, out note) == null && note.Contains("pid reused"),
                     "a writer that is not a Clarion IDE -> no record (" + note + ")");
                 Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", keep);
+
+                // Run 2 (Codex): FAIL CLOSED. A protected/elevated process now on the pid: its identity cannot be read.
+                IdeSolutionRecord.ResetForTest();
+                IdeSolutionRecord.Publish(sln);
+                IdeSolutionRecord.ProcessIdentityLookup = (int id, out string n, out DateTime st) =>
+                {
+                    throw new System.ComponentModel.Win32Exception(5);   // ERROR_ACCESS_DENIED
+                };
+                try
+                {
+                    bool tr;
+                    string unverified = IdeSolutionRecord.Read(self, out note, out tr);
+                    Check(unverified == null && !tr && note.Contains("could not be verified"),
+                        "an unreadable writer identity -> no record, definite, 'could not be verified' (" + note + ")");
+
+                    var plainRec = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(rf));
+                    plainRec.Remove("startTime"); plainRec.Remove("processName");
+                    File.WriteAllText(rf, new JavaScriptSerializer().Serialize(plainRec));
+                    Check(string.Equals(IdeSolutionRecord.Read(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                        "...but a record without a start time is not verified at all: accepted as before (" + note + ")");
+                }
+                finally { IdeSolutionRecord.ProcessIdentityLookup = null; }
                 IdeSolutionRecord.Publish(null);
             }
 

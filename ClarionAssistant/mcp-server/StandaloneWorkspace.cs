@@ -258,9 +258,20 @@ namespace ClarionAssistant.McpServer
         public SolutionScope Snapshot()
         {
             var src = SolutionSource;
-            string sln = src.Path;
+            return ScopeOf(src.Path, src.Record, src);
+        }
+
+        /// <summary>ISolutionScopedWorkspace: the scope of a solution the caller named (run 2) - not necessarily the followed one.</summary>
+        public SolutionScope ScopeFor(string solutionPath)
+        {
+            return ScopeOf(solutionPath, ReadIdeRecord(), null);
+        }
+
+        /// <summary>Everything keyed on <paramref name="sln"/>, the version decided from the record <paramref name="rec"/>.</summary>
+        private SolutionScope ScopeOf(string sln, IdeSolutionRecord.Details rec, SolutionSourceSnapshot src)
+        {
             string note;
-            var cfg = VersionConfigFor(sln, src.Record, out note);
+            var cfg = VersionConfigFor(sln, rec, out note);
             lock (_lock) { _versionConfig = cfg; _versionNote = note; }
             var red = RedFileFor(sln, cfg);
             return new SolutionScope

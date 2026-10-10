@@ -216,7 +216,8 @@ static class SolutionFollowerTest
                       && reg.Contains("WithVersion(WithAbsolutePaths(result, paths, scope.BaseDir), false, scope.Snap)"),
                     "resolve_red_path / get_red_search_paths report the version of the scope's snapshot");
                 string snapImpl = Between(ws, "public SolutionScope Snapshot()", "public ClarionVersionConfig VersionConfigFor(");
-                Check(snapImpl != null && snapImpl.Contains("VersionConfigFor(sln, src.Record, out note)"),
+                Check(snapImpl != null && snapImpl.Contains("ScopeOf(src.Path, src.Record, src)")
+                      && snapImpl.Contains("VersionConfigFor(sln, rec, out note)"),
                     "the snapshot's version is decided from the SAME record read as its solution");
                 // Run 1 (code review): the two "no solution" replies speak one vocabulary; one version resolver.
                 Check(info != null && !info.Contains("lastSelectedPath") && Count(info, "{ \"switchedFrom\", slnPath }") == 1,
@@ -229,9 +230,12 @@ static class SolutionFollowerTest
                       && !held.Contains("BuildIndexLibraryPaths()") && !held.Contains("RedFileFor(") && !held.Contains("ActiveRedFileService"),
                     "index_solution's IndexHeld uses the snapshotted scope's .red and library paths");
                 string icg = Between(reg, "private object ExecuteIndexCodeGraph(", "private static string DescribeIndexEvent");
-                Check(icg != null && icg.Contains("SnapshotSolution(true)") && icg.Contains("snap.Red")
+                Check(icg != null && icg.Contains("SnapshotSolution(true)") && icg.Contains("red = own.Red")
                       && !icg.Contains("_workspace.CurrentSolutionPath"),
                     "index_codegraph uses the snapshotted solution's .red and library paths");
+                // Run 2 (debugger LOW): an explicit sln_path that is not the followed solution gets its own scope.
+                Check(icg != null && icg.Contains("scopedWs.ScopeFor(slnPath)"),
+                    "index_codegraph with another solution's sln_path uses THAT solution's scope, not the followed one's");
 
                 string acc = File.ReadAllText(Path.Combine(proj, "AssistantChatControl.cs"));
                 int onChanged = acc.IndexOf("private void OnSolutionChanged(string path)", StringComparison.Ordinal);

@@ -123,6 +123,12 @@ namespace ClarionAssistant.Services
     {
         /// <summary>One read of the followed solution and everything keyed on it. Never null.</summary>
         SolutionScope Snapshot();
+
+        /// <summary>
+        /// The same for a solution the caller NAMES (index_codegraph's sln_path, run 2), which need not be the followed
+        /// one: its own version, .red, library paths and database. Never null.
+        /// </summary>
+        SolutionScope ScopeFor(string solutionPath);
     }
 
     /// <summary>

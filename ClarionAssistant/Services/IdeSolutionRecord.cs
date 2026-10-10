@@ -318,8 +318,12 @@ namespace ClarionAssistant.Services
         /// IDE leaves its record behind, and Windows recycles pids: without this, a new process on that pid made a dead
         /// IDE's solution "live" again. The record carries the writer's start time and image name (Publish); the live
         /// process must match both, and be a Clarion IDE (image "Clarion", or CA_IDE_IMAGE_NAME in tests - the rule
-        /// IdeEndpointRecord applies). A record without a start time (an addin from before this) is accepted as before;
-        /// a process whose start time cannot be read (access denied) is too - unverifiable is not evidence of reuse.
+        /// IdeEndpointRecord applies). A record without a start time (an addin from before this) is accepted as before.
+        ///
+        /// FAILS CLOSED (run 2, Codex): when the record carries a start time and the live process's name or start time
+        /// cannot be read (access denied - a protected or elevated process now on a dead IDE's pid), the writer is
+        /// unverified, so there is no record. This cannot reject a legitimate IDE: this server is the IDE's own child,
+        /// running with the same token, so it can always read its parent's name and start time.
         ///
         /// NOT DEFENDED, deliberately: a forged record from a process running as the same user. Such a process can
         /// already read and write this folder, the IDE's own settings and the server's stdio; per-launch nonces, ACLs
@@ -334,30 +338,52 @@ namespace ClarionAssistant.Services
                     System.Globalization.DateTimeStyles.RoundtripKind, out start))
                 return true;
             string recordedName = rec.TryGetValue("processName", out v) ? v as string : null;
+            string liveName;
+            DateTime liveStart;
             try
             {
-                using (var p = System.Diagnostics.Process.GetProcessById(pid))
-                {
-                    string image = Environment.GetEnvironmentVariable("CA_IDE_IMAGE_NAME");
-                    if (string.IsNullOrEmpty(image)) image = "Clarion";
-                    if (!p.ProcessName.StartsWith(image, StringComparison.OrdinalIgnoreCase)
-                        || (!string.IsNullOrEmpty(recordedName) && !string.Equals(p.ProcessName, recordedName, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        why = "the record for pid " + pid + " is stale: that pid is now '" + p.ProcessName
-                            + "', not the IDE that wrote it (pid reused) - ignored";
-                        return false;
-                    }
-                    if (Math.Abs((p.StartTime.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds) > 2)
-                    {
-                        why = "the record for pid " + pid + " is stale: that pid was started at "
-                            + p.StartTime.ToUniversalTime().ToString("o") + ", not the recorded "
-                            + start.ToUniversalTime().ToString("o") + " (pid reused) - ignored";
-                        return false;
-                    }
-                }
+                var lookup = ProcessIdentityLookup ?? ReadProcessIdentity;
+                lookup(pid, out liveName, out liveStart);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                why = "the record for pid " + pid + " is ignored: the IDE identity could not be verified ("
+                    + ex.GetType().Name + ": " + ex.Message + ")";
+                return false;
+            }
+
+            string image = Environment.GetEnvironmentVariable("CA_IDE_IMAGE_NAME");
+            if (string.IsNullOrEmpty(image)) image = "Clarion";
+            if (liveName == null || !liveName.StartsWith(image, StringComparison.OrdinalIgnoreCase)
+                || (!string.IsNullOrEmpty(recordedName) && !string.Equals(liveName, recordedName, StringComparison.OrdinalIgnoreCase)))
+            {
+                why = "the record for pid " + pid + " is stale: that pid is now '" + liveName
+                    + "', not the IDE that wrote it (pid reused) - ignored";
+                return false;
+            }
+            if (Math.Abs((liveStart.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds) > 2)
+            {
+                why = "the record for pid " + pid + " is stale: that pid was started at "
+                    + liveStart.ToUniversalTime().ToString("o") + ", not the recorded "
+                    + start.ToUniversalTime().ToString("o") + " (pid reused) - ignored";
+                return false;
+            }
             return true;
+        }
+
+        /// <summary>Reads a live process's image name and start time. Throws when either cannot be read.</summary>
+        internal delegate void ProcessIdentityReader(int pid, out string name, out DateTime startTime);
+
+        /// <summary>Test seam (run 2): replaces the process lookup VerifyWriter uses, e.g. with one that throws. Null in production.</summary>
+        internal static ProcessIdentityReader ProcessIdentityLookup { get; set; }
+
+        private static void ReadProcessIdentity(int pid, out string name, out DateTime startTime)
+        {
+            using (var p = System.Diagnostics.Process.GetProcessById(pid))
+            {
+                name = p.ProcessName;
+                startTime = p.StartTime;
+            }
         }
 
         private static bool IsAlive(int pid)
