@@ -22,9 +22,9 @@ namespace ClarionAssistant.Services
     /// IDE lives. A record whose pid is no longer running is ignored, so an IDE that crashed without
     /// cleaning up cannot hand a stale solution to anyone.
     ///
-    /// SCOPE, deliberately narrow: the standalone uses this ONLY as the LSP's fallback when it was
-    /// given no --solution. It does not re-point the CodeGraph/solution tools - those keep the
-    /// launch-time --solution semantics they document.
+    /// SCOPE (widened by 9e1bd280): the standalone FOLLOWS this for every tool, not only the LSP -
+    /// SolutionFollower serves the solution named here, --solution only until the IDE publishes one,
+    /// and none once the IDE closes it. Owner decision: a tab answers for what the header shows.
     ///
     /// IDE-free (compiled into both the addin and the standalone), and never throws.
     /// </summary>

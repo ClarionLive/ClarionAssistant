@@ -1873,7 +1873,7 @@ IdeOnly = true,
                 {
                     string slnPath = _workspace?.CurrentSolutionPath;
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
-                        return "Error: No solution loaded.";
+                        return "Error: No solution loaded." + NoSolutionSuffix();
 
                     var slnParser = new ClarionCodeGraph.Parsing.SolutionParser();
                     var projParser = new ClarionCodeGraph.Parsing.ProjectParser();
@@ -2214,7 +2214,7 @@ COMMON QUERIES:
                         dbPath = FindCodeGraphDb();
 
                     if (string.IsNullOrEmpty(dbPath) || !File.Exists(dbPath))
-                        return "Error: CodeGraph database not found. Specify db_path or ensure a .codegraph.db exists next to the open solution.";
+                        return "Error: CodeGraph database not found. Specify db_path or ensure a .codegraph.db exists next to the open solution." + NoSolutionSuffix();
 
                     return ExecuteCodeGraphQuery(dbPath, sql);
                 }
@@ -2265,6 +2265,9 @@ COMMON QUERIES:
                     + "(activeRedFile), the IDE's active build configuration for it (buildConfiguration), its search paths for .clw, "
                     + ".inc and templates (clwSearchPaths, incSearchPaths, tplSearchPaths; tplAbsoluteSearchPaths anchors relative "
                     + "entries at baseDir), and CodeGraph database status. "
+                    + "solutionSource says where the solution came from: 'ide-live' (the solution open in the IDE now - "
+                    + "this tab follows it), 'launch-arg' (--solution; the IDE has published none) or 'none'; after a "
+                    + "switch, switchedFrom names the solution it replaced. "
                     + "Take the Clarion root and .red from here, never from memory.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = true,
@@ -2273,8 +2276,29 @@ COMMON QUERIES:
                     if (_workspace == null)
                         return "Error: chat control not initialized";
 
+                    // 9e1bd280: WHERE THE SOLUTION CAME FROM. The standalone follows the IDE (ide-live), falls back to
+                    // its --solution while the IDE has published nothing (launch-arg), and says none when the IDE
+                    // closed it. One snapshot, so the path, its source and the switch are read together.
+                    var sourceInfo = _workspace as ISolutionSourceInfo;
+                    SolutionSourceSnapshot source = sourceInfo != null ? sourceInfo.SolutionSource : null;
+                    if (source != null && source.Source == SolutionSourceSnapshot.None)
+                    {
+                        var none = new Dictionary<string, object>
+                        {
+                            { "solutionPath", "(none open)" },
+                            { "solutionSource", source.Source },
+                            { "solutionSourceNote", source.Note },
+                            { "isIndexed", false },
+                            { "lastIndexed", "(never)" },
+                            { "note", "No solution is open in the IDE, so the solution tools (CodeGraph, build, .red) have "
+                                + "nothing to work on. Open one in the IDE; this tab follows it." }
+                        };
+                        AddSwitch(none, source);
+                        return none;
+                    }
+
                     // Check the live IDE state first — the cached path may be stale
-                    string ideSlnPath = _workspace.GetHostOpenSolutionPath();
+                    string ideSlnPath = source != null ? source.Path : _workspace.GetHostOpenSolutionPath();
                     string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _workspace.CurrentSolutionPath;
 
                     // If nothing is open in the IDE and we only have a cached path, report no solution
@@ -2301,6 +2325,14 @@ COMMON QUERIES:
                         { "isIndexed", hasDb },
                         { "lastIndexed", hasDb ? File.GetLastWriteTime(dbPath).ToString("yyyy-MM-dd HH:mm:ss") : "(never)" }
                     };
+                    // In the addin the solution IS the IDE's (ideSlnPath came from it): ide-live too.
+                    result["solutionSource"] = source != null ? source.Source
+                        : (!string.IsNullOrEmpty(ideSlnPath) ? SolutionSourceSnapshot.IdeLive : SolutionSourceSnapshot.None);
+                    if (source != null)
+                    {
+                        result["solutionSourceNote"] = source.Note;
+                        AddSwitch(result, source);
+                    }
 
                     // Which tier chose the version, or why there is none (GH #247) — read after CurrentVersionConfig,
                     // which is what fills it in.
@@ -2410,7 +2442,7 @@ COMMON QUERIES:
                     }
 
                     if (local == null && lspPath == null)
-                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
+                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first." + NoSolutionSuffix();
 
                     var decision = RedResolution.Decide(local, lspPath, LspService.LspConfiguration, scope.LspMatchesConfiguration);
                     var result = new Dictionary<string, object>
@@ -2499,7 +2531,7 @@ COMMON QUERIES:
 
                     // Local: the same sections, in the same order, as resolve_red_path.
                     if (scope.Red == null || scope.Red.RedFilePath == null)
-                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first.";
+                        return "Error: no .red file loaded and LSP unavailable. Select a version and solution first." + NoSolutionSuffix();
 
                     var paths = RedResolution.SearchPaths(scope.Red, new[] { ext }, scope.Sections);
                     var result = new Dictionary<string, object>
@@ -2541,7 +2573,7 @@ COMMON QUERIES:
                     // check against the same value, so this cannot disagree with it.
                     string slnForIndex = _workspace.CurrentSolutionPath;
                     if (string.IsNullOrEmpty(slnForIndex) || !File.Exists(slnForIndex))
-                        return "Error: no solution is selected, so there is nothing to index.";
+                        return "Error: no solution is selected, so there is nothing to index." + NoSolutionSuffix();
 
                     _workspace.RunIndex(isIncremental);
                     return isIncremental
@@ -3520,7 +3552,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                         slnPath = _workspace.GetHostOpenSolutionPath();
 
                     if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
-                        return "Error: No solution path provided and no solution is currently loaded in the IDE.";
+                        return "Error: No solution path provided and no solution is currently loaded in the IDE." + NoSolutionSuffix();
 
                     string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
@@ -5327,6 +5359,34 @@ IdeOnly = true,
 
         /// <summary>5a5581e6: the template extensions get_solution_info's tplSearchPaths covers (.red: *.tp?, *.tpl, *.tpw).</summary>
         internal static readonly string[] TemplateExtensions = { ".tpl", ".tpw" };
+
+        /// <summary>
+        /// 9e1bd280: appended to a solution tool's "no solution" error. When the workspace follows the IDE and the
+        /// IDE has no solution open, says so (and which solution it had), rather than leaving the agent to guess
+        /// whether this tab is broken. Empty otherwise.
+        /// </summary>
+        private string NoSolutionSuffix()
+        {
+            try
+            {
+                var info = _workspace as ISolutionSourceInfo;
+                var src = info != null ? info.SolutionSource : null;
+                if (src == null || src.Source != SolutionSourceSnapshot.None) return "";
+                return " No solution is open in the IDE"
+                    + (string.IsNullOrEmpty(src.SwitchedFrom) ? "" : " (it had " + src.SwitchedFrom + " open)")
+                    + ". This tab follows the IDE: open a solution there.";
+            }
+            catch { return ""; }
+        }
+
+        /// <summary>9e1bd280: after the followed solution switched, say from which and when.</summary>
+        private static void AddSwitch(Dictionary<string, object> result, SolutionSourceSnapshot source)
+        {
+            if (source == null || string.IsNullOrEmpty(source.SwitchedFrom)) return;
+            result["switchedFrom"] = source.SwitchedFrom;
+            if (source.SwitchedAt.HasValue)
+                result["switchedAt"] = source.SwitchedAt.Value.ToString("yyyy-MM-dd HH:mm:ss");
+        }
 
         /// <summary>
         /// 5a5581e6: add <paramref name="key"/> ('absoluteSearchPaths') - <paramref name="paths"/> anchored at

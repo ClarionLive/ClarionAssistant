@@ -12,8 +12,13 @@
 //   2 embed         IDE has the embeditor document -> embeditor-document, procedure, lineNumber in editor lines
 //   3 not open      IDE answers found:false        -> disk + analysedReason (not an error)
 //   4 no IDE        no endpoint records            -> disk + "no IDE"
-//   5 other sln     the IDE has another solution   -> disk + "no IDE has this solution open"
+//   5 other sln     the only reachable IDE has another solution -> disk + "no IDE has this solution open"
 //   6 ambiguous     two IDEs (neither ours) match  -> disk + "not guessing"
+//
+// 9e1bd280: the server now FOLLOWS the launching IDE's solution record (every tool, not only the LSP), so a case that
+// deleted or re-pointed THAT record would now be "the IDE closed / switched its solution" instead of what it means to
+// test. Cases 4, 5, 6 and 9 therefore keep the launching IDE's record on this solution and vary only the ENDPOINTS:
+// the launcher publishes no endpoint there, and the IDEs that do are other processes.
 //   7 slow          IDE takes 5 s                  -> disk + reason, the call back inside ~4 s
 //   8 bad token     record token wrong (401)       -> disk + reason; the token never appears anywhere
 //   9 pid reuse     record start time is wrong     -> record deleted + logged, disk
@@ -277,16 +282,21 @@ static class IdeLiveTextE2E
                   && !(S(r3b, "analysedReason") ?? "").Contains("no editor has this file open"),
                 "3b: an open, unedited CA Editor tab must say so (not 'no editor has this file open'); got " + Show(r3b));
 
-            // 4 no IDE at all
+            // 4 no IDE at all (no endpoint; the launching IDE still has this solution open - 9e1bd280)
             ClearRecords();
+            WriteSolution(me, _sln);
             var r4 = Call(F("noide.clw"), null, out ms, out raw); outputs.AppendLine(raw);
             Console.WriteLine("4 noide    " + Show(r4));
             Check(S(r4, "analysed") == "disk" && (S(r4, "analysedReason") ?? "").Contains("no IDE"),
                 "4: expected disk with a 'no IDE' reason; got " + Show(r4));
 
-            // 5 the IDE has ANOTHER solution open
-            WriteEndpoint(me, _port, _token);
-            WriteSolution(me, _otherSln);
+            // 5 the only reachable IDE has ANOTHER solution open. Not the launching IDE: since 9e1bd280 the server follows
+            // that one's solution, so it cannot have "another" one.
+            ClearRecords();
+            WriteSolution(me, _sln);
+            idleA = Idle();
+            WriteEndpoint(idleA, _port, _token);
+            WriteSolution(idleA, _otherSln);
             var r5 = Call(F("othersln.clw"), null, out ms, out raw); outputs.AppendLine(raw);
             Console.WriteLine("5 othersln " + Show(r5));
             Check(S(r5, "analysed") == "disk" && (S(r5, "analysedReason") ?? "").Contains("no IDE has this solution open"),
@@ -294,7 +304,8 @@ static class IdeLiveTextE2E
 
             // 6 two IDEs with this solution, neither the one that launched the server
             ClearRecords();
-            idleA = Idle(); idleB = Idle();
+            WriteSolution(me, _sln);
+            idleB = Idle();
             WriteEndpoint(idleA, _port, _token); WriteSolution(idleA, _sln);
             WriteEndpoint(idleB, _port, _token); WriteSolution(idleB, _sln);
             var r6 = Call(F("ambig.clw"), null, out ms, out raw); outputs.AppendLine(raw);
@@ -323,6 +334,7 @@ static class IdeLiveTextE2E
 
             // 9 pid reuse: the record's start time is not the process's
             ClearRecords();
+            WriteSolution(me, _sln);
             WriteEndpoint(idleA, _port, _token, DateTime.Now.AddHours(-3)); WriteSolution(idleA, _sln);
             string reuseFile = Path.Combine(_recDir, "ide-endpoint", idleA.Id + "-" + _port + ".json");
             var r9 = Call(F("reuse.clw"), null, out ms, out raw); outputs.AppendLine(raw);

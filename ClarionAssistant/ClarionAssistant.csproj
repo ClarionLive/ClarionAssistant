@@ -182,6 +182,7 @@
     <Compile Include="Services\LspService.cs" />
     <Compile Include="Services\LspStartResult.cs" />
     <Compile Include="Services\IdeSolutionRecord.cs" />
+    <Compile Include="Services\SolutionFollower.cs" />
     <Compile Include="Services\IdeEndpointRecord.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\ColonQualifierScope.cs" />

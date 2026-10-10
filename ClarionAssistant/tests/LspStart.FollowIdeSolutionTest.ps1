@@ -116,7 +116,9 @@ try {
     # -- A ---------------------------------------------------------------------------------------
     $r1 = Tool 'lsp_start' @{}
     Show 'record=A  lsp_start' $r1
-    if ($r1 -notmatch 'LSP server started for solution') {
+    # 9e1bd280: the record names A at launch, so the server already serves A and its background autostart may have
+    # started the language server before this call - "already running for A" is the same precondition.
+    if ($r1 -notmatch 'LSP server started for solution|LSP already running for solution') {
         Write-Host "COULD NOT RUN: the language server did not start on A (needs node + the Clarion extension)." -ForegroundColor Yellow
         exit 2
     }

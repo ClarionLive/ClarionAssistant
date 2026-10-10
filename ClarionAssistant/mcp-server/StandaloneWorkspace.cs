@@ -14,16 +14,31 @@ namespace ClarionAssistant.McpServer
     /// depend on it — the CodeGraph and solution family, including index_solution, which is what
     /// builds the graph a non-IDE editor would then query.
     ///
+    /// LAUNCHED BY AN IDE (--ide-pid), THE SOLUTION FOLLOWS THAT IDE (9e1bd280): whatever it has open now,
+    /// published through IdeSolutionRecord, with --solution only the starting value. See SolutionFollower.
+    ///
     /// EVERYTHING IS RESOLVED LAZILY AND CACHED. Detecting the Clarion install and parsing a .red
     /// costs real work, and a server that a client launches and then asks only query_docs must not
     /// pay for it. Resolution failures are recorded rather than thrown: "no solution" is a normal
     /// state that the tools already report properly, and killing the process over it would take
     /// the other 46 tools down with it.
     /// </summary>
-    internal sealed class StandaloneWorkspace : IWorkspaceContext, IVersionNoteSource
+    internal sealed class StandaloneWorkspace : IWorkspaceContext, IVersionNoteSource, ISolutionSourceInfo
     {
         private readonly object _lock = new object();
+
+        /// <summary>
+        /// The solution as resolved at launch (--solution, or the working directory's one .sln). Since 9e1bd280
+        /// only the STARTING value: <see cref="_follower"/> serves the IDE's open solution whenever the
+        /// launching IDE publishes one, and this when it never has.
+        /// </summary>
         private readonly string _solutionPath;
+
+        /// <summary>
+        /// What every member here asks "which solution" (9e1bd280). Built lazily, because the launching IDE's
+        /// pid (McpToolRegistry.IdeProcessId) is parsed after this object is resolved.
+        /// </summary>
+        private SolutionFollower _follower;
 
         /// <summary>Version name from --clarion-version, or null. Outranks every other tier.</summary>
         private readonly string _versionOverride;
@@ -152,37 +167,63 @@ namespace ClarionAssistant.McpServer
                 + "rather than have this server guess which you meant.");
         }
 
-        public string CurrentSolutionPath { get { return _solutionPath; } }
+        /// <summary>
+        /// The followed solution (9e1bd280): the one the launching IDE has open NOW, else --solution while no
+        /// IDE record exists, else null - including when the IDE closed its solution. Re-asked on every read
+        /// (one file stat while the record is unchanged), so everything keyed on it - the version, the .red,
+        /// the CodeGraph db, the index run, the LSP - re-resolves on a switch.
+        /// </summary>
+        public string CurrentSolutionPath { get { return Follower.CurrentPath; } }
+
+        /// <summary>The followed solution with where it came from and the last switch (get_solution_info).</summary>
+        public SolutionSourceSnapshot SolutionSource { get { return Follower.Current(); } }
+
+        /// <summary>The follower itself, for the hosts that must agree with the tools (the LSP, the heartbeat).</summary>
+        public SolutionFollower Follower
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_follower == null)
+                    {
+                        _follower = new SolutionFollower(_solutionPath, () => McpToolRegistry.IdeProcessId);
+                        _follower.Changed = (was, now) =>
+                        {
+                            string line = "[StandaloneWorkspace] followed the IDE's solution: " + (was ?? "(none)")
+                                + " -> " + (now ?? "(none - the IDE has no solution open)");
+                            LspTrace.Write(line);
+                            try { Console.Error.WriteLine("clarion-mcp-server: " + line); } catch { }
+                            // Completion's held-open symbol DB connections belong to the old solution - released
+                            // here as the addin's OnSolutionChanged does, so its index run is not locked out.
+                            try { SymbolIndex.ReleaseAll(); } catch { }
+                        };
+                    }
+                    return _follower;
+                }
+            }
+        }
 
         /// <summary>
-        /// The solution the HOST believes is open — which here is simply the one this server was
-        /// told to use. THIS PROCESS IS THE HOST, so the two cannot diverge: there is no separate
-        /// IDE that might have closed a solution behind our back, which is the only thing the
-        /// distinction ever existed to express.
+        /// The solution the HOST believes is open. Since 9e1bd280 that is the followed solution, the same value
+        /// as <see cref="CurrentSolutionPath"/>: when this server follows an IDE, a null here really does mean
+        /// the IDE closed its solution - the staleness the distinction exists to express - and the two members
+        /// read one source, so they cannot diverge.
         ///
-        /// RETURNING NULL HERE WOULD BREAK TWO TOOLS, and I had written into IWorkspaceContext
-        /// that null was correct because "callers fall back to CurrentSolutionPath". Reading the
-        /// callers showed otherwise:
-        ///
-        ///   build_solution      uses this as its ONLY fallback and never consults
-        ///                       CurrentSolutionPath — with null it fails "no solution is
-        ///                       currently loaded in the IDE" even when --solution was given.
-        ///   get_solution_info   treats "host says none, but a path is cached" as a STALE
-        ///                       selection and returns an early stub, suppressing the version,
-        ///                       .red and database fields that are the point of the tool.
-        ///
-        /// Both are correct in the addin, where a null genuinely means the IDE closed the
-        /// solution. Neither is correct here, where a null would be describing a staleness that
-        /// cannot happen.
+        /// NEVER NULL WHILE A SOLUTION IS SERVED: build_solution uses this as its ONLY fallback and
+        /// never consults CurrentSolutionPath, and get_solution_info reads "host says none, but a
+        /// path is cached" as a stale selection. Returning null beside a live --solution (as
+        /// IWorkspaceContext once advised) broke both; the follower answers null only when there
+        /// really is no solution, and then CurrentSolutionPath is null too.
         /// </summary>
-        public string GetHostOpenSolutionPath() { return _solutionPath; }
+        public string GetHostOpenSolutionPath() { return CurrentSolutionPath; }
 
         public ClarionVersionConfig CurrentVersionConfig
         {
             get
             {
                 string note;
-                var cfg = VersionConfigFor(_solutionPath, out note);
+                var cfg = VersionConfigFor(CurrentSolutionPath, out note);
                 lock (_lock) { _versionConfig = cfg; _versionNote = note; }
                 return cfg;
             }
@@ -310,18 +351,25 @@ namespace ClarionAssistant.McpServer
             {
                 // Re-loaded when the version moves (0ce0b5e2): the IDE's choice for the solution can change
                 // while this server runs, and the .red is that version's.
-                var cfg = CurrentVersionConfig;
+                // 9e1bd280: and when the SOLUTION moves. Keyed on the version alone, a switch between two
+                // solutions on one Clarion kept the first one's .red - a solution-local .red is per folder.
+                string sln = CurrentSolutionPath;
+                string note;
+                var cfg = VersionConfigFor(sln, out note);
+                lock (_lock) { _versionConfig = cfg; _versionNote = note; }
                 string name = cfg != null ? cfg.Name : null;
                 lock (_lock)
                 {
                     // GH #261: also when the .red (or a file it {include}s) changed on disk since it was read -
                     // an edit to it used to change nothing until this server restarted.
                     if (!_redResolved || !string.Equals(name, _redVersionName, StringComparison.Ordinal)
+                        || !SolutionFollower.SamePath(sln, _redSolution)
                         || (_redFile != null && _redFile.IsStale()))
                     {
                         _redResolved = true;
                         _redVersionName = name;
-                        _redFile = LoadRedFile(cfg);
+                        _redSolution = sln;
+                        _redFile = LoadRedFile(cfg, sln);
                     }
                     return _redFile;
                 }
@@ -329,6 +377,7 @@ namespace ClarionAssistant.McpServer
         }
 
         private string _redVersionName;
+        private string _redSolution;
 
         /// <summary>
         /// The addin distinguishes these because it resolves one per ACTIVE PROJECT, which can
@@ -339,15 +388,15 @@ namespace ClarionAssistant.McpServer
         /// </summary>
         public RedFileService ActiveRedFileService { get { return RedFile; } }
 
-        private RedFileService LoadRedFile(ClarionVersionConfig cfg)
+        private RedFileService LoadRedFile(ClarionVersionConfig cfg, string solutionPath)
         {
             if (cfg == null) return null;
 
             var svc = new RedFileService();
             string projectDir = null;
-            if (!string.IsNullOrEmpty(_solutionPath))
+            if (!string.IsNullOrEmpty(solutionPath))
             {
-                try { projectDir = Path.GetDirectoryName(_solutionPath); }
+                try { projectDir = Path.GetDirectoryName(solutionPath); }
                 catch { projectDir = null; }
             }
 
@@ -371,10 +420,16 @@ namespace ClarionAssistant.McpServer
         {
             get
             {
-                if (string.IsNullOrEmpty(_solutionPath)) return null;
-                return Path.Combine(Path.GetDirectoryName(_solutionPath),
-                    Path.GetFileNameWithoutExtension(_solutionPath) + ".codegraph.db");
+                // The followed solution's (9e1bd280), read once so the folder and the name agree.
+                return DbPathFor(CurrentSolutionPath);
             }
+        }
+
+        private static string DbPathFor(string solutionPath)
+        {
+            if (string.IsNullOrEmpty(solutionPath)) return null;
+            return Path.Combine(Path.GetDirectoryName(solutionPath),
+                Path.GetFileNameWithoutExtension(solutionPath) + ".codegraph.db");
         }
 
         public List<string> BuildIndexLibraryPaths()
@@ -426,14 +481,18 @@ namespace ClarionAssistant.McpServer
                 if (onCompleted != null) { try { onCompleted(summary); } catch { } }
             };
 
-            string slnPath = _solutionPath;
+            // ONE read of the followed solution (9e1bd280): the run indexes the solution it started on, into
+            // that solution's database, even if the IDE switches mid-run.
+            var src = SolutionSource;
+            string slnPath = src.Path;
             if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
             {
-                complete("Error: no solution is selected. " + (ResolutionNote ?? "Pass --solution <path.sln>."));
+                complete("Error: no solution is selected. " + (src.Source == SolutionSourceSnapshot.None
+                    ? src.Note : (ResolutionNote ?? "Pass --solution <path.sln>.")));
                 return;
             }
 
-            string dbPath = CurrentDbPath;
+            string dbPath = DbPathFor(slnPath);
 
             // The same gate the addin's entry points use. It now guards ACROSS PROCESSES as well
             // as within one, which this host is the reason for: the addin and this server can hold

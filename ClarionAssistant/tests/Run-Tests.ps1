@@ -136,6 +136,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "IdeSolutionRecord.Test"
                Sources = @("tests\IdeSolutionRecord.Test.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # 9e1bd280: every tool in a tab follows the IDE's open solution - --solution only until the IDE publishes,
+            # none once it closes it, the switch reported - and the standalone/LSP/addin wiring reads that one follower.
+            @{ Name = "SolutionFollower.Test"
+               Sources = @("tests\SolutionFollower.Test.cs", "Services\SolutionFollower.cs",
+                           "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Web.Extensions.dll")
+               Args = @($RepoDir) }
             # 0ce0b5e2: a solution's Clarion version - pins, then the IDE's own choice for it (live record, then its
             # saved preferences file, chosen by content with the name hash only as a tiebreak), then the host
             # install. x86 like the IDE, so the hash tiebreak is checked as the IDE computes it.

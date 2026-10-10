@@ -199,6 +199,21 @@ static class CaAgentIdentityTest
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");
 
+        // ---- FollowedContextName (9e1bd280): the tab's solution part follows the IDE, the agent name never moves ----
+        const string v61 = @"H:\Dev\POS\v61POSitive.sln", ult = @"C:\Clarion10v8\Examples\UltimateSQLTest.sln";
+        string moved = CaAgentIdentity.FollowedContextName("v61POSitive", v61, ult);
+        Ok("a tab opened on the solution follows the IDE's switch", moved == "UltimateSQLTest", moved);
+        Ok("its label: same agent name, new solution",
+            CaAgentIdentity.TabLabel("CA1", moved) == "CA1 · UltimateSQLTest", CaAgentIdentity.TabLabel("CA1", moved));
+        Ok("case-insensitive match on the old solution's name",
+            CaAgentIdentity.FollowedContextName("V61POSITIVE", v61, ult) == "UltimateSQLTest");
+        Ok("a tab opened on a project/class keeps its name",
+            CaAgentIdentity.FollowedContextName("InvoiceClass", v61, ult) == null);
+        Ok("a plain Terminal N tab (no solution) keeps its name",
+            CaAgentIdentity.FollowedContextName("Terminal 2", null, ult) == null);
+        Ok("no new solution (the IDE closed it): no relabel",
+            CaAgentIdentity.FollowedContextName("v61POSitive", v61, null) == null);
+
         Console.WriteLine();
         Console.WriteLine(fail == 0 ? "ALL " + pass + " CHECKS PASSED" : fail + " FAILED, " + pass + " passed");
         return fail == 0 ? 0 : 1;

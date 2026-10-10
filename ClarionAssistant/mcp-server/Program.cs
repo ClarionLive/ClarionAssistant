@@ -218,6 +218,9 @@ namespace ClarionAssistant.McpServer
             {
                 var coord = bundle.InstanceCoordination;
                 coord.SolutionPath = workspace != null ? workspace.CurrentSolutionPath : null;
+                // 9e1bd280: re-read at every heartbeat, so peers match this instance on the solution the IDE
+                // has open now, not the one this tab was launched on.
+                if (workspace != null) coord.SolutionPathProvider = () => workspace.CurrentSolutionPath;
                 coord.WorkingOn = ServerName + " " + ServerVersion + " (standalone, no IDE)";
                 coord.Start();
             }
@@ -299,7 +302,9 @@ namespace ClarionAssistant.McpServer
             w.WriteLine("  --stdio              same, stated explicitly");
             w.WriteLine("  --solution <path>    the .sln the CodeGraph/solution tools work on.");
             w.WriteLine("  --ide-pid <pid>      the Clarion IDE that launched this server (set by the addin;");
-            w.WriteLine("                       lets the schema tools see the dictionary of the app it has open).");
+            w.WriteLine("                       lets the schema tools see the dictionary of the app it has open,");
+            w.WriteLine("                       and every tool follows the solution it has open; --solution");
+            w.WriteLine("                       then only seeds it until that IDE publishes one).");
             w.WriteLine("                       Without it, a single .sln in the working directory");
             w.WriteLine("                       is used; several means none, rather than a guess.");
             w.WriteLine("  --clarion-version <name>");
@@ -411,45 +416,36 @@ namespace ClarionAssistant.McpServer
                 // kept none for its whole life while the developer opened one in the IDE - every
                 // lsp_* tool then failed with no way forward short of a new tab. When the IDE
                 // launched us (--ide-pid), the addin publishes its live open solution
-                // (IdeSolutionRecord), and the LSP falls back to that. Only the LSP: the
-                // CodeGraph/solution tools keep the --solution they were launched with.
+                // (IdeSolutionRecord), and the LSP falls back to that.
                 //
                 // It is a FOLLOWED source, not a one-shot fallback: the IDE can switch or close the
                 // solution while the server runs, and LspService re-asks it on every lsp_* call and
                 // restarts or stops the server to match (pipeline run 1). ReadCached keeps that to
                 // one file stat per call.
-                ClarionAssistant.Services.LspService.SolutionPathProvider =
-                    () => workspace.CurrentSolutionPath;
+                //
+                // 9e1bd280: NOT ONLY THE LSP ANY MORE, and not only without --solution. Every tool now
+                // follows the IDE (StandaloneWorkspace.CurrentSolutionPath reads a SolutionFollower), and
+                // the LSP follows THAT SAME follower, so the language server and the tools cannot answer
+                // for different solutions. Launched by an IDE, the solution is a followed source from the
+                // start - --solution only seeds it until the IDE publishes - so the LSP takes it through
+                // FollowedSolutionProvider (restart on a switch, stop on a close). With no IDE there is
+                // nothing to follow, and --solution is a plain provider as before.
                 int? launchingIde = ClarionAssistant.Services.McpToolRegistry.IdeProcessId;
-                if (string.IsNullOrEmpty(workspace.CurrentSolutionPath) && launchingIde.HasValue)
+                if (launchingIde.HasValue)
                 {
-                    int idePid = launchingIde.Value;
-                    string lastSeen = null;
-                    ClarionAssistant.Services.LspService.FollowedSolutionProvider = () =>
-                    {
-                        string note;
-                        string ideSln = ClarionAssistant.Services.IdeSolutionRecord.ReadCached(idePid, out note);
-                        if (!string.Equals(ideSln, lastSeen, StringComparison.OrdinalIgnoreCase))
-                        {
-                            ClarionAssistant.Services.LspTrace.Write("[LspService] no --solution; the IDE's "
-                                + "published solution is now: " + (ideSln ?? "none") + " (" + note + ")");
-                            lastSeen = ideSln;
-                        }
-                        return ideSln;
-                    };
+                    ClarionAssistant.Services.LspService.SolutionPathProvider = null;
+                    ClarionAssistant.Services.LspService.FollowedSolutionProvider = () => workspace.CurrentSolutionPath;
+                }
+                else
+                {
+                    ClarionAssistant.Services.LspService.SolutionPathProvider =
+                        () => workspace.CurrentSolutionPath;
                 }
 
                 // 44a1b10c: lsp_diagnostics is served HERE, with no editors, so it asks the IDE that has this solution
                 // open for an open editor's text (get_live_text over the pane's MCP endpoint), else checks the disk and
-                // says why. The solution matched is the one this server's LSP uses: --solution, else the followed one.
-                ClarionAssistant.Services.IdeLiveTextClient.SolutionProvider = () =>
-                {
-                    string s = workspace.CurrentSolutionPath;
-                    if (!string.IsNullOrEmpty(s)) return s;
-                    if (!launchingIde.HasValue) return null;
-                    string note;
-                    return ClarionAssistant.Services.IdeSolutionRecord.ReadCached(launchingIde.Value, out note);
-                };
+                // says why. The solution matched is the one this server's LSP uses - the followed one (9e1bd280).
+                ClarionAssistant.Services.IdeLiveTextClient.SolutionProvider = () => workspace.CurrentSolutionPath;
                 ClarionAssistant.Services.IdeLiveTextClient.PreferredIdePid = launchingIde;
                 ClarionAssistant.Services.IdeLiveTextClient.Log = ClarionAssistant.Services.LspTrace.Write;
                 ClarionAssistant.Services.SharedLspBridge.LiveTextProvider = ClarionAssistant.Services.IdeLiveTextClient.Get;
