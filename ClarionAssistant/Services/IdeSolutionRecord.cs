@@ -130,6 +130,17 @@ namespace ClarionAssistant.Services
                             { "pid", pid },
                             { "writtenAt", DateTime.Now.ToString("o") }
                         };
+                        // 9e1bd280 run 1: who wrote it, so a reader can tell this IDE from a later process that
+                        // reused its pid (see VerifyWriter).
+                        try
+                        {
+                            using (var me = System.Diagnostics.Process.GetCurrentProcess())
+                            {
+                                rec["startTime"] = me.StartTime.ToUniversalTime().ToString("o");
+                                rec["processName"] = me.ProcessName;
+                            }
+                        }
+                        catch { }
                         if (version != null) rec["clarionVersion"] = version;
                         if (configDir != null) rec["configDir"] = configDir;
                         if (build != null)
@@ -273,6 +284,12 @@ namespace ClarionAssistant.Services
                     note = "the IDE that published the record (pid " + pid + ") is no longer running";
                     return null;
                 }
+                string staleWhy;
+                if (!VerifyWriter(rec, pid, out staleWhy))
+                {
+                    note = staleWhy;
+                    return null;
+                }
                 if (string.IsNullOrEmpty(sln) || !File.Exists(sln))
                 {
                     note = "the published solution '" + sln + "' does not exist";
@@ -296,6 +313,53 @@ namespace ClarionAssistant.Services
                 return null;
             }
         }
+        /// <summary>
+        /// 9e1bd280 run 1 (Codex): is the live process on <paramref name="pid"/> the one that WROTE the record? A crashed
+        /// IDE leaves its record behind, and Windows recycles pids: without this, a new process on that pid made a dead
+        /// IDE's solution "live" again. The record carries the writer's start time and image name (Publish); the live
+        /// process must match both, and be a Clarion IDE (image "Clarion", or CA_IDE_IMAGE_NAME in tests - the rule
+        /// IdeEndpointRecord applies). A record without a start time (an addin from before this) is accepted as before;
+        /// a process whose start time cannot be read (access denied) is too - unverifiable is not evidence of reuse.
+        ///
+        /// NOT DEFENDED, deliberately: a forged record from a process running as the same user. Such a process can
+        /// already read and write this folder, the IDE's own settings and the server's stdio; per-launch nonces, ACLs
+        /// or authenticated IPC would add machinery without adding a boundary (declined in review).
+        /// </summary>
+        private static bool VerifyWriter(Dictionary<string, object> rec, int pid, out string why)
+        {
+            why = null;
+            object v;
+            DateTime start;
+            if (!rec.TryGetValue("startTime", out v) || !DateTime.TryParse(v as string, null,
+                    System.Globalization.DateTimeStyles.RoundtripKind, out start))
+                return true;
+            string recordedName = rec.TryGetValue("processName", out v) ? v as string : null;
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetProcessById(pid))
+                {
+                    string image = Environment.GetEnvironmentVariable("CA_IDE_IMAGE_NAME");
+                    if (string.IsNullOrEmpty(image)) image = "Clarion";
+                    if (!p.ProcessName.StartsWith(image, StringComparison.OrdinalIgnoreCase)
+                        || (!string.IsNullOrEmpty(recordedName) && !string.Equals(p.ProcessName, recordedName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        why = "the record for pid " + pid + " is stale: that pid is now '" + p.ProcessName
+                            + "', not the IDE that wrote it (pid reused) - ignored";
+                        return false;
+                    }
+                    if (Math.Abs((p.StartTime.ToUniversalTime() - start.ToUniversalTime()).TotalSeconds) > 2)
+                    {
+                        why = "the record for pid " + pid + " is stale: that pid was started at "
+                            + p.StartTime.ToUniversalTime().ToString("o") + ", not the recorded "
+                            + start.ToUniversalTime().ToString("o") + " (pid reused) - ignored";
+                        return false;
+                    }
+                }
+            }
+            catch { }
+            return true;
+        }
+
         private static bool IsAlive(int pid)
         {
             try

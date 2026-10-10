@@ -37,6 +37,28 @@ namespace ClarionAssistant.Services
         private static readonly ConcurrentDictionary<string, FileStream> Held =
             new ConcurrentDictionary<string, FileStream>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>Test seam (9e1bd280 run 1): names a pause file, see <see cref="PauseBeforeSetUpForTest"/>.</summary>
+        public const string PauseEnv = "CA_TEST_INDEX_SETUP_PAUSE";
+
+        /// <summary>
+        /// Test seam (9e1bd280 run 1). An index run calls this AFTER it snapshotted its solution and BEFORE it resolves
+        /// that solution's .red and library paths. When <see cref="PauseEnv"/> names an existing file, it creates
+        /// "&lt;file&gt;.reached" and waits (at most 60 s) until the file is deleted, so an end-to-end test can switch the
+        /// IDE's solution at exactly that moment. Unset in production: one environment read.
+        /// </summary>
+        public static void PauseBeforeSetUpForTest()
+        {
+            try
+            {
+                string pause = Environment.GetEnvironmentVariable(PauseEnv);
+                if (string.IsNullOrEmpty(pause) || !File.Exists(pause)) return;
+                File.Create(pause + ".reached").Dispose();
+                var until = DateTime.UtcNow.AddSeconds(60);
+                while (File.Exists(pause) && DateTime.UtcNow < until) System.Threading.Thread.Sleep(50);
+            }
+            catch { }
+        }
+
         /// <summary>Try to claim an index run on this database. False = a run already holds it.</summary>
         public static bool TryEnter(string dbPath)
         {

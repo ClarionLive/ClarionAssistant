@@ -31,6 +31,8 @@ static class IdeSolutionRecordTest
 
     static int Main()
     {
+        // 9e1bd280 run 1: a record now names its writer, which must be a Clarion IDE; THIS process plays the IDE.
+        Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-idesln-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         string recDir = Path.Combine(root, "records");
         Directory.CreateDirectory(root);
@@ -128,6 +130,45 @@ static class IdeSolutionRecordTest
                 "R4: a half-written record keeps the last definite answer");
             IdeSolutionRecord.Publish(null);
             Check(IdeSolutionRecord.ReadCached(self, out note) == null, "R4: a record really removed is definite: null");
+
+            // -- 9e1bd280 run 1: PID REUSE. A record names its writer's start time and image; a live process on that
+            //    pid that started at another time, or is another image, is not the IDE that wrote it.
+            {
+                IdeSolutionRecord.ResetForTest();
+                IdeSolutionRecord.Publish(sln);
+                var pub = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(rf));
+                Check(pub.ContainsKey("startTime") && pub.ContainsKey("processName"), "Publish records the writer's start time and image");
+                Check(string.Equals(IdeSolutionRecord.Read(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                    "matching start time and image -> accepted (" + note + ")");
+
+                pub["startTime"] = DateTime.UtcNow.AddHours(-3).ToString("o");
+                File.WriteAllText(rf, new JavaScriptSerializer().Serialize(pub));
+                bool transient;
+                string reused = IdeSolutionRecord.Read(self, out note, out transient);
+                Check(reused == null && !transient && note.Contains("pid reused"),
+                    "mismatched start time -> no record, definite, says 'pid reused' (" + note + ")");
+
+                pub["startTime"] = System.Diagnostics.Process.GetCurrentProcess().StartTime.ToUniversalTime().ToString("o");
+                pub["processName"] = "SomethingElse";
+                File.WriteAllText(rf, new JavaScriptSerializer().Serialize(pub));
+                Check(IdeSolutionRecord.Read(self, out note) == null && note.Contains("pid reused"),
+                    "another image on the pid -> no record (" + note + ")");
+
+                pub.Remove("startTime"); pub.Remove("processName");
+                File.WriteAllText(rf, new JavaScriptSerializer().Serialize(pub));
+                Check(string.Equals(IdeSolutionRecord.Read(self, out note), sln, StringComparison.OrdinalIgnoreCase),
+                    "a record without a start time (older addin) -> accepted as before (" + note + ")");
+
+                IdeSolutionRecord.Publish(sln);   // valid again, then: this process is not a Clarion IDE
+                string keep = Environment.GetEnvironmentVariable("CA_IDE_IMAGE_NAME");
+                Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", null);
+                IdeSolutionRecord.ResetForTest();
+                IdeSolutionRecord.Publish(sln);
+                Check(IdeSolutionRecord.Read(self, out note) == null && note.Contains("pid reused"),
+                    "a writer that is not a Clarion IDE -> no record (" + note + ")");
+                Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", keep);
+                IdeSolutionRecord.Publish(null);
+            }
 
             // -- publishing a path that does not exist is "nothing open", not a stale write
             IdeSolutionRecord.ResetForTest();

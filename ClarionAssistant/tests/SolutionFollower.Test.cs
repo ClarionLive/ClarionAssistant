@@ -36,9 +36,27 @@ static class SolutionFollowerTest
 
     static bool Same(string a, string b) { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
 
+    /// <summary>The text from <paramref name="start"/> to the next <paramref name="end"/>, or null when either is missing.</summary>
+    static string Between(string text, string start, string end)
+    {
+        int s = text.IndexOf(start, StringComparison.Ordinal);
+        if (s < 0) return null;
+        int e = text.IndexOf(end, s + start.Length, StringComparison.Ordinal);
+        return e < 0 ? null : text.Substring(s, e - s);
+    }
+
+    static int Count(string text, string what)
+    {
+        int n = 0, i = 0;
+        while ((i = text.IndexOf(what, i, StringComparison.Ordinal)) >= 0) { n++; i += what.Length; }
+        return n;
+    }
+
     static int Main(string[] args)
     {
         Console.WriteLine("SolutionFollower: every tool follows the IDE's open solution (9e1bd280)");
+        // Run 1: a record names its writer, which must be a Clarion IDE; THIS process plays the IDE.
+        Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-follow-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(root);
         try
@@ -99,6 +117,22 @@ static class SolutionFollowerTest
             Check(Same(s4.Path, c) && s4.Source == SolutionSourceSnapshot.IdeLive, "IDE reopened: follows to c.sln");
             Check(Same(s4.SwitchedFrom, b), "through none, switchedFrom is the last real solution (" + s4.SwitchedFrom + ")");
 
+            // -- run 1 (Codex): PID REUSE. The record's writer started at another time than the live process on its pid:
+            //    not the IDE - no record, so (the IDE having published before) none, latched, with the reason.
+            {
+                string rf = IdeSolutionRecord.PathForPid(self);
+                var js = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var rec = js.Deserialize<Dictionary<string, object>>(File.ReadAllText(rf));
+                rec["startTime"] = DateTime.UtcNow.AddHours(-3).ToString("o");
+                File.WriteAllText(rf, js.Serialize(rec));
+                var sr = f1.Current();
+                Check(sr.Path == null && sr.Source == SolutionSourceSnapshot.None && sr.Note.Contains("pid reused"),
+                    "a record left by a dead IDE whose pid was reused: none, saying why (" + sr.Source + ": " + sr.Note + ")");
+                IdeSolutionRecord.ResetForTest();
+                IdeSolutionRecord.Publish(c);
+                Check(Same(f1.CurrentPath, c), "...and a genuine record is followed again");
+            }
+
             // -- launched with no --solution, IDE has nothing: none
             IdeSolutionRecord.Publish(null);
             var f2 = new SolutionFollower(null, () => self);
@@ -152,7 +186,7 @@ static class SolutionFollowerTest
                     "StandaloneWorkspace.CurrentSolutionPath reads the follower");
                 Check(ws.Contains("public string GetHostOpenSolutionPath() { return CurrentSolutionPath; }"),
                     "GetHostOpenSolutionPath (build tools, get_solution_info) reads the same followed solution");
-                Check(ws.Contains("SolutionFollower.SamePath(sln, _redSolution)"),
+                Check(ws.Contains("SolutionFollower.SamePath(solutionPath, _redSolution)"),
                     "the .red cache is keyed on the solution, not the version alone");
 
                 string prog = File.ReadAllText(Path.Combine(proj, "mcp-server", "Program.cs"));
@@ -164,6 +198,40 @@ static class SolutionFollowerTest
                     "instance coordination re-reads the followed solution");
                 Check(!prog.Contains("IdeSolutionRecord.ReadCached("),
                     "no second, private reader of the IDE record left in Program.cs");
+
+                // Run 1 (debugger LOW): get_solution_info derives the db, version, .red and RedScope from ONE snapshot.
+                string reg = File.ReadAllText(Path.Combine(proj, "Services", "McpToolRegistry.cs"));
+                string info = Between(reg, "Name = \"get_solution_info\"", "Name = \"resolve_red_path\"");
+                Check(info != null && !info.Contains("_workspace.CurrentDbPath") && !info.Contains("_workspace.CurrentVersionConfig")
+                      && !info.Contains("_workspace.RedFile"),
+                    "get_solution_info re-reads none of the db / version / .red after its snapshot");
+                Check(info != null && Count(info, "SnapshotSolution(") == 1 && info.Contains("snap.DbPath") && info.Contains("snap.Version")
+                      && info.Contains("snap.Red") && info.Contains("RedScopeFor(new Dictionary<string, object>(), snap)"),
+                    "get_solution_info takes ONE snapshot and keys the db, version, .red and RedScope on it");
+                string scopeFor = Between(reg, "private RedScope RedScopeFor(Dictionary<string, object> args, SolutionScope snap)", "private static string ActiveBuildConfiguration");
+                Check(scopeFor != null && scopeFor.Contains("scope.Red = snap.Red") && !scopeFor.Contains("_workspace.")
+                      && !scopeFor.Contains("CurrentSolutionPath"),
+                    "RedScope (resolve_red_path, get_red_search_paths) takes its .red from the same one read of the solution");
+                Check(reg.Contains("WithVersion(result, decision.Resolver == \"lsp\", scope.Snap)")
+                      && reg.Contains("WithVersion(WithAbsolutePaths(result, paths, scope.BaseDir), false, scope.Snap)"),
+                    "resolve_red_path / get_red_search_paths report the version of the scope's snapshot");
+                string snapImpl = Between(ws, "public SolutionScope Snapshot()", "public ClarionVersionConfig VersionConfigFor(");
+                Check(snapImpl != null && snapImpl.Contains("VersionConfigFor(sln, src.Record, out note)"),
+                    "the snapshot's version is decided from the SAME record read as its solution");
+                // Run 1 (code review): the two "no solution" replies speak one vocabulary; one version resolver.
+                Check(info != null && !info.Contains("lastSelectedPath") && Count(info, "{ \"switchedFrom\", slnPath }") == 1,
+                    "both 'no solution' replies name the solution they had as switchedFrom");
+                Check(Count(ws, "ResolveVersionFor(") >= 4 && !ws.Contains("var cfg = VersionConfigFor(CurrentSolutionPath"),
+                    "CurrentVersionConfig and RedFileFor share ResolveVersionFor");
+                // Run 1 (debugger MEDIUM + Codex HIGH): an index run derives its .red and library paths from its snapshot.
+                string held = Between(ws, "private void IndexHeld(", "catch (Exception ex)");
+                Check(held != null && held.Contains("scope.Red") && held.Contains("scope.IndexLibraryPaths")
+                      && !held.Contains("BuildIndexLibraryPaths()") && !held.Contains("RedFileFor(") && !held.Contains("ActiveRedFileService"),
+                    "index_solution's IndexHeld uses the snapshotted scope's .red and library paths");
+                string icg = Between(reg, "private object ExecuteIndexCodeGraph(", "private static string DescribeIndexEvent");
+                Check(icg != null && icg.Contains("SnapshotSolution(true)") && icg.Contains("snap.Red")
+                      && !icg.Contains("_workspace.CurrentSolutionPath"),
+                    "index_codegraph uses the snapshotted solution's .red and library paths");
 
                 string acc = File.ReadAllText(Path.Combine(proj, "AssistantChatControl.cs"));
                 int onChanged = acc.IndexOf("private void OnSolutionChanged(string path)", StringComparison.Ordinal);

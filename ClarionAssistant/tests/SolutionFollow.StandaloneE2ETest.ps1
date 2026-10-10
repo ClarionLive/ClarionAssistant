@@ -17,6 +17,8 @@
 #   S3  the IDE puts B on V2       -> V2 (the version is B's, re-resolved for the new solution)
 #   S5  back to A, its record names no build configuration -> NOT B's 'Release' (the record is A's now), A's folder
 #   S6  A's record says 'Profile'  -> 'Profile': the configuration is always the FOLLOWED solution's
+#   S7  index_codegraph on A, the IDE switches to B between the run's snapshot and its set-up -> A's db, A's .red
+#   S8  index_solution on B, the IDE switches to A at the same point -> the run log names B's .red
 #   S4  the IDE closes A           -> solutionSource none, switchedFrom A; the solution tools and the LSP say so
 #
 # MUST BE ABLE TO GO RED: before 9e1bd280 S1-S4 fail (the tools stay on A; the LSP, started from --solution, never
@@ -81,8 +83,14 @@ $serverDir = Join-Path $bin 'lsp-server\out\server\src'
 New-Item -ItemType Directory -Force $serverDir | Out-Null
 Copy-Item (Join-Path $PSScriptRoot 'fixtures\lsp-version-follow\server.js') (Join-Path $serverDir 'server.js') -Force
 foreach ($d in @($solA, $solB)) { Copy-Item (Join-Path $PSScriptRoot 'fixtures\lsp-semantic-pass\*') $d -Force }
-$slnA = Join-Path $solA 'v61POSitive.sln';     Move-Item (Join-Path $solA 'ctrl.sln') $slnA
-$slnB = Join-Path $solB 'UltimateSQLTest.sln'; Move-Item (Join-Path $solB 'ctrl.sln') $slnB
+# Unique solution NAMES: an index run logs to %APPDATA%\ClarionAssistant\codegraph-index-<name>.log, and a real
+# v61POSitive's log must not be rotated away by this test.
+$tag  = [System.IO.Path]::GetFileName($work)
+$nameA = "v61POSitive-$tag"; $nameB = "UltimateSQLTest-$tag"
+$slnA = Join-Path $solA "$nameA.sln"; Move-Item (Join-Path $solA 'ctrl.sln') $slnA
+$slnB = Join-Path $solB "$nameB.sln"; Move-Item (Join-Path $solB 'ctrl.sln') $slnB
+$pause = Join-Path $work 'index.pause'
+$runLogDir = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'ClarionAssistant'
 $clwA = Join-Path $solA 'ctrl.clw'
 $clwB = Join-Path $solB 'ctrl.clw'
 
@@ -116,6 +124,7 @@ try {
     $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
     $psi.StandardErrorEncoding  = New-Object System.Text.UTF8Encoding($false)
     $psi.EnvironmentVariables['CA_FAKE_LSP_LOG'] = $log
+    $psi.EnvironmentVariables['CA_TEST_INDEX_SETUP_PAUSE'] = $pause   # inert until the file exists (S7, S8)
     $p = [System.Diagnostics.Process]::Start($psi)
     $stderrTask = $p.StandardError.ReadToEndAsync()
     $script:nextId = 1
@@ -126,7 +135,17 @@ try {
         $p.StandardInput.WriteLine(($msg | ConvertTo-Json -Compress -Depth 6))
         $p.StandardInput.Flush()
         if ($notify) { return $null }
-        $want = $msg.id
+        return Answer $msg.id
+    }
+    # Send without waiting (S7, S8: the call pauses in the server while this test switches the IDE's solution).
+    function Begin([string]$name, [hashtable]$arguments) {
+        $msg = @{ jsonrpc = '2.0'; method = 'tools/call'; params = @{ name = $name; arguments = $arguments }; id = $script:nextId }
+        $script:nextId++
+        $p.StandardInput.WriteLine(($msg | ConvertTo-Json -Compress -Depth 6))
+        $p.StandardInput.Flush()
+        return $msg.id
+    }
+    function Answer($want) {
         $deadline = [DateTime]::UtcNow.AddSeconds(120)
         while ([DateTime]::UtcNow -lt $deadline) {
             $line = $p.StandardOutput.ReadLine()
@@ -183,7 +202,7 @@ try {
     Assert-That ($i2.solutionSource -eq 'ide-live') "S2: solutionSource should be ide-live, got '$($i2.solutionSource)'"
     Assert-That (SamePath $i2.switchedFrom $slnA) "S2: switchedFrom should name A, got '$($i2.switchedFrom)'"
     Assert-That (SamePath $i2.activeRedFile $localRed) "S2: the .red should be B's own '$localRed' (same version - keyed on the solution), got '$($i2.activeRedFile)'"
-    Assert-That (SamePath $i2.databasePath (Join-Path $solB 'UltimateSQLTest.codegraph.db')) "S2: the CodeGraph db should be B's, got '$($i2.databasePath)'"
+    Assert-That (SamePath $i2.databasePath (Join-Path $solB "$nameB.codegraph.db")) "S2: the CodeGraph db should be B's, got '$($i2.databasePath)'"
     $dB = Tool 'lsp_diagnostics' @{ file_path = $clwB; timeout_ms = 15000 }
     Show 'S2 updatePaths log' ((LoggedSolutions) -join ' ; ')
     Assert-That ((LoggedSolutions).Count -gt $startsA -and (SamePath (LoggedSolutions)[-1] $slnB)) "S2: the language server should have restarted on B, log: $((LoggedSolutions) -join ' ; ')"
@@ -213,6 +232,41 @@ try {
     Show 'S6 get_red_search_paths' ("" + $g6.buildConfiguration + " | " + $g6.configurationNote)
     Assert-That ($g6.buildConfiguration -eq 'Profile') "S6: the configuration should be A's record's 'Profile', got '$($g6.buildConfiguration)' ($($g6.configurationNote))"
 
+    # ---- S7/S8 (run 1, debugger + Codex): an index run is ONE solution, even when the IDE switches mid-run ----
+    # The server pauses each run between snapshotting its solution and resolving that solution's .red
+    # (IndexRunGate.PauseBeforeSetUpForTest); the IDE switches exactly then. A and B each have their own local .red.
+    function SwitchDuringIndex([string]$tool, [string]$switchTo) {
+        [System.IO.File]::WriteAllText($pause, '')
+        if (Test-Path "$pause.reached") { Remove-Item "$pause.reached" -Force }
+        $id = Begin $tool @{}
+        $deadline = [DateTime]::UtcNow.AddSeconds(60)
+        while (-not (Test-Path "$pause.reached") -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+        $reached = Test-Path "$pause.reached"
+        Publish $switchTo $v1
+        Remove-Item $pause -Force
+        return @{ reached = $reached; answer = (Answer $id) }
+    }
+    $redA = Join-Path $solA $redName
+    $redB = Join-Path $solB $redName
+
+    # S7: index_codegraph on A (followed since S5), the IDE switches to B mid-run.
+    $r7 = SwitchDuringIndex 'index_codegraph' $slnB
+    Show 'S7 index_codegraph' $r7.answer
+    if (-not $r7.reached) { Write-Host "COULD NOT RUN: index_codegraph never reached the set-up pause (answer: $($r7.answer))." -ForegroundColor Yellow; exit 2 }
+    Assert-That ($r7.answer -match [regex]::Escape("Database: " + (Join-Path $solA "$nameA.codegraph.db"))) "S7: index_codegraph should index A's db, got: $($r7.answer)"
+    Assert-That ($r7.answer -match ("Redirection: " + [regex]::Escape($redA))) "S7: A's run must use A's .red '$redA' though the IDE switched to B, got: $($r7.answer)"
+
+    # S8: index_solution on B (followed now), the IDE switches back to A mid-run. Its answer has no summary; the run log does.
+    $r8 = SwitchDuringIndex 'index_solution' $slnA
+    Show 'S8 index_solution' $r8.answer
+    if (-not $r8.reached) { Write-Host "COULD NOT RUN: index_solution never reached the set-up pause (answer: $($r8.answer))." -ForegroundColor Yellow; exit 2 }
+    $logB = Join-Path $runLogDir "codegraph-index-$nameB.log"
+    $redLine = if (Test-Path $logB) { (Get-Content $logB | Where-Object { $_ -match 'Redirection file:' } | Select-Object -First 1) } else { $null }
+    Show 'S8 run log' $redLine
+    Assert-That ($redLine -and $redLine -match [regex]::Escape($redB)) "S8: B's run must use B's .red '$redB' though the IDE switched to A, log line: '$redLine'"
+    $i8 = Json (Tool 'get_solution_info' @{})
+    Assert-That ((SamePath $i8.solutionPath $slnA) -and (SamePath $i8.activeRedFile $redA)) "S8: after the run the tab follows A with A's .red, got '$($i8.solutionPath)' / '$($i8.activeRedFile)'"
+
     # ---- S4: the IDE closes A: none, never the old solution ----
     Publish $null
     $i4 = Json (Tool 'get_solution_info' @{})
@@ -234,6 +288,7 @@ finally {
     }
     try { Publish $null } catch { }
     try { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    try { Get-ChildItem $runLogDir -Filter "codegraph-index-*$tag*.log" -ErrorAction SilentlyContinue | Remove-Item -Force } catch { }
 }
 
 Write-Host ""

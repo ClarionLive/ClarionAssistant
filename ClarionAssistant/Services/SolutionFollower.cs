@@ -27,6 +27,12 @@ namespace ClarionAssistant.Services
         public string SwitchedFrom { get; internal set; }
         /// <summary>When that switch was seen (local time), or null.</summary>
         public DateTime? SwitchedAt { get; internal set; }
+        /// <summary>
+        /// The IDE record this answer was read from (null when none), so everything derived from the snapshot - the
+        /// IDE's version choice above all - comes from the SAME read, not a second one a switch can land between
+        /// (9e1bd280 run 1).
+        /// </summary>
+        public IdeSolutionRecord.Details Record { get; internal set; }
     }
 
     /// <summary>
@@ -155,7 +161,8 @@ namespace ClarionAssistant.Services
                     Source = source,
                     Note = note,
                     SwitchedFrom = _switchedFrom,
-                    SwitchedAt = _switchedAt
+                    SwitchedAt = _switchedAt,
+                    Record = rec
                 };
             }
 
@@ -167,11 +174,16 @@ namespace ClarionAssistant.Services
             return snap;
         }
 
+        /// <summary>
+        /// SolutionVersionResolver.SamePath's comparison (full path, trailing separators trimmed, case-insensitive), with
+        /// ONE difference: null equals null here, because "no solution" -> "no solution" is not a switch. Not shared
+        /// because this file compiles alone into its harness (with IdeSolutionRecord only).
+        /// </summary>
         internal static bool SamePath(string a, string b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b);
             try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); } catch { }
-            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+            return string.Equals(a.TrimEnd('\\', '/'), b.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
         }
     }
 }

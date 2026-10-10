@@ -217,9 +217,8 @@ namespace ClarionAssistant.McpServer
             try
             {
                 var coord = bundle.InstanceCoordination;
-                coord.SolutionPath = workspace != null ? workspace.CurrentSolutionPath : null;
-                // 9e1bd280: re-read at every heartbeat, so peers match this instance on the solution the IDE
-                // has open now, not the one this tab was launched on.
+                // 9e1bd280: re-read at registration and every heartbeat (Register/Heartbeat call the provider), so
+                // peers match this instance on the solution the IDE has open now, not the one this tab was launched on.
                 if (workspace != null) coord.SolutionPathProvider = () => workspace.CurrentSolutionPath;
                 coord.WorkingOn = ServerName + " " + ServerVersion + " (standalone, no IDE)";
                 coord.Start();
@@ -433,6 +432,8 @@ namespace ClarionAssistant.McpServer
                 int? launchingIde = ClarionAssistant.Services.McpToolRegistry.IdeProcessId;
                 if (launchingIde.HasValue)
                 {
+                    // Null ON PURPOSE: LspService consults SolutionPathProvider BEFORE FollowedSolutionProvider, and a
+                    // server started from it is never followed (no restart on a switch, no stop on a close).
                     ClarionAssistant.Services.LspService.SolutionPathProvider = null;
                     ClarionAssistant.Services.LspService.FollowedSolutionProvider = () => workspace.CurrentSolutionPath;
                 }

@@ -2278,9 +2278,11 @@ COMMON QUERIES:
 
                     // 9e1bd280: WHERE THE SOLUTION CAME FROM. The standalone follows the IDE (ide-live), falls back to
                     // its --solution while the IDE has published nothing (launch-arg), and says none when the IDE
-                    // closed it. One snapshot, so the path, its source and the switch are read together.
-                    var sourceInfo = _workspace as ISolutionSourceInfo;
-                    SolutionSourceSnapshot source = sourceInfo != null ? sourceInfo.SolutionSource : null;
+                    // closed it. One snapshot, so the path, its source and the switch are read together - and (run 1)
+                    // the database, version and .red below come from that SAME snapshot, never a second read: a switch
+                    // mid-call answered for two solutions at once.
+                    var snap = SnapshotSolution(false);
+                    SolutionSourceSnapshot source = snap.Source;
                     if (source != null && source.Source == SolutionSourceSnapshot.None)
                     {
                         var none = new Dictionary<string, object>
@@ -2299,24 +2301,27 @@ COMMON QUERIES:
 
                     // Check the live IDE state first — the cached path may be stale
                     string ideSlnPath = source != null ? source.Path : _workspace.GetHostOpenSolutionPath();
-                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : _workspace.CurrentSolutionPath;
+                    string slnPath = !string.IsNullOrEmpty(ideSlnPath) ? ideSlnPath : snap.SolutionPath;
 
-                    // If nothing is open in the IDE and we only have a cached path, report no solution
+                    // If nothing is open in the IDE and we only have a cached path, report no solution - with the
+                    // same field names as the follower's "none" above (9e1bd280 run 1): switchedFrom, not a
+                    // second name for the solution it had.
                     if (string.IsNullOrEmpty(ideSlnPath) && !string.IsNullOrEmpty(slnPath))
                     {
                         return new Dictionary<string, object>
                         {
                             { "solutionPath", "(none open)" },
-                            { "lastSelectedPath", slnPath },
+                            { "solutionSource", SolutionSourceSnapshot.None },
+                            { "switchedFrom", slnPath },
                             { "isIndexed", false },
                             { "lastIndexed", "(never)" },
-                            { "note", "No solution is currently open in the IDE. The lastSelectedPath was the most recently selected solution." }
+                            { "note", "No solution is currently open in the IDE. switchedFrom is the most recently selected solution." }
                         };
                     }
 
-                    string dbPath = _workspace.CurrentDbPath;
+                    string dbPath = snap.DbPath;
                     bool hasDb = !string.IsNullOrEmpty(dbPath) && File.Exists(dbPath);
-                    var vConfig = _workspace.CurrentVersionConfig;
+                    var vConfig = snap.Version;
 
                     var result = new Dictionary<string, object>
                     {
@@ -2337,8 +2342,7 @@ COMMON QUERIES:
                     // Which tier chose the version, or why there is none (GH #247) — read after CurrentVersionConfig,
                     // which is what fills it in.
                     // 0ce0b5e2: the addin says it too - there the IDE's own Build > Set Clarion Version decides.
-                    var noteSource = _workspace as IVersionNoteSource;
-                    string versionNote = noteSource != null ? noteSource.VersionNote : VersionNoteForAddin(vConfig);
+                    string versionNote = snap.VersionNote;
                     if (!string.IsNullOrEmpty(versionNote))
                         result["versionNote"] = versionNote;
                     string versionWarning = SolutionVersionResolver.ProjectVersionWarning(slnPath, vConfig);
@@ -2356,7 +2360,7 @@ COMMON QUERIES:
                             result["macros"] = vConfig.Macros;
                     }
 
-                    var red = _workspace.RedFile;
+                    var red = snap.Red;
                     if (red != null && red.RedFilePath != null)
                     {
                         result["activeRedFile"] = red.RedFilePath;
@@ -2367,7 +2371,7 @@ COMMON QUERIES:
                         // 5a5581e6: and where templates live. Without it the agent searched drives for a .tpl
                         // and found one of 60 stale copies. The same sections and folder resolve_red_path uses,
                         // anchored too, so the list can be Grepped as is.
-                        var scope = RedScopeFor(new Dictionary<string, object>());
+                        var scope = RedScopeFor(new Dictionary<string, object>(), snap);
                         if (scope.Error == null && scope.Red != null)
                         {
                             var tplPaths = RedResolution.SearchPaths(scope.Red, TemplateExtensions, scope.Sections);
@@ -2467,7 +2471,7 @@ COMMON QUERIES:
                         result["searchedPaths"] = searchPaths;
                         WithAbsolutePaths(result, searchPaths, scope.BaseDir, "searchedAbsolutePaths");
                     }
-                    return WithVersion(result, decision.Resolver == "lsp");
+                    return WithVersion(result, decision.Resolver == "lsp", scope.Snap);
                 }
             });
 
@@ -2543,7 +2547,7 @@ COMMON QUERIES:
                         { "resolver", "redfile" }
                     };
                     scope.Describe(result);
-                    return WithVersion(WithAbsolutePaths(result, paths, scope.BaseDir), false);
+                    return WithVersion(WithAbsolutePaths(result, paths, scope.BaseDir), false, scope.Snap);
                 }
             });
 
@@ -5379,6 +5383,31 @@ IdeOnly = true,
             catch { return ""; }
         }
 
+        /// <summary>
+        /// 9e1bd280 run 1: ONE read of the solution and everything keyed on it, for one call. A workspace that can switch
+        /// under a call (the standalone follows the IDE: ISolutionScopedWorkspace) builds it from one record read; the
+        /// addin's members answer for its own current solution, as they always did, so its scope is just those members.
+        /// <paramref name="withLibraryPaths"/>: the addin computes the index library paths only when asked.
+        /// </summary>
+        private SolutionScope SnapshotSolution(bool withLibraryPaths)
+        {
+            var scoped = _workspace as ISolutionScopedWorkspace;
+            if (scoped != null) return scoped.Snapshot();
+            var cfg = _workspace.CurrentVersionConfig;
+            var info = _workspace as ISolutionSourceInfo;
+            var noteSource = _workspace as IVersionNoteSource;
+            return new SolutionScope
+            {
+                Source = info != null ? info.SolutionSource : null,
+                SolutionPath = _workspace.CurrentSolutionPath,
+                Version = cfg,
+                VersionNote = noteSource != null ? noteSource.VersionNote : VersionNoteForAddin(cfg),
+                Red = _workspace.RedFile,
+                DbPath = _workspace.CurrentDbPath,
+                IndexLibraryPaths = withLibraryPaths ? _workspace.BuildIndexLibraryPaths() : null
+            };
+        }
+
         /// <summary>9e1bd280: after the followed solution switched, say from which and when.</summary>
         private static void AddSwitch(Dictionary<string, object> result, SolutionSourceSnapshot source)
         {
@@ -5428,6 +5457,8 @@ IdeOnly = true,
         private sealed class RedScope
         {
             public RedFileService Red;
+            /// <summary>The solution snapshot this scope was built from: one read per call (9e1bd280 run 1).</summary>
+            public SolutionScope Snap;
             public string BaseDir;
             public string[] Sections;
             public string Configuration;
@@ -5459,8 +5490,18 @@ IdeOnly = true,
         /// </summary>
         private RedScope RedScopeFor(Dictionary<string, object> args)
         {
-            var scope = new RedScope();
-            string sln = _workspace.CurrentSolutionPath;
+            return RedScopeFor(args, SnapshotSolution(false));
+        }
+
+        /// <summary>
+        /// As above for a solution the caller already snapshotted (9e1bd280 run 1): the folder, .red, version and
+        /// configuration all come from <paramref name="snap"/>, read once - never from a second read of the followed
+        /// solution.
+        /// </summary>
+        private RedScope RedScopeFor(Dictionary<string, object> args, SolutionScope snap)
+        {
+            string sln = snap.SolutionPath;
+            var scope = new RedScope { Snap = snap };
             string project = McpJsonRpc.GetString(args, "project_name", "");
             scope.ExplicitProject = !string.IsNullOrEmpty(project);
             string projectNote, projectError;
@@ -5468,7 +5509,7 @@ IdeOnly = true,
             if (projectError != null) { scope.Error = projectError; return scope; }
             scope.ProjectNote = projectNote;
 
-            scope.Red = _workspace.RedFile;
+            scope.Red = snap.Red;
             if (scope.Red != null && scope.BaseDir != null)
                 scope.Red = RedFileService.ForProjectDirectory(scope.BaseDir, scope.Red);
 
@@ -5523,6 +5564,13 @@ IdeOnly = true,
         /// </summary>
         private Dictionary<string, object> WithVersion(Dictionary<string, object> result, bool fromLsp)
         {
+            return WithVersion(result, fromLsp, null);
+        }
+
+        /// <summary>As above; with <paramref name="snap"/>, the version of the solution the call snapshotted (9e1bd280
+        /// run 1), not a re-read one.</summary>
+        private Dictionary<string, object> WithVersion(Dictionary<string, object> result, bool fromLsp, SolutionScope snap)
+        {
             try
             {
                 string name, note, warning;
@@ -5531,6 +5579,12 @@ IdeOnly = true,
                     name = LspService.RunningVersionName;
                     note = LspService.RunningVersionNote;
                     warning = LspService.RunningVersionWarning;
+                }
+                else if (snap != null)
+                {
+                    name = snap.Version != null ? snap.Version.Name : null;
+                    note = snap.VersionNote;
+                    warning = null;   // get_solution_info carries it; not re-read on every lookup
                 }
                 else
                 {
@@ -5631,8 +5685,11 @@ IdeOnly = true,
         private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
         {
             string slnPath = McpJsonRpc.GetString(args, "sln_path");
-            if (string.IsNullOrEmpty(slnPath) && _workspace != null)
-                slnPath = _workspace.CurrentSolutionPath;
+            // 9e1bd280 run 1: ONE read of the solution, its .red and its library paths, taken here - a switch between
+            // this and the set-up below indexed A's db with B's .red and library paths.
+            SolutionScope snap = _workspace != null ? SnapshotSolution(true) : null;
+            if (string.IsNullOrEmpty(slnPath) && snap != null)
+                slnPath = snap.SolutionPath;
             if (string.IsNullOrEmpty(slnPath))
                 return "Error: no solution path provided and no solution is open in the IDE.";
             if (!File.Exists(slnPath))
@@ -5665,10 +5722,22 @@ IdeOnly = true,
                     // PARITY with RunIndex/index_solution: same active .red, same library
                     // paths. This handler used to pass neither, so the same db was more or
                     // less complete depending on which tool indexed last (ticket d1a0aea6).
-                    if (_workspace != null)
+                    // 9e1bd280 run 1: from the snapshot taken at the top of this call. The addin keeps its per-project
+                    // ActiveRedFileService; an explicit sln_path other than the workspace's keeps the old behaviour.
+                    IndexRunGate.PauseBeforeSetUpForTest();
+                    RedFileService red = null;
+                    List<string> libPaths = null;
+                    if (snap != null)
                     {
-                        indexer.RedService = _workspace.ActiveRedFileService;
+                        bool fromSnap = _workspace is ISolutionScopedWorkspace
+                            && SolutionVersionResolver.SamePath(slnPath, snap.SolutionPath);
+                        red = fromSnap ? snap.Red : _workspace.ActiveRedFileService;
+                        libPaths = fromSnap ? snap.IndexLibraryPaths
+                            : (SolutionVersionResolver.SamePath(slnPath, snap.SolutionPath) ? snap.IndexLibraryPaths : _workspace.BuildIndexLibraryPaths());
+                        indexer.RedService = red;
                     }
+                    runLog.WriteLine("Redirection file: " + (red != null && red.RedFilePath != null ? red.RedFilePath : "(none)")
+                        + " (for " + slnPath + ")");
                     indexer.OnProgress += msg => runLog.WriteLine(msg);
                     if (onProgress != null)
                     {
@@ -5677,8 +5746,7 @@ IdeOnly = true,
                             DescribeIndexEvent(ev));
                     }
 
-                    var result = indexer.IndexSolution(slnPath, incremental,
-                        _workspace != null ? _workspace.BuildIndexLibraryPaths() : null);
+                    var result = indexer.IndexSolution(slnPath, incremental, libPaths);
 
                     return string.Format(
                         "CodeGraph indexed successfully:\n" +
@@ -5690,13 +5758,15 @@ IdeOnly = true,
                         "  Duration: {5}ms\n" +
                         "  Database: {6}\n" +
                         "  Mode: {7}\n" +
+                        "  Redirection: {9}\n" +
                         "  Log: {8}",
                         Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
                         result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
                         incremental ? "incremental" : "full",
                         // LogPath is null when the log could not be opened (e.g. another index
                         // run holds the per-solution file) — say so instead of a bare "Log: ".
-                        runLog.LogPath ?? "(no log written — another index run may hold the log file)");
+                        runLog.LogPath ?? "(no log written — another index run may hold the log file)",
+                        red != null && red.RedFilePath != null ? red.RedFilePath : "(none)");
                 }
                 finally
                 {
