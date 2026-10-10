@@ -94,6 +94,26 @@ foldsAre('unterminated OMIT folds to end of buffer', [
     '  anything',
 ], ['2-3']);
 
+// GH #264: the fold reads directives through the same parseOmitDirective / lineHasOmitTerminator as
+// the omitted-code dimming, so it follows the compiler — a CASE-SENSITIVE terminator (verified on the
+// Clarion 12 compiler), with a '' inside the quoted terminator meaning one quote.
+foldsAre('terminator is case-sensitive, as the compiler reads it (GH #264)', [
+    "OMIT('ENDX')",
+    '! endx is not the terminator',
+    '  anything',
+    '! ENDX',
+], ['1-4']);
+foldsAre("a '' in the terminator is one quote, not the end of it (GH #264)", [
+    "OMIT('A''B')",
+    '  x = 1  ! A',
+    "! A'B",
+], ['1-3']);
+foldsAre('a mixed-case terminator keeps its case (GH #264)', [
+    "OMIT('EndX')",
+    '! ENDX is not it',
+    '! EndX',
+], ['1-3']);
+
 // ---- one-liner IF (offsets must index the blanked line, not the raw one) ----
 console.log('\nOne-line IF detection with strings present:');
 foldsAre('one-line IF with a string is not a fold', [
