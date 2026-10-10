@@ -257,6 +257,9 @@ namespace ClarionAssistant.Services
                 int endOffset = GetOffset(document, endLine - 1, endCol);
                 if (startOffset < 0 || endOffset < 0)
                     return InsertResult.Failed("Invalid line/column range");
+                // GH #262: a reversed range is the same range (as the CA Editor treats it). A negative length threw
+                // inside Document.Replace AFTER DocumentAboutToBeChanged had fired.
+                if (endOffset < startOffset) { int swap = startOffset; startOffset = endOffset; endOffset = swap; }
 
                 int length = endOffset - startOffset;
                 int caretOffset;
@@ -396,7 +399,7 @@ namespace ClarionAssistant.Services
                     if (paramTypes.Length == 2)
                     {
                         // GH #262: the clamped columns behind the offsets above (the rule the CA Editor uses), not
-                        // the raw ones: end_col 999 or start_col 0 would otherwise reach the selection unclamped.
+                        // the raw ones: the omitted end_col (int.MaxValue) or start_col 0 would otherwise reach the selection unclamped.
                         var locType = paramTypes[0].ParameterType;
                         var startLoc = Activator.CreateInstance(locType, new object[] { startOffset - LineOffset(document, startLine - 1), startLine - 1 });
                         var endLoc = Activator.CreateInstance(locType, new object[] { endOffset - LineOffset(document, endLine - 1), endLine - 1 });
@@ -423,36 +426,36 @@ namespace ClarionAssistant.Services
         /// EditorTextOps.ColumnIndex (GH #262: the CA Editor's rule, so a column below 1 no longer reaches back
         /// into the previous line's break).
         /// </summary>
-        private int GetOffset(object document, int line, int col)
+        private int GetOffset(object document, int line0, int col1)
         {
             try
             {
-                // Try GetLineSegment(line).Offset + col
+                // Try GetLineSegment(line0).Offset + the clamped column
                 var getLineMethod = document.GetType().GetMethod("GetLineSegment",
                     new[] { typeof(int) });
                 if (getLineMethod != null)
                 {
-                    var segment = getLineMethod.Invoke(document, new object[] { line });
+                    var segment = getLineMethod.Invoke(document, new object[] { line0 });
                     if (segment != null)
                     {
                         int lineOffset = (int)GetProperty(segment, "Offset");
                         int lineLength = (int)GetProperty(segment, "Length");
-                        return lineOffset + EditorTextOps.ColumnIndex(col, lineLength);
+                        return lineOffset + EditorTextOps.ColumnIndex(col1, lineLength);
                     }
                 }
 
                 // Fallback: calculate from text
                 string text = (GetProperty(document, "TextContent") ?? GetProperty(document, "Text")) as string;
                 if (text == null) return -1;
-                return line < 0 ? -1 : EditorTextOps.Offset(text, line + 1, col);
+                return line0 < 0 ? -1 : EditorTextOps.Offset(text, line0 + 1, col1);
             }
             catch { return -1; }
         }
 
         /// <summary>Offset where a 0-based line starts (column 1 of it).</summary>
-        private int LineOffset(object document, int line)
+        private int LineOffset(object document, int line0)
         {
-            return GetOffset(document, line, 1);
+            return GetOffset(document, line0, 1);
         }
 
         /// <summary>

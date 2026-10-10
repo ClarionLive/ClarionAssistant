@@ -19,8 +19,8 @@ You have MCP tools that directly control the IDE the developer is using. ALWAYS 
 - `insert_text_at_cursor` -Insert text at the current cursor position in the editor
 - `replace_text` -Find and replace ALL occurrences of a string in the active editor. Best for simple text substitutions.
 - `replace_range` -Replace text between specific line/column positions (1-based). Best for replacing a specific block of code. Columns count characters (a tab is 1); `end_col` is EXCLUSIVE (the character at it is kept), and omitting it replaces to the end of `end_line`. Whole lines N–M: `start_line=N`, `end_line=M`, omit both columns, and do not end `new_text` with a line break.
-- `select_range` -Select/highlight a range of text in the editor (1-based line/col).
-- `delete_range` -Delete text between specific line/column positions (1-based). Same column rules as `replace_range`.
+- `select_range` -Select/highlight a range of text in the editor (1-based line/col). Same column rules as `replace_range` (the character at `end_col` is not selected).
+- `delete_range` -Delete text between specific line/column positions (1-based). Same column rules as `replace_range`. Whole lines N–M with their line breaks: `start_line=N`, `start_col=1`, `end_line=M+1`, `end_col=1`. If M is the last line: `start_line=N-1` with `start_col` past its end, `end_line=M`, `end_col` omitted. Whole document: `start_line=1`, `end_line`=last, columns omitted.
 - `undo` -Undo the last edit. Use after a bad edit to revert.
 - `redo` -Redo the last undone edit.
 - `save_file` -Save the active file. Use after making edits.

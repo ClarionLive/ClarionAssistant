@@ -133,6 +133,7 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static int ColumnIndex(int col, int lineLength)
         {
+            if (col <= 1) return 0;   // before the subtraction: int.MinValue - 1 wraps to int.MaxValue (the line's END)
             return Math.Max(0, Math.Min(col - 1, lineLength));
         }
 
