@@ -363,6 +363,85 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string ReadActiveVersion(string prefsDir, string solutionPath, out string file, out string note)
         {
+            return Read(prefsDir, solutionPath, c => c.ActiveVersion, out file, out note);
+        }
+
+        /// <summary>
+        /// 5a5581e6: the build configuration the IDE saved for <paramref name="solutionPath"/> - ActiveConfiguration
+        /// ("Debug", "Release", ...) with its ActivePlatform ("Win32") - chosen from the same file, by the same rules,
+        /// as <see cref="ReadActiveVersion"/>. Null when there is none.
+        /// </summary>
+        public static string ReadActiveConfiguration(string prefsDir, string solutionPath, out string platform, out string file, out string note)
+        {
+            platform = null;
+            string config = Read(prefsDir, solutionPath, c => c.ActiveConfiguration, out file, out note);
+            if (config != null && file != null)
+            {
+                var c = ReadCandidate(file, "");
+                if (c != null) platform = c.ActivePlatform;
+            }
+            return config;
+        }
+
+        /// <summary>
+        /// 5a5581e6 run 2: the build configuration for <paramref name="solutionPath"/>, most live source first: the IDE
+        /// in this process (<paramref name="inProcess"/>, the addin), then the IDE's published record
+        /// (<paramref name="record"/>, the standalone), each only when it is about THIS solution; then the saved
+        /// preferences in <paramref name="configDirs"/>, noted as saved state. Null, with the reason, when none says.
+        /// </summary>
+        public static string ResolveBuildConfiguration(string solutionPath, IdeSolutionRecord.BuildConfiguration inProcess,
+                                                       IdeSolutionRecord.Details record, IEnumerable<string> configDirs,
+                                                       out string platform, out string note)
+        {
+            platform = null;
+            note = null;
+            if (string.IsNullOrEmpty(solutionPath))
+            {
+                note = "no solution: the build configuration is unknown";
+                return null;
+            }
+            if (inProcess != null && !string.IsNullOrEmpty(inProcess.Configuration)
+                && SolutionVersionResolver.SamePath(inProcess.Solution, solutionPath))
+            {
+                platform = inProcess.Platform;
+                note = Describe(inProcess.Configuration, platform, "live from the IDE");
+                return inProcess.Configuration;
+            }
+            if (record != null && !string.IsNullOrEmpty(record.BuildConfiguration)
+                && SolutionVersionResolver.SamePath(record.Solution, solutionPath))
+            {
+                platform = record.BuildPlatform;
+                note = Describe(record.BuildConfiguration, platform, "live from the IDE (pid " + record.Pid + ")");
+                return record.BuildConfiguration;
+            }
+            string why = null;
+            if (configDirs != null)
+                foreach (string dir in configDirs)
+                {
+                    if (string.IsNullOrEmpty(dir)) continue;
+                    string file, prefsNote;
+                    string config = ReadActiveConfiguration(Path.Combine(dir, "preferences"), solutionPath, out platform, out file, out prefsNote);
+                    if (config != null)
+                    {
+                        note = Describe(config, platform, "SAVED state, the IDE's preferences\\" + Path.GetFileName(file)
+                            + (prefsNote != null ? "; " + prefsNote : "") + " - a switch made since it was saved is not seen");
+                        return config;
+                    }
+                    if (prefsNote != null) why = prefsNote;
+                }
+            platform = null;
+            note = "the IDE's build configuration for this solution is unknown (" + (why ?? "no live IDE record and no preferences file for it") + ")";
+            return null;
+        }
+
+        private static string Describe(string config, string platform, string source)
+        {
+            return "configuration '" + config + "'" + (string.IsNullOrEmpty(platform) ? "" : " (" + platform + ")") + " [" + source + "]";
+        }
+
+        private static string Read(string prefsDir, string solutionPath, Func<Candidate, string> valueOf,
+                                   out string file, out string note)
+        {
             file = null;
             note = null;
             try
@@ -382,19 +461,34 @@ namespace ClarionAssistant.Services
                 }
                 if (candidates.Count == 0) return null;
 
-                if (candidates.Count == 1)
-                    return Take(candidates[0], out file);
-
-                // Several files for one solution NAME (other folders' solutions of the same name). When they all say
-                // the same thing, which one is ours does not matter.
-                var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var c in candidates) distinct.Add(c.ActiveVersion ?? "");
-                if (distinct.Count == 1)
+                // 5a5581e6 pipeline runs 2-3: EVERY candidate must prove it is this solution's - the IDE's name hash
+                // (how the IDE itself picks the file) or a recorded path under the solution's folder - however many
+                // there are. Same-named files that merely agree may all be other folders' solutions of that name.
+                string ownHash = HashSuffix(solutionPath);
+                string ownDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath)).TrimEnd('\\') + "\\";
+                var owned = candidates.FindAll(c => c.MentionsFolder(ownDir)
+                    || (ownHash != null && string.Equals(c.Suffix.TrimStart('0'), ownHash.TrimStart('0'), StringComparison.OrdinalIgnoreCase)));
+                if (owned.Count == 0)
                 {
-                    note = candidates.Count + " preference files for " + slnName + ", all saying the same";
-                    return Take(candidates[0], out file);
+                    var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var c in candidates) values.Add(valueOf(c) ?? "");
+                    note = (candidates.Count == 1
+                            ? "the only preference file for " + slnName + " (" + Path.GetFileName(candidates[0].Path) + ")"
+                            : candidates.Count + " preference files for " + slnName + (values.Count == 1 ? " (all saying the same)" : ""))
+                        + (candidates.Count == 1 ? ": it records no path" : ": none records a path") + " under this solution's folder"
+                        + (ownHash != null ? (candidates.Count == 1 ? " nor carries" : " or carries") + " its name hash (" + ownHash + ")" : "")
+                        + ", so " + (candidates.Count == 1 ? "it may be another folder's " : "they may be other folders' ") + slnName + " - none was used";
+                    return null;
                 }
-
+                if (owned.Count == 1)
+                {
+                    if (candidates.Count > 1)
+                        note = "chosen among " + candidates.Count + " preference files for " + slnName
+                            + (owned[0].MentionsFolder(ownDir) ? " by the paths it records" : " by the IDE's name hash");
+                    return Take(owned[0], valueOf, out file);
+                }
+                // Several OWNED files (a recorded path in one, the hash in another): the rules below choose.
+                candidates = owned;
                 string hash = HashSuffix(solutionPath);
                 Candidate byHash = hash == null ? null
                     : candidates.Find(c => string.Equals(c.Suffix.TrimStart('0'), hash.TrimStart('0'), StringComparison.OrdinalIgnoreCase));
@@ -409,19 +503,28 @@ namespace ClarionAssistant.Services
                         + " by the paths it records";
                     if (byHash != null && !ReferenceEquals(byHash, pick))
                         note += "; NOTE the name hash points at " + Path.GetFileName(byHash.Path) + " instead";
-                    return Take(pick, out file);
+                    return Take(pick, valueOf, out file);
                 }
 
                 if (byHash != null)
                 {
                     note = "chosen among " + candidates.Count + " preference files for " + slnName
                         + " by the IDE's name hash (their contents do not say which solution they belong to)";
-                    return Take(byHash, out file);
+                    return Take(byHash, valueOf, out file);
+                }
+
+                // Several owned files that say the same: which one does not matter.
+                var ownedValues = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var c in candidates) ownedValues.Add(valueOf(c) ?? "");
+                if (ownedValues.Count == 1)
+                {
+                    note = candidates.Count + " preference files for " + slnName + " prove they are this solution's, all saying the same";
+                    return Take(candidates[0], valueOf, out file);
                 }
 
                 note = "the IDE has " + candidates.Count + " preference files for " + slnName + " ("
                     + string.Join(", ", candidates.ConvertAll(c => Path.GetFileName(c.Path) + "='"
-                        + (c.ActiveVersion ?? "") + "'").ToArray())
+                        + (valueOf(c) ?? "") + "'").ToArray())
                     + ") that disagree, and nothing says which is this solution's, so none was used";
                 return null;
             }
@@ -443,10 +546,10 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        private static string Take(Candidate c, out string file)
+        private static string Take(Candidate c, Func<Candidate, string> valueOf, out string file)
         {
             file = c.Path;
-            return c.ActiveVersion;
+            return valueOf(c);
         }
 
         private sealed class Candidate
@@ -454,6 +557,8 @@ namespace ClarionAssistant.Services
             public string Path;
             public string Suffix;
             public string ActiveVersion;
+            public string ActiveConfiguration;
+            public string ActivePlatform;
             public List<string> Paths = new List<string>();
 
             public bool MentionsFolder(string folderWithSlash)
@@ -464,6 +569,14 @@ namespace ClarionAssistant.Services
             }
         }
 
+        private static string ValueOf(XmlDocument doc, string element)
+        {
+            var e = doc.SelectSingleNode("/Properties/" + element) as XmlElement;
+            if (e == null) return null;
+            string v = e.GetAttribute("value");
+            return string.IsNullOrEmpty(v) ? null : v.Trim();
+        }
+
         private static Candidate ReadCandidate(string file, string suffix)
         {
             try
@@ -471,12 +584,9 @@ namespace ClarionAssistant.Services
                 var doc = new XmlDocument();
                 doc.Load(file);   // honours the BOM the IDE writes
                 var c = new Candidate { Path = file, Suffix = suffix };
-                var av = doc.SelectSingleNode("/Properties/ActiveVersion") as XmlElement;
-                if (av != null)
-                {
-                    string v = av.GetAttribute("value");
-                    c.ActiveVersion = string.IsNullOrEmpty(v) ? null : v.Trim();
-                }
+                c.ActiveVersion = ValueOf(doc, "ActiveVersion");
+                c.ActiveConfiguration = ValueOf(doc, "ActiveConfiguration");   // 5a5581e6
+                c.ActivePlatform = ValueOf(doc, "ActivePlatform");
                 foreach (XmlNode n in doc.SelectNodes("//@value"))
                 {
                     string v = n.Value;

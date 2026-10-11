@@ -77,6 +77,32 @@ namespace ClarionAssistant.Services
             return agentName + " · " + context;
         }
 
+        /// <summary>
+        /// The tab's new context name when the IDE switched to <paramref name="newSolutionPath"/>, or null when the
+        /// tab does not follow (ticket 9e1bd280).
+        ///
+        /// WHY: every tool in a tab answers for the solution open in the IDE now, so a tab opened on v61POSitive
+        /// that kept saying "CA1 · v61POSitive" after the IDE opened UltimateSQLTest named a solution none of its
+        /// tools served. A tab follows when it was opened ON a solution - its context is still that solution's name
+        /// (<paramref name="tabSolutionPath"/>). A tab opened on a project or class, or a plain "Terminal N", keeps
+        /// its name: that context is not the solution. Only the context moves; the agent name (CA1) is the tab's
+        /// MultiTerminal identity and never changes here.
+        /// </summary>
+        public static string FollowedContextName(string contextName, string tabSolutionPath, string newSolutionPath)
+        {
+            if (string.IsNullOrEmpty(tabSolutionPath) || string.IsNullOrEmpty(newSolutionPath)) return null;
+            string oldName, newName;
+            try
+            {
+                oldName = System.IO.Path.GetFileNameWithoutExtension(tabSolutionPath);
+                newName = System.IO.Path.GetFileNameWithoutExtension(newSolutionPath);
+            }
+            catch { return null; }
+            if (string.IsNullOrEmpty(newName)) return null;
+            if (!string.Equals((contextName ?? "").Trim(), oldName, StringComparison.OrdinalIgnoreCase)) return null;
+            return newName;
+        }
+
         private const string ExitTitlePrefix = "ca-assistant-exited:";
         private const string RunningTitle = "Clarion Assistant";
 

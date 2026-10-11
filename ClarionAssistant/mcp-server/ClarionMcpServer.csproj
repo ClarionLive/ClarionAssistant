@@ -140,6 +140,7 @@
     <Compile Include="..\CodeGraph\Parsing\Models\ParseResult.cs"><Link>Parsing\Models\ParseResult.cs</Link></Compile>
     <!-- IDE-free Services the shared layer needs (same four the indexer links) -->
     <Compile Include="..\Services\RedFileService.cs"><Link>Services\RedFileService.cs</Link></Compile>
+    <Compile Include="..\Services\RedResolution.cs"><Link>Services\RedResolution.cs</Link></Compile>
     <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
     <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
     <Compile Include="..\Services\EffectiveClarionVersion.cs"><Link>Services\EffectiveClarionVersion.cs</Link></Compile>
@@ -197,6 +198,7 @@
     <Compile Include="..\Services\LspService.cs"><Link>Services\LspService.cs</Link></Compile>
     <Compile Include="..\Services\LspStartResult.cs"><Link>Services\LspStartResult.cs</Link></Compile>
     <Compile Include="..\Services\IdeSolutionRecord.cs"><Link>Services\IdeSolutionRecord.cs</Link></Compile>
+    <Compile Include="..\Services\SolutionFollower.cs"><Link>Services\SolutionFollower.cs</Link></Compile>
     <Compile Include="..\Services\IdeEndpointRecord.cs"><Link>Services\IdeEndpointRecord.cs</Link></Compile>
     <Compile Include="..\Services\IdeLiveTextClient.cs"><Link>Services\IdeLiveTextClient.cs</Link></Compile>
     <Compile Include="..\Services\EditorToolRouter.cs"><Link>Services\EditorToolRouter.cs</Link></Compile>

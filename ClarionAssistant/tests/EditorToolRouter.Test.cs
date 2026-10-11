@@ -156,8 +156,87 @@ static class EditorToolRouterTest
         return r.Run(tool, () => Native(tool), ov);
     }
 
+    // GH #262: the column rules replace_range / delete_range / select_range document, as EditorTextOps computes them for
+    // both editors, and the native caret after a replace_range whose new_text has LF-only line breaks.
+    static void ColumnRules()
+    {
+        Console.WriteLine("\nGH #262: range column rules (both editors) and the native caret after replace_range");
+        Check("end_col is exclusive: col L+1 is the end of a line of length L", EditorTextOps.ColumnIndex(6, 5) == 5 && EditorTextOps.ColumnIndex(5, 5) == 4);
+        Check("a column past the end clamps to the end (e.g. 999)", EditorTextOps.ColumnIndex(999, 5) == 5);
+        Check("a column below 1 clamps to the line's start", EditorTextOps.ColumnIndex(0, 5) == 0 && EditorTextOps.ColumnIndex(-3, 5) == 0);
+        Check("int.MinValue clamps to the start, not (wrapped) to the end", EditorTextOps.ColumnIndex(int.MinValue, 5) == 0, EditorTextOps.ColumnIndex(int.MinValue, 5).ToString());
+        Check("int.MaxValue (the omitted end_col) is the end of the line", EditorTextOps.ColumnIndex(int.MaxValue, 5) == 5);
+        string t = "\tab\r\nxy\r\n";
+        Check("columns count characters: a tab is 1", EditorTextOps.Offset(t, 1, 2) == 1 && t[EditorTextOps.Offset(t, 1, 2)] == 'a');
+        Check("end of a CRLF line stops before its \\r", EditorTextOps.Offset(t, 1, 999) == 3);
+        Check("a column below 1 never reaches the previous line's break", EditorTextOps.Offset(t, 2, 0) == 5);
+
+        // The reporter's case: an end_col one short leaves the last character behind.
+        string line = "  Resize:LockSize )";
+        int L = line.Length;
+        string shortEnd = line.Substring(0, EditorTextOps.Offset(line, 1, 3)) + "X" + line.Substring(EditorTextOps.Offset(line, 1, L));
+        string fullEnd = line.Substring(0, EditorTextOps.Offset(line, 1, 3)) + "X" + line.Substring(EditorTextOps.Offset(line, 1, L + 1));
+        Check("end_col = L keeps the last character; L+1 replaces it", shortEnd == "  X)" && fullEnd == "  X", shortEnd + " | " + fullEnd);
+
+        // Whole lines N-M: start_col 1, end_col omitted (999), new_text without a trailing break: line M's break survives.
+        string doc = "a\r\nb\r\nc\r\nd\r\n";
+        int s = EditorTextOps.Offset(doc, 2, 1), e = EditorTextOps.Offset(doc, 3, 999);
+        string whole = doc.Substring(0, s) + "X" + doc.Substring(e);
+        Check("whole lines 2-3 (cols omitted) become one line; the break after line 3 is kept", whole == "a\r\nX\r\nd\r\n", whole.Replace("\r\n", "|"));
+
+        int caret;
+        string inserted = EditorTextOps.ReplacementText("a\nb\nc", 10, out caret);
+        Check("native replace_range inserts the CRLF-normalized text", inserted == "a\r\nb\r\nc", inserted.Replace("\r\n", "|"));
+        Check("...and the caret lands after it (not one short per LF)", caret == 10 + inserted.Length, "caret " + caret + ", expected " + (10 + inserted.Length));
+        inserted = EditorTextOps.ReplacementText(null, 4, out caret);
+        Check("...a null new_text inserts nothing, caret at the start", inserted == "" && caret == 4);
+    }
+
+    // GH #262 on the CA Editor path: the extreme columns and the delete_range recipes the tool description gives, each
+    // on a fresh page. Max is the omitted end_col (McpToolRegistry's default).
+    static void RangeRecipes(EditorToolRouter router, FakeUi ui, string path)
+    {
+        Console.WriteLine("\nGH #262: extreme columns and the delete_range recipes, in the CA Editor");
+        const int Max = int.MaxValue;
+        Func<string, string, Func<OverlayEditorOps, object>, string> on = (seed, tool, op) =>
+        {
+            var p = new FakePage { Path = path, Text = seed, UiThreadId = ui.Thread.ManagedThreadId };
+            EditorToolRouter.ActiveOverlayResolver = () => p;
+            var r = router.Run(tool, () => Native(tool), op) as string;
+            return r != null && r.StartsWith("Error") ? r : p.Text;
+        };
+        Func<string, string> show = s => s.Replace("\r\n", "|");
+
+        string longLine = new string('x', 1200) + "END";
+        string t = on(longLine + "\r\nnext", "replace_range", ov => ov.ReplaceRange(1, 1, 1, Max, "Z"));
+        Check("omitted end_col (int.MaxValue) replaces a 1,203-character line to its end", t == "Z\r\nnext", show(t).Length > 60 ? show(t).Substring(0, 60) + "..." : show(t));
+        t = on(longLine + "\r\nnext", "replace_range", ov => ov.ReplaceRange(1, 1, 1, 999, "Z"));
+        Check("...(control: the old default 999 left the tail behind)", t.StartsWith("Z" + new string('x', 202) + "END"), show(t).Substring(0, Math.Min(40, t.Length)));
+        t = on("abc\r\n", "replace_range", ov => ov.ReplaceRange(1, int.MinValue, 1, int.MinValue, "X"));
+        Check("start_col/end_col int.MinValue insert at the line's start", t == "Xabc\r\n", show(t));
+
+        const string four = "l1\r\nl2\r\nl3\r\nl4";
+        t = on(four, "delete_range", ov => ov.DeleteRange(1, 1, 3, 1));
+        Check("delete lines 1-2 (start_line=1, end_line=3, end_col=1)", t == "l3\r\nl4", show(t));
+        t = on(four, "delete_range", ov => ov.DeleteRange(2, 1, 4, 1));
+        Check("delete lines 2-3 (a middle range)", t == "l1\r\nl4", show(t));
+        t = on(four, "delete_range", ov => ov.DeleteRange(4, 1, 5, 1));
+        Check("the M+1 recipe on the last line is refused (no line M+1)", t == "Error: Invalid line/column range", show(t));
+        t = on(four, "delete_range", ov => ov.DeleteRange(3, Max, 4, Max));
+        Check("delete the last line (start_line=N-1 past its end, end_line=M, end_col omitted)", t == "l1\r\nl2\r\nl3", show(t));
+        t = on(four, "delete_range", ov => ov.DeleteRange(2, Max, 4, Max));
+        Check("delete the last two lines the same way", t == "l1\r\nl2", show(t));
+        t = on(four, "delete_range", ov => ov.DeleteRange(1, 1, 4, Max));
+        Check("empty the whole document (start_line=1, end_line=last, columns omitted)", t == "", show(t));
+        t = on("only", "delete_range", ov => ov.DeleteRange(1, 1, 1, Max));
+        Check("delete the only line", t == "", show(t));
+        t = on("a\r\nb\r\n", "delete_range", ov => ov.DeleteRange(2, Max, 3, Max));
+        Check("delete an empty last line", t == "a\r\nb", show(t));
+    }
+
     static int Main()
     {
+        ColumnRules();
         var ui = new FakeUi();
         EditorToolRouter.UiThreadId = ui.Thread.ManagedThreadId;
         var router = new EditorToolRouter(() => ui);
@@ -165,9 +244,11 @@ static class EditorToolRouterTest
         string seed = "  MEMBER('app')\r\nP PROCEDURE\r\n  CODE\r\n  x = 1\r\n  y = 2\r\n";
         File.WriteAllText(tmp, seed);
         var page = new FakePage { Path = tmp, Text = seed, UiThreadId = ui.Thread.ManagedThreadId, CurLine = 4, CurCol = 3 };
-        EditorToolRouter.ActiveOverlayResolver = () => page;
         try
         {
+            RangeRecipes(router, ui, tmp);
+            EditorToolRouter.ActiveOverlayResolver = () => page;
+
             Console.WriteLine("\nWith a CA Editor up: writes land in Monaco's text, reads come from it, native untouched");
             NativeCalls = 0;
             var r = Run(router, "insert_text_at_cursor", ov => ov.InsertTextAtCursor("IF x = "));

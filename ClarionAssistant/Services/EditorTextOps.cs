@@ -115,15 +115,38 @@ namespace ClarionAssistant.Services
             return start < end ? text.Substring(start, end - start) : null;
         }
 
-        /// <summary>Offset of a 1-based line/column, the column clamped to the line's length (EditorService.GetOffset);
-        /// -1 when the line does not exist.</summary>
+        /// <summary>Offset of a 1-based line/column, the column clamped by <see cref="ColumnIndex"/> (as
+        /// EditorService.GetOffset); -1 when the line does not exist.</summary>
         public static int Offset(string text, int line, int col)
         {
             var starts = LineStarts(text);
             if (line < 1 || line > starts.Count) return -1;
             string lineText = LineText(text, line) ?? "";
-            int c = Math.Max(0, Math.Min(col - 1, lineText.Length));
-            return starts[line - 1] + c;
+            return starts[line - 1] + ColumnIndex(col, lineText.Length);
+        }
+
+        /// <summary>
+        /// GH #262: the column rule of replace_range / delete_range / select_range, on both paths. A 1-based column
+        /// counts characters (a tab is 1) and names the gap BEFORE that character, so a range's end column is
+        /// exclusive; it is clamped to [1, line length + 1], so a column past the end means the end of the line (never
+        /// its line break) and one below 1 means its start. Returns the 0-based index into the line.
+        /// </summary>
+        public static int ColumnIndex(int col, int lineLength)
+        {
+            if (col <= 1) return 0;   // before the subtraction: int.MinValue - 1 wraps to int.MaxValue (the line's END)
+            return Math.Max(0, Math.Min(col - 1, lineLength));
+        }
+
+        /// <summary>
+        /// GH #262: the text replace_range inserts natively (CRLF-normalized) and the caret offset just after it. The
+        /// caret is measured on the NORMALIZED text: measured on the caller's, an LF-only new_text left the caret one
+        /// character short per line break.
+        /// </summary>
+        public static string ReplacementText(string newText, int startOffset, out int caretOffset)
+        {
+            string inserted = NormalizeCrLf(newText ?? "");
+            caretOffset = startOffset + inserted.Length;
+            return inserted;
         }
 
         /// <summary>1-based [line, column] of an offset.</summary>

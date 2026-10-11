@@ -15,6 +15,15 @@ You are an expert Clarion language programmer. This file holds the most critical
 
 **Gotcha (verified on Clarion 12):** neither write path produces CRLF for you. `mcp__clarion-assistant__write_file` does NOT interpret escape sequences (`\r\n` lands on disk as four literal characters), and Claude Code's built-in `Write` tool emits **LF only** on Windows. LF-only files do not compile: the whole file is reported as line 1 with a huge column number, `Illegal character` at every line break, and `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP`. After writing any of these files, convert LF to CRLF (`unix2dos`, or read the text, replace LF with CRLF and write it back) before compiling. `write_embed_content` is safe — the embeditor converts LF to CRLF.
 
+## Finding Clarion Files (ALWAYS)
+
+**ALWAYS find Clarion files through the active .red** (`resolve_red_path`; `get_red_search_paths` to search inside them). Never use a path from memory or an earlier answer, and never search drives: files move, and the .red is the only source of truth.
+
+- The build's Clarion comes from `get_solution_info` (`versionName`, `clarionRoot`, `activeRedFile`) — not from memory or the IDE's install folder; Build > Set Clarion Version can point the solution at a different Clarion.
+- `resolve_red_path` finds ANY file the compiler or template engine would: `.tpl`, `.tpw`, `.inc`, `.clw`, `.equ`, `.trn`, `.lib`, `.dll`, `.ico`, ...
+- To search inside them (e.g. which template writes X), Grep only `get_red_search_paths`'s `absoluteSearchPaths` for that extension, in order — earlier folders take precedence. Stale copies elsewhere on disk give wrong answers.
+- In a multi-project solution pass `project_name`. An answer with `alsoFoundIn` means the file also resolves under another build configuration's section: say which one you used.
+
 ## Top Critical Syntax Rules
 
 1. **Strings use single quotes** (`'Hello'`); embedded quote is doubled (`'Don''t'`). Never double quotes. Comments start with `!`. Concatenate with `&`.

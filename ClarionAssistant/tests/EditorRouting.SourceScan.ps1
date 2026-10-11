@@ -99,6 +99,37 @@ Check ($tabHas.Contains('if (inst._editor != null) return true;') -and
 Check ($prov.Contains('MonacoClarionEditor.IsOpenInNativeEditor(path)') -and $prov.Contains('open in the native Clarion editor') -and
        $prov.Contains('not visible to the tool')) 'get_live_text says a native-mode tab''s unsaved edits are not visible'
 
+# GH #262: the native range tools use the shared column rule and put the caret after the text actually inserted (its
+# CRLF-normalized form; EditorToolRouter.Test checks the helpers themselves).
+$rr = $svc.IndexOf('public InsertResult ReplaceRange(')
+$rrBody = if ($rr -ge 0) { $svc.Substring($rr, [Math]::Min(3000, $svc.Length - $rr)) } else { '' }
+Check ($rrBody.Contains('EditorTextOps.ReplacementText(newText, startOffset, out caretOffset)') -and
+       $rrBody.Contains('SetProperty(caret, "Offset", caretOffset)') -and -not $rrBody.Contains('(newText ?? "").Length')) `
+    'replace_range (native) sets the caret from the inserted, CRLF-normalized text'
+Check ($svc.Contains('return lineOffset + EditorTextOps.ColumnIndex(col1, lineLength);')) `
+    'the native range tools clamp columns by EditorTextOps.ColumnIndex (the CA Editor''s rule)'
+# A reversed range is swapped before Document.Replace (a negative length threw after DocumentAboutToBeChanged).
+$swap = $rrBody.IndexOf('if (endOffset < startOffset) { int swap = startOffset; startOffset = endOffset; endOffset = swap; }')
+Check ($swap -ge 0 -and $swap -lt $rrBody.IndexOf('int length = endOffset - startOffset;')) `
+    'replace_range / delete_range (native) swap a reversed range before computing its length'
+$rangeRules = $src.Contains('end_col is EXCLUSIVE')
+foreach ($t in @('replace_range', 'delete_range', 'select_range')) {
+    $b = Block $t
+    Check ($rangeRules -and $null -ne $b -and $b.Contains('RangeColumnRules') -and $b.Contains('{ "end_col", RangeEndColHelp }')) `
+        "$t documents its column rules (end_col exclusive)"
+    # An omitted end_col is "the end of end_line" for ANY line: 999 left everything past column 998 behind.
+    Check ($null -ne $b -and $b.Contains('McpJsonRpc.GetInt(args, "end_col", int.MaxValue)') -and -not $b.Contains('"end_col", 999')) `
+        "$t defaults an omitted end_col to int.MaxValue (the end of a line of any length)"
+}
+$del = Block 'delete_range'
+Check ($null -ne $del -and $del.Contains('If M is the last line') -and $del.Contains('To empty the whole document')) `
+    'delete_range documents the last-line and whole-document recipes'
+# ...and the bundled prompt says the same (Check-PromptSync keeps .claude\CLAUDE.md equal to it).
+$promptPath = Join-Path $Root 'Terminal\clarion-assistant-prompt.md'
+$prompt = if (Test-Path $promptPath) { [System.IO.File]::ReadAllText($promptPath) } else { '' }
+Check ($prompt -match '(?m)^- `replace_range`.*`end_col` is EXCLUSIVE' -and $prompt -match '(?m)^- `select_range`.*not selected' -and
+       $prompt -match '(?m)^- `delete_range`.*If M is the last line') 'the bundled prompt gives the range tools'' column rules and delete recipes'
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host "PASS - $pass checks" -ForegroundColor Green; exit 0 }
 Write-Host "FAIL - $fail of $($pass + $fail) checks" -ForegroundColor Red

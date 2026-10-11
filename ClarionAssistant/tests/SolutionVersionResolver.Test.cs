@@ -60,6 +60,8 @@ static class SolutionVersionResolverTest
 
     static int Main()
     {
+        // 9e1bd280 run 1: a record now names its writer, which must be a Clarion IDE; THIS process plays the IDE.
+        Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-solver-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(root);
         try
@@ -114,7 +116,11 @@ static class SolutionVersionResolverTest
             Check(r.Config == null && r.Note.Contains("'Clarion 99'"), "an unmatched pin STOPS, it does not fall through", r.Note);
 
             Console.WriteLine("-- live vs saved");
-            WritePrefs(prefs, "v61POSitive.sln.4a0d30a2.xml", other.Name, null);
+            // Fixtures prove ownership the way real files do (5a5581e6 run 3): named by the IDE's hash of the solution
+            // path. Real files record no paths (OpenFiles is empty); one recorded-path case is kept below.
+            string ownFile = "v61POSitive.sln." + IdeSolutionPreferences.HashSuffix(sln) + ".xml";
+            // A lone file must prove it is this solution's (5a5581e6 run 2): the IDE's name hash.
+            WritePrefs(prefs, ownFile, other.Name, null);
             var i5 = baseInputs(); i5.IdeRecord = live(c10.Name);
             r = SolutionVersionResolver.Resolve(i5);
             Check(r.Config == c10 && r.Source == SolutionVersionSource.IdeLive, "live beats the saved preferences", r.Note);
@@ -122,7 +128,7 @@ static class SolutionVersionResolverTest
             var i6 = baseInputs(); i6.IdeRecord = live(null);
             r = SolutionVersionResolver.Resolve(i6);
             Check(r.Config == other && r.Source == SolutionVersionSource.IdePreferences
-                && r.Note.Contains("v61POSitive.sln.4a0d30a2.xml"),
+                && r.Note.Contains(ownFile),
                 "no live choice (older addin): the saved preferences in the record's config dir, named", r.Note);
 
             var i7 = baseInputs(); i7.IdeRecord = live("Current");
@@ -144,19 +150,34 @@ static class SolutionVersionResolverTest
             r = SolutionVersionResolver.Resolve(i10);
             Check(r.Source == SolutionVersionSource.IdePreferences && r.Config == other, "no IDE: the host Clarion's preferences folder", r.Note);
 
-            File.Delete(Path.Combine(prefs, "v61POSitive.sln.4a0d30a2.xml"));
-            WritePrefs(prefs, "v61POSitive.sln.4a0d30a2.xml", "Current", null);
+            File.Delete(Path.Combine(prefs, ownFile));
+            WritePrefs(prefs, ownFile, "Current", null);
             r = SolutionVersionResolver.Resolve(i10);
             Check(r.Config == c12 && r.Source == SolutionVersionSource.HostInstall && r.Note.Contains("'Current'"),
                 "a saved 'Current' falls to the host and says so", r.Note);
-            File.Delete(Path.Combine(prefs, "v61POSitive.sln.4a0d30a2.xml"));
+            File.Delete(Path.Combine(prefs, ownFile));
 
             Console.WriteLine("-- choosing the preferences file");
             string f, note, got;
             WritePrefs(prefs, "v61POSitive.sln.11111111.xml", c10.Name, null);
             WritePrefs(prefs, "v61POSitive.sln.22222222.xml", c10.Name, null);
             got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
-            Check(got == c10.Name && note != null && note.Contains("all saying the same"), "several files that agree: that choice", note);
+            // 5a5581e6 run 3: agreeing is not owning - two other folders' same-named solutions may agree.
+            Check(got == null && note != null && note.Contains("all saying the same") && note.Contains("none was used"),
+                "several UNOWNED files that agree: unknown (version)", got + " / " + note);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            foreach (var n in new[] { "11111111", "22222222" })
+                File.WriteAllText(Path.Combine(prefs, "v61POSitive.sln." + n + ".xml"), "<Properties>\r\n  <ActiveConfiguration value=\"Release\" />\r\n</Properties>");
+            string agreePlatform;
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out agreePlatform, out f, out note);
+            Check(got == null && note != null && note.Contains("none was used"), "several UNOWNED files that agree: unknown (configuration)", got + " / " + note);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            WritePrefs(prefs, ownFile, c10.Name, null);
+            WritePrefs(prefs, "v61POSitive.sln.22222222.xml", c10.Name, null);
+            got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
+            Check(got == c10.Name && Path.GetFileName(f) == ownFile, "an owned file among agreeing ones: the owned one", note);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            // The one recorded-path case (a code path the reader still supports).
 
             WritePrefs(prefs, "v61POSitive.sln.22222222.xml", c12.Name, Path.Combine(solDir, "PRM002", "PRM002.clw"));
             WritePrefs(prefs, "v61POSitive.sln.4a0d30a2.xml", other.Name, @"C:\Somewhere\Else\x.clw");
@@ -215,6 +236,62 @@ static class SolutionVersionResolverTest
             Check(got == null, "only <sln name>.<hex>.xml files are candidates", f);
             foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
 
+            // 5a5581e6: the build configuration comes from the same file, by the same rules. Two files for the name:
+            // ours (a path under the solution) says Release, the other folder's says Debug.
+            Console.WriteLine("-- the IDE's saved build configuration");
+            File.WriteAllText(Path.Combine(prefs, ownFile),
+                "<Properties>\r\n  <Array name=\"OpenFiles\" />\r\n"
+                + "  <ActiveConfiguration value=\"Release\" />\r\n  <ActivePlatform value=\"Win32\" />\r\n  <ActiveVersion value=\"" + c10.Name + "\" />\r\n</Properties>");
+            File.WriteAllText(Path.Combine(prefs, "v61POSitive.sln.22222222.xml"),
+                "<Properties>\r\n  <Array name=\"OpenFiles\">\r\n    <String value=\"C:\\Elsewhere\\a.clw\" />\r\n  </Array>\r\n"
+                + "  <ActiveConfiguration value=\"Debug\" />\r\n  <ActivePlatform value=\"Win32\" />\r\n  <ActiveVersion value=\"" + c10.Name + "\" />\r\n</Properties>");
+            string platform;
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out platform, out f, out note);
+            Check(got == "Release" && platform == "Win32" && Path.GetFileName(f) == ownFile,
+                "ActiveConfiguration is read from this solution's file, chosen by content when files disagree", got + " / " + note);
+            got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
+            Check(got == c10.Name, "...and reading it leaves ActiveVersion's answer alone", got);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            WritePrefs(prefs, ownFile, c10.Name, null);
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out platform, out f, out note);
+            Check(got == null, "no ActiveConfiguration saved: none (the caller searches Common only)", got);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+
+            // 5a5581e6 run 2: a LONE same-named file must prove it is this solution's.
+            Console.WriteLine("-- a lone preferences file needs proof");
+            WritePrefs(prefs, "v61POSitive.sln.0badf00d.xml", other.Name, @"C:\Somewhere\Else\x.clw");
+            got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
+            Check(got == null && note != null && note.Contains("none was used"), "a lone stale file from another folder's solution is rejected (version)", got + " / " + note);
+            var iLone = baseInputs(); iLone.PreferencesDir = prefs;
+            r = SolutionVersionResolver.Resolve(iLone);
+            Check(r.Source == SolutionVersionSource.HostInstall && r.Note.Contains("none was used"), "...the resolver falls through and says why", r.Note);
+            File.WriteAllText(Path.Combine(prefs, "v61POSitive.sln.0badf00d.xml"),
+                "<Properties>\r\n  <ActiveConfiguration value=\"Release\" />\r\n  <String value=\"C:\\Somewhere\\Else\\x.clw\" />\r\n</Properties>");
+            got = IdeSolutionPreferences.ReadActiveConfiguration(prefs, sln, out platform, out f, out note);
+            Check(got == null && note != null && note.Contains("none was used"), "a lone stale file is rejected (configuration)", got + " / " + note);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            WritePrefs(prefs, "v61POSitive.sln." + IdeSolutionPreferences.HashSuffix(sln) + ".xml", other.Name, null);
+            got = IdeSolutionPreferences.ReadActiveVersion(prefs, sln, out f, out note);
+            Check(got == other.Name, "a lone file named with this solution's hash is accepted without recorded paths", note);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+
+            // 5a5581e6 run 2: the LIVE configuration (in-process IDE, then the IDE's record) beats the saved file.
+            Console.WriteLine("-- live build configuration");
+            File.WriteAllText(Path.Combine(prefs, ownFile),
+                "<Properties>\r\n  <ActiveConfiguration value=\"Debug\" />\r\n</Properties>");
+            var recRelease = live(c10.Name); recRelease.BuildConfiguration = "Release"; recRelease.BuildPlatform = "Win32";
+            got = IdeSolutionPreferences.ResolveBuildConfiguration(sln, null, recRelease, new[] { cfgDir }, out platform, out note);
+            Check(got == "Release" && platform == "Win32" && note.Contains("live from the IDE"), "the record (Release) beats the saved file (Debug)", got + " / " + note);
+            var recOther = live(c10.Name); recOther.BuildConfiguration = "Release"; recOther.Solution = Path.Combine(root, "elsewhere.sln");
+            got = IdeSolutionPreferences.ResolveBuildConfiguration(sln, null, recOther, new[] { cfgDir }, out platform, out note);
+            Check(got == "Debug" && note.Contains("SAVED"), "a record for ANOTHER solution is ignored; the saved file is used and called saved", got + " / " + note);
+            var inProc = new IdeSolutionRecord.BuildConfiguration { Solution = sln, Configuration = "Profile", Platform = "Win32" };
+            got = IdeSolutionPreferences.ResolveBuildConfiguration(sln, inProc, recRelease, new[] { cfgDir }, out platform, out note);
+            Check(got == "Profile", "the IDE in this process beats its record", got);
+            foreach (var old in Directory.GetFiles(prefs)) File.Delete(old);
+            got = IdeSolutionPreferences.ResolveBuildConfiguration(sln, null, live(c10.Name), new[] { cfgDir }, out platform, out note);
+            Check(got == null && note.Contains("unknown"), "nothing says: unknown, with the reason", note);
+
             Console.WriteLine("-- the projects' .Version resources (advisory)");
             string warn = SolutionVersionResolver.ProjectVersionWarning(sln, c12);
             Check(warn != null && warn.Contains("PRM002 (Clarion 10)") && warn.StartsWith("WARNING"), "C12 chosen, project says 10000: warned", warn);
@@ -242,10 +319,25 @@ static class SolutionVersionResolverTest
             IdeSolutionRecord.Publish(sln);
             d = IdeSolutionRecord.ReadDetails(self, out note, out transient);
             Check(d != null && d.VersionChoice == null && d.Solution != null, "a provider that throws still publishes the solution");
+            // 5a5581e6 run 2: the live build configuration rides along, re-published when it changes, only for this solution.
+            string buildConfig = "Release";
+            IdeSolutionRecord.BuildConfigurationProvider = () => new IdeSolutionRecord.BuildConfiguration { Solution = sln, Configuration = buildConfig, Platform = "Win32" };
+            IdeSolutionRecord.Republish();
+            d = IdeSolutionRecord.ReadDetails(self, out note, out transient);
+            Check(d != null && d.BuildConfiguration == "Release" && d.BuildPlatform == "Win32", "Publish carries the live build configuration", d != null ? d.BuildConfiguration : note);
+            buildConfig = "Debug";
+            IdeSolutionRecord.Republish();
+            d = IdeSolutionRecord.ReadDetails(self, out note, out transient);
+            Check(d != null && d.BuildConfiguration == "Debug", "a Debug/Release switch with the same solution open is re-published", d != null ? d.BuildConfiguration : note);
+            IdeSolutionRecord.BuildConfigurationProvider = () => new IdeSolutionRecord.BuildConfiguration { Solution = Path.Combine(root, "elsewhere.sln"), Configuration = "Release" };
+            IdeSolutionRecord.Republish();
+            d = IdeSolutionRecord.ReadDetails(self, out note, out transient);
+            Check(d != null && d.BuildConfiguration == null, "another solution's configuration is not published", d != null ? d.BuildConfiguration : note);
             IdeSolutionRecord.Publish(null);
         }
         finally
         {
+            IdeSolutionRecord.BuildConfigurationProvider = null;
             IdeSolutionRecord.VersionChoiceProvider = null;
             IdeSolutionRecord.ConfigDirProvider = null;
             try { Directory.Delete(root, true); } catch { }

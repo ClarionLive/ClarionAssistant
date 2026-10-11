@@ -63,7 +63,7 @@ Depending on the scope chosen:
 
 Read and analyze the code based on scope:
 
-1. For options 1-2: **Read the TXA** to understand embed structure, procedure relationships, and template context, then **read the source files** (.clw/.inc) using `read_file`
+1. For options 1-2: **Read the TXA** to understand embed structure, procedure relationships, and template context, then **read the source files** (.clw/.inc) using `read_file`. Locate any file the code INCLUDEs or a template it uses through the active .red (`resolve_red_path`) — never from memory or a drive search
 2. For options 3-5: analyze the gathered code directly
 3. For class-based code, use `analyze_class` and `sync_check` for deeper analysis
 

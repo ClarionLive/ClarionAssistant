@@ -193,6 +193,11 @@ $Items = @(
     "Microsoft.Web.WebView2.WinForms.dll"
     "Microsoft.Web.WebView2.Wpf.dll"
     "WebView2Loader.dll"
+    # Everything SDK shim for search_files / search_files_advanced / search_content / find_duplicates, P/Invoked
+    # by EverythingService from BOTH the addin and clarion-mcp-server.exe (same folder). 5a5581e6: it was never in
+    # this list, so a dev-deployed root had it only if an installer had once put it there - every Clarion 11 dev
+    # deploy failed those tools with "Everything32.dll not found". The installer ships it per version too.
+    "Everything32.dll"
     # PdfPig — in-process PDF text extraction for DocGraph ingestion (#167). ALL of these ship:
     # the five System.*/Microsoft.Bcl shims are NOT inbox on .NET Framework 4.8, they arrive via
     # PdfPig's own package dependencies, and omitting any one of them fails at RUNTIME (the first
