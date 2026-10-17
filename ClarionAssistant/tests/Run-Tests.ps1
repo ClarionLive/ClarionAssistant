@@ -460,6 +460,38 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "McpPathPolicy.Test"
                Sources = @("tests\McpPathPolicy.Test.cs", "Services\McpPathPolicy.cs")
                Refs = @("System.dll") }
+            # The REAL indexer end to end over a temp solution: CLASS MODULE()/LINK() followed to the implementing
+            # .clw through the project's .red and build configuration (GH #245), honest coverage status (#244 item 3);
+            # every feature check re-run with the pass off, where it must fail (x86 SQLite).
+            @{ Name = "CodeGraphIndexer.ModuleLink.Test"
+               Sources = @("tests\CodeGraphIndexer.ModuleLink.Test.cs",
+                           "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
+                           "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs", "CodeGraph\Parsing\SolutionParser.cs",
+                           "CodeGraph\Parsing\ProjectParser.cs", "CodeGraph\Parsing\SourceResolver.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
+            # The REAL indexer end to end: data in an .inc INCLUDEd into the PROGRAM's global data is scope='global',
+            # and calls through such a global object (Mark's ActiveThreads.Add in N modules) link to the class's
+            # method, inherited ones included (GH #246); every feature check re-run with the pass off (x86 SQLite).
+            @{ Name = "CodeGraphIndexer.GlobalObject.Test"
+               Sources = @("tests\CodeGraphIndexer.GlobalObject.Test.cs",
+                           "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
+                           "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs", "CodeGraph\Parsing\SolutionParser.cs",
+                           "CodeGraph\Parsing\ProjectParser.cs", "CodeGraph\Parsing\SourceResolver.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

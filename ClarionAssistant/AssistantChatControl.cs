@@ -2459,6 +2459,9 @@ namespace ClarionAssistant
             // Build library paths from RED file .inc search paths
             List<string> libPaths = BuildIndexLibraryPaths();
             var activeRed = _redFileService;
+            // GH #245: resolve through the build configuration's .red sections, as resolve_red_path does. Read
+            // here, on the UI thread, where the IDE's active configuration can be asked.
+            string buildConfiguration = ClarionAssistant.Services.McpToolRegistry.BuildConfigurationForIndex(slnPath);
 
             _header.ClearIndexLog();
 
@@ -2530,6 +2533,7 @@ namespace ClarionAssistant
                 {
                     var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
                     indexer.RedService = activeRed; // the IDE's ACTIVE .red — version file + local override
+                    indexer.BuildConfiguration = buildConfiguration; // GH #245: the configuration's .red sections
                     indexer.CancelRequested = () =>
                         System.Threading.Interlocked.CompareExchange(ref cancelFlag, 0, 0) == 1;
                     indexer.OnProgress += msg =>
@@ -2638,8 +2642,7 @@ namespace ClarionAssistant
 
                     var result = e.Result as ClarionCodeGraph.Graph.IndexResult;
                     externalSummary = result != null
-                        ? string.Format(
-                            "CodeGraph indexed successfully:\n" +
+                        ? result.Headline + "\n" + string.Format(
                             "  Solution: {0}\n" +
                             "  Projects: {1}\n" +
                             "  Files: {2}\n" +
@@ -2653,6 +2656,7 @@ namespace ClarionAssistant
                             result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
                             incremental ? "incremental" : "full",
                             runLog.LogPath ?? "(no log written — another index run may hold the log file)")
+                            + "\n" + result.CoverageText()
                         : "Error: index returned no result.";
                     runLog.Dispose();
                     if (formAlive)
