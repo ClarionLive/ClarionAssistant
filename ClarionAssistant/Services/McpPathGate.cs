@@ -52,6 +52,7 @@ namespace ClarionAssistant.Services
             {
                 CaDataDir = CaDataDir(),
                 UserProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ClaudeConfigDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"),
                 ExtraAllowedRoots = Join(Setting(McpPathPolicy.AllowedRootsSetting), Environment.GetEnvironmentVariable(McpPathPolicy.AllowedRootsEnv)),
                 ExtraDeniedPaths = Join(Setting(McpPathPolicy.DeniedPathsSetting), Environment.GetEnvironmentVariable(McpPathPolicy.DeniedPathsEnv))
             };
