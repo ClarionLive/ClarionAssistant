@@ -41,11 +41,13 @@ static class OpenTabGuardTest
     // Scripts the IDE: what the check returns, and what a reload returns. Every call is recorded.
     static void Script(Func<List<TabProbe>> probe, Func<TabProbe, TabReload> reload)
     {
-        OpenTabGuard.Probe = probe == null ? (Func<string, List<TabProbe>>)null
-            : p => { calls.Add("check"); return probe(); };
-        OpenTabGuard.Reload = reload == null ? (Func<string, TabProbe, TabReload>)null
-            : (p, tab) => { calls.Add("reload:" + tab.Handle); return reload(tab); };
+        OpenTabGuard.Probe = probe == null ? (Func<IList<string>, List<TabProbe>>)null
+            : p => { calls.Add("check"); lastChecked = new List<string>(p); return probe(); };
+        OpenTabGuard.Reload = reload == null ? (Func<IList<string>, TabProbe, TabReload>)null
+            : (p, tab) => { calls.Add("reload:" + tab.Handle); lastReloaded = new List<string>(p); return reload(tab); };
     }
+
+    static List<string> lastChecked, lastReloaded;
 
     static string file;
     static readonly byte[] Original = Encoding.ASCII.GetBytes("  MEMBER()\r\n! original\r\n");
@@ -174,6 +176,19 @@ static class OpenTabGuardTest
             r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: character not in cp1252"; });
             Ok("nothing reloaded after a failed write", Calls() == "check,write", Calls());
             Ok("the write's error comes back unchanged", r == "Error: character not in cp1252", r);
+
+            Console.WriteLine("-- both spellings reach the IDE (pipeline run 1: aliases)");
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false) }, t => new TabReload { Reloaded = true });
+            string alias = @"J:\alias\Main001.clw";
+            r = OpenTabGuard.Run(file, alias, false, Write);
+            Ok("the check is asked about the resolved path AND the caller's spelling",
+               lastChecked != null && lastChecked.Count == 2 && lastChecked[0] == file && lastChecked[1] == alias, string.Join(",", (lastChecked ?? new List<string>()).ToArray()));
+            Ok("...and so is the reload", lastReloaded != null && lastReloaded.Count == 2 && lastReloaded[1] == alias);
+            Reset();
+            r = OpenTabGuard.Run(file, file.ToUpperInvariant(), false, Write);
+            Ok("the same spelling twice (case aside) is asked once", lastChecked.Count == 1, lastChecked.Count.ToString());
+            Ok("Spellings drops empties", OpenTabGuard.Spellings(file, null).Count == 1 && OpenTabGuard.Spellings(file, "").Count == 1);
 
             Console.WriteLine("-- overwrite_open_buffer parsing");
             Func<object, bool> flag = v => OpenTabGuard.ParseFlag(v == null ? new Dictionary<string, object>()

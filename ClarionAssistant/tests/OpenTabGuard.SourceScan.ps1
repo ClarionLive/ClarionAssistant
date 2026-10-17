@@ -79,19 +79,52 @@ function Method([string]$text, [string]$sig) {
 $check = Method $nts 'private static TabProbe CheckOnUi('
 $reload = Method $nts 'private static TabReload ReloadOnUi('
 $keep = Method $nts 'private static int ReloadKeepingCaret('
-$onui = Method $nts 'private static string OnUi('
-Check ((Before $check 'MonacoClarionEditor.IsOpenInOverlay(' 'NativeViewsOf(') -and $check.Contains('TryGetLiveTabState')) `
-    'the check asks the CA Editor first (its native shell stays clean, so IsDirty would lie)'
+$views = Method $nts 'private static List<TextEditorDisplayBindingWrapper> ViewsOf('
+Check ((Before $check 'me.OverlayUp' 'w.IsDirty') -and $check.Contains('me.OverlayDirty')) `
+    'the check classifies a tab whose CA Editor is up as ca-editor first (its native shell stays clean, so IsDirty would lie)'
 Check ($check.Contains('w.IsDirty')) 'the check reads the native tab''s IsDirty'
 Check ((Before $reload 'w.IsDirty' 'ReloadKeepingCaret(') -and $reload.Contains('unsaved changes now')) 'a reload re-checks IsDirty first and refuses a dirty tab'
-Check ($reload.Contains('MonacoClarionEditor.IsOpenInOverlay(')) 'a reload never touches a tab the CA Editor covers'
+Check ((Before $reload 'me.OverlayUp' 'ReloadKeepingCaret(')) 'a reload never touches a tab the CA Editor covers'
+Check ($reload.Contains('string own = FileNameOf(w);') -and $reload.Contains('ReloadKeepingCaret(w, own)')) 'a reload loads the TAB''S OWN file name (an alias tab keeps its title)'
 Check ($keep.Contains('w.Load(path)') -and (Before $keep 'caret.Line' 'w.Load(path)') -and (Before $keep 'w.Load(path)' 'area.Caret.Line =')) `
     'the reload is SharpDevelop''s own Load, with the caret line captured before and put back after'
-Check ($onui.Contains('.Post(') -and $onui.Contains('done.Wait(') -and -not $onui.Contains('.Send(') -and -not $onui.Contains('Invoke(')) `
+# Pipeline run 1, fix 1: matched by FILE IDENTITY, and every view swept (FileService only matches path text).
+Check ($views.Contains('FileIdentity.MatchesAny(FileNameOf(w), probes)') -and $views.Contains('ViewContentCollection')) `
+    'tabs are matched by file identity, over every open view'
+Check (-not ($nts -match 'string\.Equals\([^)]*FileName')) 'no tab is matched by comparing path text'
+Check ($nts.Contains('UiThreadCall.Run(_ui') -and -not $nts.Contains('.Post(') -and -not $nts.Contains('Invoke(')) 'NativeTabSync goes through the shared UiThreadCall'
+$uitc = Text 'UiThreadCall.cs'
+Check ($uitc.Contains('ui.Post(') -and $uitc.Contains('done.Wait(waitMs)') -and -not $uitc.Contains('.Send(') -and -not $uitc.Contains('Invoke(')) `
     'UI work is Posted with a bounded wait, never Send/Invoke'
+$elp = Text 'EditorLiveTextProvider.cs'
+Check ($elp.Contains('UiThreadCall.Run(ui') -and $elp.Contains('FileIdentity.SameFile(a, b)') -and -not $elp.Contains('ui.Post(')) `
+    'EditorLiveTextProvider shares the UI helper and the identity compare (no copy)'
 
 $auto = [System.IO.File]::ReadAllText($autostartPath)
 Check ($auto.Contains('NativeTabSync.Register()')) 'the addin registers it at startup (LspAutostartCommand)'
+
+# Pipeline run 1, fix 2: the endpoint exists with NO chat pane.
+Check ($auto.Contains('IdeCallbackHost.Start()')) 'the IDE call-back endpoint starts at addin start, not in the chat pane'
+$cbHost = Text 'IdeCallbackHost.cs'
+Check ($cbHost -match 'CallbackTools\s*=\s*\{\s*"get_live_text",\s*"editor_tab_sync"\s*\}' -and $cbHost.Contains('registry.RetainOnly(CallbackTools)')) `
+    'the call-back endpoint serves exactly get_live_text and editor_tab_sync'
+Check ($cbHost.Contains('ReclaimPreferredPort = false') -and $cbHost -match 'PreferredPort\s*=\s*19390;') `
+    'it never takes or retries the chat pane''s 19372'
+Check ($cbHost.Contains('new McpServer(ui, null)')) 'it accepts only its own session token (no external token)'
+Check ($cbHost.Contains('IdeSolutionRecord.Publish(EditorService.GetOpenSolutionPath())')) 'it publishes the IDE''s open solution without a chat pane'
+$srv = Text 'Services\McpServer.cs'
+$startAt = $srv.IndexOf('public bool Start(')
+$stopAt = $srv.IndexOf('public void Stop()')
+Check ($startAt -ge 0 -and $srv.IndexOf('JoinEndpoint();', $startAt) -gt $startAt -and $srv.IndexOf('IdeEndpointRecord.Publish(port', $startAt) -lt 0) `
+    'every McpServer publishes through the one-record-per-IDE ownership, never directly'
+Check ($stopAt -ge 0 -and $srv.IndexOf('LeaveEndpoint();', $stopAt) -gt $stopAt) 'stopping a server hands the record on'
+
+# Pipeline run 1, fix 1: both spellings travel to the IDE.
+foreach ($t in @('write_file', 'append_to_file')) {
+    $b = Block $t
+    Check ((Before $b 'string asked = path;' 'McpPathGate.GatePath(') -and $b.Contains('OpenTabGuard.Run(target, asked,')) "$t sends the caller's spelling with the resolved path"
+}
+Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('check(spellings)') -and $sync.Contains('reload(spellings)')) 'editor_tab_sync takes also_path'
 
 $prog = [System.IO.File]::ReadAllText($programPath)
 $setWs = $prog.IndexOf('registry.SetWorkspace(workspace, ui);')
@@ -104,11 +137,16 @@ Check ($probeAt -ge 0 -and $wsBlock -ge 0 -and $probeAt -lt $wsBlock -and
 $tab = Text 'Services\IdeTabClient.cs'
 Check ($tab.Contains('IdeEndpointRecord.DiscoverAll(') -and $tab.Contains('"editor_tab_sync"') -and $tab.Contains('"reload"')) `
     'the standalone asks every trusted IDE pane through editor_tab_sync'
+Check ($tab.Contains('_fanOut.Ask(eps') -and $tab.Contains('OpenTabGuard.AlsoPathArg') -and $tab.Contains('TimedOut = IsTimeout(ex)')) `
+    'the IDEs are asked in parallel (IdeFanOut), with both spellings, and a timeout is reported as one'
 
 $addinProj = Text 'ClarionAssistant.csproj'
 $mcpProj = Text 'mcp-server\ClarionMcpServer.csproj'
-Check ($addinProj.Contains('Services\OpenTabGuard.cs') -and $addinProj.Contains('NativeTabSync.cs')) 'the addin compiles OpenTabGuard and NativeTabSync'
-Check ($mcpProj.Contains('..\Services\OpenTabGuard.cs') -and $mcpProj.Contains('..\Services\IdeTabClient.cs')) 'the standalone compiles OpenTabGuard and IdeTabClient'
+Check ($addinProj.Contains('Services\OpenTabGuard.cs') -and $addinProj.Contains('NativeTabSync.cs') -and $addinProj.Contains('Services\FileIdentity.cs') -and
+       $addinProj.Contains('Services\EndpointOwnership.cs') -and $addinProj.Contains('IdeCallbackHost.cs') -and $addinProj.Contains('UiThreadCall.cs')) `
+    'the addin compiles the guard, the tab sync, file identity, the endpoint ownership, the call-back host and the UI helper'
+Check ($mcpProj.Contains('..\Services\OpenTabGuard.cs') -and $mcpProj.Contains('..\Services\IdeTabClient.cs') -and $mcpProj.Contains('..\Services\IdeFanOut.cs')) `
+    'the standalone compiles OpenTabGuard, IdeTabClient and IdeFanOut'
 
 Write-Host ""
 Write-Host "OpenTabGuard.SourceScan: $pass passed, $fail failed"

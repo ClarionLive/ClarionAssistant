@@ -207,6 +207,7 @@
     <Compile Include="..\Services\IdeLiveTextClient.cs"><Link>Services\IdeLiveTextClient.cs</Link></Compile>
     <Compile Include="..\Services\OpenTabGuard.cs"><Link>Services\OpenTabGuard.cs</Link></Compile>
     <Compile Include="..\Services\IdeTabClient.cs"><Link>Services\IdeTabClient.cs</Link></Compile>
+    <Compile Include="..\Services\IdeFanOut.cs"><Link>Services\IdeFanOut.cs</Link></Compile>
     <Compile Include="..\Services\EditorToolRouter.cs"><Link>Services\EditorToolRouter.cs</Link></Compile>
     <Compile Include="..\Services\EditorTextOps.cs"><Link>Services\EditorTextOps.cs</Link></Compile>
     <Compile Include="..\Services\HostRequestBroker.cs"><Link>Services\HostRequestBroker.cs</Link></Compile>
