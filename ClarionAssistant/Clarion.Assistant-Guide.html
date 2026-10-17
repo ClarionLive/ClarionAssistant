@@ -698,7 +698,7 @@
       <tr>
         <td><strong>Claude Code plugin</strong></td>
         <td><code>%USERPROFILE%\.claude\plugins\...\clarion-assistant\</code></td>
-        <td>20+ Clarion-specific skills, hooks, and docs</td>
+        <td>25 Clarion skills, a session viewer, hooks, and docs</td>
       </tr>
       <tr>
         <td><strong>Code quality agents</strong></td>
@@ -2038,7 +2038,7 @@
   <h2>Claude Code Skills</h2>
 
   <p>
-    The installer includes 22 Clarion-specific skills for Claude Code (installed as a plugin):
+    The installer includes 26 skills for Claude Code (installed as a plugin): 25 for Clarion development, and one general-purpose skill, <code>session-viewer</code>, contributed by Dinko Ba&#269;un (<a href="https://github.com/bdinko/session-viewer">@bdinko</a>).
   </p>
 
   <table class="tools-table">
@@ -2049,9 +2049,12 @@
       <tr><td><code>clarion-analyze</code></td><td>Analyze Clarion code generation traces for recurring failure patterns</td></tr>
       <tr><td><code>clarion-benchmark</code></td><td>Benchmark Clarion code generation quality</td></tr>
       <tr><td><code>clarion-convert-driver</code></td><td>Convert Clarion dictionaries between file drivers (e.g., TopSpeed to SQLite)</td></tr>
+      <tr><td><code>clarion-appgen</code></td><td>Create a complete Clarion application from authored TXA (and optional .dctx) text, built headlessly with ClarionCL and MSBuild</td></tr>
+      <tr><td><code>clarion-solution</code></td><td>Orient in a folder containing a Clarion solution: which solution, whether CodeGraph is indexed, which tools are available</td></tr>
       <tr><td><code>evaluate-code</code></td><td>Evaluate Clarion app code for issues and improvements</td></tr>
       <tr><td><code>jfiles</code></td><td>jFiles JSON serialization patterns for Clarion</td></tr>
       <tr><td><code>lsp-diagnostics</code></td><td>Run LSP diagnostics across all source files in the open solution with navigate-to-error support</td></tr>
+      <tr><td><code>stringtheory</code></td><td>CapeSoft StringTheory patterns and gotchas: BLOB/MEMO handling, common method confusions, storage-aware serialization</td></tr>
       <tr><td><code>ClarionCOM</code></td><td>Interactive COM development assistant</td></tr>
       <tr><td><code>clarioncom-build</code></td><td>Build COM projects with MSBuild</td></tr>
       <tr><td><code>clarioncom-config</code></td><td>Manage ClarionCOM settings</td></tr>
@@ -2066,6 +2069,7 @@
       <tr><td><code>clarioncom-webview2-create</code></td><td>Create WebView2-based COM controls with HTML/CSS/JS</td></tr>
       <tr><td><code>clarioncom-webview2-deploy</code></td><td>Generate deployment artifacts for WebView2 COM controls</td></tr>
       <tr><td><code>clarioncom-webview2-validate</code></td><td>Validate WebView2 COM controls for RegFree compliance</td></tr>
+      <tr><td><code>session-viewer</code></td><td>List, render and resume previous Claude Code sessions in any project (general purpose; needs Python 3). By <a href="https://github.com/bdinko/session-viewer">@bdinko</a>, MIT</td></tr>
     </tbody>
   </table>
 </section>

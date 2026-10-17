@@ -59,6 +59,15 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 <!-- Entries for the next release go here, in the same shape as the release blocks below. -->
 
+<!-- release-docs: covered=skills -->
+### New bundled skill: session-viewer, by Dinko Bačun ([#41](https://github.com/ClarionLive/ClarionAssistant/issues/41))
+
+Ask *"show me my past sessions"* (or type `/session-viewer`) and Claude lists the earlier Claude Code sessions for the current project, newest first and numbered, with the date and the first thing you asked. Ask it to render one and you get that session as a readable conversation; ask it to resume one and it gives you the exact `claude --resume <id>` command to run, so you no longer have to pick the right thread out of the `/resume` list. It works in any project, Clarion or not. It is read-only and needs Python 3; if Python is missing, Claude says so and tells you how to install it.
+
+The skill is Dinko Bačun's ([@bdinko](https://github.com/bdinko)), from [bdinko/session-viewer](https://github.com/bdinko/session-viewer), MIT licence, bundled with his agreement. Thank you, Dinko. Our copy adds a few fixes that we are offering back to him: the most visible one is that, when a project has no transcript folder of its own, it no longer shows the sessions of an unrelated project with a similar folder name.
+
+The README's skills list was also out of date: it said 22 skills and left out `clarion-appgen`, `clarion-solution` and `stringtheory`, which were already shipping. It now lists all 26.
+
 ## What's New in v6.0
 
 6.0 is a major release. Claude's editor and embed tools now work on the text you see in the CA Editor and CA Embeditor, the bundled language server moves to v1.0.8 with incremental sync, hover, completion and diagnostics are more accurate, and the CA Editor gains keymap profiles. Full notes: **[docs/releases/v6.0.0.md](docs/releases/v6.0.0.md)**.
@@ -579,7 +588,7 @@ documentation from a URL, GitHub operations, and the marketplace browser.
 | COM for Clarion addin | `{Clarion}\accessory\addins\ComForClarion\` | COM browser addin |
 | UltimateCOM template | `{Clarion}\accessory\template\win\` | .tpl, .inc, .clw, and template DLLs |
 | Documentation | `{Clarion}\accessory\resources\ComForClarionDocumentation\` | COM for Clarion docs |
-| Claude Code plugin | `%USERPROFILE%\.claude\plugins\...\clarion-assistant\` | 20+ Clarion-specific skills, hooks, and docs |
+| Claude Code plugin | `%USERPROFILE%\.claude\plugins\...\clarion-assistant\` | 25 Clarion skills, a session viewer, hooks, and docs |
 | Code quality agents | `%USERPROFILE%\.claude\agents\` | 6 agents (won't overwrite existing) |
 | ClarionCOM tooling | `%APPDATA%\ClarionCOM\` | Project templates and scripts |
 | DocGraph database | `%APPDATA%\ClarionAssistant\` | Pre-loaded Clarion 12 documentation index |
@@ -751,7 +760,7 @@ Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with th
 
 ## Claude Code Skills
 
-The installer includes 22 Clarion-specific skills for Claude Code (installed as a plugin):
+The installer includes 26 skills for Claude Code (installed as a plugin): 25 for Clarion development, and one general-purpose skill, `session-viewer`, contributed by Dinko Bačun ([@bdinko](https://github.com/bdinko/session-viewer)).
 
 | Skill | Description |
 |---|---|
@@ -760,9 +769,12 @@ The installer includes 22 Clarion-specific skills for Claude Code (installed as 
 | `clarion-analyze` | Analyze Clarion code generation traces for recurring failure patterns |
 | `clarion-benchmark` | Benchmark Clarion code generation quality |
 | `clarion-convert-driver` | Convert Clarion dictionaries between file drivers (e.g., TopSpeed to SQLite) |
+| `clarion-appgen` | Create a complete Clarion application from authored TXA (and optional .dctx) text, built headlessly with ClarionCL and MSBuild |
+| `clarion-solution` | Orient in a folder containing a Clarion solution: which solution, whether CodeGraph is indexed, which tools are available |
 | `evaluate-code` | Evaluate Clarion app code for issues and improvements |
 | `jfiles` | jFiles JSON serialization patterns for Clarion |
 | `lsp-diagnostics` | Run LSP diagnostics across all source files in the open solution with navigate-to-error support |
+| `stringtheory` | CapeSoft StringTheory patterns and gotchas: BLOB/MEMO handling, common method confusions, storage-aware serialization |
 | `ClarionCOM` | Interactive COM development assistant |
 | `clarioncom-build` | Build COM projects with MSBuild |
 | `clarioncom-config` | Manage ClarionCOM settings |
@@ -777,6 +789,7 @@ The installer includes 22 Clarion-specific skills for Claude Code (installed as 
 | `clarioncom-webview2-create` | Create WebView2-based COM controls with HTML/CSS/JS |
 | `clarioncom-webview2-deploy` | Generate deployment artifacts for WebView2 COM controls |
 | `clarioncom-webview2-validate` | Validate WebView2 COM controls for RegFree compliance |
+| `session-viewer` | List, render and resume previous Claude Code sessions in any project (general purpose; needs Python 3). By [@bdinko](https://github.com/bdinko/session-viewer), MIT |
 
 ---
 
