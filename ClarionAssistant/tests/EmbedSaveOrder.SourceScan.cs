@@ -184,10 +184,29 @@ static class EmbedSaveOrderSourceScan
         int oseEnd = ose >= 0 ? page.IndexOf("} else if (msg.type", ose + 10, StringComparison.Ordinal) : -1;
         string oseBody = ose >= 0 && oseEnd > ose ? page.Substring(ose, oseEnd - ose) : "";
         int restoreBtn = oseBody.IndexOf("label: 'Restore'", StringComparison.Ordinal);
+        int applyAt = oseBody.IndexOf("applyOrParkSlots(", StringComparison.Ordinal);
         Ok("the page OFFERS the lost save (restored only from the Restore button, never on arrival)",
-            oseBody.Contains("showActionToast(") && restoreBtn > 0 &&
-            oseBody.IndexOf("restoreSlotContents(", StringComparison.Ordinal) > restoreBtn &&
-            oseBody.Contains("label: 'Discard'"));
+            oseBody.Contains("showActionToast(") && restoreBtn > 0 && applyAt > restoreBtn &&
+            !oseBody.Contains("restoreSlotContents(") && oseBody.Contains("label: 'Discard'"), "restore@" + restoreBtn + " apply@" + applyAt);
+        Ok("restoreSlots and the offer share applyOrParkSlots", page.Contains("function applyOrParkSlots(slots)") &&
+            Count(page, "applyOrParkSlots(") == 3);
+
+        // ---- pipeline run 1 ----
+        int cj = view.IndexOf("private void CheckSaveJournal()", StringComparison.Ordinal);
+        int cjEnd = cj >= 0 ? view.IndexOf("private void HandleSavedEditsOffer(", cj, StringComparison.Ordinal) : -1;
+        string cjBody = cj >= 0 && cjEnd > cj ? view.Substring(cj, cjEnd - cj) : "";
+        Ok("the open decides with the pid rule (EmbedSaveJournal.Decide), not the bare verdict",
+            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid())") && !cjBody.Contains(".Assess("));
+        int ja = view.IndexOf("private string JournalApp()", StringComparison.Ordinal);
+        string jaBody = ja >= 0 ? view.Substring(ja, Math.Min(300, view.Length - ja)) : "";
+        Ok("the journal key is the launcher-captured app, never the 'current app' guess",
+            jaBody.Contains("EmbedAppFile") && !jaBody.Contains("TryGetCurrentAppKey"));
+        string launcher = File.ReadAllText(Path.Combine(root, "Services", "ModernEmbeditorLauncher.cs"));
+        Ok("both launcher paths capture the embed's own app and hand it to the view",
+            Count(launcher, "appTree.GetOpenEmbedAppFileName()") == 2 &&
+            launcher.Contains("view.EmbedAppFile = capApp;") && launcher.Contains("overlay.EmbedAppFile = capApp;"));
+        Ok("the offer names both causes honestly",
+            cjBody.Contains("Clarion stopped before it \" +") && cjBody.Contains("\"was saved, or the app was closed without saving. Restore it as unsaved edits?\""));
 
         // ---- GH #179: every monaco-spike.log line names its process ----
         string spike = File.ReadAllText(Path.Combine(root, "MonacoClarionSourceEditor.cs"));

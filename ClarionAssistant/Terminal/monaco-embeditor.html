@@ -1270,6 +1270,13 @@
         } catch (e) { }
     }
 
+    // Restore slot texts now, or — when they arrive before the async source fetch has filled the model —
+    // park them until applySource's tail picks them up (pendingRestoreSlots).
+    function applyOrParkSlots(slots) {
+        if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(slots);
+        else pendingRestoreSlots = slots;
+    }
+
     // Embed mode's sibling of pushFileState (task d19c036d): mirror the edited slot texts to the host on
     // every legal edit. The overlay can be torn down at ANY moment by Clarion's own error→embed navigation
     // closing + re-opening the native embed under us — the native buffer is clean (our edits live only in
@@ -9794,9 +9801,7 @@
             } else if (msg.type === 'externalFileState') {
                 handleExternalFileState(msg);
             } else if (msg.type === 'restoreSlots') {
-                // May arrive before the async source fetch fills the model — park until applySource's tail.
-                if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(msg.slots);
-                else pendingRestoreSlots = msg.slots;
+                applyOrParkSlots(msg.slots);
             } else if (msg.type === 'offerSavedEdits') {
                 // GH #179: a save that reported ok but never reached the procedure (the Generator faulted after it).
                 // OFFERED, never applied: Restore puts the text in as unsaved edits (the same path as restoreSlots),
@@ -9804,8 +9809,7 @@
                 var offered = msg.slots;
                 showActionToast(msg.message, false, [
                     { label: 'Restore', onClick: function () {
-                        if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(offered);
-                        else pendingRestoreSlots = offered;
+                        applyOrParkSlots(offered);
                         postToHost({ action: 'savedEditsOffer', choice: 'restore' });
                     } },
                     { label: 'Discard', onClick: function () { postToHost({ action: 'savedEditsOffer', choice: 'discard' }); } }

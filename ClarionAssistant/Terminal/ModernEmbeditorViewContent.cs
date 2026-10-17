@@ -2077,35 +2077,46 @@ namespace ClarionAssistant.Terminal
         // take the edit with it. Every embed save is journaled BEFORE the native round-trip and the journal is kept
         // through ok=True; THIS method, on the next open of the procedure, decides from the freshly loaded slots
         // whether that save landed. See Services.EmbedSaveJournal for why the open, not a timer, is the proof.
-        private string _journalApp;              // app identity the journal is keyed by (captured once)
         private bool _journalChecked;            // CheckSaveJournal runs once per view
         private Services.EmbedSaveJournal.Entry _offeredJournal;   // the entry the page is offering, if any
 
+        /// <summary>The .app this embed belongs to, captured by the launcher while the native embed was open
+        /// (AppTreeService.GetOpenEmbedAppFileName). Null = unknown: the save journal is then off for this view,
+        /// never filed under a guessed app (pipeline run 1: the "current app" falls back to the FIRST app view when
+        /// a CA tab is active, which with several apps open is the wrong one).</summary>
+        internal string EmbedAppFile { get; set; }
+
         private string JournalApp()
         {
-            if (_journalApp == null) _journalApp = TryGetCurrentAppKey() ?? "";
-            return _journalApp;
+            return string.IsNullOrWhiteSpace(EmbedAppFile) ? null : EmbedAppFile;
+        }
+
+        private static int MyPid()
+        {
+            try { return System.Diagnostics.Process.GetCurrentProcess().Id; } catch { return 0; }
         }
 
         private void CheckSaveJournal()
         {
             if (_journalChecked || _panel == null || string.IsNullOrEmpty(_procedureName)) return;
             _journalChecked = true;
+            if (JournalApp() == null) { MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": app unknown, not checked"); return; }
             try
             {
                 var e = Services.EmbedSaveJournal.Read(JournalApp(), _procedureName);
                 if (e == null) return;
-                var v = Services.EmbedSaveJournal.Assess(e, _originalSlotTexts);
+                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid());
                 MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": entry of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") +
-                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)) -> " + v);
+                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)) -> " + act);
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                if (v == Services.EmbedSaveJournal.Verdict.Persisted)
+                if (act == Services.EmbedSaveJournal.Action.Retire)
                 {
-                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // it landed: nothing to say
+                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // a later session read it back: it landed
                     return;
                 }
+                if (act == Services.EmbedSaveJournal.Action.Keep) return;   // landed in memory only, this session: say nothing
                 string when = e.Written.ToString("yyyy-MM-dd HH:mm");
-                if (v == Services.EmbedSaveJournal.Verdict.Diverged)
+                if (act == Services.EmbedSaveJournal.Action.Archive)
                 {
                     // Changed since (e.g. edited in Clarion's own embeditor): offering it would overwrite newer work.
                     string rec = Services.EmbedSaveJournal.Archive(e, "this embed has changed since");
@@ -2119,9 +2130,9 @@ namespace ClarionAssistant.Terminal
                 if (slots == null) return;
                 _offeredJournal = e;
                 _panel.PostJson("{\"type\":\"offerSavedEdits\",\"message\":" + ser.Serialize(
-                    "Your CA Embeditor save of " + _procedureName + " on " + when + " is not in this embed: Clarion appears to " +
-                    "have stopped right after it. Restore it as unsaved edits? Nothing changes until you choose, and you " +
-                    "review it before saving.") + ",\"slots\":" + ser.Serialize(slots) + "}");
+                    "Your save of " + _procedureName + " on " + when + " is not in this procedure: Clarion stopped before it " +
+                    "was saved, or the app was closed without saving. Restore it as unsaved edits?") +
+                    ",\"slots\":" + ser.Serialize(slots) + "}");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] open check error: " + ex.Message); }
         }
@@ -2160,6 +2171,7 @@ namespace ClarionAssistant.Terminal
         private void BeginSaveJournal(List<string> current)
         {
             if (string.IsNullOrEmpty(_procedureName)) return;
+            if (JournalApp() == null) { MonacoSpikeLog.Write("[save-journal] skipped: the app of " + _procedureName + " is unknown"); return; }
             try
             {
                 string archived;
@@ -2174,7 +2186,7 @@ namespace ClarionAssistant.Terminal
         /// that never happened, so it goes.</summary>
         private void RetireSaveJournal(string why)
         {
-            if (string.IsNullOrEmpty(_procedureName)) return;
+            if (string.IsNullOrEmpty(_procedureName) || JournalApp() == null) return;
             if (Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName))
                 MonacoSpikeLog.Write("[save-journal] retired — " + why);
         }
