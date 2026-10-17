@@ -3038,6 +3038,18 @@ namespace ClarionAssistant
 
         private static readonly object _writeLock = new object();   // pool-thread writers exist (WriteWithMemAsync)
 
+        /// <summary>"[pid N] " — every running IDE appends to the one file, so each line says which process wrote
+        /// it (GH #179: a second instance starting looked like a restart after a fault). It goes AFTER the
+        /// timestamp and its two-space separator, so a reader keyed on the line's leading timestamp still works.
+        /// ClarionConfigDirectory.LogOnce writes the same shape.</summary>
+        public static readonly string PidTag = MakePidTag();
+
+        private static string MakePidTag()
+        {
+            try { return "[pid " + System.Diagnostics.Process.GetCurrentProcess().Id + "] "; }
+            catch { return "[pid ?] "; }
+        }
+
         public static void Write(string message)
         {
             try
@@ -3047,7 +3059,7 @@ namespace ClarionAssistant
                     EnsureDir();
                     File.AppendAllText(
                         Path.Combine(DataDir, "monaco-spike.log"),
-                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                        DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + PidTag + message + Environment.NewLine);
                 }
             }
             catch { }

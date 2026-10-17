@@ -12,6 +12,9 @@ using ClarionAssistant.Services;
 //     a write failure leaves the editor intact; only a failure after the detach is reported as not intact.
 //   * EmbedRecovery writes a BOM-free, uniquely named file atomically (no .tmp left behind).
 //   * MergeStash restores per slot.
+//   * GH #179: EmbedSaveJournal keeps a save's text through ok=True (the Generator can fault after it), and the
+//     next open decides from the reloaded slots: persisted -> retired, back at the pre-save text -> offered,
+//     changed since -> archived. Torn files are never offered.
 //
 // Run:  tests\Run-Tests.ps1
 static class EmbedSaveFlowTest
@@ -342,6 +345,89 @@ static class EmbedSaveFlowTest
         {
             EmbedRecovery.FolderOverride = null;
             try { Directory.Delete(dir, true); } catch { }
+        }
+
+        // ---------------- pending save journal (GH #179) ----------------
+        Console.WriteLine("pending save journal");
+        string jdir = Path.Combine(Path.GetTempPath(), "ca-embed-journal-test-" + Guid.NewGuid().ToString("N"));
+        EmbedRecovery.FolderOverride = jdir;
+        EmbedSaveJournal.FolderOverride = Path.Combine(jdir, "pending");
+        try
+        {
+            const string App = @"C:\Apps\Invoice.app";
+            string big = new string('x', 330000);   // the reporter's embed size, in one slot
+            var saved = new List<string> { "  x = 5 ! JOHN-179-A", O1, big };
+            string arch;
+
+            Ok("nothing changed: no journal", EmbedSaveJournal.Begin(App, "P", origT, origT, out arch) == null &&
+                !File.Exists(EmbedSaveJournal.PathFor(App, "P")));
+
+            // A save begins: the journal is written BEFORE Clarion gets the text.
+            string jp = EmbedSaveJournal.Begin(App, "BrowseDepartment", origT, saved, out arch);
+            Ok("written before the save, per app + procedure", jp != null && File.Exists(jp) && jp == EmbedSaveJournal.PathFor(App, "BrowseDepartment"), jp);
+            Ok("no temp file left behind", Directory.GetFiles(EmbedSaveJournal.Folder, "*.tmp").Length == 0);
+            var jb = File.ReadAllBytes(jp);
+            Ok("no BOM", !(jb.Length >= 3 && jb[0] == 0xEF && jb[1] == 0xBB && jb[2] == 0xBF));
+            Ok("another app's same-named procedure has its own journal", EmbedSaveJournal.PathFor(@"C:\Apps\Other.app", "BrowseDepartment") != jp);
+
+            // SaveLive ok=True, refreshPadSources DONE ... and then the process dies: NOTHING on that path retires
+            // it (the view's success path is pinned by EmbedSaveOrder.SourceScan). The file is all that is left.
+            var e = EmbedSaveJournal.Read(App, "BrowseDepartment");
+            Ok("kept through ok=True: readable after the save", e != null && e.Index.Count == 2 && e.SlotCount == 3);
+            Ok("...holds only the changed slots, whole (330k chars round-trip)",
+                e != null && e.Index.SequenceEqual(new[] { 0, 2 }) && e.Saved[1] == big && e.Baseline[0] == O0);
+
+            // Next start, next open: the Generator died, so the embed is back at its pre-save text.
+            Ok("crash: fresh == pre-save text -> Lost (offered)", EmbedSaveJournal.Assess(e, origT) == EmbedSaveJournal.Verdict.Lost);
+            var offer = EmbedSaveJournal.RestoredSlots(e, origT);
+            Ok("crash: the offer is the saved text", offer != null && offer.SequenceEqual(saved));
+
+            // A normal save: the reopened embed holds what was saved -> retired silently, no offer.
+            Ok("normal save: fresh == saved -> Persisted", EmbedSaveJournal.Assess(e, saved) == EmbedSaveJournal.Verdict.Persisted);
+            var normalised = new List<string> { "  x = 5 ! JOHN-179-A   \r\n", O1, big + "\r\n" };
+            Ok("normal save, Clarion trimmed/re-ended lines -> still Persisted (no false offer)",
+                EmbedSaveJournal.Assess(e, normalised) == EmbedSaveJournal.Verdict.Persisted);
+            Ok("changed since (edited natively) -> Diverged, not offered",
+                EmbedSaveJournal.Assess(e, new List<string> { "  x = 99", O1, O2 }) == EmbedSaveJournal.Verdict.Diverged);
+            Ok("slot count changed -> Diverged", EmbedSaveJournal.Assess(e, new List<string> { O0, O1 }) == EmbedSaveJournal.Verdict.Diverged);
+
+            Ok("retire removes it", EmbedSaveJournal.Retire(App, "BrowseDepartment") && !File.Exists(jp) &&
+                EmbedSaveJournal.Read(App, "BrowseDepartment") == null);
+
+            // A newer save over a persisted entry replaces it quietly; over an unconfirmed one it archives it first.
+            EmbedSaveJournal.Begin(App, "P2", origT, saved, out arch);
+            EmbedSaveJournal.Begin(App, "P2", saved, new List<string> { "  x = 6", O1, big }, out arch);
+            Ok("re-save over a persisted entry: no archive", arch == null && !Directory.GetFiles(jdir, "*.txt").Any());
+            EmbedSaveJournal.Begin(App, "P3", origT, saved, out arch);              // lost, offered, left alone ...
+            EmbedSaveJournal.Begin(App, "P3", origT, new List<string> { "  x = 7", O1, O2 }, out arch);   // ... then a new save
+            Ok("re-save over an unconfirmed entry: archived to a dated recovery file first",
+                arch != null && File.Exists(arch) && File.ReadAllText(arch).Contains("JOHN-179-A") &&
+                File.ReadAllText(arch).Contains("could not be confirmed"), arch);
+            var e3 = EmbedSaveJournal.Read(App, "P3");
+            Ok("...and the journal now holds the newer save", e3 != null && e3.Saved[0] == "  x = 7");
+            string a3 = EmbedSaveJournal.Archive(e3, "test");
+            Ok("Archive keeps a readable copy and retires the journal", a3 != null && File.Exists(a3) && EmbedSaveJournal.Read(App, "P3") == null);
+
+            // Torn / damaged files are never offered.
+            string full = EmbedSaveJournal.Serialize(EmbedSaveJournal.Read(App, "P2") ?? new EmbedSaveJournal.Entry());
+            Ok("serialized form parses back", EmbedSaveJournal.Parse(full) != null);
+            bool anyTornParsed = false;
+            foreach (int cut in new[] { 10, full.Length / 3, full.Length / 2, full.Length - 5, full.Length - 1 })
+                if (EmbedSaveJournal.Parse(full.Substring(0, cut)) != null) anyTornParsed = true;
+            Ok("a file torn at any point is rejected", !anyTornParsed);
+            Ok("no END trailer: rejected", EmbedSaveJournal.Parse(full.Replace("END\n", "")) == null);
+            Ok("trailing junk after END: rejected", EmbedSaveJournal.Parse(full + "x") == null);
+            string p4 = EmbedSaveJournal.PathFor(App, "P4");
+            File.WriteAllText(p4, full.Substring(0, full.Length / 2));
+            Ok("a torn file on disk reads as no journal", EmbedSaveJournal.Read(App, "P4") == null);
+            File.WriteAllText(p4, full);   // P2's entry under P4's name
+            Ok("an entry for another procedure under this name is not trusted", EmbedSaveJournal.Read(App, "P4") == null);
+        }
+        finally
+        {
+            EmbedRecovery.FolderOverride = null;
+            EmbedSaveJournal.FolderOverride = null;
+            try { Directory.Delete(jdir, true); } catch { }
         }
 
         Console.WriteLine();

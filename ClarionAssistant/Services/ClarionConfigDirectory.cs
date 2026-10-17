@@ -167,7 +167,8 @@ namespace ClarionAssistant.Services
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 File.AppendAllText(
                     Path.Combine(dir, "monaco-spike.log"),
-                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + message + Environment.NewLine);
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  [pid " +
+                    System.Diagnostics.Process.GetCurrentProcess().Id + "] " + message + Environment.NewLine);   // MonacoSpikeLog.PidTag's shape
             }
             catch { }
         }

@@ -153,6 +153,49 @@ static class EmbedSaveOrderSourceScan
         Ok("the page's mirror-mode refusal still tells the host (embed mode)",
             gate > ds && gateEnd > gate && page.Substring(gate, gateEnd - gate).Contains("postToHost({ action: 'save'"));
 
+        // ---- GH #179 (254e4353): the save journal outlives ok=True ----
+        int rtj = view.IndexOf("private void RunSaveRoundTripCore(", StringComparison.Ordinal);
+        int rtjEnd = rtj >= 0 ? view.IndexOf("private bool IsStillLive()", rtj, StringComparison.Ordinal) : -1;
+        string rtBody = rtj >= 0 && rtjEnd > rtj ? view.Substring(rtj, rtjEnd - rtj) : "";
+        int bj = rtBody.IndexOf("BeginSaveJournal(current);", StringComparison.Ordinal);
+        int firstSave = rtBody.IndexOf("ModernEmbeditorSaver.Save", StringComparison.Ordinal);
+        Ok("the journal is written before ANY native save in the round-trip", bj > 0 && firstSave > bj,
+            "journal@" + bj + " firstSave@" + firstSave);
+        // Nothing on the success path retires it: the Generator faults AFTER refreshPadSources DONE. The only retires
+        // in the round-trip are on a failure that left the text in the editor.
+        Ok("the round-trip never touches the journal file directly", !rtBody.Contains("EmbedSaveJournal.Retire(") &&
+            !rtBody.Contains("EmbedSaveJournal.Archive("));
+        bool retiresGuarded = true;
+        int nRetire = 0;
+        for (int i = rtBody.IndexOf("RetireSaveJournal(", StringComparison.Ordinal); i >= 0;
+             i = rtBody.IndexOf("RetireSaveJournal(", i + 1, StringComparison.Ordinal))
+        {
+            nRetire++;
+            string before = rtBody.Substring(Math.Max(0, i - 220), Math.Min(220, i));
+            bool failureOnly = before.Contains("else if (editorIntact)") || rtBody.Substring(Math.Max(0, i - 10), Math.Min(10, i)).Contains("if (!ok) ");
+            if (!failureOnly) retiresGuarded = false;
+        }
+        Ok("the round-trip retires the journal ONLY on a failure that left the text in the editor (never on ok=True)",
+            retiresGuarded && nRetire == 2, "retires=" + nRetire);
+        Ok("the journal file is deleted in exactly three places: failure-intact, persisted-at-open, developer's Discard",
+            Count(view, "EmbedSaveJournal.Retire(") == 3);
+        Ok("the next open checks the journal", view.Contains("CheckSaveJournal();   // a save that did not survive the Generator"));
+        int ose = page.IndexOf("msg.type === 'offerSavedEdits'", StringComparison.Ordinal);
+        int oseEnd = ose >= 0 ? page.IndexOf("} else if (msg.type", ose + 10, StringComparison.Ordinal) : -1;
+        string oseBody = ose >= 0 && oseEnd > ose ? page.Substring(ose, oseEnd - ose) : "";
+        int restoreBtn = oseBody.IndexOf("label: 'Restore'", StringComparison.Ordinal);
+        Ok("the page OFFERS the lost save (restored only from the Restore button, never on arrival)",
+            oseBody.Contains("showActionToast(") && restoreBtn > 0 &&
+            oseBody.IndexOf("restoreSlotContents(", StringComparison.Ordinal) > restoreBtn &&
+            oseBody.Contains("label: 'Discard'"));
+
+        // ---- GH #179: every monaco-spike.log line names its process ----
+        string spike = File.ReadAllText(Path.Combine(root, "MonacoClarionSourceEditor.cs"));
+        Ok("MonacoSpikeLog.Write tags each line with the pid, after the timestamp",
+            spike.Contains("ToString(\"yyyy-MM-dd HH:mm:ss.fff\") + \"  \" + PidTag + message"));
+        string cfgDir = File.ReadAllText(Path.Combine(root, "Services", "ClarionConfigDirectory.cs"));
+        Ok("ClarionConfigDirectory.LogOnce writes the same [pid N] shape", cfgDir.Contains("\"  [pid \" +"));
+
         Console.WriteLine(fail == 0 ? "all passed" : fail + " failed");
         return fail == 0 ? 0 : 1;
     }
