@@ -479,6 +479,24 @@ namespace ClarionCodeGraph.Parsing
         /// </summary>
         public ParseResult ParseMemberFile(string filePath, int projectId, HashSet<string> knownProcedures, int startLine = 0)
         {
+            return ParseMemberFileCore(filePath, projectId, knownProcedures, startLine, false);
+        }
+
+        /// <summary>
+        /// GH #246: parse a file INCLUDEd into a PROGRAM's global data section as what it is there - more of that
+        /// section. Its declarations come back scope='global' (the same DATA machinery the PROGRAM file uses) and
+        /// its own INCLUDEs carry <see cref="ClarionSymbol.InGlobalData"/>. ParseIncFile, which every .inc also goes
+        /// through, emits classes, equates and includes but never file-level data, so this is the only place
+        /// "ActiveThreads ctQ_ActiveThreads:ThreadSafe" in such an .inc becomes a row. Callers keep only the
+        /// variables from the result: the classes and equates are ParseIncFile's.
+        /// </summary>
+        public ParseResult ParseGlobalDataInclude(string filePath, int projectId)
+        {
+            return ParseMemberFileCore(filePath, projectId, null, 0, true);
+        }
+
+        private ParseResult ParseMemberFileCore(string filePath, int projectId, HashSet<string> knownProcedures, int startLine, bool globalDataInclude)
+        {
             var result = new ParseResult { FilePath = filePath };
             if (!File.Exists(filePath))
                 return result;
@@ -492,7 +510,9 @@ namespace ClarionCodeGraph.Parsing
             // enclosing procedure is recoverable via the routine symbol's own ParentName.
             string currentRoutine = null;
             bool inCode = false;
-            bool inData = false; // True when between PROCEDURE def and CODE keyword
+            // True when between PROCEDURE def and CODE keyword. A global-data include starts INSIDE the PROGRAM's
+            // global data section, so it starts open.
+            bool inData = globalDataInclude;
             int dataGroupDepth = 0; // Track nested GROUP/QUEUE/RECORD in DATA sections
             var itemize = new ItemizeScope(); // ITEMIZE blocks in DATA sections (members named Prefix:Name)
             var localRoutines = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -501,7 +521,7 @@ namespace ClarionCodeGraph.Parsing
             bool inClassBody = false;
             int classEndDepth = 0;
             // PROGRAM (main) file: pre-procedure data is the app's GLOBAL data section
-            bool isProgramFile = false;
+            bool isProgramFile = globalDataInclude;
             // Explicit MAP tracking. Pass 1 (ParseMainFile) owns MAP contents; here a MAP must be
             // skipped WHOLESALE, because prototypes inside it may legally start at column 0
             // ("TestSignatureFlow PROCEDURE, LONG" — the codegraph-repro fixture compiles) and
@@ -597,6 +617,23 @@ namespace ClarionCodeGraph.Parsing
                             currentClassName = null;
                         }
                         continue;
+                    }
+
+                    // A GROUP/QUEUE/RECORD member opens its own END. Without counting it, its END closed the
+                    // CLASS early and the members after it read as data (GH #246: in a global-data .inc they
+                    // became phantom globals). Counted the way ParseIncFile counts it, self-closing forms
+                    // included. Confined to global-data includes for now: the same gap exists for a .clw's own
+                    // CLASS bodies, but changing that shifts every existing index and is its own ticket.
+                    if (globalDataInclude)
+                    {
+                        var nested = ClassGroupQueueRecordDeclRegex.Match(StripInlineComment(line.TrimStart()));
+                        if (nested.Success)
+                        {
+                            bool selfClosing = nested.Groups["term"].Success ||
+                                Regex.IsMatch(nested.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                            if (!selfClosing) classEndDepth++;
+                            continue;
+                        }
                     }
 
                     // Method prototype inside CLASS: indented "MethodName PROCEDURE(...)"
@@ -861,7 +898,12 @@ namespace ClarionCodeGraph.Parsing
                         Type = "include",
                         FilePath = filePath,
                         LineNumber = lineNum,
-                        ProjectId = projectId
+                        ProjectId = projectId,
+                        // GH #246: an INCLUDE in the PROGRAM's global data section - not in a MAP or CLASS body
+                        // (both consumed above), a procedure, a routine or a GROUP/QUEUE body, and not in a comment.
+                        InGlobalData = isProgramFile && inData && !inCode && currentProcedure == null &&
+                                       currentRoutine == null && dataGroupDepth == 0 &&
+                                       IncludeRegex.IsMatch(StripInlineComment(line))
                     });
                 }
 

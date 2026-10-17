@@ -43,6 +43,13 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         public bool FollowClassModules { get; set; } = true;
 
+        /// <summary>
+        /// Index the data declared in files INCLUDEd into a PROGRAM's global data section as scope='global'
+        /// variables (Pass 2d, GH #246). On by default; the switch exists so a harness can prove its own checks
+        /// fail without it.
+        /// </summary>
+        public bool IndexGlobalDataIncludes { get; set; } = true;
+
         public event Action<string> OnProgress;
 
         /// <summary>
@@ -224,6 +231,8 @@ namespace ClarionCodeGraph.Graph
             var incScans = new Dictionary<string, IncScan>(StringComparer.OrdinalIgnoreCase);
             // Pass 2c seeds: MODULE/LINK names on classes declared in a project's parsed .clw files.
             var clwModuleSeeds = new Dictionary<int, List<KeyValuePair<string, string>>>();
+            // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project.
+            var globalDataIncludeSeeds = new Dictionary<int, List<string>>();
             int unresolvedCount = 0;
 
             // Files an earlier run reached OTHER than through the .cwproj (Pass 2b includes, Pass 2c MODULE/LINK
@@ -615,6 +624,16 @@ namespace ClarionCodeGraph.Graph
                                     discoveredIncludeNames[proj.Id] = names;
                                 }
                                 names.Add(sym.Name);
+                                if (sym.InGlobalData)
+                                {
+                                    List<string> gd;
+                                    if (!globalDataIncludeSeeds.TryGetValue(proj.Id, out gd))
+                                    {
+                                        gd = new List<string>();
+                                        globalDataIncludeSeeds[proj.Id] = gd;
+                                    }
+                                    gd.Add(sym.Name);
+                                }
                                 continue; // Pass 1 already inserted this file's include symbols
                             }
 
@@ -755,6 +774,18 @@ namespace ClarionCodeGraph.Graph
                 {
                     FollowClassModuleTargets(projects, changedProjects, projectDirs, mainFiles, memberFiles, incFiles,
                         discoveredIncludeNames, clwModuleSeeds, incScans, priorReached, libraryPaths, clarionRoot, result);
+                    txn.Commit();
+                }
+            }
+
+            // Pass 2d (GH #246): data declared in files the PROGRAM INCLUDEs into its global data -> scope='global'.
+            if (IndexGlobalDataIncludes && globalDataIncludeSeeds.Count > 0)
+            {
+                ReportProgress("Pass 2d: Indexing global data declared in INCLUDEd files...");
+                using (var txn = _db.BeginTransaction())
+                {
+                    IndexGlobalDataIncludeFiles(projects, changedProjects, projectDirs, globalDataIncludeSeeds,
+                        libraryPaths, clarionRoot, result);
                     txn.Commit();
                 }
             }
@@ -918,7 +949,7 @@ namespace ClarionCodeGraph.Graph
             {
                 var dt = _db.ExecuteQuery(
                     "SELECT project_id, file_name, resolved_path, pass FROM indexed_files " +
-                    "WHERE pass IN ('pass2b-include','" + PassModule + "') AND resolved_path IS NOT NULL " +
+                    "WHERE pass IN ('pass2b-include','" + PassModule + "','" + PassGlobalData + "') AND resolved_path IS NOT NULL " +
                     "AND outcome IN ('resolved_parsed','resolved_no_symbols')");
                 foreach (System.Data.DataRow row in dt.Rows)
                 {
@@ -1107,6 +1138,97 @@ namespace ClarionCodeGraph.Graph
                 followed, unresolved, skipped));
         }
 
+        // ---------------------------------------------------------------------------------------------
+        // Pass 2d (GH #246): global data declared in INCLUDEd files.
+        //
+        //   b4.clw (PROGRAM)         INCLUDE('GlobalMirroredData.inc'),ONCE     <- in the global data section
+        //   GlobalMirroredData.inc   ActiveThreads   ctQ_ActiveThreads:ThreadSafe
+        //
+        // ActiveThreads is program-global, but ParseIncFile never emits file-level data, so it had no row and
+        // "ActiveThreads.Add(...)" in 22 modules linked to nothing. Each file the PROGRAM INCLUDEs in its global
+        // data (and each file THAT one INCLUDEs at its own data level) is read once more as global data, and only
+        // its variables are kept: its classes, equates and includes are ParseIncFile's rows already. Per project,
+        // since each program owns its own instance of the globals. Same admission rule as Pass 2c: never under
+        // the Clarion install.
+        // ---------------------------------------------------------------------------------------------
+
+        internal const string PassGlobalData = "pass2d-global-data";
+
+        private static readonly System.Text.RegularExpressions.Regex TypeAttrRegex = new System.Text.RegularExpressions.Regex(
+            @",\s*TYPE\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private void IndexGlobalDataIncludeFiles(
+            List<SolutionProject> projects,
+            HashSet<int> changedProjects,
+            Dictionary<int, string> projectDirs,
+            Dictionary<int, List<string>> seeds,
+            List<string> libraryPaths,
+            string clarionRoot,
+            IndexResult result)
+        {
+            int files = 0, variables = 0;
+            foreach (var proj in projects)
+            {
+                int pid = proj.Id;
+                List<string> seedNames;
+                string projectDir;
+                if (!changedProjects.Contains(pid) || !seeds.TryGetValue(pid, out seedNames) ||
+                    !projectDirs.TryGetValue(pid, out projectDir)) continue;
+
+                var queue = new Queue<string>(seedNames);
+                var namesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var pathsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                const int MaxFiles = 500; // belt-and-braces against a pathological include web
+                while (queue.Count > 0 && pathsSeen.Count < MaxFiles)
+                {
+                    ThrowIfCancelled();
+                    string name = queue.Dequeue();
+                    if (!namesSeen.Add(name)) continue;
+                    // .inc and .clw fragments only: .equ/.trn and the like hold equates, which ParseIncFile or
+                    // nothing at all covers.
+                    if (!name.EndsWith(".inc", StringComparison.OrdinalIgnoreCase) &&
+                        !name.EndsWith(".clw", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    var resolvedList = _resolver.Resolve(projectDir, new List<string> { name }, libraryPaths);
+                    if (resolvedList.Count == 0 || !resolvedList[0].Found)
+                    {
+                        _db.InsertIndexedFile(pid, name, null, "unresolved", 0, PassGlobalData);
+                        continue;
+                    }
+                    string full = FullPathOrSelf(resolvedList[0].FullPath);
+                    if (!pathsSeen.Add(full)) continue;
+                    if (IsUnder(full, clarionRoot))
+                    {
+                        _db.InsertIndexedFile(pid, name, full, "skipped_clarion_install", 0, PassGlobalData);
+                        continue;
+                    }
+
+                    var parsed = _clarionParser.ParseGlobalDataInclude(full, pid);
+                    int kept = 0;
+                    foreach (var sym in parsed.Symbols)
+                    {
+                        if (sym.Type == "include")
+                        {
+                            if (sym.InGlobalData) queue.Enqueue(sym.Name);
+                            continue;
+                        }
+                        if (sym.Type != "variable" || sym.Scope != "global") continue;
+                        if (string.Equals(sym.Params, "EQUATE", StringComparison.OrdinalIgnoreCase)) continue;
+                        // A ",TYPE" structure (QUEUE,TYPE / GROUP,TYPE) declares a type, not data: no global exists.
+                        if (sym.SourcePreview != null && TypeAttrRegex.IsMatch(sym.SourcePreview)) continue;
+                        sym.Id = _db.InsertSymbol(sym);
+                        kept++;
+                    }
+                    result.SymbolCount += kept;
+                    variables += kept;
+                    files++;
+                    _db.InsertIndexedFile(pid, Path.GetFileName(full), full,
+                        kept > 0 ? "resolved_parsed" : "resolved_no_symbols", kept, PassGlobalData);
+                }
+            }
+            ReportProgress(string.Format("  Global data: {0} INCLUDEd file(s) read, {1} global variable(s)", files, variables));
+        }
+
         /// <summary>
         /// #244 item 3: fill the coverage counts from the per-file audit (the whole database, so an incremental
         /// run reports what the index now holds, not just what this run touched) and decide the status.
@@ -1121,6 +1243,12 @@ namespace ClarionCodeGraph.Graph
                     string outcome = row["outcome"].ToString();
                     string pass = row["pass"] != DBNull.Value ? row["pass"].ToString() : "";
                     int n = Convert.ToInt32(row["n"]);
+                    // A global-data reading (Pass 2d) is a second look at a file another pass already counted.
+                    if (pass == PassGlobalData)
+                    {
+                        if (outcome == "resolved_parsed" || outcome == "resolved_no_symbols") result.GlobalDataFilesRead += n;
+                        continue;
+                    }
                     bool module = pass == PassModule;
                     if (outcome == "resolved_parsed" || outcome == "resolved_no_symbols")
                     {
@@ -2294,6 +2422,10 @@ namespace ClarionCodeGraph.Graph
                             // resolve (issue #54, Bug 1).
                             string lookupOwner = objName;
                             bool foundLocalVar = false;
+                            // True once lookupOwner came from a declared class TYPE (not the literal name):
+                            // only then is an inherited method looked for on the ancestors (GH #246).
+                            bool typedOwner = false;
+                            bool ownerAmbiguous = false;
                             if (currentFileVars != null)
                             {
                                 foreach (var varInfo in currentFileVars)
@@ -2317,7 +2449,10 @@ namespace ClarionCodeGraph.Graph
                                     foundLocalVar = true;
                                     string varTypeName;
                                     if (TryResolveVariableClassType(varInfo.Params, out varTypeName))
+                                    {
                                         lookupOwner = varTypeName;
+                                        typedOwner = true;
+                                    }
                                     break;
                                 }
                             }
@@ -2361,14 +2496,52 @@ namespace ClarionCodeGraph.Graph
                                     {
                                         string varTypeName;
                                         if (TryResolveVariableClassType(memberVar.Params, out varTypeName))
+                                        {
                                             lookupOwner = varTypeName;
+                                            typedOwner = true;
+                                        }
                                     }
                                 }
+                            }
+
+                            // GH #246: a GLOBAL object - declared in the PROGRAM, or in an .inc INCLUDEd into its
+                            // global data - is in no member module's own variable list, so "ActiveThreads.Add(...)"
+                            // in 22 modules resolved to the literal "ActiveThreads.Add" and linked nothing. Same
+                            // project-first narrowing as the references fallback; a local or file variable of the
+                            // same name (found above) still wins.
+                            if (!foundLocalVar && !typedOwner && globalVarsByName.Count > 0)
+                            {
+                                VariableInfo globalObj = resolveGlobalVar(objName, target.ProjectId, out ownerAmbiguous);
+                                string varTypeName;
+                                if (globalObj != null && TryResolveVariableClassType(globalObj.Params, out varTypeName))
+                                {
+                                    lookupOwner = varTypeName;
+                                    typedOwner = true;
+                                }
+                                else
+                                    ownerAmbiguous = false;
                             }
 
                             string fullName = lookupOwner + "." + methodName;
                             bool dottedAmbiguous;
                             long targetId = resolveCallTarget(fullName, target.ProjectId, target.Path, trimmed, out dottedAmbiguous);
+                            // Not overridden on the object's class: the nearest ancestor that declares it
+                            // (ActiveThreads is a ctQ_ActiveThreads:ThreadSafe; Count lives on ctQ_ActiveThreads).
+                            if (targetId < 0 && typedOwner)
+                            {
+                                string ancestor = lookupOwner;
+                                for (int hop = 0; hop < 25 && targetId < 0; hop++)
+                                {
+                                    string parentClassName;
+                                    if (!classParentByName.TryGetValue(ancestor, out parentClassName) ||
+                                        string.IsNullOrEmpty(parentClassName) ||
+                                        string.Equals(parentClassName, ancestor, StringComparison.OrdinalIgnoreCase))
+                                        break;
+                                    ancestor = parentClassName;
+                                    targetId = resolveCallTarget(ancestor + "." + methodName, target.ProjectId, target.Path, trimmed, out dottedAmbiguous);
+                                }
+                            }
+                            dottedAmbiguous = dottedAmbiguous || ownerAmbiguous;
                             if (targetId >= 0)
                             {
                                 string relKey = string.Format("{0}|{1}|calls|{2}", currentFromId, targetId, i + 1);
@@ -3323,6 +3496,9 @@ namespace ClarionCodeGraph.Graph
         /// <summary>INCLUDE() targets (Pass 2b) that did not resolve.</summary>
         public int IncludeTargetsUnresolved { get; set; }
 
+        /// <summary>Files INCLUDEd into a PROGRAM's global data whose declarations were indexed as globals (Pass 2d).</summary>
+        public int GlobalDataFilesRead { get; set; }
+
         public const string StatusOk = "ok";
         public const string StatusWarning = "warning";
         public const string StatusPartial = "partial";
@@ -3389,6 +3565,7 @@ namespace ClarionCodeGraph.Graph
             sb.AppendFormat("  Files parsed: {0}, unresolved: {1}, skipped: {2} (indexed_files)\n", FilesParsed, FilesUnresolved, FilesSkipped);
             sb.AppendFormat("  CLASS MODULE/LINK files: {0} indexed, {1} unresolved, {2} skipped (Clarion install)\n",
                 ModuleFilesIndexed, ModuleTargetsUnresolved, ModuleTargetsSkipped);
+            sb.AppendFormat("  Global data INCLUDE files read: {0}\n", GlobalDataFilesRead);
             foreach (string w in Warnings)
                 sb.Append("  WARNING: ").Append(w).Append('\n');
             return sb.ToString().TrimEnd('\n');

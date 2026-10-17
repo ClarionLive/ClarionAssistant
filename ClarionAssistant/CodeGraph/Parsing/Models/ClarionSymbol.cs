@@ -24,5 +24,10 @@ namespace ClarionCodeGraph.Parsing.Models
         // declaration is INCLUDEd, whether or not a .cwproj lists them (GH #245); the indexer follows them.
         // Null when the CLASS line names none.
         public System.Collections.Generic.List<string> ImplementationModules { get; set; }
+
+        // NOT persisted. On an include symbol: true when the INCLUDE sits in a PROGRAM file's global data
+        // section (or in a file INCLUDEd there), so the data the included file declares is program-global
+        // (GH #246). False everywhere else: a MAP, a CLASS body, a procedure's or routine's data, a MEMBER module.
+        public bool InGlobalData { get; set; }
     }
 }
