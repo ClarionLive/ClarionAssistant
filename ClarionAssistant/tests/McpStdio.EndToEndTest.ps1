@@ -69,6 +69,10 @@ function Invoke-Server([string[]]$requests, [string[]]$extraArgs) {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
     $psi.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+    # GH #266: block 2 lists this folder with no solution open, and the file tools only read inside the path
+    # policy's roots. The server-side extra root makes it one without touching the developer's settings.txt.
+    # From a git worktree this folder sits under a .claude folder, so block 2 also proves such a folder is READABLE.
+    $psi.EnvironmentVariables['CLARION_MCP_ALLOWED_ROOTS'] = $PSScriptRoot
 
     $p = [System.Diagnostics.Process]::Start($psi)
 

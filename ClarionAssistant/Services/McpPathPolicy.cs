@@ -47,6 +47,9 @@ namespace ClarionAssistant.Services
         public string ExtraDeniedPaths;
         /// <summary>The current user's profile (C:\Users\me). Its parent is the profiles folder; every OTHER profile there is denied.</summary>
         public string UserProfile;
+        /// <summary>CLAUDE_CONFIG_DIR when set: Claude Code's config folder moved out of the profile. Denied like
+        /// %USERPROFILE%\.claude (credentials, transcripts).</summary>
+        public string ClaudeConfigDir;
     }
 
     /// <summary>
@@ -63,10 +66,16 @@ namespace ClarionAssistant.Services
     ///                   Automatic roots never widen to a whole drive: a .red entry or project folder that IS a
     ///                   drive root is skipped. Only the developer's own setting can name a drive root.
     ///   Deny          - wins over every allow, and the built-in rules cannot be switched off: UNC and device paths,
-    ///                   network drives, \.ssh\ \.aws\ \.claude\ (and a few other credential folders), other users'
-    ///                   profiles, CA's own secrets (settings.txt holds the MCP token; mcp-*.json the tab tokens;
+    ///                   network drives, \.ssh\ \.aws\ (and a few other credential folders), the user's Claude
+    ///                   config (%USERPROFILE%\.claude, %USERPROFILE%\.claude-*, CLAUDE_CONFIG_DIR) and any
+    ///                   .credentials.json, other users' profiles, CA's own secrets (settings.txt holds the MCP token; mcp-*.json the tab tokens;
     ///                   copilot\ the Copilot login), and ANY write into %APPDATA%\ClarionAssistant - otherwise the
     ///                   model could rewrite Mcp.AllowedRoots and widen its own scope. Plus Mcp.DeniedPaths.
+    ///   Write-only    - any OTHER .claude folder (a project's own, or the one a worktree lives under) stays
+    ///                   READABLE - CLAUDE.md and project skills are instructions the model is meant to read - but
+    ///                   is never writable, so the model cannot write .claude\settings*.json to grant itself
+    ///                   permissions or rewrite its own CLAUDE.md. (Fully denying every .claude segment refused
+    ///                   whole solutions that happen to live under one; McpStdio.EndToEndTest caught it.)
     ///
     /// CANONICALISATION, FAIL CLOSED. A path is judged only after: no control/wildcard characters, no alternate data
     /// stream, no reserved device name, fully qualified "X:\" (relative, "\x" and "C:x" are refused), GetFullPath
@@ -89,8 +98,15 @@ namespace ClarionAssistant.Services
         public const string AllowedRootsEnv = "CLARION_MCP_ALLOWED_ROOTS";
         public const string DeniedPathsEnv = "CLARION_MCP_DENIED_PATHS";
 
-        /// <summary>Folder names denied wherever they appear in a path (credential stores, and Claude's own config).</summary>
-        public static readonly string[] DeniedSegments = { ".ssh", ".aws", ".claude", ".gnupg", ".azure", ".kube", ".docker" };
+        /// <summary>Folder names denied (read and write) wherever they appear in a path: credential stores.</summary>
+        public static readonly string[] DeniedSegments = { ".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker" };
+
+        /// <summary>Folder names that may be read but never written, wherever they appear: Claude config other than
+        /// the user's own (which is fully denied by prefix in <see cref="Build"/>).</summary>
+        public static readonly string[] WriteDeniedSegments = { ".claude" };
+
+        /// <summary>File names denied (read and write) wherever they appear.</summary>
+        public static readonly string[] DeniedFileNames = { ".credentials.json" };
 
         public sealed class Root
         {
@@ -134,7 +150,13 @@ namespace ClarionAssistant.Services
                 p._userProfile = profile;
                 p._usersDir = Lexical(System.IO.Path.GetDirectoryName(profile));
                 if (p._usersDir != null) p._publicProfile = p._usersDir + "\\Public";
+                // The user's Claude Code config: credentials and every session transcript. Read AND write.
+                p.AddBuiltInPrefix(profile + "\\.claude", profile + "\\.claude\\");
+                p.AddBuiltInPattern(profile + "\\.claude-*", false);   // alternate profiles (.claude-work, ...)
+                p.AddBuiltInPattern(profile + "\\.claude.json*", false); // Claude Code's user config file (+ backups)
             }
+            string claudeDir = Lexical(inputs.ClaudeConfigDir);
+            if (claudeDir != null && !IsDriveRoot(claudeDir)) p.AddBuiltInPrefix(claudeDir, claudeDir + "\\ (CLAUDE_CONFIG_DIR)");
             string ca = Lexical(inputs.CaDataDir);
             if (ca != null)
             {
@@ -167,6 +189,13 @@ namespace ClarionAssistant.Services
             foreach (string entry in SplitList(inputs.ExtraAllowedRoots)) p.AddRoot(entry, "setting", true, true);
             p.AddRoot(inputs.CaDataDir, "ca-data", false, false);
             return p;
+        }
+
+        private void AddBuiltInPrefix(string full, string text)
+        {
+            _deny.Add(new DenyRule { Prefix = full, BuiltIn = true, Text = text });
+            string res = ResolveForRoot(full);   // the folder may itself be a junction (OneDrive, moved profile)
+            if (res != null && !Same(res, full)) _deny.Add(new DenyRule { Prefix = res, BuiltIn = true, Text = text });
         }
 
         private void AddBuiltInPattern(string wildcard, bool writeOnly)
@@ -280,6 +309,14 @@ namespace ClarionAssistant.Services
             foreach (string seg in DeniedSegments)
                 if (HasSegment(full, seg))
                     return new DenyRule { BuiltIn = true, Text = "*\\" + seg + "\\*" };
+            string leaf = System.IO.Path.GetFileName(full);
+            foreach (string name in DeniedFileNames)
+                if (Same(leaf, name))
+                    return new DenyRule { BuiltIn = true, Text = "*\\" + name };
+            if (access == PathAccess.Write)
+                foreach (string seg in WriteDeniedSegments)
+                    if (HasSegment(full, seg))
+                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\" + seg + "\\* (writes)" };
             return null;
         }
 

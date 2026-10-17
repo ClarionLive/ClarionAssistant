@@ -1512,11 +1512,13 @@ IdeOnly = true,
             {
                 Name = "export_txa",
 IdeOnly = true,
-                Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead.",
+                Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead. " +
+                              "Write the file inside the solution folder (e.g. a subfolder of it) so read_file can open it afterwards: " +
+                              "%TEMP% is OUTSIDE the file tools' read scope (GH #266) unless the developer adds it to Mcp.AllowedRoots.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "path", "Absolute path for the output TXA file" }
+                        { "path", "Absolute path for the output TXA file - inside the solution folder, not %TEMP%, so read_file can open it" }
                     },
                     new[] { "path" }),
                 RequiresUiThread = true,
@@ -1651,11 +1653,14 @@ IdeOnly = true,
             {
                 Name = "export_dctx",
 IdeOnly = true,
-                Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary.",
+                Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary. " +
+                              "Leave path empty, or write the file inside the solution folder (e.g. a subfolder of it), so read_file can open it " +
+                              "afterwards: the default (the .dct's own folder) is inside that scope when the dictionary lives in the solution. " +
+                              "%TEMP% is OUTSIDE the file tools' read scope (GH #266) unless the developer adds it to Mcp.AllowedRoots.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "path", "Absolute path for the output .dctx file (optional — defaults to same folder as the .dct with .dctx extension)" }
+                        { "path", "Absolute path for the output .dctx file (optional — defaults to same folder as the .dct with .dctx extension). Keep it inside the solution folder, not %TEMP%, so read_file can open it." }
                     }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -6391,7 +6396,8 @@ IdeOnly = true,
         private const string PathScopeNote =
             "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots (the open solution and its project folders, " +
             "the Clarion root, the .red search folders, the Mcp.AllowedRoots setting; Clarion Assistant's own data folder read-only) are " +
-            "accepted, and UNC/network paths, .ssh/.aws/.claude folders and other users' profiles are always refused. A refused path " +
+            "accepted. UNC/network paths, .ssh/.aws folders, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
+            "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable. A refused path " +
             "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy' that names the setting which would " +
             "allow it - report that to the developer; do not retry with another spelling of the same path.";
 

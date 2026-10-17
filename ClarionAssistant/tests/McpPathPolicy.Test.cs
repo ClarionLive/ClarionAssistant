@@ -144,8 +144,42 @@ static class McpPathPolicyTest
             Console.WriteLine("=== deny wins inside an allowed root ===");
             Denied(p, ".ssh inside the solution", Path.Combine(sol, ".ssh", "id_rsa"));
             Denied(p, ".aws inside the solution", Path.Combine(sol, ".aws", "credentials"));
-            Denied(p, ".claude inside the solution", Path.Combine(sol, ".claude", "settings.json"));
-            Denied(p, ".claude folder itself", Path.Combine(sol, ".claude"));
+            Denied(p, ".gnupg inside the solution", Path.Combine(sol, ".gnupg", "secring.gpg"));
+            Denied(p, ".credentials.json anywhere (read)", Path.Combine(sol, "sub", ".credentials.json"));
+            Denied(p, ".credentials.json anywhere (write)", Path.Combine(sol, ".credentials.json"), PathAccess.Write);
+
+            Console.WriteLine("=== .claude: the project's is read-only, the user's is off limits ===");
+            Allowed(p, "project .claude\\CLAUDE.md readable", Path.Combine(sol, ".claude", "CLAUDE.md"));
+            Allowed(p, "project .claude folder readable", Path.Combine(sol, ".claude"));
+            Denied(p, "project .claude\\settings.local.json not writable (self-granted permissions)", Path.Combine(sol, ".claude", "settings.local.json"), PathAccess.Write);
+            Denied(p, "project .claude\\CLAUDE.md not writable", Path.Combine(sol, ".claude", "CLAUDE.md"), PathAccess.Write);
+            Denied(p, "upper-cased .CLAUDE not writable", Path.Combine(sol, ".CLAUDE", "settings.json"), PathAccess.Write);
+            Denied(p, "project .claude\\.credentials.json not readable", Path.Combine(sol, ".claude", ".credentials.json"));
+            // A git worktree lives UNDER a .claude folder (repo\.claude\worktrees\name): the whole solution must not
+            // become unreadable for it - McpStdio.EndToEndTest failed exactly so on integ-1017.
+            string wtSol = Mk(root, "Repo", ".claude", "worktrees", "agent-x", "ClarionAssistant");
+            string wtFile = Touch(Path.Combine(wtSol, "Services", "McpToolRegistry.cs"));
+            var wt = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = wtSol, UserProfile = me, CaDataDir = ca });
+            Allowed(wt, "solution under a worktree's .claude: file readable", wtFile);
+            Allowed(wt, "solution under a worktree's .claude: folder listable", wtSol);
+            Denied(wt, "solution under a worktree's .claude: file not writable", wtFile, PathAccess.Write);
+            // The user's own Claude config: credentials and transcripts. Refused even though `users` is an explicit root.
+            string meClaude = Mk(me, ".claude");
+            Touch(Path.Combine(meClaude, ".credentials.json"));
+            Touch(Path.Combine(meClaude, "projects", "H--x", "session.jsonl"));
+            Denied(p, "profile .claude transcript not readable", Path.Combine(meClaude, "projects", "H--x", "session.jsonl"));
+            Denied(p, "profile .claude folder not readable", meClaude);
+            Denied(p, "profile .claude\\settings.json not writable", Path.Combine(meClaude, "settings.json"), PathAccess.Write);
+            Ok("profile .claude refusal is a built-in that cannot be overridden",
+                !p.Check(Path.Combine(meClaude, "settings.json"), PathAccess.Read).Allowed &&
+                p.Check(Path.Combine(meClaude, "settings.json"), PathAccess.Read).Hint.Contains("cannot be overridden"));
+            Denied(p, "profile .claude-work (alternate profile) not readable", Path.Combine(me, ".claude-work", "settings.json"));
+            Denied(p, "profile .claude.json not readable", Path.Combine(me, ".claude.json"));
+            Allowed(p, "a profile folder merely STARTING with .claude-like text is not the config", Path.Combine(me, "claude-notes", "a.txt"));
+            string cfgDir = Mk(sol, "MovedClaudeConfig");
+            var withCfg = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = me, ClaudeConfigDir = cfgDir });
+            Denied(withCfg, "CLAUDE_CONFIG_DIR inside an allowed root not readable", Path.Combine(cfgDir, "history.jsonl"));
+            Allowed(withCfg, "the rest of that root still readable", solFile);
             Denied(p, "Mcp.DeniedPaths folder entry", Path.Combine(sol, "Secrets", "keys.txt"));
             Denied(p, "Mcp.DeniedPaths bare-name entry", Path.Combine(sol, "Customers", "acme.txt"));
             Denied(p, "Mcp.DeniedPaths wildcard entry", Path.Combine(sol, "cert", "server.pfx"));
