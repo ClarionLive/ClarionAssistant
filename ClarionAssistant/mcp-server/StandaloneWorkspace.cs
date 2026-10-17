@@ -635,6 +635,7 @@ namespace ClarionAssistant.McpServer
                 {
                     var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
                     indexer.RedService = activeRed;
+                    indexer.BuildConfiguration = McpToolRegistry.BuildConfigurationForIndex(slnPath); // GH #245
                     indexer.OnProgress += msg =>
                     {
                         if (runLog != null) { try { runLog.WriteLine(msg); } catch { } }
@@ -649,10 +650,15 @@ namespace ClarionAssistant.McpServer
 
                     var result = indexer.IndexSolution(slnPath, incremental, libPaths);
 
+                    // #244 item 3: a run that resolved little of the solution says so (status + coverage).
                     complete(string.Format(
-                        "Indexed {0}: {1} projects, {2} files, {3} symbols, {4} relationships in {5}ms. Database: {6}",
+                        "{7} Indexed {0}: {1} projects, {2} files, {3} symbols, {4} relationships in {5}ms. Database: {6}",
                         Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
-                        result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath));
+                        result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
+                        result.Status == ClarionCodeGraph.Graph.IndexResult.StatusOk ? "" :
+                            (result.IsPartial ? "PARTIAL INDEX." : "Indexed with warnings."))
+                        .TrimStart()
+                        + "\n" + result.CoverageText());
                 }
                 finally
                 {

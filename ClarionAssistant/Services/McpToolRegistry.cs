@@ -5540,6 +5540,17 @@ IdeOnly = true,
         /// record the IDE publishes (the standalone), then its saved preferences\&lt;sln&gt;.&lt;hash&gt;.xml. Null, with a
         /// note, when none establishes it - the caller then searches Common only.
         /// </summary>
+        /// <summary>
+        /// The build configuration a CodeGraph index run resolves through (GH #245), the one resolve_red_path uses:
+        /// the IDE's active configuration for <paramref name="slnPath"/>, or null when unknown (the indexer then
+        /// keeps its old fixed section order). Never throws.
+        /// </summary>
+        internal static string BuildConfigurationForIndex(string slnPath)
+        {
+            try { string note; return ActiveBuildConfiguration(slnPath, out note); }
+            catch { return null; }
+        }
+
         private static string ActiveBuildConfiguration(string slnPath, out string note)
         {
             IdeSolutionRecord.BuildConfiguration inProcess = null;
@@ -5768,10 +5779,12 @@ IdeOnly = true,
                             DescribeIndexEvent(ev));
                     }
 
+                    indexer.BuildConfiguration = BuildConfigurationForIndex(slnPath);
                     var result = indexer.IndexSolution(slnPath, incremental, libPaths);
 
-                    return string.Format(
-                        "CodeGraph indexed successfully:\n" +
+                    // #244 item 3: the headline and the coverage block say when most of the solution did
+                    // not resolve, instead of "indexed successfully" over a near-empty graph.
+                    return result.Headline + "\n" + string.Format(
                         "  Solution: {0}\n" +
                         "  Projects: {1}\n" +
                         "  Files: {2}\n" +
@@ -5788,7 +5801,9 @@ IdeOnly = true,
                         // LogPath is null when the log could not be opened (e.g. another index
                         // run holds the per-solution file) — say so instead of a bare "Log: ".
                         runLog.LogPath ?? "(no log written — another index run may hold the log file)",
-                        red != null && red.RedFilePath != null ? red.RedFilePath : "(none)");
+                        red != null && red.RedFilePath != null ? red.RedFilePath : "(none)")
+                        + "\n  Build configuration: " + (indexer.BuildConfiguration ?? "(unknown - .red sections Common, Debug, Release)")
+                        + "\n" + result.CoverageText();
                 }
                 finally
                 {

@@ -29,6 +29,20 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         public ClarionAssistant.Services.RedFileService RedService { get; set; }
 
+        /// <summary>
+        /// The build configuration ("Debug", "Release", ...) the solution is built in, when the host knows it.
+        /// Source files then resolve through that configuration's .red sections first ([Release32], [Release],
+        /// [Common]), as resolve_red_path and the compiler do. Null keeps the indexer's old fixed order
+        /// (Common, Debug, Release).
+        /// </summary>
+        public string BuildConfiguration { get; set; }
+
+        /// <summary>
+        /// Follow CLASS MODULE('x.clw') / LINK('x.clw') to the implementing .clw (Pass 2c, GH #245). On by
+        /// default; the switch exists so a harness can prove its own checks fail without it.
+        /// </summary>
+        public bool FollowClassModules { get; set; } = true;
+
         public event Action<string> OnProgress;
 
         /// <summary>
@@ -113,6 +127,24 @@ namespace ClarionCodeGraph.Graph
             if (red == null)
                 ReportProgress("No redirection file in effect — resolution limited to .\\source, project root, and explicit search paths.");
             _resolver = new SourceResolver(red);
+            if (!string.IsNullOrEmpty(BuildConfiguration))
+            {
+                _resolver.RedSections = ClarionAssistant.Services.RedResolution.SectionsFor(BuildConfiguration);
+                ReportProgress(string.Format("Build configuration: {0} (.red sections {1})",
+                    BuildConfiguration, string.Join(", ", _resolver.RedSections)));
+            }
+            // Files under the Clarion install (%ROOT%: libsrc, accessory) are the compiler's own and the
+            // vendors' libraries; MODULE/LINK targets there are not followed (Pass 2c).
+            string clarionRoot = null;
+            if (red != null)
+            {
+                string root;
+                if (red.Macros.TryGetValue("ROOT", out root) && !string.IsNullOrEmpty(root))
+                {
+                    try { clarionRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+                    catch { clarionRoot = null; }
+                }
+            }
 
             // For full re-index, wipe everything and start fresh
             if (!incremental)
@@ -187,20 +219,39 @@ namespace ClarionCodeGraph.Graph
             var discoveredIncludeNames = new Dictionary<int, HashSet<string>>();
             var allResolved = new Dictionary<int, List<ResolvedFile>>(); // per-file outcome audit
             var mainMapSymCount = new Dictionary<int, int>(); // Pass 1 MAP symbol count per main file
+            // Pass 2c (GH #245): what each .inc INCLUDEs and which .clw its classes name in MODULE/LINK, by full
+            // path, filled as .inc files are parsed (Pass 1, 1b, 2b) so the include walk reads each file once.
+            var incScans = new Dictionary<string, IncScan>(StringComparer.OrdinalIgnoreCase);
+            // Pass 2c seeds: MODULE/LINK names on classes declared in a project's parsed .clw files.
+            var clwModuleSeeds = new Dictionary<int, List<KeyValuePair<string, string>>>();
             int unresolvedCount = 0;
+
+            // Files an earlier run reached OTHER than through the .cwproj (Pass 2b includes, Pass 2c MODULE/LINK
+            // targets), per project. Incremental only: an edit to one of them must count as a change, and an
+            // unchanged project's MODULE-reached files must still be rescanned for relationships (Pass 3 rebuilds
+            // every edge), so they are read back from the audit before anything is cleared.
+            var priorReached = incremental ? LoadReachedFiles() : new Dictionary<int, List<ReachedFile>>();
 
             foreach (var proj in projects)
             {
                 if (!File.Exists(proj.CwprojPath))
                 {
                     ReportProgress(string.Format("Skipping {0} — .cwproj not found", proj.Name));
+                    result.ProjectsUnresolved++;
+                    result.UnresolvedProjectNames.Add(proj.Name);
                     continue;
                 }
+                result.ProjectsResolved++;
 
                 string projectDir = Path.GetDirectoryName(proj.CwprojPath);
                 projectDirs[proj.Id] = projectDir;
                 var projResult = _projParser.Parse(proj.CwprojPath);
                 var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles, libraryPaths);
+                foreach (var f in resolved)
+                {
+                    result.CwprojFilesListed++;
+                    if (!f.Found) result.CwprojFilesUnresolved++;
+                }
 
                 var members = new List<ResolvedFile>();
                 var includes = new List<ResolvedFile>();
@@ -241,7 +292,7 @@ namespace ClarionCodeGraph.Graph
                         {
                             changedProjects.Add(proj.Id);
                         }
-                        else if (ProjectHasChanges(resolved, lastIndexed))
+                        else if (ProjectHasChanges(resolved, lastIndexed) || ReachedFilesChanged(priorReached, proj.Id, lastIndexed))
                         {
                             changedProjects.Add(proj.Id);
                         }
@@ -263,6 +314,7 @@ namespace ClarionCodeGraph.Graph
                     sw.Stop();
                     result.DurationMs = sw.ElapsedMilliseconds;
                     ReportProgress("No changes detected — index is up to date.");
+                    FinishCoverage(result);
                     return result;
                 }
 
@@ -348,6 +400,7 @@ namespace ClarionCodeGraph.Graph
                             long symId = _db.InsertSymbol(sym);
                             sym.Id = symId;
                         }
+                        RememberIncScan(incScans, file.FullPath, parseResult);
                         result.SymbolCount += parseResult.Symbols.Count;
                         _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
                             parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
@@ -448,6 +501,7 @@ namespace ClarionCodeGraph.Graph
                                     continue; // already indexed (from project or duplicate lib path casing)
 
                                 var parseResult = _clarionParser.ParseIncFile(fullPath, libProjectId);
+                                RememberIncScan(incScans, fullPath, parseResult);
                                 if (parseResult.Symbols.Count > 0)
                                 {
                                     foreach (var sym in parseResult.Symbols)
@@ -509,6 +563,7 @@ namespace ClarionCodeGraph.Graph
                     {
                         ThrowIfCancelled();
                         var parseResult = _clarionParser.ParseMemberFile(file.FullPath, proj.Id, null);
+                        AddModuleSeeds(clwModuleSeeds, proj.Id, parseResult);
                         foreach (var sym in parseResult.Symbols)
                         {
                             long symId = _db.InsertSymbol(sym);
@@ -547,6 +602,7 @@ namespace ClarionCodeGraph.Graph
                     {
                         ThrowIfCancelled();
                         var tailResult = _clarionParser.ParseMemberFile(tailMainPath, proj.Id, null, 0);
+                        AddModuleSeeds(clwModuleSeeds, proj.Id, tailResult);
                         int inserted = 0;
                         foreach (var sym in tailResult.Symbols)
                         {
@@ -669,6 +725,7 @@ namespace ClarionCodeGraph.Graph
                             long symId = _db.InsertSymbol(sym);
                             sym.Id = symId;
                         }
+                        RememberIncScan(incScans, fullPath, parseResult);
                         result.SymbolCount += parseResult.Symbols.Count;
                         _db.InsertIndexedFile(projectId, includeName, fullPath,
                             parseResult.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
@@ -688,6 +745,18 @@ namespace ClarionCodeGraph.Graph
                 }
 
                 txn.Commit();
+            }
+
+            // Pass 2c (GH #245): CLASS MODULE('x.clw') / LINK('x.clw') -> the implementing .clw.
+            if (FollowClassModules)
+            {
+                ReportProgress("Pass 2c: Following CLASS MODULE()/LINK() to implementation files...");
+                using (var txn = _db.BeginTransaction())
+                {
+                    FollowClassModuleTargets(projects, changedProjects, projectDirs, mainFiles, memberFiles, incFiles,
+                        discoveredIncludeNames, clwModuleSeeds, incScans, priorReached, libraryPaths, clarionRoot, result);
+                    txn.Commit();
+                }
             }
 
             // Pass 3: Always rebuild ALL relationships (they cross project boundaries)
@@ -719,14 +788,15 @@ namespace ClarionCodeGraph.Graph
             string mode = incremental ? "Incremental" : "Full";
             ReportProgress(string.Format("{0} indexing complete: {1} projects, {2} files, {3} symbols in {4}ms",
                 mode, result.ProjectCount, result.FileCount, result.SymbolCount, result.DurationMs));
-            // No silent gaps (ticket d1a0aea6): say when cwproj-listed files did not resolve,
-            // and where the per-file audit lives either way.
-            if (unresolvedCount > 0)
-                ReportProgress(string.Format(
-                    "WARNING: {0} cwproj-listed file(s) did not resolve — SELECT * FROM indexed_files WHERE outcome='unresolved'",
-                    unresolvedCount));
-            else
-                ReportProgress("All cwproj-listed files resolved. Per-file audit: indexed_files table.");
+            // No silent gaps (ticket d1a0aea6, #244 item 3): say how much of the solution the index actually
+            // covers - projects, cwproj-listed files, INCLUDE and MODULE/LINK targets - and call a run that
+            // resolved little of it partial rather than plain success. The per-file audit is indexed_files.
+            FinishCoverage(result);
+            if (unresolvedCount == 0)
+                ReportProgress("All cwproj-listed files resolved this run. Per-file audit: indexed_files table.");
+            foreach (string w in result.Warnings)
+                ReportProgress("WARNING: " + w);
+            ReportProgress("Index status: " + result.Status);
 
             return result;
         }
@@ -748,6 +818,330 @@ namespace ClarionCodeGraph.Graph
                 catch { }
             }
             return false;
+        }
+
+        // ---------------------------------------------------------------------------------------------
+        // Pass 2c (GH #245): CLASS MODULE('x.clw') / LINK('x.clw') -> the implementing .clw.
+        //
+        // A hand-coded class library reaches the compiler through the class declaration, not the .cwproj:
+        // a project INCLUDEs x.inc, x.inc declares "X CLASS,TYPE,MODULE('x.clw'),LINK('x.clw')", and the
+        // compiler then builds x.clw. Mark's shared library had 109 such files and 3 were indexed. So: walk
+        // each project's INCLUDE closure (the compiler's own rule for which declarations are in), collect
+        // the MODULE/LINK names on the classes found there, resolve each through the project's .red, and
+        // parse it as a member file. Files under the Clarion install (%ROOT%: ABC libsrc, accessory) are
+        // left alone - every generated app would otherwise pull in all of ABC.
+        // ---------------------------------------------------------------------------------------------
+
+        internal const string PassModule = "pass2c-module";
+
+        /// <summary>What one .inc INCLUDEs, and which .clw its classes name in MODULE/LINK.</summary>
+        internal sealed class IncScan
+        {
+            public List<string> Includes = new List<string>();
+            /// <summary>(module file name, declaring file path)</summary>
+            public List<KeyValuePair<string, string>> Modules = new List<KeyValuePair<string, string>>();
+        }
+
+        /// <summary>A file an earlier run reached without the .cwproj (indexed_files row, incremental runs).</summary>
+        internal sealed class ReachedFile
+        {
+            public string FileName;
+            public string Path;
+            public string Pass;
+        }
+
+        private static string FullPathOrSelf(string path)
+        {
+            try { return Path.GetFullPath(path); } catch { return path; }
+        }
+
+        private static bool IsUnder(string fullPath, string root)
+        {
+            return root != null && fullPath != null &&
+                   (fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    fullPath.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static IncScan ScanOf(string filePath, ParseResult parsed)
+        {
+            var scan = new IncScan();
+            foreach (var sym in parsed.Symbols)
+            {
+                if (sym.Type == "include")
+                    scan.Includes.Add(sym.Name);
+                else if (sym.Type == "class" && sym.ImplementationModules != null)
+                    foreach (string m in sym.ImplementationModules)
+                        scan.Modules.Add(new KeyValuePair<string, string>(m, filePath));
+            }
+            return scan;
+        }
+
+        private static void RememberIncScan(Dictionary<string, IncScan> scans, string filePath, ParseResult parsed)
+        {
+            string full = FullPathOrSelf(filePath);
+            if (!scans.ContainsKey(full)) scans[full] = ScanOf(full, parsed);
+        }
+
+        /// <summary>MODULE/LINK names on the classes a parsed .clw declares (a CLASS,TYPE in a PROGRAM's global data, say).</summary>
+        private static void AddModuleSeeds(Dictionary<int, List<KeyValuePair<string, string>>> seeds, int projectId, ParseResult parsed)
+        {
+            foreach (var sym in parsed.Symbols)
+            {
+                if (sym.Type != "class" || sym.ImplementationModules == null) continue;
+                List<KeyValuePair<string, string>> list;
+                if (!seeds.TryGetValue(projectId, out list))
+                {
+                    list = new List<KeyValuePair<string, string>>();
+                    seeds[projectId] = list;
+                }
+                foreach (string m in sym.ImplementationModules)
+                    list.Add(new KeyValuePair<string, string>(m, sym.FilePath));
+            }
+        }
+
+        /// <summary>The .inc's scan, parsing it (symbols discarded) the first time a walk meets a file no pass parsed.</summary>
+        private IncScan GetIncScan(Dictionary<string, IncScan> scans, string fullPath)
+        {
+            IncScan scan;
+            if (scans.TryGetValue(fullPath, out scan)) return scan;
+            try { scan = ScanOf(fullPath, _clarionParser.ParseIncFile(fullPath, -1)); }
+            catch { scan = new IncScan(); }
+            scans[fullPath] = scan;
+            return scan;
+        }
+
+        /// <summary>Pass 2b / 2c rows an earlier run recorded, per project (incremental runs only).</summary>
+        private Dictionary<int, List<ReachedFile>> LoadReachedFiles()
+        {
+            var byProject = new Dictionary<int, List<ReachedFile>>();
+            try
+            {
+                var dt = _db.ExecuteQuery(
+                    "SELECT project_id, file_name, resolved_path, pass FROM indexed_files " +
+                    "WHERE pass IN ('pass2b-include','" + PassModule + "') AND resolved_path IS NOT NULL " +
+                    "AND outcome IN ('resolved_parsed','resolved_no_symbols')");
+                foreach (System.Data.DataRow row in dt.Rows)
+                {
+                    if (row["project_id"] == DBNull.Value) continue;
+                    int pid = Convert.ToInt32(row["project_id"]);
+                    List<ReachedFile> list;
+                    if (!byProject.TryGetValue(pid, out list))
+                    {
+                        list = new List<ReachedFile>();
+                        byProject[pid] = list;
+                    }
+                    list.Add(new ReachedFile
+                    {
+                        FileName = row["file_name"].ToString(),
+                        Path = row["resolved_path"].ToString(),
+                        Pass = row["pass"] != DBNull.Value ? row["pass"].ToString() : null
+                    });
+                }
+            }
+            catch { }
+            return byProject;
+        }
+
+        /// <summary>True when a file an earlier run reached outside the .cwproj changed (or vanished) since then.</summary>
+        private static bool ReachedFilesChanged(Dictionary<int, List<ReachedFile>> prior, int projectId, DateTime lastIndexed)
+        {
+            List<ReachedFile> list;
+            if (prior == null || !prior.TryGetValue(projectId, out list)) return false;
+            foreach (var f in list)
+            {
+                try
+                {
+                    if (!File.Exists(f.Path) || File.GetLastWriteTime(f.Path) > lastIndexed) return true;
+                }
+                catch { return true; }
+            }
+            return false;
+        }
+
+        private void FollowClassModuleTargets(
+            List<SolutionProject> projects,
+            HashSet<int> changedProjects,
+            Dictionary<int, string> projectDirs,
+            Dictionary<int, string> mainFiles,
+            Dictionary<int, List<ResolvedFile>> memberFiles,
+            Dictionary<int, List<ResolvedFile>> incFiles,
+            Dictionary<int, HashSet<string>> discoveredIncludeNames,
+            Dictionary<int, List<KeyValuePair<string, string>>> clwModuleSeeds,
+            Dictionary<string, IncScan> incScans,
+            Dictionary<int, List<ReachedFile>> priorReached,
+            List<string> libraryPaths,
+            string clarionRoot,
+            IndexResult result)
+        {
+            // Every .clw some project already indexes, solution-wide: a MODULE target that is one of them is
+            // not parsed again. Dedup is by resolved path and solution-wide - a shared class library used by
+            // ten apps is indexed ONCE (under the first project that reaches it), so a call from any of them
+            // resolves to that one copy rather than to one of ten equal-rank duplicates.
+            var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in memberFiles)
+                foreach (var f in kv.Value)
+                    if (f.Found) claimed.Add(FullPathOrSelf(f.FullPath));
+            foreach (var kv in mainFiles)
+                claimed.Add(FullPathOrSelf(kv.Value));
+
+            // Incremental: an unchanged project keeps the MODULE-reached files an earlier run gave it, and
+            // they are rescanned for relationships like its .cwproj files (Pass 3 rebuilds every edge).
+            foreach (var proj in projects)
+            {
+                if (changedProjects.Contains(proj.Id)) continue;
+                List<ReachedFile> prior;
+                List<ResolvedFile> members;
+                if (!priorReached.TryGetValue(proj.Id, out prior) || !memberFiles.TryGetValue(proj.Id, out members)) continue;
+                foreach (var p in prior)
+                {
+                    if (p.Pass != PassModule) continue;
+                    string full = FullPathOrSelf(p.Path);
+                    if (!File.Exists(full) || !claimed.Add(full)) continue;
+                    members.Add(new ResolvedFile { FileName = p.FileName, FullPath = full, Found = true });
+                }
+            }
+
+            var resolveCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Func<string, string, bool, string> resolveOne = delegate(string projectDir, string name, bool withLibraryPaths)
+            {
+                string key = projectDir + "|" + (withLibraryPaths ? "L|" : "R|") + name;
+                string hit;
+                if (resolveCache.TryGetValue(key, out hit)) return hit;
+                var list = _resolver.Resolve(projectDir, new List<string> { name }, withLibraryPaths ? libraryPaths : null);
+                hit = list.Count > 0 && list[0].Found ? FullPathOrSelf(list[0].FullPath) : null;
+                resolveCache[key] = hit;
+                return hit;
+            };
+
+            int followed = 0, unresolved = 0, skipped = 0;
+            foreach (var proj in projects)
+            {
+                int pid = proj.Id;
+                if (!changedProjects.Contains(pid)) continue;
+                string projectDir;
+                List<ResolvedFile> members;
+                if (!projectDirs.TryGetValue(pid, out projectDir) || !memberFiles.TryGetValue(pid, out members)) continue;
+
+                var incQueue = new Queue<string>();                                  // .inc full paths
+                var visitedInc = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var includeNamesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var moduleQueue = new Queue<KeyValuePair<string, string>>();          // (module name, declared in)
+                var moduleNamesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // INCLUDE of a .clw is a source fragment and .equ/.def are equates (see Pass 2b): only .inc
+                // files are walked. Include names resolve the way Pass 2b resolves them.
+                Action<string> enqueueInclude = delegate(string name)
+                {
+                    if (string.IsNullOrEmpty(name) || !name.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) return;
+                    if (!includeNamesSeen.Add(name)) return;
+                    string full = resolveOne(projectDir, name, true);
+                    if (full != null && visitedInc.Add(full)) incQueue.Enqueue(full);
+                };
+
+                List<ResolvedFile> knownIncs;
+                if (incFiles.TryGetValue(pid, out knownIncs))
+                    foreach (var f in knownIncs)
+                    {
+                        string full = FullPathOrSelf(f.FullPath);
+                        if (visitedInc.Add(full)) incQueue.Enqueue(full);
+                    }
+                HashSet<string> seedNames;
+                if (discoveredIncludeNames.TryGetValue(pid, out seedNames))
+                    foreach (string n in seedNames) enqueueInclude(n);
+                List<KeyValuePair<string, string>> seedModules;
+                if (clwModuleSeeds.TryGetValue(pid, out seedModules))
+                    foreach (var m in seedModules) moduleQueue.Enqueue(m);
+
+                while (incQueue.Count > 0 || moduleQueue.Count > 0)
+                {
+                    ThrowIfCancelled();
+                    if (incQueue.Count > 0)
+                    {
+                        var scan = GetIncScan(incScans, incQueue.Dequeue());
+                        foreach (string n in scan.Includes) enqueueInclude(n);
+                        foreach (var m in scan.Modules) moduleQueue.Enqueue(m);
+                        continue;
+                    }
+
+                    var mod = moduleQueue.Dequeue();
+                    if (!moduleNamesSeen.Add(mod.Key)) continue;
+
+                    // MODULE/LINK names resolve through the .red only (plus the project's own folders), not
+                    // through the .inc library folders: that is where the compiler looks for a .clw.
+                    string target = resolveOne(projectDir, mod.Key, false);
+                    if (target == null)
+                    {
+                        _db.InsertIndexedFile(pid, mod.Key, null, "unresolved", 0, PassModule);
+                        unresolved++;
+                        continue;
+                    }
+                    if (claimed.Contains(target)) continue; // a .cwproj lists it, or another project reached it first
+                    if (IsUnder(target, clarionRoot))
+                    {
+                        _db.InsertIndexedFile(pid, mod.Key, target, "skipped_clarion_install", 0, PassModule);
+                        skipped++;
+                        continue;
+                    }
+                    claimed.Add(target);
+
+                    var parsed = _clarionParser.ParseMemberFile(target, pid, null);
+                    foreach (var sym in parsed.Symbols)
+                    {
+                        sym.Id = _db.InsertSymbol(sym);
+                        if (sym.Type == "include") enqueueInclude(sym.Name);
+                        else if (sym.Type == "class" && sym.ImplementationModules != null)
+                            foreach (string m in sym.ImplementationModules)
+                                moduleQueue.Enqueue(new KeyValuePair<string, string>(m, target));
+                    }
+                    result.SymbolCount += parsed.Symbols.Count;
+                    result.FileCount++;
+                    _db.InsertIndexedFile(pid, Path.GetFileName(target), target,
+                        parsed.Symbols.Count > 0 ? "resolved_parsed" : "resolved_no_symbols",
+                        parsed.Symbols.Count, PassModule);
+                    members.Add(new ResolvedFile { FileName = Path.GetFileName(target), FullPath = target, Found = true });
+                    followed++;
+                }
+            }
+
+            ReportProgress(string.Format("  MODULE/LINK: {0} implementation file(s) indexed, {1} unresolved, {2} under the Clarion install skipped",
+                followed, unresolved, skipped));
+        }
+
+        /// <summary>
+        /// #244 item 3: fill the coverage counts from the per-file audit (the whole database, so an incremental
+        /// run reports what the index now holds, not just what this run touched) and decide the status.
+        /// </summary>
+        private void FinishCoverage(IndexResult result)
+        {
+            try
+            {
+                var dt = _db.ExecuteQuery("SELECT outcome, pass, COUNT(*) AS n FROM indexed_files GROUP BY outcome, pass");
+                foreach (System.Data.DataRow row in dt.Rows)
+                {
+                    string outcome = row["outcome"].ToString();
+                    string pass = row["pass"] != DBNull.Value ? row["pass"].ToString() : "";
+                    int n = Convert.ToInt32(row["n"]);
+                    bool module = pass == PassModule;
+                    if (outcome == "resolved_parsed" || outcome == "resolved_no_symbols")
+                    {
+                        result.FilesParsed += n;
+                        if (module) result.ModuleFilesIndexed += n;
+                    }
+                    else if (outcome == "unresolved")
+                    {
+                        result.FilesUnresolved += n;
+                        if (module) result.ModuleTargetsUnresolved += n;
+                        if (pass == "pass2b-include") result.IncludeTargetsUnresolved += n;
+                    }
+                    else if (outcome.StartsWith("skipped", StringComparison.Ordinal))
+                    {
+                        result.FilesSkipped += n;
+                        if (module) result.ModuleTargetsSkipped += n;
+                    }
+                }
+            }
+            catch { }
+            result.Decide();
         }
 
         /// <summary>Returns the number of relationships inserted (surfaced on IndexResult for
@@ -2904,6 +3298,101 @@ namespace ClarionCodeGraph.Graph
         public int SymbolCount { get; set; }
         public int RelationshipCount { get; set; }
         public long DurationMs { get; set; }
+
+        // ---- Coverage (#244 item 3): how much of the solution the index actually holds ----
+
+        /// <summary>.cwproj files the .sln names that exist on disk / that do not.</summary>
+        public int ProjectsResolved { get; set; }
+        public int ProjectsUnresolved { get; set; }
+        public List<string> UnresolvedProjectNames { get; } = new List<string>();
+
+        /// <summary>Files the .cwproj files list (Compile items: .clw and .inc), and how many of them did not resolve.</summary>
+        public int CwprojFilesListed { get; set; }
+        public int CwprojFilesUnresolved { get; set; }
+
+        /// <summary>From the indexed_files audit, every pass: files parsed (with or without symbols), unresolved, skipped.</summary>
+        public int FilesParsed { get; set; }
+        public int FilesUnresolved { get; set; }
+        public int FilesSkipped { get; set; }
+
+        /// <summary>CLASS MODULE()/LINK() targets (Pass 2c): indexed, unresolved, skipped (under the Clarion install).</summary>
+        public int ModuleFilesIndexed { get; set; }
+        public int ModuleTargetsUnresolved { get; set; }
+        public int ModuleTargetsSkipped { get; set; }
+
+        /// <summary>INCLUDE() targets (Pass 2b) that did not resolve.</summary>
+        public int IncludeTargetsUnresolved { get; set; }
+
+        public const string StatusOk = "ok";
+        public const string StatusWarning = "warning";
+        public const string StatusPartial = "partial";
+
+        /// <summary>"ok", "warning" (something did not resolve) or "partial" (most of it did not).</summary>
+        public string Status { get; private set; } = StatusOk;
+        public bool IsPartial { get { return Status == StatusPartial; } }
+        public List<string> Warnings { get; } = new List<string>();
+
+        /// <summary>Decide <see cref="Status"/> and <see cref="Warnings"/> from the counts. Idempotent.</summary>
+        public void Decide()
+        {
+            Warnings.Clear();
+            bool partial = false;
+            int projectTotal = ProjectsResolved + ProjectsUnresolved;
+            if (projectTotal == 0)
+            {
+                Warnings.Add("the solution names no Clarion projects (.cwproj) - nothing was indexed");
+                partial = true;
+            }
+            else if (ProjectsUnresolved > 0)
+            {
+                Warnings.Add(string.Format("{0} of {1} .cwproj file(s) not found: {2}", ProjectsUnresolved, projectTotal,
+                    string.Join(", ", UnresolvedProjectNames)));
+                if (ProjectsUnresolved * 2 > projectTotal) partial = true;
+            }
+            if (CwprojFilesUnresolved > 0)
+            {
+                Warnings.Add(string.Format("{0} of {1} .cwproj-listed file(s) did not resolve through the .red - " +
+                    "SELECT * FROM indexed_files WHERE outcome='unresolved' AND pass='resolve'", CwprojFilesUnresolved, CwprojFilesListed));
+                if (CwprojFilesUnresolved * 2 > CwprojFilesListed) partial = true;
+            }
+            int moduleTotal = ModuleFilesIndexed + ModuleTargetsUnresolved;
+            if (ModuleTargetsUnresolved > 0)
+            {
+                Warnings.Add(string.Format("{0} of {1} CLASS MODULE()/LINK() file(s) did not resolve - " +
+                    "SELECT * FROM indexed_files WHERE outcome='unresolved' AND pass='pass2c-module'", ModuleTargetsUnresolved, moduleTotal));
+                if (ModuleTargetsUnresolved * 2 > moduleTotal) partial = true;
+            }
+            if (IncludeTargetsUnresolved > 0)
+                Warnings.Add(string.Format("{0} INCLUDE()d .inc file(s) did not resolve - SELECT * FROM indexed_files WHERE outcome='unresolved' AND pass='pass2b-include'",
+                    IncludeTargetsUnresolved));
+            Status = partial ? StatusPartial : (Warnings.Count > 0 ? StatusWarning : StatusOk);
+        }
+
+        /// <summary>First line of a result message, worded by <see cref="Status"/>.</summary>
+        public string Headline
+        {
+            get
+            {
+                if (Status == StatusPartial) return "CodeGraph index is PARTIAL - most of the solution did not resolve, so queries will miss code:";
+                if (Status == StatusWarning) return "CodeGraph indexed with warnings:";
+                return "CodeGraph indexed successfully:";
+            }
+        }
+
+        /// <summary>The coverage block every host appends to its result message ("  Name: value" lines, newline-separated).</summary>
+        public string CoverageText()
+        {
+            Decide();
+            var sb = new System.Text.StringBuilder();
+            sb.Append("  Status: ").Append(Status).Append('\n');
+            sb.AppendFormat("  Projects resolved: {0} of {1}\n", ProjectsResolved, ProjectsResolved + ProjectsUnresolved);
+            sb.AppendFormat("  Files parsed: {0}, unresolved: {1}, skipped: {2} (indexed_files)\n", FilesParsed, FilesUnresolved, FilesSkipped);
+            sb.AppendFormat("  CLASS MODULE/LINK files: {0} indexed, {1} unresolved, {2} skipped (Clarion install)\n",
+                ModuleFilesIndexed, ModuleTargetsUnresolved, ModuleTargetsSkipped);
+            foreach (string w in Warnings)
+                sb.Append("  WARNING: ").Append(w).Append('\n');
+            return sb.ToString().TrimEnd('\n');
+        }
     }
 
     internal class VariableInfo

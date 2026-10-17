@@ -17,11 +17,41 @@ namespace ClarionCodeGraph.Parsing
     {
         private readonly RedFileService _redService;
 
+        // A project folder's own version-named .red supersedes the solution's (RedFileService.ForProjectDirectory,
+        // the rule resolve_red_path follows), parsed once per folder.
+        private readonly Dictionary<string, RedFileService> _redByProjectDir =
+            new Dictionary<string, RedFileService>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The .red sections searched, in order. Null (the default) keeps the order the indexer has always used:
+        /// Common, then Debug, then Release. Set it from the build configuration (RedResolution.SectionsFor gives
+        /// "Release32", "Release", "Common") to resolve the way the compiler will for that build, as
+        /// resolve_red_path does.
+        /// </summary>
+        public string[] RedSections { get; set; }
+
+        private static readonly string[] LegacySections = { "Common", "Debug", "Release" };
+
         public SourceResolver() { }
 
         public SourceResolver(RedFileService redService)
         {
             _redService = redService;
+        }
+
+        /// <summary>The .red that governs <paramref name="projectDir"/>: its own version-named one, else the solution's.</summary>
+        public RedFileService RedFor(string projectDir)
+        {
+            if (_redService == null || string.IsNullOrEmpty(projectDir)) return _redService;
+            RedFileService red;
+            if (!_redByProjectDir.TryGetValue(projectDir, out red))
+            {
+                try { red = RedFileService.ForProjectDirectory(projectDir, _redService); }
+                catch { red = null; }
+                red = red ?? _redService;
+                _redByProjectDir[projectDir] = red;
+            }
+            return red;
         }
 
         /// <summary>
@@ -104,9 +134,10 @@ namespace ClarionCodeGraph.Parsing
 
             // Redirection file search paths (Clarion .red — e.g. %THISDIR%\Compile). Anchors the
             // .red's relative entries to the project dir, the way the compiler resolves them.
-            if (_redService != null)
+            var red = RedFor(projectDir);
+            if (red != null)
             {
-                string resolved = _redService.ResolveFrom(fileName, projectDir, "Common", "Debug", "Release");
+                string resolved = red.ResolveFrom(fileName, projectDir, RedSections ?? LegacySections);
                 if (resolved != null)
                     return resolved;
             }

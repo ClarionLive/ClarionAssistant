@@ -58,6 +58,9 @@ namespace ClarionIndexer
             Console.Error.WriteLine("                     C:\\Clarion11\\bin\\Clarion110.red). %THISDIR% anchors to the");
             Console.Error.WriteLine("                     .red's own folder; without this flag, only a *.red found in");
             Console.Error.WriteLine("                     the solution directory is used.");
+            Console.Error.WriteLine("    --configuration <name>  Build configuration (Debug, Release): resolve through");
+            Console.Error.WriteLine("                     its .red sections ([Release32], [Release], [Common]) as the");
+            Console.Error.WriteLine("                     compiler does. Default: Common, Debug, Release.");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Query Commands:");
             Console.Error.WriteLine("  query <db> find-symbol <name>          Search symbols by name");
@@ -87,10 +90,15 @@ namespace ClarionIndexer
             bool incremental = false;
             List<string> libraryPaths = null;
             string redPath = null;
+            string configuration = null;
 
             for (int i = 2; i < args.Length; i++)
             {
-                if (args[i] == "--db" && i + 1 < args.Length)
+                if (args[i] == "--configuration" && i + 1 < args.Length)
+                {
+                    configuration = args[++i];
+                }
+                else if (args[i] == "--db" && i + 1 < args.Length)
                 {
                     dbPath = Path.GetFullPath(args[++i]);
                 }
@@ -182,6 +190,7 @@ namespace ClarionIndexer
 
                 var indexer = new CodeGraphIndexer(db);
                 indexer.RedService = red;
+                indexer.BuildConfiguration = configuration;
                 indexer.OnProgress += msg => Console.Error.WriteLine("  " + msg);
 
                 var sw = Stopwatch.StartNew();
@@ -196,6 +205,17 @@ namespace ClarionIndexer
                 Console.WriteLine("  \"projectCount\": " + result.ProjectCount + ",");
                 Console.WriteLine("  \"fileCount\": " + result.FileCount + ",");
                 Console.WriteLine("  \"symbolCount\": " + result.SymbolCount + ",");
+                // #244 item 3: "success" means the run finished; "status" says how much it covered.
+                Console.WriteLine("  \"status\": " + JsonEscape(result.Status) + ",");
+                Console.WriteLine("  \"projectsResolved\": " + result.ProjectsResolved + ",");
+                Console.WriteLine("  \"projectsUnresolved\": " + result.ProjectsUnresolved + ",");
+                Console.WriteLine("  \"cwprojFilesListed\": " + result.CwprojFilesListed + ",");
+                Console.WriteLine("  \"cwprojFilesUnresolved\": " + result.CwprojFilesUnresolved + ",");
+                Console.WriteLine("  \"filesParsed\": " + result.FilesParsed + ",");
+                Console.WriteLine("  \"filesUnresolved\": " + result.FilesUnresolved + ",");
+                Console.WriteLine("  \"filesSkipped\": " + result.FilesSkipped + ",");
+                Console.WriteLine("  \"moduleFilesIndexed\": " + result.ModuleFilesIndexed + ",");
+                Console.WriteLine("  \"moduleTargetsUnresolved\": " + result.ModuleTargetsUnresolved + ",");
                 Console.WriteLine("  \"durationMs\": " + sw.ElapsedMilliseconds);
                 Console.WriteLine("}");
 
@@ -203,6 +223,7 @@ namespace ClarionIndexer
                 Console.Error.WriteLine("Done: " + result.SymbolCount + " symbols, " +
                     result.FileCount + " files, " + result.ProjectCount + " projects in " +
                     sw.ElapsedMilliseconds + "ms");
+                Console.Error.WriteLine(result.CoverageText());
 
                 db.Close();
                 return 0;

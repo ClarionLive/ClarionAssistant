@@ -329,7 +329,14 @@ namespace ClarionAssistant.Dialogs
                     // Projects that produced parse events this run — on incremental, the
                     // changed subset; "27 projects" alone implied all 27 were re-parsed.
                     _pendingProjectSymbols.Count);
-            EnterTerminalState("Index complete", Color.FromArgb(0, 128, 0), "", summary);
+            // #244 item 3: a run that resolved little of the solution is not shown as a plain green success.
+            result.Decide();
+            if (result.Status == IndexResult.StatusOk)
+                EnterTerminalState("Index complete", Color.FromArgb(0, 128, 0), "", summary);
+            else
+                EnterTerminalState(result.IsPartial ? "Index complete — PARTIAL" : "Index complete — with warnings",
+                    Color.FromArgb(176, 112, 0), result.Warnings.Count > 0 ? result.Warnings[0] : "",
+                    summary + " " + string.Join(" ", result.Warnings));
         }
 
         public void RunCancelled(string dbDisposition)

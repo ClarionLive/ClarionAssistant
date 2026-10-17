@@ -217,6 +217,33 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex ExternalAttrRegex = new Regex(
             @",\s*EXTERNAL\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        // MODULE('x.clw') / LINK('x.clw'[,flag]) in a CLASS line's attribute list (GH #245): the files the
+        // compiler builds for the class whenever its declaration is INCLUDEd.
+        private static readonly Regex ClassModuleAttrRegex = new Regex(
+            @"\b(?:MODULE|LINK)\s*\(\s*'([^']+)'", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>
+        /// The .clw files a CLASS line's attributes name in MODULE(...) and LINK(...), in order and de-duplicated,
+        /// or null when there are none. A LINK naming a .lib/.obj is not source and is left out. A trailing comment
+        /// is stripped first so a quoted name in it cannot count.
+        /// </summary>
+        internal List<string> ImplementationModulesOf(string classAttributes)
+        {
+            if (string.IsNullOrEmpty(classAttributes)) return null;
+            List<string> names = null;
+            foreach (Match m in ClassModuleAttrRegex.Matches(StripInlineComment(classAttributes)))
+            {
+                string name = m.Groups[1].Value.Trim();
+                if (!name.EndsWith(".clw", StringComparison.OrdinalIgnoreCase)) continue;
+                if (names == null) names = new List<string>();
+                bool seen = false;
+                foreach (string n in names)
+                    if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) { seen = true; break; }
+                if (!seen) names.Add(name);
+            }
+            return names;
+        }
+
         /// <summary>The declaration/definition line as a self-explaining preview, trimmed and
         /// capped — so query results identify themselves without a file read (b7553893).</summary>
         private static string Preview(string line)
@@ -766,7 +793,8 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         ParentName = parentClass,
                         Scope = "global",
-                        SourcePreview = Preview(line)
+                        SourcePreview = Preview(line),
+                        ImplementationModules = ImplementationModulesOf(classMatch.Groups[3].Value)
                     });
 
                     // Enter CLASS body to extract method prototypes
@@ -1395,7 +1423,8 @@ namespace ClarionCodeGraph.Parsing
                         ProjectId = projectId,
                         ParentName = parentClass,
                         Scope = "global",
-                        SourcePreview = Preview(line)
+                        SourcePreview = Preview(line),
+                        ImplementationModules = ImplementationModulesOf(classMatch.Groups[3].Value)
                     });
 
                     currentClassName = className;
