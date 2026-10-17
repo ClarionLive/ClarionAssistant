@@ -730,6 +730,41 @@
         transform: translateX(30px);
         font-size: var(--ca-hover-font-size, 12px);
     }
+    /* The hover's resize edge (Monaco 0.4x+, a .monaco-sash on the card's right border) sits over the
+       last few pixels of the card, and the card is exactly as wide as its longest line - so the last word
+       of that line (a clickable attribute on a control card) was under the resize cursor and could not be
+       clicked. Extra right padding (Monaco's default is 4px 8px) keeps text clear of the edge. */
+    .monaco-editor .monaco-hover .hover-contents:not(.html-hover-contents) {
+        padding-right: 20px;
+    }
+    /* Attribute edit links on a control card (applyAttributeEditLink) drawn as chips. Monaco tags every
+       hover link with its target (data-href) and title, so these rules reach only the
+       file:///clarion-attr/edit/... links: a set attribute ("Remove ..." title) is a filled chip, an
+       available one ("Add ...") an outlined chip. Theme colours, so light and dark themes both work. */
+    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"] {
+        display: inline-block;
+        padding: 0 6px;
+        margin: 1px 0;
+        border-radius: 9px;
+        border: 1px solid var(--vscode-textLink-foreground, #3794ff);
+        /* one step below the card's own size, which follows the editor font and zoom */
+        font-size: calc(var(--ca-hover-font-size, 12px) - 1px);
+        line-height: 1.45;
+        text-decoration: none !important;
+        cursor: pointer;
+    }
+    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"][title^="Add "] {
+        background: transparent;
+        color: var(--vscode-textLink-foreground, #3794ff) !important;
+    }
+    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"][title^="Remove "] {
+        background: var(--vscode-textLink-foreground, #3794ff);
+        color: var(--vscode-editorHoverWidget-background, #fff) !important;
+    }
+    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"]:hover {
+        box-shadow: 0 0 0 1px var(--vscode-textLink-foreground, #3794ff);
+        filter: brightness(1.15);
+    }
 </style>
 </head>
 <body>
@@ -5939,10 +5974,107 @@
             deadline.fire = function () { settle(localHover); };
             whenIdleSynced(model, { line: position.lineNumber, column: position.column })
                 .then(function (payload) { return payload && !settled ? requestFromHost('hover', payload) : null; })
-                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: resp.contents }] } : localHover); })
+                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: prepareAttributeLinks(resp.contents, model, position) }] } : localHover); })
                 .catch(function () { settle(localHover); });
         });
     }
+
+    // ---- Attribute edit links on a control card (click a chip to add/remove an attribute) ----
+    // The language server puts them there because LspClient announces
+    // capabilities.experimental.clarionAttributeEditLinks. A control card hovered on its declaration
+    // keyword ends with
+    //   **Attributes:** `AT` `USE` [VSCROLL](file:///clarion-attr/edit/<payload> "Remove VSCROLL — ...")
+    //   **Available:** [BOXED](file:///clarion-attr/edit/<payload> "Add BOXED — ...") ...
+    // The payload (base64url JSON) is the complete edit: { e: [{ l, c, el, ec, t, o }] } — lines relative
+    // to the hovered line, 0-based columns, the new text, and the ORIGINAL text of lines l..el. All the
+    // Clarion knowledge (commas, | continuations, comments, mutually exclusive groups) is the server's
+    // and tested there; this page only checks the original text and applies the edit as one undo step.
+    // file: links because hover markdown is untrusted (no command: links) and file: is the link kind
+    // the opener below already receives. The chips are drawn by the CSS (a[data-href*="/clarion-attr/"]).
+    var ATTR_EDIT_LINK_PATH = '/clarion-attr/edit/';
+    var attrCardTarget = null;   // { model, line, column } — the hovered keyword of the card last shown
+
+    // Card markdown on its way to the screen: remember where it was hovered, so a click knows its
+    // anchor. Where the declaration cannot be edited (read-only, outside the embed points of the CA
+    // Embeditor) the links become plain names: the card still lists them, but offers no edit.
+    function prepareAttributeLinks(markdown, model, position) {
+        var md = String(markdown || '');
+        if (md.indexOf('file://' + ATTR_EDIT_LINK_PATH) < 0) return md;
+        attrCardTarget = { model: model, line: position.lineNumber, column: position.column };
+        if (!lineIsEditable(position.lineNumber)) {
+            return md.replace(/\[([A-Z0-9]+)\]\(file:\/\/\/clarion-attr\/edit\/[A-Za-z0-9_-]+ "[^"]*"\)/g, '`$1`');
+        }
+        return md;
+    }
+
+    function lineIsEditable(line) {
+        if (isReadOnlyNow()) return false;
+        return liveEditableRanges().some(function (r) { return line >= r[0] && line <= r[1]; });
+    }
+
+    function decodeAttributeEdits(payload) {
+        var b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+        while (b64.length % 4) b64 += '=';
+        var bin = atob(b64), bytes = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return JSON.parse(new TextDecoder('utf-8').decode(bytes)).e || [];
+    }
+
+    // A chip was clicked: check the lines the edits touch still read as they did when the card was
+    // made, apply all edits as one undo step, then refresh the card. If the text has moved on, nothing
+    // is applied — the card is just shown again, freshly computed from the current text.
+    function applyAttributeEditLink(payload) {
+        var t = attrCardTarget;
+        if (!t || !t.model || t.model.isDisposed()) return;
+        var ed = null;
+        [editor, typeof editor2 !== 'undefined' ? editor2 : null].forEach(function (e) {
+            if (e && e.getModel && e.getModel() === t.model) ed = ed || e;
+        });
+        if (!ed) return;
+        var edits;
+        try { edits = decodeAttributeEdits(payload); } catch (e) { return; }
+        var anchor = t.line, count = t.model.getLineCount(), ops = [], current = true;
+        edits.forEach(function (e) {
+            var first = anchor + e.l, last = anchor + e.el;
+            for (var i = 0; i < (e.o || []).length; i++) {
+                var ln = first + i;
+                if (ln < 1 || ln > count || t.model.getLineContent(ln) !== e.o[i] || !lineIsEditable(ln)) current = false;
+            }
+            ops.push({ range: new monaco.Range(first, e.c + 1, last, e.ec + 1), text: e.t });
+        });
+        if (current && ops.length) {
+            ed.executeEdits('clarion-attr', ops);   // one undo step
+            ed.focus();
+        }
+        // Refresh the card: post the edited buffer NOW instead of after the IDLE_SYNC_MS typing pause
+        // (the server card must arrive within FALLBACK_LSP_DEADLINE_MS, or the plain keyword card wins),
+        // then show the hover again on the same keyword — the new card moves the name across.
+        if (idleSyncTimer) { clearTimeout(idleSyncTimer); idleSync(); }
+        reshowHover(ed, t.line, t.column);
+    }
+
+    // Show the hover at (line, column) without moving the cursor, through Monaco's content-hover
+    // controller (an internal API, checked in Monaco 0.52.2: showContentHover(range, mode, source, focus);
+    // its own "show hover" action passes mode 1 = Immediate, source 1 = Keyboard, so the card stays up
+    // while the mouse sits on it). If that API is not there, fall back to the public "show hover"
+    // action, which hovers at the cursor: move the cursor there first.
+    function reshowHover(ed, line, column) {
+        try {
+            var c = ed.getContribution && ed.getContribution('editor.contrib.contentHover');
+            if (c && typeof c.showContentHover === 'function') {
+                // Close the open card first: showContentHover keeps the current result when the new
+                // anchor equals the open card's (`_currentResult.anchor.equals(...)`), so a second
+                // click on the same declaration would leave the old card up. `_hideWidgets` is the
+                // controller's own (private) close.
+                if (typeof c._hideWidgets === 'function') c._hideWidgets();
+                c.showContentHover(new monaco.Range(line, column, line, column), 1, 1, false);
+                return;
+            }
+        } catch (e) { /* fall back below */ }
+        ed.setPosition({ lineNumber: line, column: column });
+        ed.trigger('clarion-attr', 'editor.action.showHover', {});
+    }
+    // ---- end attribute edit links ----
 
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
@@ -6227,7 +6359,7 @@
                                 if (!resp || !resp.contents) return null;
                                 // Same symbol as the local card already on screen: one card, not two.
                                 if (localSymbol && localSymbol === hoverCardSymbol(resp.contents)) return null;
-                                return { contents: [{ value: resp.contents }] };
+                                return { contents: [{ value: prepareAttributeLinks(resp.contents, model, position) }] };
                             });
                     })
                     .catch(function () { return null; });
@@ -6242,6 +6374,11 @@
         monaco.editor.registerLinkOpener({
             open: function (uri) {
                 if (!uri || uri.scheme !== 'file') return false;
+                // Attribute edit links on a control card (see applyAttributeEditLink).
+                if (uri.path.indexOf(ATTR_EDIT_LINK_PATH) === 0) {
+                    applyAttributeEditLink(uri.path.slice(ATTR_EDIT_LINK_PATH.length));
+                    return true;
+                }
                 // Hover footers only ever emit a bare #L<line> (see HoverFormatter.locationLink on the
                 // language-server side) — no column — matching what the host's navigation (EditorService.
                 // NavigateToFileAndLine, same as the open_file MCP tool) accepts.
