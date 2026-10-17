@@ -259,19 +259,68 @@ static class StandaloneConfigDirTest
             pk = ServerPicker.Pick(pi);
             Check(pk.Server == null && pk.Source == ServerPicker.SourceNone, "no server anywhere: no pick", pk.Note);
 
+            // ---------------------------------------------------------------- downgrade guard (pipeline run 1)
+            Console.WriteLine("downgrade guard");
+            Func<string, string, string, ServerCandidate> CandV = (r, clarion, server) =>
+            {
+                var c = Cand(r, clarion);
+                c.ServerVersion = server == null ? null : new Version(server);
+                return c;
+            };
+            var boot = CandV(r12, "12.0.0.14000", "6.0.0.1400");
+            var older11 = CandV(r11, "11.0.0.13244", "6.0.0.1300");
+            Func<ServerCandidate, ServerPickInputs> guardIn = c11 => new ServerPickInputs
+            {
+                SolutionPath = sln, FindNamed = find, Bootstrap = boot,
+                Candidates = new List<ServerCandidate> { boot, c11 }
+            };
+
+            pi = guardIn(older11); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(pk.DowngradeRefused && pk.Server.ExePath == boot.ExePath,
+                "the project's Clarion holds an OLDER server: refused, the bootstrap serves", pk.Note);
+            Check(Has(pk.Note, "REFUSED") && Has(pk.Note, "6.0.0.1300") && Has(pk.Note, "6.0.0.1400") && Has(pk.Note, r11),
+                "...and the note names both versions and the refused root", pk.Note);
+
+            pi = guardIn(older11); pi.ProjectMajors.Add(new KeyValuePair<string, int>("A", 11));
+            Check(ServerPicker.Pick(pi).DowngradeRefused, "the guard applies to every tier (here the projects' .Version)");
+
+            pi = guardIn(CandV(r11, "11.0.0.13244", null)); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(pk.DowngradeRefused && Has(pk.Note, "version unreadable"), "a server whose version cannot be read is refused too", pk.Note);
+
+            pi = guardIn(CandV(r11, "11.0.0.13244", "6.0.0.1400")); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(!pk.DowngradeRefused && pk.Server.Root == r11 && pk.Warning == null, "the same version is not a downgrade", pk.Note);
+
+            pi = guardIn(older11); pi.CommandLineVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(!pk.DowngradeRefused && pk.Server.Root == r11, "--clarion-version PINS that Clarion: the older server runs", pk.Note);
+            Check(Has(pk.Warning, "WARNING") && Has(pk.Warning, "6.0.0.1300") && Has(pk.Warning, "6.0.0.1400") && Has(pk.Note, "WARNING"),
+                "...with a WARNING naming both versions, in the note too", pk.Warning);
+
             // ---------------------------------------------------------------- launch note
             Console.WriteLine("serverChosenBy");
             string own = Path.Combine(r11, ServerPicker.RelativeExe);
             var pick11 = new ServerPick { Server = Cand(r11, "11.0.0.13244"), Note = "server under " + r11 + " [chosen by: x]" };
-            Check(ServerPicker.DescribeLaunch(null, own, () => pick11) == null, "not started by the launcher: no serverChosenBy");
-            string d1 = ServerPicker.DescribeLaunch("pick", own, () => pick11);
+            Func<List<ServerCandidate>> none = () => new List<ServerCandidate>();
+            Check(ServerPicker.DescribeLaunch(null, own, () => pick11, none, null) == null, "not started by the launcher: no serverChosenBy");
+            string d1 = ServerPicker.DescribeLaunch("pick", own, () => pick11, none, null);
             Check(Has(d1, "clarion-tools launcher") && Has(d1, "chosen by: x") && !Has(d1, "restart"), "a pick that matches this server is reported as is", d1);
-            string d2 = ServerPicker.DescribeLaunch("pick", Path.Combine(r12, ServerPicker.RelativeExe), () => pick11);
+            string d2 = ServerPicker.DescribeLaunch("pick", Path.Combine(r12, ServerPicker.RelativeExe), () => pick11, none, null);
             Check(Has(d2, "restart") && Has(d2, r11), "a pick that differs from this server says so", d2);
-            string d3 = ServerPicker.DescribeLaunch("override", own, () => { throw new InvalidOperationException("must not pick"); });
-            Check(Has(d3, "CLARION_MCP_SERVER") && Has(d3, "no pick"), "the CLARION_MCP_SERVER override is reported without picking", d3);
-            string d4 = ServerPicker.DescribeLaunch("bootstrap", own, () => pick11);
+            Func<ServerPick> mustNotPick = () => { throw new InvalidOperationException("must not pick"); };
+            string d3 = ServerPicker.DescribeLaunch("override", own, mustNotPick, none, null);
+            Check(Has(d3, "CLARION_MCP_SERVER") && Has(d3, "no pick") && !Has(d3, "WARNING"), "the CLARION_MCP_SERVER override is reported without picking", d3);
+            string d3w = ServerPicker.DescribeLaunch("override", own, mustNotPick, () => new List<ServerCandidate> { boot }, null);
+            Check(Has(d3w, "WARNING") && Has(d3w, "6.0.0.1400") && Has(d3w, boot.ExePath),
+                "a CLARION_MCP_SERVER pin OLDER than an installed server warns, naming the newer one", d3w);
+            string d4 = ServerPicker.DescribeLaunch("bootstrap", own, () => pick11, none, null);
             Check(Has(d4, "WITHOUT a pick"), "a launch the bootstrap could not pick is said", d4);
+            string bootExe = Path.Combine(r12, ServerPicker.RelativeExe);
+            string d5 = ServerPicker.DescribeLaunch("fallback", bootExe, () => pick11, none, own);
+            Check(Has(d5, "FALLBACK") && Has(d5, "failed to start") && Has(d5, own) && !Has(d5, "restart"),
+                "a fallback after the pick failed to start names the failed server", d5);
         }
         finally
         {

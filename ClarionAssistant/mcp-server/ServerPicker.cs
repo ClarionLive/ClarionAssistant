@@ -13,6 +13,11 @@ namespace ClarionAssistant.McpServer
         public string ExePath;
         /// <summary>&lt;Root&gt;\bin\Clarion.exe's file version, or null when it cannot be read.</summary>
         public Version ClarionExeVersion;
+        /// <summary>
+        /// The SERVER's own file version (Clarion Assistant's, e.g. 6.0.0.1344), or null when unreadable. Deploys go per
+        /// Clarion version, so one root can hold an older server than another (pipeline run 1, e1df6c2e).
+        /// </summary>
+        public Version ServerVersion;
         /// <summary>Where the candidate was found: CLARION_ROOTS, the installer's registry record, C:\ClarionXX, this server's own install.</summary>
         public string Origin;
     }
@@ -38,6 +43,11 @@ namespace ClarionAssistant.McpServer
         /// <summary>(project, Clarion major) from the projects' .Version resources.</summary>
         public List<KeyValuePair<string, int>> ProjectMajors = new List<KeyValuePair<string, int>>();
         public List<LiveIde> LiveIdes = new List<LiveIde>();
+        /// <summary>
+        /// The server answering --pick-server (the launcher's "bootstrap", the first one it found), or null. A pick is
+        /// never OLDER than it unless the user pinned that Clarion with --clarion-version (see <see cref="ServerPicker.Pick"/>).
+        /// </summary>
+        public ServerCandidate Bootstrap;
     }
 
     internal sealed class ServerPick
@@ -49,6 +59,10 @@ namespace ClarionAssistant.McpServer
         /// <summary>True when nothing about the project decided and the newest install was taken.</summary>
         public bool IsFallback;
         public string Note;
+        /// <summary>The project's choice was an OLDER server than the bootstrap and was refused; <see cref="Server"/> is the bootstrap.</summary>
+        public bool DowngradeRefused;
+        /// <summary>Set when an older server was picked anyway because the user pinned it; also part of <see cref="Note"/>.</summary>
+        public string Warning;
     }
 
     /// <summary>
@@ -84,7 +98,45 @@ namespace ClarionAssistant.McpServer
         /// <summary>Extra Clarion roots to consider, semicolon-separated (a Clarion not in C:\ClarionXX nor recorded by the installer).</summary>
         public const string RootsEnvVar = "CLARION_ROOTS";
 
+        /// <summary>
+        /// The pick, then the DOWNGRADE GUARD (pipeline run 1, e1df6c2e): deploys go per Clarion version, so the server
+        /// under the project's Clarion can be an older Clarion Assistant than the one answering. Running it would silently
+        /// drop every fix since (path policy #266, #205, ...). So a pick older than the bootstrap - or whose version cannot
+        /// be read - is REFUSED and the bootstrap serves instead, said so; except when the user pinned that Clarion with
+        /// --clarion-version, where it runs with a WARNING naming both versions.
+        /// </summary>
         public static ServerPick Pick(ServerPickInputs input)
+        {
+            var pick = PickByProject(input);
+            var boot = input.Bootstrap;
+            if (pick.Server == null || boot == null || boot.ServerVersion == null) return pick;
+            if (SolutionFollower.SamePath(pick.Server.ExePath, boot.ExePath)) return pick;
+            var v = pick.Server.ServerVersion;
+            if (v != null && v >= boot.ServerVersion) return pick;
+
+            string what = "the server under " + pick.Server.Root + " is Clarion Assistant "
+                + (v != null ? v.ToString() : "(version unreadable)") + ", OLDER than " + boot.ExePath
+                + " (Clarion Assistant " + boot.ServerVersion + ") - it lacks every fix made since";
+            if (pick.Source == SourceCommandLine)
+            {
+                pick.Warning = "WARNING: " + what + ". Running it anyway because --clarion-version names that Clarion; "
+                    + "update Clarion Assistant in " + pick.Server.Root + " to get those fixes";
+                pick.Note = pick.Note + "; " + pick.Warning;
+                return pick;
+            }
+            return new ServerPick
+            {
+                Server = boot,
+                Source = pick.Source,
+                IsFallback = pick.IsFallback,
+                DowngradeRefused = true,
+                Note = pick.Note + "; REFUSED: " + what + ", so " + boot.ExePath + " serves instead (it still uses the"
+                    + " Clarion version chosen for the project). Install or deploy Clarion Assistant for that Clarion to use"
+                    + " its own server, or pass --clarion-version to insist"
+            };
+        }
+
+        private static ServerPick PickByProject(ServerPickInputs input)
         {
             var cands = input.Candidates ?? new List<ServerCandidate>();
             Func<string, ClarionVersionConfig> find = input.FindNamed ?? (n => null);
@@ -263,9 +315,38 @@ namespace ClarionAssistant.McpServer
                 if (found.Exists(f => SolutionFollower.SamePath(f.Root, root))) continue;
                 string exe = Path.Combine(root, RelativeExe);
                 if (!File.Exists(exe)) continue;
-                found.Add(new ServerCandidate { Root = root, ExePath = exe, ClarionExeVersion = ExeVersion(root), Origin = r.Value });
+                found.Add(new ServerCandidate
+                {
+                    Root = root, ExePath = exe, ClarionExeVersion = ExeVersion(root), ServerVersion = FileVersionOf(exe), Origin = r.Value
+                });
             }
             return found;
+        }
+
+        /// <summary>The candidate for one server exe (the bootstrap): its root is three folders up when it sits in a Clarion tree.</summary>
+        public static ServerCandidate CandidateFor(string exe, string origin)
+        {
+            if (string.IsNullOrEmpty(exe)) return null;
+            string root = null;
+            try { root = ClarionVersionService.InstalledClarionRoot(Path.GetDirectoryName(Path.GetFullPath(exe))); } catch { }
+            return new ServerCandidate
+            {
+                Root = root ?? Path.GetDirectoryName(exe), ExePath = exe,
+                ClarionExeVersion = root != null ? ExeVersion(root) : null, ServerVersion = FileVersionOf(exe), Origin = origin
+            };
+        }
+
+        /// <summary>A server exe's file version (Clarion Assistant's own), or null when it has none or cannot be read.</summary>
+        public static Version FileVersionOf(string exe)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(exe) || !File.Exists(exe)) return null;
+                var fv = FileVersionInfo.GetVersionInfo(exe);
+                if (fv.FileMajorPart == 0 && fv.FileMinorPart == 0 && fv.FileBuildPart == 0 && fv.FilePrivatePart == 0) return null;
+                return new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart);
+            }
+            catch { return null; }
         }
 
         private static Version ExeVersion(string root)
@@ -285,7 +366,8 @@ namespace ClarionAssistant.McpServer
         /// is looked up in the settings folder the server itself would use (a /ConfigDir one when one is known).
         /// </summary>
         public static ServerPick PickForMachine(string solutionPath, string commandLineVersion,
-                                               string configDirArg, string configDirEnv, string baseDir)
+                                               string configDirArg, string configDirEnv, string baseDir,
+                                               string bootstrapExe)
         {
             var pin = SolutionClarionVersion.ReadPin(solutionPath);
             var dir = StandaloneConfigDir.Resolve(IdeSolutionRecord.FindLiveForSolution(solutionPath), configDirArg,
@@ -301,7 +383,8 @@ namespace ClarionAssistant.McpServer
                     ? ClarionVersionService.FindNamedInConfigDir(cfgDir, name)
                     : ClarionVersionService.FindNamedVersion(null, name),
                 ProjectMajors = SolutionVersionResolver.ProjectClarionMajors(solutionPath),
-                LiveIdes = FindLiveIdes(solutionPath)
+                LiveIdes = FindLiveIdes(solutionPath),
+                Bootstrap = CandidateFor(bootstrapExe, "the server answering --pick-server")
             });
         }
 
@@ -309,19 +392,44 @@ namespace ClarionAssistant.McpServer
         /// The serverChosenBy sentence for a server the launcher started (<paramref name="launcherMode"/> is the
         /// CLARION_MCP_LAUNCHER value it set): the launcher's reason, recomputed here from the same inputs, checked
         /// against the server actually running (<paramref name="ownExe"/>). Null when not started by the launcher.
+        /// "override" (CLARION_MCP_SERVER) makes no pick, but still WARNS when the named server is older than another
+        /// installed one (<paramref name="installed"/>). "fallback": the pick (<paramref name="failedPick"/>) failed to
+        /// start and the launcher fell back to the bootstrap, this server.
         /// </summary>
-        public static string DescribeLaunch(string launcherMode, string ownExe, Func<ServerPick> pick)
+        public static string DescribeLaunch(string launcherMode, string ownExe, Func<ServerPick> pick,
+                                            Func<List<ServerCandidate>> installed, string failedPick)
         {
             if (string.IsNullOrEmpty(launcherMode)) return null;
             if (string.Equals(launcherMode, "override", StringComparison.OrdinalIgnoreCase))
-                return "started by the clarion-tools launcher as named by CLARION_MCP_SERVER (" + ownExe + "); no pick was made";
+            {
+                string line = "started by the clarion-tools launcher as named by CLARION_MCP_SERVER (" + ownExe + "); no pick was made";
+                try
+                {
+                    Version own = FileVersionOf(ownExe);
+                    ServerCandidate newer = null;
+                    foreach (var c in (installed != null ? installed() : null) ?? new List<ServerCandidate>())
+                        if (c.ServerVersion != null && (own == null || c.ServerVersion > own)
+                            && (newer == null || c.ServerVersion > newer.ServerVersion)) newer = c;
+                    if (newer != null)
+                        line += "; WARNING: this server is Clarion Assistant " + (own != null ? own.ToString() : "(version unreadable)")
+                            + ", OLDER than " + newer.ExePath + " (Clarion Assistant " + newer.ServerVersion
+                            + ") - it lacks every fix made since";
+                }
+                catch { }
+                return line;
+            }
+            bool fallback = string.Equals(launcherMode, "fallback", StringComparison.OrdinalIgnoreCase);
+            string prefix = "started by the clarion-tools launcher - ";
+            if (string.Equals(launcherMode, "bootstrap", StringComparison.OrdinalIgnoreCase))
+                prefix = "started by the clarion-tools launcher WITHOUT a pick (the first server it found could not choose; an older version?) - ";
+            else if (fallback)
+                prefix = "started by the clarion-tools launcher as a FALLBACK: the server it picked (" + (failedPick ?? "?")
+                    + ") failed to start, so this server (" + ownExe + ") serves instead - ";
             ServerPick p;
-            try { p = pick(); } catch (Exception ex) { return "started by the clarion-tools launcher; the pick could not be re-checked: " + ex.Message; }
-            string prefix = string.Equals(launcherMode, "bootstrap", StringComparison.OrdinalIgnoreCase)
-                ? "started by the clarion-tools launcher WITHOUT a pick (the first server it found could not choose; an older version?) - "
-                : "started by the clarion-tools launcher - ";
+            try { p = pick(); } catch (Exception ex) { return prefix + "the pick could not be re-checked: " + ex.Message; }
             if (p == null || p.Server == null) return prefix + "this server (" + ownExe + ")";
             if (SolutionFollower.SamePath(p.Server.ExePath, ownExe)) return prefix + p.Note;
+            if (fallback) return prefix + "the pick was: " + p.Note;
             return prefix + "this server is " + ownExe + ", but a pick now gives " + p.Server.ExePath + " (" + p.Note
                 + "); restart the MCP server to switch";
         }
