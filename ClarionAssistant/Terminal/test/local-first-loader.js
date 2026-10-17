@@ -114,7 +114,7 @@ function load(opts) {
     });
     const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync', 'applySpanMap', 'noteBufferEdit',
         'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource', 'deliverHostReply',
-        'prepareAttributeLinks', 'applyAttributeEditLink', 'decodeAttributeEdits', 'isAttributeLinkUri'];
+        'prepareAttributeLinks', 'applyAttributeEditLink', 'decodeAttributeEdits', 'isAttributeLinkUri', 'applyGeneratedSourceFlag'];
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
     env.api = new Function('__scope', 'with (__scope) {\n' + SRC + '\nreturn ' + ret + ';\n}')(scope);

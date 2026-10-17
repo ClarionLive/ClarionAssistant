@@ -726,6 +726,7 @@ namespace ClarionAssistant
                 // code) — mirror any field added/removed/renamed here over there too.
                 bool fileReadOnly = IsFileReadOnly();
                 string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
+                bool generatedSource = IsGeneratedSourceFile();   // GH #263 Q2; kept current by GeneratedSourceWatch
                 string json = "{\"type\":\"setSource\","
                     + "\"title\":" + MonacoEditorControl.JsonString(pageTitle) + ","
                     + "\"language\":\"clarion\","
@@ -733,7 +734,7 @@ namespace ClarionAssistant
                     + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
                     + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
-                    + "\"generatedSource\":" + (IsGeneratedSourceFile() ? "true" : "false") + ","   // GH #263 Q2
+                    + "\"generatedSource\":" + (generatedSource ? "true" : "false") + ","   // GH #263 Q2
                     + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
                     + "\"breakpointsEnabled\":true,"
                     + "\"designerEnabled\":true,"
@@ -751,6 +752,8 @@ namespace ClarionAssistant
                     + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26), painted after the content is in
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
+                _generatedFlag.MarkSent(generatedSource);
+                GeneratedSourceWatch.EnsureWired();
                 MonacoSpikeLog.Write("overlay setSource sent (fileMode editable, " + text.Length + " chars, file=" + (_filePath ?? "?") + (navLine >= 1 ? (", nav->line " + navLine) : "") + ", bps=[" + bpCsv + "])");
 
                 // The page can now be positioned. Re-register under the firm page-resolved path, flush any nav
@@ -1549,6 +1552,7 @@ namespace ClarionAssistant
                 CaptureIdeChromeColors();
                 bool fileReadOnly = IsFileReadOnly();
                 string pageTitle = fileReadOnly ? (_overlayTitle + " (read-only)") : _overlayTitle;
+                bool generatedSource = IsGeneratedSourceFile();   // GH #263 Q2 (KEEP IN SYNC with the open path)
                 int curLine = _lastCursorLine >= 1 ? _lastCursorLine : 1;
                 int curCol = _lastCursorCol >= 1 ? _lastCursorCol : 1;
                 string json = "{\"type\":\"setSource\","
@@ -1559,7 +1563,7 @@ namespace ClarionAssistant
                     + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
                     + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
-                    + "\"generatedSource\":" + (IsGeneratedSourceFile() ? "true" : "false") + ","   // GH #263 Q2 (KEEP IN SYNC)
+                    + "\"generatedSource\":" + (generatedSource ? "true" : "false") + ","   // GH #263 Q2 (KEEP IN SYNC)
                     + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
                     + "\"breakpointsEnabled\":true,"
                     + "\"designerEnabled\":true,"
@@ -1580,6 +1584,7 @@ namespace ClarionAssistant
                     + "\"executionLine\":" + SeedExecutionLineForPage() + ","   // debugger marker (#26) survives a reload
                     + "\"sourceUrl\":\"https://clarion-embeditor-data/source.txt\"}";
                 _editor.PostJson(json);
+                _generatedFlag.MarkSent(generatedSource);
                 MonacoSpikeLog.Write("overlay reload: re-read from disk and resent (" + _filePath + ", " + text.Length + " chars)");
             }
             catch (Exception ex)
@@ -2335,6 +2340,28 @@ namespace ClarionAssistant
         {
             try { return new Services.AppTreeService().IsGeneratedModuleOfOpenApp(_filePath); }
             catch { return false; }
+        }
+
+        private readonly Services.GeneratedSourceFlag _generatedFlag = new Services.GeneratedSourceFlag();
+
+        /// <summary>GH #263 Q2 follow-up (GeneratedSourceWatch, UI thread): a tab opened or restored before its app
+        /// loaded got generatedSource=false. Re-check every live tab and post the new answer where it changed.</summary>
+        internal static void RefreshGeneratedSourceFlags()
+        {
+            List<MonacoClarionEditor> snapshot;
+            lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (inst._editor == null || !inst._pageReady) continue;
+                    string msg = inst._generatedFlag.Update(inst.IsGeneratedSourceFile());
+                    if (msg == null) continue;
+                    inst._editor.PostJson(msg);
+                    MonacoSpikeLog.Write("[generated-source] " + System.IO.Path.GetFileName(inst._filePath ?? "?") + " -> " + msg);
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("[generated-source] refresh error: " + ex.Message); }
+            }
         }
 
         private int WriteToDisk(string text)

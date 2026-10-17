@@ -64,6 +64,12 @@ namespace ClarionAssistant.Services
             return Path.HasExtension(n) ? n : n + ".clw";
         }
 
+        /// <summary>The page message that updates generatedSource (GH #263 Q2 follow-up).</summary>
+        public static string UpdateMessage(bool generated)
+        {
+            return "{\"type\":\"generatedSource\",\"value\":" + (generated ? "true" : "false") + "}";
+        }
+
         private static string SafeBaseName(string appFile)
         {
             if (string.IsNullOrWhiteSpace(appFile)) return null;
@@ -73,6 +79,36 @@ namespace ClarionAssistant.Services
                 return string.IsNullOrEmpty(b) ? null : b;
             }
             catch (ArgumentException) { return null; }
+        }
+    }
+
+    /// <summary>
+    /// What one CA Editor page was last told about generatedSource. setSource computes the flag once, but a tab
+    /// opened, or restored at startup, BEFORE its app loads would keep the wrong answer, and with it the chips
+    /// whose edits the next generate wipes. So the host re-checks when apps open or close
+    /// (GeneratedSourceWatch) and posts an update only when the answer changed.
+    /// </summary>
+    public sealed class GeneratedSourceFlag
+    {
+        private readonly object _gate = new object();
+        private bool? _sent;
+
+        /// <summary>setSource carried <paramref name="generated"/>: the page now holds it.</summary>
+        public void MarkSent(bool generated) { lock (_gate) { _sent = generated; } }
+
+        /// <summary>The page was replaced (or never loaded): nothing is known to be there.</summary>
+        public void Reset() { lock (_gate) { _sent = null; } }
+
+        /// <summary>The message to post for the current answer, or null when the page already has it or has
+        /// had no setSource yet (that setSource will carry the answer itself).</summary>
+        public string Update(bool generated)
+        {
+            lock (_gate)
+            {
+                if (_sent == null || _sent.Value == generated) return null;
+                _sent = generated;
+                return GeneratedModuleMatch.UpdateMessage(generated);
+            }
         }
     }
 }

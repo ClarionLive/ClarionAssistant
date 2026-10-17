@@ -38,6 +38,26 @@ static class GeneratedModuleMatchTest
                                         && !GeneratedModuleMatch.IsGeneratedModule("  ", mods, apps));
         Ok("an invalid path: false, no throw", !GeneratedModuleMatch.IsGeneratedModule("C:\\bad<|>name.clw", new[] { "x<|>.clw" }, new[] { "a<|>.app" }));
 
+        // Pipeline run 1 follow-up: a tab opened (or restored at startup) BEFORE its app loads. setSource said
+        // false; the re-check after the app opens must flip it, once, and flip it back when the app closes.
+        Console.WriteLine("GeneratedSourceFlag (the flag flips when an app opens after the tab)");
+        string file = "C:\\Apps\\PRM002081.clw";
+        var noApps = new string[0];
+        var flag = new GeneratedSourceFlag();
+        Ok("before setSource: no update (setSource will carry the answer)", flag.Update(true) == null);
+        bool atOpen = GeneratedModuleMatch.IsGeneratedModule(file, noApps, noApps);
+        flag.MarkSent(atOpen);
+        Ok("tab opens with no app loaded: setSource says not generated", !atOpen);
+        Ok("no app yet, re-check: nothing to post", flag.Update(GeneratedModuleMatch.IsGeneratedModule(file, noApps, noApps)) == null);
+        string m = flag.Update(GeneratedModuleMatch.IsGeneratedModule(file, mods, apps));   // the app has opened
+        Ok("app opens after the tab: the page is told generatedSource=true",
+           m == "{\"type\":\"generatedSource\",\"value\":true}");
+        Ok("...once: the next re-check posts nothing", flag.Update(GeneratedModuleMatch.IsGeneratedModule(file, mods, apps)) == null);
+        m = flag.Update(GeneratedModuleMatch.IsGeneratedModule(file, noApps, noApps));       // the app has closed
+        Ok("app closes: the page is told generatedSource=false", m == "{\"type\":\"generatedSource\",\"value\":false}");
+        flag.Reset();
+        Ok("after Reset (page replaced): no update until setSource", flag.Update(true) == null);
+
         Console.WriteLine();
         Console.WriteLine(pass + " passed, " + fail + " failed");
         return fail == 0 ? 0 : 1;

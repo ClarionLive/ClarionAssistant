@@ -6042,6 +6042,14 @@
         return ranges.some(function (r) { return line >= r[0] && line <= r[1]; });
     }
 
+    // The host re-sends generatedSource when an app opens or closes after the tab loaded (a tab restored at
+    // startup is set up before its app is). File mode only, like setSource. Turning it on also drops the
+    // card target, so a chip still on screen from before does nothing.
+    function applyGeneratedSourceFlag(value) {
+        generatedSource = fileMode && value === true;
+        if (generatedSource) attrCardTarget = null;
+    }
+
     function isWholeNumber(v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v; }
 
     // payload → the validated edit list, or null for anything malformed (never throws).
@@ -9701,6 +9709,11 @@
             if (msg.type === 'setSource') {
                 if (msg.executionLine != null) execLineWanted = normExecLine(msg.executionLine);   // #26: record on arrival
                 if (ready) applySource(msg); else pending = msg;
+            } else if (msg.type === 'generatedSource') {
+                // GH #263 Q2 follow-up: an app opened or closed after this tab loaded. A setSource still waiting
+                // for Monaco takes the newer answer with it; otherwise apply it now.
+                if (!ready && pending) pending.generatedSource = msg.value === true;
+                else applyGeneratedSourceFlag(msg.value);
             } else if (msg.type === 'applyTheme') {
                 setTheme(themePrefDark);   // user preference wins over IDE theme changes
             } else if (msg.type === 'confirmSaveExitResult') {
