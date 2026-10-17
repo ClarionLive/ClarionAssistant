@@ -119,6 +119,8 @@
     <Compile Include="StandaloneUiDispatcher.cs" />
     <Compile Include="StandaloneWorkspace.cs" />
     <Compile Include="SolutionClarionVersion.cs" />
+    <Compile Include="StandaloneConfigDir.cs" />
+    <Compile Include="ServerPicker.cs" />
     <!-- Graph layer — SHARED, linked from ..\CodeGraph\ -->
     <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>

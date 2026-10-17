@@ -152,6 +152,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\ClarionVersionService.cs", "Services\ClarionConfigDirectory.cs")
                Refs = @("System.dll", "System.Xml.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Platform = "x86" }
+            # e1df6c2e (GH #244): the standalone server's settings folder for a Clarion run with /ConfigDir (live IDE,
+            # --clarion-config-dir, CLARION_CONFIG_DIR, clarion-assistant.json; a named folder fails closed), and the
+            # plugin launcher's pick of WHICH installed server to start (newest only as a reported fallback).
+            @{ Name = "StandaloneConfigDir.Test"
+               Sources = @("tests\StandaloneConfigDir.Test.cs", "mcp-server\StandaloneConfigDir.cs",
+                           "mcp-server\SolutionClarionVersion.cs", "mcp-server\ServerPicker.cs",
+                           "Services\IdeSolutionRecord.cs", "Services\SolutionFollower.cs", "Services\EncodingHelper.cs",
+                           "Services\SolutionVersionResolver.cs", "Services\ClarionVersionService.cs",
+                           "Services\ClarionConfigDirectory.cs")
+               Refs = @("System.dll", "System.Xml.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # GH #209: the running Clarion.exe matched the FIRST version entry on its bin folder (a
             # Clarion.NET compiler, not the IDE). Fixture = the reporter's own ClarionProperties.xml.
             @{ Name = "ClarionVersionService.ExeMatchTest"

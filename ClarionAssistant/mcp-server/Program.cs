@@ -28,6 +28,8 @@ namespace ClarionAssistant.McpServer
             bool stdioNoise = false, help = false;
             string solution = null;
             string clarionVersion = null;
+            string configDir = null;     // --clarion-config-dir (e1df6c2e)
+            bool pickServer = false;     // --pick-server (e1df6c2e)
             bool unknownArg = false;
 
             for (int i = 0; i < args.Length; i++)
@@ -128,11 +130,28 @@ namespace ClarionAssistant.McpServer
                             return 64;
                         }
                         break;
+                    case StandaloneConfigDir.ArgName:
+                        // The Clarion settings folder, for a Clarion started with /ConfigDir= (e1df6c2e, GH #244).
+                        // Same "checked, not assumed" rule: a bare flag must not read as "no preference".
+                        if (i + 1 < args.Length) { configDir = args[++i]; }
+                        else
+                        {
+                            Console.Error.WriteLine(ServerName + ": " + StandaloneConfigDir.ArgName + " needs a folder path.");
+                            return 64;
+                        }
+                        break;
+                    case "--pick-server":
+                        // For the plugin launcher (clarion-tools.cmd): print the installed server to run for this
+                        // solution on stdout, the reason on stderr, and exit. See ServerPicker.
+                        pickServer = true;
+                        break;
                     default:
                         if (a.StartsWith("--solution=", StringComparison.OrdinalIgnoreCase))
                             solution = a.Substring("--solution=".Length);
                         else if (a.StartsWith("--clarion-version=", StringComparison.OrdinalIgnoreCase))
                             clarionVersion = a.Substring("--clarion-version=".Length);
+                        else if (a.StartsWith(StandaloneConfigDir.ArgName + "=", StringComparison.OrdinalIgnoreCase))
+                            configDir = a.Substring(StandaloneConfigDir.ArgName.Length + 1);
                         else
                             unknownArg = true;
                         break;
@@ -150,6 +169,9 @@ namespace ClarionAssistant.McpServer
                 return 64; // EX_USAGE
             }
 
+            string configDirEnv = Environment.GetEnvironmentVariable(StandaloneConfigDir.EnvVar);
+            if (pickServer) return RunPickServer(solution, clarionVersion, configDir, configDirEnv);
+
             // DEFAULT IS TO SERVE. An MCP client launches this with no arguments and immediately
             // starts talking JSON-RPC on the pipe; printing usage and exiting 64 (the old spike
             // behaviour) would look to every client like a server that crashes on startup.
@@ -161,6 +183,21 @@ namespace ClarionAssistant.McpServer
             // mystery the user has no way to diagnose from the client side.
             Console.Error.WriteLine(ServerName + ": " + workspace.ResolutionNote);
 
+            // WHICH SETTINGS FOLDER (e1df6c2e): before the version, which is looked up in it.
+            workspace.SetConfigDirSources(configDir, configDirEnv, Environment.CurrentDirectory);
+
+            // WHY THIS SERVER (e1df6c2e): when the plugin launcher started us, the reason - recomputed from the same
+            // inputs - and LOUDLY when it was only the newest-installed fallback.
+            string launcherMode = Environment.GetEnvironmentVariable(LauncherEnvVar);
+            if (!string.IsNullOrEmpty(launcherMode))
+            {
+                string own = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string launchSln = workspace.CurrentSolutionPath;
+                workspace.ServerChosenBy = ServerPicker.DescribeLaunch(launcherMode, own,
+                    () => ServerPicker.PickForMachine(launchSln, clarionVersion, configDir, configDirEnv, Environment.CurrentDirectory));
+                Console.Error.WriteLine(ServerName + ": " + workspace.ServerChosenBy);
+            }
+
             // WHICH CLARION, AND WHO DECIDED. Resolved EAGERLY here, though everything else about
             // the workspace is lazy, and the exception is deliberate: the version silently sets
             // the redirection file, the library search paths and the build root, so the user needs
@@ -170,6 +207,8 @@ namespace ClarionAssistant.McpServer
             workspace.ResolveVersionNow();
             if (!string.IsNullOrEmpty(workspace.VersionNote))
                 Console.Error.WriteLine(ServerName + ": " + workspace.VersionNote);
+            if (!string.IsNullOrEmpty(workspace.SettingsNote))
+                Console.Error.WriteLine(ServerName + ": settings: " + workspace.SettingsNote);
 
             var bundle = BuildDispatcher(workspace);
             RegisterAsVisibleInstance(bundle, workspace);
@@ -293,6 +332,42 @@ namespace ClarionAssistant.McpServer
             t.Start();
         }
 
+        /// <summary>
+        /// Set by the plugin launcher (clarion-tools.cmd) on the server it starts: "pick" (it ran --pick-server),
+        /// "bootstrap" (the first server found could not pick), "override" (CLARION_MCP_SERVER named the server).
+        /// </summary>
+        internal const string LauncherEnvVar = "CLARION_MCP_LAUNCHER";
+
+        /// <summary>
+        /// --pick-server (e1df6c2e): the launcher's question "which installed server for this solution?". Exactly one
+        /// line on stdout - the exe path - because the launcher reads it with for /f; the reason goes to stderr, which
+        /// the MCP client logs. Exit 0 with a path; 3 when no server is installed anywhere it looked (the launcher then
+        /// keeps the server it already found). Writes nothing anywhere else.
+        /// </summary>
+        private static int RunPickServer(string solution, string clarionVersion, string configDir, string configDirEnv)
+        {
+            try
+            {
+                var ws = StandaloneWorkspace.Resolve(solution, Environment.CurrentDirectory, clarionVersion);
+                var pick = ServerPicker.PickForMachine(ws.LaunchSolutionPath, clarionVersion, configDir, configDirEnv,
+                    Environment.CurrentDirectory);
+                if (pick.Server == null)
+                {
+                    Console.Error.WriteLine("clarion-tools: " + pick.Note);
+                    return 3;
+                }
+                Console.Error.WriteLine("clarion-tools: " + pick.Note);
+                Console.Out.WriteLine(pick.Server.ExePath);
+                Console.Out.Flush();
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("clarion-tools: could not pick a server - " + ex.Message);
+                return 3;
+            }
+        }
+
         private static void PrintUsage(TextWriter w)
         {
             w.WriteLine(ServerName + " — Clarion Assistant MCP tools, without the IDE.");
@@ -316,6 +391,14 @@ namespace ClarionAssistant.McpServer
             w.WriteLine("                       reported on stderr at startup. It decides the redirection");
             w.WriteLine("                       file, library search paths and build root - so with several");
             w.WriteLine("                       Clarions installed, commit the file.");
+            w.WriteLine("  " + StandaloneConfigDir.ArgName + " <folder>");
+            w.WriteLine("                       the Clarion settings folder, for a Clarion started with");
+            w.WriteLine("                       /ConfigDir=<folder> (the folder holding its ClarionProperties.xml).");
+            w.WriteLine("                       Also " + StandaloneConfigDir.EnvVar + ", or \"configDir\" in " + SolutionClarionVersion.FileName + ".");
+            w.WriteLine("                       A live IDE that has the solution open on a /ConfigDir folder");
+            w.WriteLine("                       beats all three. Without any, the default folders are read.");
+            w.WriteLine("  --pick-server        print which installed server should serve this solution (for the");
+            w.WriteLine("                       Claude Code plugin's launcher) and exit.");
             w.WriteLine("  --debug              write the LSP subsystem's diagnostics to stderr (stdout stays");
             w.WriteLine("                       pure JSON-RPC). Works in the SHIPPED build — this is the trace");
             w.WriteLine("                       to capture when the language server misbehaves.");

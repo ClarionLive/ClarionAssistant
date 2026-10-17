@@ -2362,6 +2362,18 @@ COMMON QUERIES:
                     string versionWarning = SolutionVersionResolver.ProjectVersionWarning(slnPath, vConfig);
                     if (versionWarning != null)
                         result["versionWarning"] = versionWarning;
+                    // e1df6c2e (GH #244): WHICH ClarionProperties.xml the version's macros and paths came from, and
+                    // why that settings folder (a /ConfigDir one, or the default). Every Clarion's file carries a copy
+                    // of every version's entry, so the version name alone does not say what was read.
+                    if (vConfig != null && !string.IsNullOrEmpty(vConfig.SourcePropertiesXml))
+                        result["settingsFile"] = vConfig.SourcePropertiesXml;
+                    if (!string.IsNullOrEmpty(snap.SettingsNote))
+                        result["settingsChosenBy"] = snap.SettingsNote;
+                    // ...and, under the plugin launcher, why THIS server (which Clarion's install) was started.
+                    var launch = _workspace as IServerLaunchInfo;
+                    string launchNote = launch != null ? launch.ServerChosenBy : null;
+                    if (!string.IsNullOrEmpty(launchNote))
+                        result["serverChosenBy"] = launchNote;
 
                     if (vConfig != null)
                     {
