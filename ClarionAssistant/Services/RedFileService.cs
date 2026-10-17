@@ -982,8 +982,9 @@ namespace ClarionAssistant.Services
 
         /// <summary>
         /// Simple wildcard pattern matching for .red patterns like *.clw, *.inc, *.*
+        /// Internal (GH #204): ClarionBuildTarget's output lookup must match .red entries exactly as the resolver does.
         /// </summary>
-        private static bool MatchesPattern(string fileName, string pattern)
+        internal static bool MatchesPattern(string fileName, string pattern)
         {
             // Handle *.* (matches everything)
             if (pattern == "*.*") return true;
