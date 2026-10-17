@@ -75,9 +75,11 @@ Each code line in `get_embeditor_source` / `search_embeditor_source` output is p
 - `get_diff_content` — Get the unified diff for the current/most recent `show_diff`, computed server-side from the exact text passed in. Response scales with change size, not file size — safe for very large files.
 
 ### Build Tools (ClarionCL / MSBuild)
-- `build_solution` -Build the entire loaded solution via ClarionCL. Use `build_app` instead for multi-DLL solutions when only one target changed.
-- `build_app` -Build a single .app via ClarionCL. Defaults to the currently active app.
-- `generate_source` -Run template code generation (.clw/.inc) from an .app via ClarionCL WITHOUT a full build. Optional `conditional_generation`/`debug_generation` on/off.
+- `build_solution` -Generate every .app in the loaded solution via ClarionCL `/ag`. Use `build_app` instead for multi-DLL solutions when only one target changed.
+- `build_app` -Generate a single .app via ClarionCL `/ag`. Defaults to the currently active app. Also takes a `.cwproj`.
+- `generate_source` -Run template code generation (.clw/.inc) from an .app via ClarionCL. Optional `conditional_generation`/`debug_generation` on/off.
+
+**None of these three compiles or links.** ClarionCL has no compile switch, so a success means the source was GENERATED, not that an .exe/.dll was built. Never tell the developer "it builds" from these results. The output file each result names is existing output, not produced by that call. A hand-written source project (no .app) is refused with the MSBuild command line that compiles it.
 - `build_com_project` -Build a C# COM control project (.csproj) with VS2022 MSBuild.
 - `run_command` -Execute an arbitrary command-line process and capture output, for build tasks not covered above.
 
