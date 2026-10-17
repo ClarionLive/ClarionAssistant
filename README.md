@@ -110,6 +110,35 @@ Claude Code's permission rules never apply to MCP tools, so `read_file`, `write_
 - **`get_solution_info` says which settings it read.** `settingsFile` is the `ClarionProperties.xml` the version came from, and `settingsChosenBy` says why that folder was used. The server also writes both to stderr at startup.
 - **The plugin launcher starts the server for your project's Clarion.** It used to start the newest installed Clarion's server, whatever the project. It now asks, in order: `--clarion-version`, `clarionVersion` in `clarion-assistant.json`, the Clarion your projects' `.Version` resources say generated them, then an IDE that has the solution open. Only when none of these applies does it start the newest server, and it says so. `get_solution_info` reports the choice as `serverChosenBy`. `CLARION_MCP_SERVER` still names a server outright. A new `CLARION_ROOTS` variable (folders separated by semicolons) adds Clarion installs outside `C:\ClarionXX` that the installer did not record.
 
+<!-- release-docs: covered=embeditor -->
+### A CA Embeditor save survives Clarion crashing right after it ([#179](https://github.com/ClarionLive/ClarionAssistant/issues/179))
+
+On large procedures, Clarion's Generator can crash a moment *after* the CA Embeditor has handed it your text and reported the save as done. Until now that text was gone with the process. Every save now writes the embeds you changed to a recovery file first, and keeps it until a later open of that procedure shows the text really arrived. If Clarion went down in between, the next time you open that procedure in the CA Embeditor you get **Restore** and **Discard** buttons. Restore puts the text back as unsaved edits for you to review and save, and nothing is applied unless you choose it. If the embed has been changed some other way since, it isn't offered; a dated copy is kept in `%APPDATA%\ClarionAssistant\embed-recovery` instead. `monaco-spike.log` lines now carry the process ID, so several IDEs writing to one log can be told apart. Thanks to @asantarelli for the measurements that pinned this down.
+
+<!-- release-docs: covered=hover -->
+### Click an attribute on the control hover card to add or remove it, by geircodes ([#263](https://github.com/ClarionLive/ClarionAssistant/issues/263))
+
+With a language server that supports it (Clarion-Extension #731), the hover card for a window or report control shows its flag attributes as chips: filled for the ones it sets, outlined for the ones it could take. Click one to add or remove it; the change is one undo step and the card refreshes. The edit is applied only if the lines are still what the card described, and plain names are shown instead of chips where the code can't be edited: read-only files, text outside an embed point, and the generated modules of an open app, where an edit would be lost on the next generate. Thanks to [@geircodes](https://github.com/geircodes) for the patch.
+
+<!-- release-docs: covered=build-tools -->
+### The build tools say what they did: generated, not compiled ([#204](https://github.com/ClarionLive/ClarionAssistant/issues/204))
+
+`build_app`, `build_solution` and `generate_source` run ClarionCL, which generates source but has no switch to compile it. They used to report **BUILD SUCCEEDED** anyway. Results now open with **GENERATION SUCCEEDED (generated, not compiled)**, and name the project's real output file, resolved from the project's `OutputPath` for the active configuration or else the `.red`, as *existing output, not produced by this call*, with the time it was last written. They also tell an app-generated project from a hand-written one, from the `Generated` flag on its modules, a matching `.app` beside it, and the solution's Solution Items. A source project is refused with "nothing to generate" and the MSBuild command line that compiles it, instead of ClarionCL's misleading "no templates have been registered". Thanks to @oleendrebergerud.
+
+<!-- release-docs: covered=schemagraph -->
+### SchemaGraph keeps the dictionary attributes it was dropping ([#267](https://github.com/ClarionLive/ClarionAssistant/issues/267))
+
+A `.dctx` ingest now stores key case sensitivity (`keys.is_case_sensitive`, 0 = NOCASE) and external names, field initial values verbatim (`!` expressions included), `DerivedFrom`, `BaseType`, external names and the Binary, Password and ReadOnly flags, and the table's `Path`, memory-file names included. Two of these were bugs: the ingest read attribute names no `.dctx` contains, so `is_auto_increment` and `default_value` were empty in every database. `get_table` shows all of it. An existing `.schemagraph.db` gets the new columns automatically, but they stay empty until you re-run `ingest_schema` on your dictionary. Thanks to @KevinErskine.
+
+<!-- release-docs: covered=codegraph -->
+### CodeGraph follows class libraries and global objects ([#245](https://github.com/ClarionLive/ClarionAssistant/issues/245), [#246](https://github.com/ClarionLive/ClarionAssistant/issues/246), [#244](https://github.com/ClarionLive/ClarionAssistant/issues/244))
+
+- **Class implementations reached through `MODULE()`/`LINK()` are indexed.** For each project, CodeGraph walks what it INCLUDEs, as the compiler does, and resolves each `MODULE('x.clw')`/`LINK('x.clw')` through that project's `.red` and the active build configuration. Those files are parsed and their calls become edges. A library several apps share is indexed once; classes under the Clarion install itself are not followed. Each file reached this way is recorded in `indexed_files` with `pass='pass2c-module'`.
+- **Global objects link up.** Data declared in a file the PROGRAM INCLUDEs in its global data, nested includes too, is indexed as `scope='global'`, and calls through such an object (`ActiveThreads.Add(...)`) resolve to the class's method, or the inherited one when it isn't overridden.
+- **An index that mostly failed says so.** `index_codegraph` reports a status of ok, warning or partial, with projects resolved/unresolved and files parsed/unresolved/skipped, instead of always "indexed successfully".
+
+Re-index your solution after updating to pick these up. Thanks to @MarkGoldberg.
+
 ## What's New in v6.0
 
 6.0 is a major release. Claude's editor and embed tools now work on the text you see in the CA Editor and CA Embeditor, the bundled language server moves to v1.0.8 with incremental sync, hover, completion and diagnostics are more accurate, and the CA Editor gains keymap profiles. Full notes: **[docs/releases/v6.0.0.md](docs/releases/v6.0.0.md)**.
