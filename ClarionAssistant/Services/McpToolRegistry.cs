@@ -3553,7 +3553,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             Register(new McpTool
             {
                 Name = "build_solution",
-                Description = "Build the entire loaded Clarion solution using ClarionCL.exe. Returns build output with errors and warnings. Use build_app instead for multi-DLL solutions when you only need to rebuild one target.",
+                Description = "Run ClarionCL.exe template generation (/ag) over the loaded Clarion solution: every .app in the .sln is generated, NOT compiled. ClarionCL has no compile step, so no .exe/.dll is produced; compile in the IDE or with MSBuild. Hand-written source projects (no .app) are left alone by /ag and listed as such; a solution with no .app at all is refused. The result lists every project's kind (app-generated or source) with its evidence and its real OUTPUT file (from the .cwproj's OutputName/OutputType/OutputPath for the IDE's active configuration, else the .red) with whether it exists and when it was last written (existing output, not produced by this call). Use build_app for one target.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -3583,7 +3583,28 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
                     // /au suppresses the app/dct upgrade prompt — a modal dialog would
                     // otherwise sit invisibly (CreateNoWindow) until the timeout kills us.
                     string arguments = "/au /ag \"" + slnPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout, "build_solution", slnPath, exitCodeIsErrorCount: true);
+
+                    // GH #204: what each project is and where its binary goes, read from the .sln and .cwproj files.
+                    var projects = SolutionProjectsFor(slnPath);
+                    var solutionApps = ClarionBuildTarget.SolutionItemApps(slnPath);
+                    bool anyApp = solutionApps.Count > 0;
+                    foreach (var p in projects) if (p.Error == null && p.Kind == ClarionProjectKind.App) anyApp = true;
+                    Func<string> describeAll = () =>
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var p in projects) sb.Append(ClarionBuildTarget.Describe(p));
+                        return sb.ToString();
+                    };
+                    if (!anyApp && projects.Count > 0)
+                        return "Error: " + Path.GetFileName(slnPath) + " has no .app-driven project (and no .app under Solution Items); nothing to generate.\n"
+                             + "build_solution runs ClarionCL /ag, which only generates source from .app files and has no compile step. "
+                             + "Compile these source projects in the IDE, or with MSBuild per .cwproj (e.g. through run_command):\n"
+                             + string.Join("\n", projects.Where(p => p.Error == null)
+                                   .Select(p => "  " + ClarionBuildTarget.MsBuildCommand(p, FindMSBuild(), clarionRoot)).ToArray())
+                             + "\n\n" + describeAll();
+
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(slnPath), timeout, "build_solution", slnPath, exitCodeIsErrorCount: true,
+                                           resultPreamble: describeAll);
                 }
             });
 
@@ -3591,28 +3612,24 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             {
                 Name = "build_app",
 IdeOnly = true,
-                Description = "Build a single Clarion .app file using ClarionCL.exe. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app in the IDE.",
+                Description = "Run ClarionCL.exe template generation (/ag) for ONE .app-driven project: generated, NOT compiled. ClarionCL has no compile step, so this produces .clw/.inc source, never the .exe/.dll; compile in the IDE or with MSBuild. Ideal for multi-DLL solutions where only one target changed. Defaults to the currently active app in the IDE. Accepts project_path (.cwproj): a hand-written source project (no .app) is refused with the MSBuild command that compiles it. Every result names the project kind (app-generated or source) with its evidence, and the real OUTPUT file (from the .cwproj's OutputName/OutputType/OutputPath for the IDE's active configuration, else the .red) with whether it exists and when it was last written; that file is existing output, not produced by this call.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE." },
+                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE. A .cwproj here is treated as project_path." },
+                        { "project_path", "Path to a .cwproj instead of an .app: its .app is found beside it or in the .sln's Solution Items. A source project (no .app) is refused." },
                         { "timeout", "Timeout in seconds (default: 120)" }
                     }),
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string appPath = McpJsonRpc.GetString(args, "app_path", null);
                     int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
 
-                    if (string.IsNullOrEmpty(appPath))
-                    {
-                        var appInfo = _appTree.GetAppInfo();
-                        if (appInfo != null && appInfo.ContainsKey("fileName"))
-                            appPath = appInfo["fileName"]?.ToString();
-                    }
-
-                    if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
-                        return "Error: No app path provided and no .app file is currently open in the IDE.";
+                    var target = ResolveClarionClTarget(args);
+                    if (target.Error != null) return target.Error;
+                    string refusal = ClarionClRefusal("build_app", target);
+                    if (refusal != null) return refusal;
+                    string appPath = target.AppPath;
 
                     string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
@@ -3624,7 +3641,8 @@ IdeOnly = true,
 
                     // /au suppresses the app/dct upgrade prompt (see build_solution).
                     string arguments = "/au /ag \"" + appPath + "\"";
-                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout, "build_app", appPath, exitCodeIsErrorCount: true);
+                    return RunBuildProcess(clarionCl, arguments, Path.GetDirectoryName(appPath), timeout, "build_app", appPath, exitCodeIsErrorCount: true,
+                                           resultPreamble: () => target.Describe());
                 }
             });
 
@@ -3632,11 +3650,12 @@ IdeOnly = true,
             {
                 Name = "generate_source",
 IdeOnly = true,
-                Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe without a full build. Runs template code generation to produce the source files. Defaults to the currently active app.",
+                Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe template generation (/ag): generated, NOT compiled. Defaults to the currently active app. Accepts project_path (.cwproj): a hand-written source project with no .app is refused (\"nothing to generate\") instead of running ClarionCL into a misleading \"no templates have been registered\" error. The result names the project kind with its evidence and the real OUTPUT file with whether it exists and when it was last written (existing output, not produced by this call).",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE." },
+                        { "app_path", "Path to .app file. Defaults to the currently active app in the IDE. A .cwproj here is treated as project_path." },
+                        { "project_path", "Path to a .cwproj instead of an .app: its .app is found beside it or in the .sln's Solution Items. A source project (no .app) is refused." },
                         { "conditional_generation", "on/off — toggle conditional code generation (default: use app setting)" },
                         { "debug_generation", "on/off — toggle #DEBUG generation (default: use app setting)" },
                         { "timeout", "Timeout in seconds (default: 120)" }
@@ -3644,20 +3663,15 @@ IdeOnly = true,
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    string appPath = McpJsonRpc.GetString(args, "app_path", null);
                     string condGen = McpJsonRpc.GetString(args, "conditional_generation", null);
                     string debugGen = McpJsonRpc.GetString(args, "debug_generation", null);
                     int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
 
-                    if (string.IsNullOrEmpty(appPath))
-                    {
-                        var appInfo = _appTree.GetAppInfo();
-                        if (appInfo != null && appInfo.ContainsKey("fileName"))
-                            appPath = appInfo["fileName"]?.ToString();
-                    }
-
-                    if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
-                        return "Error: No app path provided and no .app file is currently open in the IDE.";
+                    var target = ResolveClarionClTarget(args);
+                    if (target.Error != null) return target.Error;
+                    string refusal = ClarionClRefusal("generate_source", target);
+                    if (refusal != null) return refusal;
+                    string appPath = target.AppPath;
 
                     string clarionRoot = _workspace.GetClarionInstallPath();
                     if (string.IsNullOrEmpty(clarionRoot))
@@ -3675,7 +3689,8 @@ IdeOnly = true,
                     if (!string.IsNullOrEmpty(debugGen))
                         argBuilder.Append(" /agd " + debugGen);
 
-                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout, "generate_source", appPath, exitCodeIsErrorCount: true);
+                    return RunBuildProcess(clarionCl, argBuilder.ToString(), Path.GetDirectoryName(appPath), timeout, "generate_source", appPath, exitCodeIsErrorCount: true,
+                                           resultPreamble: () => target.Describe());
                 }
             });
 
@@ -5939,8 +5954,126 @@ IdeOnly = true,
         private static readonly HashSet<string> ClarionSourceBuildTools =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "build_solution", "build_app", "generate_source" };
 
-        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null, bool exitCodeIsErrorCount = false)
+        /// <summary>GH #204: what build_app / generate_source run ClarionCL on, and the project it generates.</summary>
+        private sealed class ClarionClTarget
         {
+            /// <summary>The .app ClarionCL is given; null when the project has none (it is then refused).</summary>
+            public string AppPath;
+            /// <summary>The .cwproj read for kind and output; null when there is none beside the .app.</summary>
+            public ClarionProjectInfo Project;
+            public string Error;
+
+            public string Describe()
+            {
+                if (Project != null) return ClarionBuildTarget.Describe(Project);
+                return "PROJECT: no " + Path.GetFileNameWithoutExtension(AppPath ?? "") + ".cwproj beside " + AppPath
+                     + "; project kind and OUTPUT path not resolved\n";
+            }
+        }
+
+        /// <summary>
+        /// GH #204: resolve 'project_path' (a .cwproj; also accepted in 'app_path') or 'app_path' (default: the IDE's
+        /// active app) to the .app ClarionCL generates and the .cwproj that describes the output. Configuration: the
+        /// IDE's active one for the followed solution; .red: that solution's, superseded by the project folder's own.
+        /// </summary>
+        private ClarionClTarget ResolveClarionClTarget(Dictionary<string, object> args)
+        {
+            string appPath = McpJsonRpc.GetString(args, "app_path", null);
+            string projectPath = McpJsonRpc.GetString(args, "project_path", null);
+            if (string.IsNullOrEmpty(projectPath) && !string.IsNullOrEmpty(appPath)
+                && appPath.EndsWith(".cwproj", StringComparison.OrdinalIgnoreCase))
+            {
+                projectPath = appPath;
+                appPath = null;
+            }
+
+            var t = new ClarionClTarget();
+            var snap = SnapshotSolution(false);
+            string configNote;
+            string configuration = ActiveBuildConfiguration(snap.SolutionPath, out configNote);
+            var solutionApps = ClarionBuildTarget.SolutionItemApps(snap.SolutionPath);
+
+            if (!string.IsNullOrEmpty(appPath) && !File.Exists(appPath))
+            {
+                t.Error = "Error: .app file not found: " + appPath;
+                return t;
+            }
+
+            if (!string.IsNullOrEmpty(projectPath))
+            {
+                if (!File.Exists(projectPath)) { t.Error = "Error: project file not found: " + projectPath; return t; }
+                t.Project = ClarionBuildTarget.Inspect(projectPath, configuration, snap.Red, solutionApps);
+                if (t.Project.Error != null) { t.Error = "Error: " + t.Project.Error; return t; }
+                // An explicit app_path names the .app that generates this project wherever it lives.
+                t.AppPath = !string.IsNullOrEmpty(appPath) ? appPath : t.Project.AppPath;
+                return t;
+            }
+
+            if (string.IsNullOrEmpty(appPath))
+            {
+                var appInfo = _appTree.GetAppInfo();
+                if (appInfo != null && appInfo.ContainsKey("fileName"))
+                    appPath = appInfo["fileName"]?.ToString();
+            }
+            if (string.IsNullOrEmpty(appPath) || !File.Exists(appPath))
+            {
+                t.Error = "Error: No app_path or project_path provided and no .app file is currently open in the IDE.";
+                return t;
+            }
+
+            t.AppPath = appPath;
+            string cwproj = ClarionBuildTarget.CwprojForApp(appPath);
+            if (cwproj != null)
+            {
+                var info = ClarionBuildTarget.Inspect(cwproj, configuration, snap.Red, solutionApps);
+                if (info.Error == null) t.Project = info;
+            }
+            return t;
+        }
+
+        /// <summary>GH #204: every .cwproj of <paramref name="slnPath"/>, read for kind and output (empty when the .sln can't be parsed).</summary>
+        private List<ClarionProjectInfo> SolutionProjectsFor(string slnPath)
+        {
+            var result = new List<ClarionProjectInfo>();
+            List<ClarionCodeGraph.Parsing.Models.SolutionProject> projects;
+            try { projects = new ClarionCodeGraph.Parsing.SolutionParser().Parse(slnPath); }
+            catch { return result; }
+            var snap = SnapshotSolution(false);
+            string configNote;
+            string configuration = ActiveBuildConfiguration(slnPath, out configNote);
+            var solutionApps = ClarionBuildTarget.SolutionItemApps(slnPath);
+            foreach (var p in projects)
+            {
+                if (!File.Exists(p.CwprojPath))
+                {
+                    result.Add(new ClarionProjectInfo { CwprojPath = p.CwprojPath, ProjectName = p.Name, Error = "project file not found: " + p.CwprojPath });
+                    continue;
+                }
+                result.Add(ClarionBuildTarget.Inspect(p.CwprojPath, configuration, snap.Red, solutionApps));
+            }
+            return result;
+        }
+
+        /// <summary>GH #204: the refusal for a target with no .app to generate from, or null when ClarionCL can run.</summary>
+        private string ClarionClRefusal(string toolName, ClarionClTarget target)
+        {
+            if (target.AppPath != null || target.Project == null) return null;
+            return ClarionBuildTarget.Refusal(toolName, target.Project, FindMSBuild(), _workspace.GetClarionInstallPath());
+        }
+
+        private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null, bool exitCodeIsErrorCount = false,
+                                       Func<string> resultPreamble = null)
+        {
+            // GH #204: ClarionCL /ag only generates. Its tools say so in the headline, never "BUILD SUCCEEDED".
+            bool generateOnly = toolName != null && ClarionSourceBuildTools.Contains(toolName);
+            // Evaluated AFTER the process ends, so the PROJECT/OUTPUT lines show the file as it is now.
+            Func<string> preamble = () =>
+            {
+                if (resultPreamble == null) return "";
+                try { return resultPreamble() ?? ""; }
+                catch (Exception ex) { return "PROJECT: could not be described: " + ex.Message + "\n"; }
+            };
+
             // Flush unsaved CA Editor tabs before ClarionCL reads the files off disk.
             //
             // The IDE's own toolbar build is covered by SaveSourceEditorsBeforeBuildCommand, which hangs off
@@ -6012,7 +6145,7 @@ IdeOnly = true,
                     if (!exited)
                     {
                         try { process.Kill(); } catch { }
-                        return string.Format("Error: Build timed out after {0} seconds.\n\nPartial output:\n{1}", timeoutSeconds, output.ToString());
+                        return string.Format("Error: Build timed out after {0} seconds.\n{2}\nPartial output:\n{1}", timeoutSeconds, output.ToString(), preamble());
                     }
 
                     var result = new StringBuilder();
@@ -6027,7 +6160,7 @@ IdeOnly = true,
                     if (exitCodeIsErrorCount && !success)
                         errorCount = process.ExitCode;
 
-                    result.AppendLine(success ? "BUILD SUCCEEDED" : "BUILD FAILED");
+                    result.AppendLine(generateOnly ? ClarionBuildTarget.GenerationHeadline(success) : (success ? "BUILD SUCCEEDED" : "BUILD FAILED"));
                     result.AppendLine(string.Format("Exit code: {0} | Errors: {1} | Warnings: {2}", process.ExitCode, errorCount, warningCount));
                     result.AppendLine(string.Format("Command: {0} {1}", fileName, arguments));
                     // A locked .app (GH #204) fails exactly like a real generation error; say which it is
@@ -6037,6 +6170,8 @@ IdeOnly = true,
                     // failure anyway, so gating it could only hide the message.
                     string lockDiagnosis = ClarionClDiagnosis.DescribeAppLock(output.ToString() + errors.ToString());
                     if (lockDiagnosis != null) result.AppendLine(lockDiagnosis);
+                    if (generateOnly) result.AppendLine(ClarionBuildTarget.GenerateOnlyNote);
+                    result.Append(preamble());
                     result.AppendLine();
 
                     if (output.Length > 0)

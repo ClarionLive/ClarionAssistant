@@ -214,6 +214,7 @@
     <Compile Include="..\Services\EmbedToolRouter.cs"><Link>Services\EmbedToolRouter.cs</Link></Compile>
     <Compile Include="..\Services\EmbedSlotText.cs"><Link>Services\EmbedSlotText.cs</Link></Compile>
     <Compile Include="..\Services\ClarionClDiagnosis.cs"><Link>Services\ClarionClDiagnosis.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionBuildTarget.cs"><Link>Services\ClarionBuildTarget.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- x86 SQLite.Interop.dll next to the exe, same as the indexer. -->
