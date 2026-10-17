@@ -110,6 +110,11 @@ Claude Code's permission rules never apply to MCP tools, so `read_file`, `write_
 - **`get_solution_info` says which settings it read.** `settingsFile` is the `ClarionProperties.xml` the version came from, and `settingsChosenBy` says why that folder was used. The server also writes both to stderr at startup.
 - **The plugin launcher starts the server for your project's Clarion.** It used to start the newest installed Clarion's server, whatever the project. It now asks, in order: `--clarion-version`, `clarionVersion` in `clarion-assistant.json`, the Clarion your projects' `.Version` resources say generated them, then an IDE that has the solution open. Only when none of these applies does it start the newest server, and it says so. `get_solution_info` reports the choice as `serverChosenBy`. `CLARION_MCP_SERVER` still names a server outright. A new `CLARION_ROOTS` variable (folders separated by semicolons) adds Clarion installs outside `C:\ClarionXX` that the installer did not record.
 
+<!-- release-docs: covered=file-tools -->
+### `write_file` no longer loses to a stale Clarion editor tab ([#205](https://github.com/ClarionLive/ClarionAssistant/issues/205))
+
+A file Claude changed on disk while it was also open in a native Clarion editor tab kept the tab's old text, and the next save in that tab silently put the old text back. `write_file` and `append_to_file` now ask every running Clarion IDE first. If a native tab has the file open with no unsaved changes, they write it and reload the tab, keeping your caret. If the tab has unsaved changes, they refuse and write nothing, asking you to save or close it first; `overwrite_open_buffer: true` overrides that, with a warning that saving the tab will undo the write. Files open in the CA Editor behave as before: it shows *File changed on disk* with a Reload button. If no IDE can be asked, the result says the tabs could not be checked. Thanks to @oleendrebergerud.
+
 <!-- release-docs: covered=embeditor -->
 ### A CA Embeditor save survives Clarion crashing right after it ([#179](https://github.com/ClarionLive/ClarionAssistant/issues/179))
 
