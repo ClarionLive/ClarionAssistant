@@ -1786,12 +1786,13 @@ IdeOnly = true,
                 Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does. " +
                               "Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is written with CRLF, no BOM, and in the file's " +
                               "existing encoding (the ANSI code page for a new or all-ASCII file); a character that encoding cannot " +
-                              "hold is refused rather than written as '?'. " + PathScopeNote,
+                              "hold is refused rather than written as '?'. " + OpenTabNote + " " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "path", "Absolute path to write to" },
-                        { "content", "The content to write" }
+                        { "content", "The content to write" },
+                        { OpenTabGuard.OverrideArg, OpenTabOverrideArgNote }
                     },
                     new[] { "path", "content" }),
                 RequiresUiThread = false,
@@ -1801,29 +1802,37 @@ IdeOnly = true,
                     string content = McpJsonRpc.GetString(args, "content", "");
                     string refusal = McpPathGate.GatePath("write_file", path, PathAccess.Write, _workspace, out path);
                     if (refusal != null) return refusal;
-                    string dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                        Directory.CreateDirectory(dir);
-                    // Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is forced to CRLF, no
-                    // BOM, and the file's own encoding, so LF-only / BOM content can't reach the
-                    // Clarion compiler (issue #34) and an ANSI file stays ANSI (GH #203).
-                    Encoding written;
-                    try { written = ClarionSourceText.WriteFile(path, content); }
-                    catch (ClarionEncodingException ex) { return "Error: " + ex.Message; }
-                    string crlfNote = written != null ? ", CRLF/no-BOM, " + written.WebName : "";
-                    return "File written: " + path + " (" + content.Length + " chars" + crlfNote + ")";
+                    // GH #205: never underneath a native editor tab's stale buffer. OpenTabGuard asks the IDE first:
+                    // a tab with unsaved changes refuses (nothing written, not even the folder); a clean one is
+                    // reloaded after the write; the result says what happened to any open tab.
+                    string target = path;
+                    return OpenTabGuard.Run(target, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
+                    {
+                        string dir = Path.GetDirectoryName(target);
+                        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                            Directory.CreateDirectory(dir);
+                        // Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is forced to CRLF, no
+                        // BOM, and the file's own encoding, so LF-only / BOM content can't reach the
+                        // Clarion compiler (issue #34) and an ANSI file stays ANSI (GH #203).
+                        Encoding written;
+                        try { written = ClarionSourceText.WriteFile(target, content); }
+                        catch (ClarionEncodingException ex) { return "Error: " + ex.Message; }
+                        string crlfNote = written != null ? ", CRLF/no-BOM, " + written.WebName : "";
+                        return "File written: " + target + " (" + content.Length + " chars" + crlfNote + ")";
+                    });
                 }
             });
 
             Register(new McpTool
             {
                 Name = "append_to_file",
-                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM. " + PathScopeNote,
+                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM. " + OpenTabNote + " " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "path", "Absolute path to the file" },
-                        { "text", "Text to append" }
+                        { "text", "Text to append" },
+                        { OpenTabGuard.OverrideArg, OpenTabOverrideArgNote }
                     },
                     new[] { "path", "text" }),
                 RequiresUiThread = false,
@@ -1847,15 +1856,21 @@ IdeOnly = true,
                     // Appended Clarion source is CRLF-normalized (issue #34) and encoded in the
                     // file's own encoding (GH #203): UTF-8 appended onto an ANSI file leaves one
                     // file in two encodings. Other files are appended exactly as before.
-                    try
+                    //
+                    // GH #205: the same open-tab guard as write_file (refuse under a dirty native tab, reload a clean one).
+                    string target = path;
+                    return OpenTabGuard.Run(target, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
                     {
-                        ClarionSourceText.AppendFile(path, text);
-                        return "Text appended to " + path;
-                    }
-                    catch (Exception ex)
-                    {
-                        return "Error: " + ex.Message;
-                    }
+                        try
+                        {
+                            ClarionSourceText.AppendFile(target, text);
+                            return "Text appended to " + target;
+                        }
+                        catch (Exception ex)
+                        {
+                            return "Error: " + ex.Message;
+                        }
+                    });
                 }
             });
 
@@ -3094,6 +3109,51 @@ COMMON QUERIES:
                     answer["lineOffset"] = live.LineOffset;
                     if (!string.IsNullOrEmpty(live.Procedure)) answer["procedure"] = live.Procedure;
                     return answer;
+                }
+            });
+
+            // GH #205: the IDE half of write_file/append_to_file's open-tab guard (OpenTabGuard). Those two are served by
+            // the standalone clarion-mcp-server, which has no editors, so it calls THIS over the pane's endpoint
+            // (IdeTabClient) before writing, and again after, to reload a clean native tab. IdeOnly: only the IDE can
+            // answer it. The UI work inside is bounded (Post + wait, never Invoke), so this tool is not RequiresUiThread.
+            Register(new McpTool
+            {
+                Name = "editor_tab_sync",
+                IdeOnly = true,
+                Description = "Internal, for write_file/append_to_file (you do not normally call it). action 'check': is the file open " +
+                    "in an IDE editor tab - { kind: none | native | ca-editor, dirty }. action 'reload': reload a NATIVE Clarion " +
+                    "editor tab of the file from disk, keeping the caret line - { reloaded, line, reason }; refused when that tab has " +
+                    "unsaved changes, so it never discards edits.",
+                InputSchema = McpJsonRpc.BuildSchema(
+                    new Dictionary<string, string>
+                    {
+                        { "file_path", "Absolute path of the file" },
+                        { "action", "'check' or 'reload'" }
+                    },
+                    new[] { "file_path", "action" }),
+                RequiresUiThread = false,
+                Handler = args =>
+                {
+                    string filePath = McpJsonRpc.GetString(args, "file_path");
+                    string action = (McpJsonRpc.GetString(args, "action") ?? "").Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    if (action == "check")
+                    {
+                        var check = OpenTabGuard.LocalCheck;
+                        TabProbe p;
+                        try { p = check != null ? check(filePath) : null; }
+                        catch (Exception ex) { p = new TabProbe { Reachable = false, Reason = "the editor lookup failed: " + ex.Message }; }
+                        return OpenTabGuard.CheckToWire(p);
+                    }
+                    if (action == "reload")
+                    {
+                        var reload = OpenTabGuard.LocalReload;
+                        TabReload r;
+                        try { r = reload != null ? reload(filePath) : null; }
+                        catch (Exception ex) { r = new TabReload { Reason = "the reload failed: " + ex.Message }; }
+                        return OpenTabGuard.ReloadToWire(r);
+                    }
+                    return "Error: action must be 'check' or 'reload'.";
                 }
             });
 
@@ -6287,6 +6347,20 @@ IdeOnly = true,
         #region Path policy (GH #266)
 
         /// <summary>Appended to the file tools' descriptions: the model must know a refusal is a boundary, not a missing file.</summary>
+        // GH #205: what write_file / append_to_file do about a file that is open in an IDE editor tab (OpenTabGuard).
+        private const string OpenTabNote =
+            "If the file is open in a NATIVE Clarion editor tab (which keeps its own buffer, so a save there would put the old " +
+            "text back): a tab with NO unsaved changes is reloaded from disk after the write (caret line kept; its undo history " +
+            "starts afresh); a tab WITH unsaved changes makes the call refuse ('Error: <file> is open in the Clarion editor with " +
+            "unsaved changes; save or close it there first'), nothing written - ask the developer to save or close it there, do " +
+            "not just retry. A file open in the CA Editor is written; the CA Editor shows a 'File changed on disk' notice and offers " +
+            "a reload. When no IDE can be asked, the file is written and the result says open tabs could not be checked.";
+
+        private const string OpenTabOverrideArgNote =
+            "Optional, default false. 'true' writes even though a native Clarion editor tab holds this file with unsaved changes. " +
+            "That tab is NOT reloaded (it would lose its edits), so saving it there WILL overwrite this write; the result warns. " +
+            "Use only with the developer's explicit go-ahead.";
+
         private const string PathScopeNote =
             "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots (the open solution and its project folders, " +
             "the Clarion root, the .red search folders, the Mcp.AllowedRoots setting; Clarion Assistant's own data folder read-only) are " +

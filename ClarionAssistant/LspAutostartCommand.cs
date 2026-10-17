@@ -84,6 +84,12 @@ namespace ClarionAssistant
             try { EditorLiveTextProvider.Register(); }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] live-text provider failed: " + ex.Message); }
 
+            // GH #205: write_file / append_to_file never write underneath a native editor tab's stale buffer. The IDE
+            // half of the check (editor_tab_sync, and the direct probe when this addin serves write_file itself). Here,
+            // at addin start on the UI thread, so it works with no chat tab and knows the UI thread to post to.
+            try { NativeTabSync.Register(); }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] native tab sync failed: " + ex.Message); }
+
             // fc420c30: the MCP editor tools reach the CA Editor (Monaco) instead of the native document hidden under it.
             // At addin start, on the UI thread, so it works with no chat tab and the router knows the UI thread.
             try
