@@ -2279,7 +2279,8 @@ COMMON QUERIES:
             Register(new McpTool
             {
                 Name = "list_codegraph_databases",
-                Description = "List available CodeGraph databases (.codegraph.db files) that have been indexed.",
+                Description = "List available CodeGraph databases (.codegraph.db files) that have been indexed, each with the indexer "
+                    + "version and feature level that built it; one marked STALE predates the current indexer's features and should be re-indexed.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>()),
                 RequiresUiThread = false,
                 Handler = args =>
@@ -2309,7 +2310,14 @@ COMMON QUERIES:
 
                     if (results.Count == 0)
                         return "No CodeGraph databases found. Run the CodeGraph indexer on a Clarion solution first.";
-                    return string.Join("\n", results);
+                    // Which indexer built each one (read-only), so an index from before a feature level - e.g.
+                    // without CLASS MODULE/LINK files or INCLUDEd global data - is visibly stale.
+                    var lines = new List<string>();
+                    foreach (string db in results)
+                        lines.Add(db + "  [" + (string.Equals(db, libDb, StringComparison.OrdinalIgnoreCase)
+                            ? "Clarion library index (built by LibraryIndexer, not the solution indexer)"
+                            : ClarionCodeGraph.Graph.CodeGraphIndexer.DescribeDatabase(db)) + "]");
+                    return string.Join("\n", lines);
                 }
             });
 

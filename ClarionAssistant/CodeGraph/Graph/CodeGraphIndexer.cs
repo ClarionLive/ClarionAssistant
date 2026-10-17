@@ -50,6 +50,50 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         public bool IndexGlobalDataIncludes { get; set; } = true;
 
+        /// <summary>
+        /// What this indexer can put in a database, as a number that only goes up. 1 (or no index_metadata row) =
+        /// before GH #245/#246; 2 = CLASS MODULE()/LINK() files (pass2c-module) and global data from INCLUDEd files
+        /// (pass2d-global-data). Bump it, and add to <see cref="Features"/>, whenever a change means an older
+        /// database is missing code a re-index would add.
+        /// </summary>
+        public const int FeatureLevel = 2;
+        public const string Features = "pass2c-module,pass2d-global-data";
+
+        public const string MetaIndexerVersion = "indexer_version";
+        public const string MetaFeatureLevel = "indexer_feature_level";
+        public const string MetaFeatures = "indexer_features";
+
+        /// <summary>The assembly version of the build running this indexer (the addin, the server or clarion-indexer).</summary>
+        public static string IndexerVersion
+        {
+            get
+            {
+                try { return typeof(CodeGraphIndexer).Assembly.GetName().Version.ToString(); }
+                catch { return "unknown"; }
+            }
+        }
+
+        /// <summary>
+        /// One line saying which indexer built the database at <paramref name="dbPath"/> and whether it predates the
+        /// current feature level, for database listings. Read-only. Never throws.
+        /// </summary>
+        public static string DescribeDatabase(string dbPath)
+        {
+            var meta = CodeGraphDatabase.ReadMetadataReadOnly(dbPath);
+            string version, level, last;
+            meta.TryGetValue(MetaIndexerVersion, out version);
+            meta.TryGetValue(MetaFeatureLevel, out level);
+            meta.TryGetValue("last_indexed", out last);
+            int lvl;
+            if (!int.TryParse(level, out lvl)) lvl = meta.Count > 0 ? 1 : 0;
+            if (lvl == 0) return "no index metadata";
+            string s = "indexer " + (version ?? "unknown (before feature levels)") + ", feature level " + lvl;
+            if (!string.IsNullOrEmpty(last)) s += ", last indexed " + last;
+            if (lvl < FeatureLevel)
+                s += " - STALE: built before feature level " + FeatureLevel + " (" + Features + "); re-index to add the missing code";
+            return s;
+        }
+
         public event Action<string> OnProgress;
 
         /// <summary>
@@ -134,6 +178,7 @@ namespace ClarionCodeGraph.Graph
             if (red == null)
                 ReportProgress("No redirection file in effect — resolution limited to .\\source, project root, and explicit search paths.");
             _resolver = new SourceResolver(red);
+            _resolveCache.Clear();
             if (!string.IsNullOrEmpty(BuildConfiguration))
             {
                 _resolver.RedSections = ClarionAssistant.Services.RedResolution.SectionsFor(BuildConfiguration);
@@ -815,6 +860,13 @@ namespace ClarionCodeGraph.Graph
             _db.SetMetadata("file_count", result.FileCount.ToString());
             _db.SetMetadata("symbol_count", result.SymbolCount.ToString());
             _db.SetMetadata("index_duration_ms", result.DurationMs.ToString());
+            // Which indexer built this database (pipeline follow-up): an index written before MODULE/LINK and
+            // global-data includes existed answers "who calls X" from a smaller graph and looks no different.
+            result.IndexerVersion = IndexerVersion;
+            result.FeatureLevel = FeatureLevel;
+            _db.SetMetadata(MetaIndexerVersion, IndexerVersion);
+            _db.SetMetadata(MetaFeatureLevel, FeatureLevel.ToString());
+            _db.SetMetadata(MetaFeatures, Features);
 
             string mode = incremental ? "Incremental" : "Full";
             ReportProgress(string.Format("{0} indexing complete: {1} projects, {2} files, {3} symbols in {4}ms",
@@ -864,6 +916,28 @@ namespace ClarionCodeGraph.Graph
         // ---------------------------------------------------------------------------------------------
 
         internal const string PassModule = "pass2c-module";
+
+        // Pass 2c and 2d resolve the same names (an .inc INCLUDEd in global data is also walked for MODULE/LINK), so
+        // they share one cache: project folder + search-path set + name -> full path, or null for "does not
+        // resolve". Reset per IndexSolution run; the .red cannot change within one.
+        private readonly Dictionary<string, string> _resolveCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// <paramref name="name"/> resolved for <paramref name="projectDir"/> by the run's SourceResolver (its .source,
+        /// root, <paramref name="searchPaths"/>, then the project's .red), as a full path; null when it does not resolve.
+        /// Pass null search paths for a .clw (the .red decides where the compiler finds it), the library paths for an
+        /// INCLUDE target, as Pass 2b does.
+        /// </summary>
+        private string ResolveCached(string projectDir, string name, List<string> searchPaths)
+        {
+            string key = projectDir + "|" + (searchPaths == null ? "R|" : "L|") + name;
+            string hit;
+            if (_resolveCache.TryGetValue(key, out hit)) return hit;
+            var list = _resolver.Resolve(projectDir, new List<string> { name }, searchPaths);
+            hit = list.Count > 0 && list[0].Found ? FullPathOrSelf(list[0].FullPath) : null;
+            _resolveCache[key] = hit;
+            return hit;
+        }
 
         /// <summary>What one .inc INCLUDEs, and which .clw its classes name in MODULE/LINK.</summary>
         internal sealed class IncScan
@@ -1032,16 +1106,17 @@ namespace ClarionCodeGraph.Graph
                 }
             }
 
-            var resolveCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            Func<string, string, bool, string> resolveOne = delegate(string projectDir, string name, bool withLibraryPaths)
+            // Under the Clarion install (ABC libsrc, accessory) nothing is followed, so the walk STOPS at such an
+            // .inc instead of reading it and resolving everything it INCLUDEs and names: every generated app
+            // includes dozens of them. One skipped_clarion_install row per stopping point per run (not per project)
+            // still says, in indexed_files, where the walk stopped and why.
+            var rootSkipsRecorded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Func<int, string, string, bool> skipUnderRoot = delegate(int projectId, string name, string fullPath)
             {
-                string key = projectDir + "|" + (withLibraryPaths ? "L|" : "R|") + name;
-                string hit;
-                if (resolveCache.TryGetValue(key, out hit)) return hit;
-                var list = _resolver.Resolve(projectDir, new List<string> { name }, withLibraryPaths ? libraryPaths : null);
-                hit = list.Count > 0 && list[0].Found ? FullPathOrSelf(list[0].FullPath) : null;
-                resolveCache[key] = hit;
-                return hit;
+                if (!IsUnder(fullPath, clarionRoot)) return false;
+                if (rootSkipsRecorded.Add(fullPath))
+                    _db.InsertIndexedFile(projectId, name, fullPath, "skipped_clarion_install", 0, PassModule);
+                return true;
             };
 
             int followed = 0, unresolved = 0, skipped = 0;
@@ -1065,8 +1140,10 @@ namespace ClarionCodeGraph.Graph
                 {
                     if (string.IsNullOrEmpty(name) || !name.EndsWith(".inc", StringComparison.OrdinalIgnoreCase)) return;
                     if (!includeNamesSeen.Add(name)) return;
-                    string full = resolveOne(projectDir, name, true);
-                    if (full != null && visitedInc.Add(full)) incQueue.Enqueue(full);
+                    string full = ResolveCached(projectDir, name, libraryPaths);
+                    if (full == null || !visitedInc.Add(full)) return;
+                    if (skipUnderRoot(pid, Path.GetFileName(full), full)) { skipped++; return; }
+                    incQueue.Enqueue(full);
                 };
 
                 List<ResolvedFile> knownIncs;
@@ -1074,7 +1151,9 @@ namespace ClarionCodeGraph.Graph
                     foreach (var f in knownIncs)
                     {
                         string full = FullPathOrSelf(f.FullPath);
-                        if (visitedInc.Add(full)) incQueue.Enqueue(full);
+                        if (!visitedInc.Add(full)) continue;
+                        if (skipUnderRoot(pid, f.FileName, full)) { skipped++; continue; }
+                        incQueue.Enqueue(full);
                     }
                 HashSet<string> seedNames;
                 if (discoveredIncludeNames.TryGetValue(pid, out seedNames))
@@ -1099,7 +1178,7 @@ namespace ClarionCodeGraph.Graph
 
                     // MODULE/LINK names resolve through the .red only (plus the project's own folders), not
                     // through the .inc library folders: that is where the compiler looks for a .clw.
-                    string target = resolveOne(projectDir, mod.Key, false);
+                    string target = ResolveCached(projectDir, mod.Key, null);
                     if (target == null)
                     {
                         _db.InsertIndexedFile(pid, mod.Key, null, "unresolved", 0, PassModule);
@@ -1107,12 +1186,9 @@ namespace ClarionCodeGraph.Graph
                         continue;
                     }
                     if (claimed.Contains(target)) continue; // a .cwproj lists it, or another project reached it first
-                    if (IsUnder(target, clarionRoot))
-                    {
-                        _db.InsertIndexedFile(pid, mod.Key, target, "skipped_clarion_install", 0, PassModule);
-                        skipped++;
-                        continue;
-                    }
+                    // A project's own class naming a .clw under the install (the .inc walk already stops at the
+                    // install's own .inc files): not followed, recorded once per run.
+                    if (skipUnderRoot(pid, mod.Key, target)) { skipped++; continue; }
                     claimed.Add(target);
 
                     var parsed = _clarionParser.ParseMemberFile(target, pid, null);
@@ -1189,13 +1265,12 @@ namespace ClarionCodeGraph.Graph
                     if (!name.EndsWith(".inc", StringComparison.OrdinalIgnoreCase) &&
                         !name.EndsWith(".clw", StringComparison.OrdinalIgnoreCase)) continue;
 
-                    var resolvedList = _resolver.Resolve(projectDir, new List<string> { name }, libraryPaths);
-                    if (resolvedList.Count == 0 || !resolvedList[0].Found)
+                    string full = ResolveCached(projectDir, name, libraryPaths);
+                    if (full == null)
                     {
                         _db.InsertIndexedFile(pid, name, null, "unresolved", 0, PassGlobalData);
                         continue;
                     }
-                    string full = FullPathOrSelf(resolvedList[0].FullPath);
                     if (!pathsSeen.Add(full)) continue;
                     if (IsUnder(full, clarionRoot))
                     {
@@ -3499,6 +3574,10 @@ namespace ClarionCodeGraph.Graph
         /// <summary>Files INCLUDEd into a PROGRAM's global data whose declarations were indexed as globals (Pass 2d).</summary>
         public int GlobalDataFilesRead { get; set; }
 
+        /// <summary>The indexer build and feature level that wrote this run (also stored in index_metadata).</summary>
+        public string IndexerVersion { get; set; }
+        public int FeatureLevel { get; set; }
+
         public const string StatusOk = "ok";
         public const string StatusWarning = "warning";
         public const string StatusPartial = "partial";
@@ -3566,6 +3645,8 @@ namespace ClarionCodeGraph.Graph
             sb.AppendFormat("  CLASS MODULE/LINK files: {0} indexed, {1} unresolved, {2} skipped (Clarion install)\n",
                 ModuleFilesIndexed, ModuleTargetsUnresolved, ModuleTargetsSkipped);
             sb.AppendFormat("  Global data INCLUDE files read: {0}\n", GlobalDataFilesRead);
+            if (!string.IsNullOrEmpty(IndexerVersion))
+                sb.AppendFormat("  Indexer: {0} (feature level {1})\n", IndexerVersion, FeatureLevel);
             foreach (string w in Warnings)
                 sb.Append("  WARNING: ").Append(w).Append('\n');
             return sb.ToString().TrimEnd('\n');
