@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Dictionary Name="gh267" Version="1" StructureChecked="1" DctxFormat="4">
+	<DictionaryVersion Version="1" Description="Initial version"/>
+	<Table Guid="{11111111-0000-0000-0000-000000000001}" Ident="1" Name="Customer" Prefix="CUS" Driver="TOPSPEED" Path="Customer.tps" Create="true" Thread="true" Bindable="true">
+		<Field Guid="{22222222-0000-0000-0000-000000000001}" Ident="1" Name="SysID" DataType="LONG" ScreenPicture="@n-14" ExternalName="SYS_ID" ReadOnly="true"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000002}" Ident="2" Name="Name" DataType="STRING" Size="40" ScreenPicture="@s40" InitialValue="'Unknown'"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000003}" Ident="3" Name="Created" DataType="DATE" ScreenPicture="@d17" InitialValue="!TODAY()"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000004}" Ident="4" Name="Pwd" DataType="CSTRING" Size="21" ScreenPicture="@s20" Password="true"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000005}" Ident="5" Name="Photo" DataType="MEMO" ScreenPicture="@s20" Binary="true"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000006}" Ident="6" Name="Status" DataType="STRING" Size="10" ScreenPicture="@s10" DerivedFrom="COD:Status" BaseType="STA:Status"/>
+		<Field Guid="{22222222-0000-0000-0000-000000000007}" Ident="7" Name="Plain" DataType="BYTE" ScreenPicture="@n3"/>
+		<Key Guid="{33333333-0000-0000-0000-000000000001}" Name="SysIDKey" KeyType="KEY" Unique="true" Primary="true" AutoNumber="true" Exclude="true" CaseSensitive="true" ExternalName="cus_sysid_pk">
+			<Component Guid="{44444444-0000-0000-0000-000000000001}" FieldId="{22222222-0000-0000-0000-000000000001}" Order="1" Ascend="true"/>
+		</Key>
+		<Key Guid="{33333333-0000-0000-0000-000000000002}" Name="NameKey" KeyType="KEY" Exclude="true">
+			<Component Guid="{44444444-0000-0000-0000-000000000002}" FieldId="{22222222-0000-0000-0000-000000000002}" Order="1" Ascend="true"/>
+		</Key>
+	</Table>
+	<Table Guid="{11111111-0000-0000-0000-000000000002}" Ident="2" Name="ApiQueue" Prefix="APIQUE" Driver="MEMORY" Path="!MEM:FileName_APIQUE" Create="true" Thread="true">
+		<Field Guid="{22222222-0000-0000-0000-000000000011}" Ident="1" Name="ID" DataType="LONG" ScreenPicture="@n-14"/>
+		<Key Guid="{33333333-0000-0000-0000-000000000011}" Name="IDKey" KeyType="KEY" Unique="true" Primary="true">
+			<Component Guid="{44444444-0000-0000-0000-000000000011}" FieldId="{22222222-0000-0000-0000-000000000011}" Order="1" Ascend="true"/>
+		</Key>
+	</Table>
+</Dictionary>

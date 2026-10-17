@@ -4924,7 +4924,11 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "query_schema",
-                Description = "Run a read-only SQL query against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata.",
+                Description = "Run a read-only SQL query against a SchemaGraph database. Tables: tables, columns, keys, key_columns, relationships, relationship_mappings, procedures, procedure_params, views, view_references, schema_fts, schema_metadata. " +
+                              "Dictionary attributes from a .dctx ingest: tables.path (external file name, may be a memory file like !MEM:Name); " +
+                              "columns.default_value (InitialValue verbatim, a leading ! marks an expression), columns.derived_from (DerivedFrom), columns.base_type (BaseType), columns.external_name, columns.is_binary/is_password/is_read_only (0/1); " +
+                              "keys.is_primary/is_unique/is_auto_increment (AutoNumber)/is_exclude/is_case_sensitive (0/1; 0 = NOCASE), keys.external_name. " +
+                              "Optional text attributes are NULL when the dictionary does not set them. A database ingested before these were captured has them empty until ingest_schema is re-run (schema_metadata key 'dctx_attributes_version' >= 2 once it has been).",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "sql", "SQL SELECT query to run (read-only)" },
@@ -4976,7 +4980,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "get_table",
-                Description = "Get full detail for a database table: all columns (name, type, size, picture), keys with their fields, and relationships to other tables.",
+                Description = "Get full detail for a database table: path, all columns (name, type, size, picture, plus dictionary attributes: initial value, derived_from, base_type, external_name, BINARY/PASSWORD/READONLY), keys with their fields and flags (PRIMARY, UNIQUE, AUTO, EXCLUDE, CASE/NOCASE, external_name), and relationships to other tables.",
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "name", "Exact table name (case-insensitive)" },

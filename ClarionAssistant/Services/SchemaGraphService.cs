@@ -59,7 +59,8 @@ namespace ClarionAssistant.Services
                     description TEXT,
                     source_file TEXT,
                     source TEXT DEFAULT 'dctx',
-                    schema_name TEXT
+                    schema_name TEXT,
+                    path TEXT
                 )",
 
                 @"CREATE TABLE IF NOT EXISTS columns (
@@ -74,7 +75,13 @@ namespace ClarionAssistant.Services
                     nullable INTEGER DEFAULT 1,
                     default_value TEXT,
                     description TEXT,
-                    ordinal INTEGER
+                    ordinal INTEGER,
+                    derived_from TEXT,
+                    base_type TEXT,
+                    external_name TEXT,
+                    is_binary INTEGER DEFAULT 0,
+                    is_password INTEGER DEFAULT 0,
+                    is_read_only INTEGER DEFAULT 0
                 )",
 
                 @"CREATE TABLE IF NOT EXISTS keys (
@@ -85,7 +92,9 @@ namespace ClarionAssistant.Services
                     is_primary INTEGER DEFAULT 0,
                     is_unique INTEGER DEFAULT 0,
                     is_auto_increment INTEGER DEFAULT 0,
-                    is_exclude INTEGER DEFAULT 0
+                    is_exclude INTEGER DEFAULT 0,
+                    is_case_sensitive INTEGER DEFAULT 0,
+                    external_name TEXT
                 )",
 
                 @"CREATE TABLE IF NOT EXISTS key_columns (
@@ -181,6 +190,74 @@ namespace ClarionAssistant.Services
                 using (var cmd = new SQLiteCommand(sql, conn))
                     cmd.ExecuteNonQuery();
             }
+
+            MigrateSchema(conn);
+        }
+
+        /// <summary>
+        /// Schema version this build writes. 2 = GH #267 dictionary attributes (keys.is_case_sensitive,
+        /// keys.external_name, columns.derived_from/base_type/external_name/is_binary/is_password/is_read_only,
+        /// tables.path). Stored in schema_metadata.schema_version.
+        /// </summary>
+        public const int SchemaVersion = 2;
+
+        /// <summary>
+        /// Columns added after the original schema. CREATE TABLE IF NOT EXISTS leaves a database made by an
+        /// older build without them, so each one is ALTERed in when missing. Every one is nullable or
+        /// defaulted, so the SQL Server / SQLite / PostgreSQL ingest paths (which never set them) keep working.
+        /// </summary>
+        private static readonly string[][] AddedColumns =
+        {
+            new[] { "tables",  "path",              "TEXT" },
+            new[] { "columns", "derived_from",      "TEXT" },
+            new[] { "columns", "base_type",         "TEXT" },
+            new[] { "columns", "external_name",     "TEXT" },
+            new[] { "columns", "is_binary",         "INTEGER DEFAULT 0" },
+            new[] { "columns", "is_password",       "INTEGER DEFAULT 0" },
+            new[] { "columns", "is_read_only",      "INTEGER DEFAULT 0" },
+            new[] { "keys",    "is_case_sensitive", "INTEGER DEFAULT 0" },
+            new[] { "keys",    "external_name",     "TEXT" },
+        };
+
+        private static void MigrateSchema(SQLiteConnection conn)
+        {
+            var existing = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var add in AddedColumns)
+            {
+                HashSet<string> cols;
+                if (!existing.TryGetValue(add[0], out cols))
+                {
+                    cols = GetColumnNames(conn, add[0]);
+                    existing[add[0]] = cols;
+                }
+                if (cols.Contains(add[1])) continue;
+                using (var cmd = new SQLiteCommand("ALTER TABLE " + add[0] + " ADD COLUMN " + add[1] + " " + add[2], conn))
+                    cmd.ExecuteNonQuery();
+                cols.Add(add[1]);
+            }
+            StampSchemaVersion(conn);
+        }
+
+        private static void StampSchemaVersion(SQLiteConnection conn)
+        {
+            using (var cmd = new SQLiteCommand(
+                "INSERT OR REPLACE INTO schema_metadata (key, value) VALUES ('schema_version', @v)", conn))
+            {
+                cmd.Parameters.AddWithValue("@v", SchemaVersion.ToString());
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static HashSet<string> GetColumnNames(SQLiteConnection conn, string table)
+        {
+            var cols = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var cmd = new SQLiteCommand("PRAGMA table_info(" + table + ")", conn))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                    cols.Add(reader["name"]?.ToString() ?? "");
+            }
+            return cols;
         }
 
         #endregion
@@ -244,8 +321,10 @@ namespace ClarionAssistant.Services
                             string tPrefix = tableElem.GetAttribute("Prefix");
                             string tDriver = tableElem.GetAttribute("Driver");
                             string tDesc = tableElem.GetAttribute("Description");
+                            // External file name; may be a memory-file name such as !MEM:FileName_APIQUE.
+                            string tPath = tableElem.GetAttribute("Path");
 
-                            long tableId = InsertTable(conn, tGuid, tName, tPrefix, tDriver, tDesc, dctxPath);
+                            long tableId = InsertTable(conn, tGuid, tName, tPrefix, tDriver, tDesc, dctxPath, path: tPath);
                             if (!string.IsNullOrEmpty(tGuid))
                                 tableGuidToId[tGuid] = tableId;
                             tableCount++;
@@ -267,10 +346,21 @@ namespace ClarionAssistant.Services
                                     int fPlaces = ParseInt(fieldElem.GetAttribute("Places"), 0);
                                     string fPicture = fieldElem.GetAttribute("ScreenPicture");
                                     string fDesc = fieldElem.GetAttribute("Description");
-                                    string fDefault = fieldElem.GetAttribute("Initial");
+                                    // InitialValue verbatim: a leading '!' marks an expression, not a literal.
+                                    // (GH #267: this read "Initial", which no .dctx carries, so it was always empty.)
+                                    string fDefault = fieldElem.GetAttribute("InitialValue");
+                                    var fAttrs = new DctxFieldAttributes
+                                    {
+                                        DerivedFrom = fieldElem.GetAttribute("DerivedFrom"),
+                                        BaseType = fieldElem.GetAttribute("BaseType"),
+                                        ExternalName = fieldElem.GetAttribute("ExternalName"),
+                                        IsBinary = IsTrue(fieldElem, "Binary"),
+                                        IsPassword = IsTrue(fieldElem, "Password"),
+                                        IsReadOnly = IsTrue(fieldElem, "ReadOnly")
+                                    };
 
                                     long colId = InsertColumn(conn, fGuid, tableId, fName, fType, fSize, fPlaces,
-                                        fPicture, fDefault, fDesc, fieldOrdinal);
+                                        fPicture, fDefault, fDesc, fieldOrdinal, fAttrs);
                                     if (!string.IsNullOrEmpty(fGuid))
                                         fieldGuidToId[fGuid] = colId;
                                     fieldOrdinal++;
@@ -289,12 +379,18 @@ namespace ClarionAssistant.Services
 
                                     string kGuid = keyElem.GetAttribute("Guid");
                                     string kName = keyElem.GetAttribute("Name");
-                                    bool kPrimary = keyElem.GetAttribute("Primary") == "true";
-                                    bool kUnique = keyElem.GetAttribute("Unique") == "true";
-                                    bool kAutoInc = keyElem.GetAttribute("AutoIncrement") == "true";
-                                    bool kExclude = keyElem.GetAttribute("Exclude") == "true";
+                                    bool kPrimary = IsTrue(keyElem, "Primary");
+                                    bool kUnique = IsTrue(keyElem, "Unique");
+                                    // The .dctx attribute is AutoNumber (GH #267: this read "AutoIncrement",
+                                    // which no .dctx carries, so is_auto_increment was always 0).
+                                    bool kAutoInc = IsTrue(keyElem, "AutoNumber");
+                                    bool kExclude = IsTrue(keyElem, "Exclude");
+                                    // Absent = the key is NOCASE.
+                                    bool kCaseSensitive = IsTrue(keyElem, "CaseSensitive");
+                                    string kExternal = keyElem.GetAttribute("ExternalName");
 
-                                    long keyId = InsertKey(conn, kGuid, tableId, kName, kPrimary, kUnique, kAutoInc, kExclude);
+                                    long keyId = InsertKey(conn, kGuid, tableId, kName, kPrimary, kUnique, kAutoInc, kExclude,
+                                        kCaseSensitive, kExternal);
                                     if (!string.IsNullOrEmpty(kGuid))
                                         keyGuidToId[kGuid] = keyId;
                                     keyCount++;
@@ -378,6 +474,7 @@ namespace ClarionAssistant.Services
                     SetMetadata(conn, "column_count", columnCount.ToString());
                     SetMetadata(conn, "key_count", keyCount.ToString());
                     SetMetadata(conn, "relationship_count", relationCount.ToString());
+                    SetMetadata(conn, DctxAttributesMetadataKey, SchemaVersion.ToString());
 
                     // Build FTS index
                     RebuildFtsIndex(conn);
@@ -1244,6 +1341,8 @@ namespace ClarionAssistant.Services
                 using (var cmd = new SQLiteCommand("DELETE FROM " + t, conn))
                     cmd.ExecuteNonQuery();
             }
+            // schema_metadata was just emptied; the schema itself is unchanged, so its version stays recorded.
+            StampSchemaVersion(conn);
         }
 
         private void RebuildFtsIndex(SQLiteConnection conn)
@@ -1282,12 +1381,14 @@ namespace ClarionAssistant.Services
         #region Insert Helpers
 
         private long InsertTable(SQLiteConnection conn, string guid, string name, string prefix,
-            string driver, string description, string sourceFile, string source = "dctx", string schemaName = null)
+            string driver, string description, string sourceFile, string source = "dctx", string schemaName = null,
+            string path = null)
         {
             using (var cmd = new SQLiteCommand(
-                @"INSERT INTO tables (guid, name, prefix, driver, description, source_file, source, schema_name)
-                  VALUES (@guid, @name, @prefix, @driver, @desc, @src, @source, @schema)", conn))
+                @"INSERT INTO tables (guid, name, prefix, driver, description, source_file, source, schema_name, path)
+                  VALUES (@guid, @name, @prefix, @driver, @desc, @src, @source, @schema, @path)", conn))
             {
+                cmd.Parameters.AddWithValue("@path", NullIfEmpty(path));
                 cmd.Parameters.AddWithValue("@guid", guid ?? "");
                 cmd.Parameters.AddWithValue("@name", name ?? "");
                 cmd.Parameters.AddWithValue("@prefix", prefix ?? "");
@@ -1303,12 +1404,20 @@ namespace ClarionAssistant.Services
 
         private long InsertColumn(SQLiteConnection conn, string guid, long tableId, string name,
             string dataType, int size, int places, string picture, string defaultValue,
-            string description, int ordinal)
+            string description, int ordinal, DctxFieldAttributes attrs = null)
         {
             using (var cmd = new SQLiteCommand(
-                @"INSERT INTO columns (guid, table_id, name, data_type, size, places, picture, default_value, description, ordinal)
-                  VALUES (@guid, @tid, @name, @dtype, @size, @places, @pic, @def, @desc, @ord)", conn))
+                @"INSERT INTO columns (guid, table_id, name, data_type, size, places, picture, default_value, description, ordinal,
+                                       derived_from, base_type, external_name, is_binary, is_password, is_read_only)
+                  VALUES (@guid, @tid, @name, @dtype, @size, @places, @pic, @def, @desc, @ord,
+                          @derived, @base, @ext, @bin, @pwd, @ro)", conn))
             {
+                cmd.Parameters.AddWithValue("@derived", NullIfEmpty(attrs?.DerivedFrom));
+                cmd.Parameters.AddWithValue("@base", NullIfEmpty(attrs?.BaseType));
+                cmd.Parameters.AddWithValue("@ext", NullIfEmpty(attrs?.ExternalName));
+                cmd.Parameters.AddWithValue("@bin", attrs != null && attrs.IsBinary ? 1 : 0);
+                cmd.Parameters.AddWithValue("@pwd", attrs != null && attrs.IsPassword ? 1 : 0);
+                cmd.Parameters.AddWithValue("@ro", attrs != null && attrs.IsReadOnly ? 1 : 0);
                 cmd.Parameters.AddWithValue("@guid", guid ?? "");
                 cmd.Parameters.AddWithValue("@tid", tableId);
                 cmd.Parameters.AddWithValue("@name", name ?? "");
@@ -1325,12 +1434,15 @@ namespace ClarionAssistant.Services
         }
 
         private long InsertKey(SQLiteConnection conn, string guid, long tableId, string name,
-            bool isPrimary, bool isUnique, bool isAutoInc, bool isExclude)
+            bool isPrimary, bool isUnique, bool isAutoInc, bool isExclude,
+            bool isCaseSensitive = false, string externalName = null)
         {
             using (var cmd = new SQLiteCommand(
-                @"INSERT INTO keys (guid, table_id, name, is_primary, is_unique, is_auto_increment, is_exclude)
-                  VALUES (@guid, @tid, @name, @pri, @uniq, @auto, @excl)", conn))
+                @"INSERT INTO keys (guid, table_id, name, is_primary, is_unique, is_auto_increment, is_exclude, is_case_sensitive, external_name)
+                  VALUES (@guid, @tid, @name, @pri, @uniq, @auto, @excl, @case, @ext)", conn))
             {
+                cmd.Parameters.AddWithValue("@case", isCaseSensitive ? 1 : 0);
+                cmd.Parameters.AddWithValue("@ext", NullIfEmpty(externalName));
                 cmd.Parameters.AddWithValue("@guid", guid ?? "");
                 cmd.Parameters.AddWithValue("@tid", tableId);
                 cmd.Parameters.AddWithValue("@name", name ?? "");
@@ -1560,36 +1672,48 @@ namespace ClarionAssistant.Services
             {
                 // Find table
                 long tableId = 0;
-                string tName = "", tPrefix = "", tDriver = "", tDesc = "";
+                string tName = "", tPrefix = "", tDriver = "", tDesc = "", tPath = "", tSource = "";
 
+                // SELECT * and optional reads throughout: a database made before GH #267 lacks the new
+                // columns, and this connection is read-only, so it cannot be migrated here. It must still answer.
                 using (var cmd = new SQLiteCommand(
-                    "SELECT id, name, prefix, driver, description FROM tables WHERE name = @name COLLATE NOCASE", conn))
+                    "SELECT * FROM tables WHERE name = @name COLLATE NOCASE", conn))
                 {
                     cmd.Parameters.AddWithValue("@name", tableName);
                     using (var reader = cmd.ExecuteReader())
                     {
                         if (!reader.Read())
                             return "Table \"" + tableName + "\" not found. Use search_tables to find it.";
-                        tableId = reader.GetInt64(0);
-                        tName = reader.GetString(1);
-                        tPrefix = reader["prefix"]?.ToString() ?? "";
-                        tDriver = reader["driver"]?.ToString() ?? "";
-                        tDesc = reader["description"]?.ToString() ?? "";
+                        tableId = Convert.ToInt64(reader["id"]);
+                        tName = reader["name"]?.ToString() ?? "";
+                        tPrefix = OptString(reader, "prefix");
+                        tDriver = OptString(reader, "driver");
+                        tDesc = OptString(reader, "description");
+                        tPath = OptString(reader, "path");
+                        tSource = OptString(reader, "source");
                     }
                 }
+                bool fromDctx = string.IsNullOrEmpty(tSource) || tSource.Equals("dctx", StringComparison.OrdinalIgnoreCase);
+                // A database migrated by a newer build but not re-ingested has the GH #267 columns, all empty/0:
+                // only an ingest by this build may be read as "absent attribute" (e.g. 0 = NOCASE).
+                bool attributesIngested = ParseInt(ReadMetadata(conn, DctxAttributesMetadataKey), 0) >= SchemaVersion;
 
                 var sb = new StringBuilder();
                 sb.AppendLine("## " + tName);
+                if (fromDctx && !attributesIngested)
+                    sb.AppendLine("Note: this dictionary was ingested before key case-sensitivity, initial values, DerivedFrom/BaseType, " +
+                                  "external names, Path and field flags were captured. Re-run ingest_schema on the .dctx to fill them.");
                 if (!string.IsNullOrEmpty(tPrefix)) sb.AppendLine("Prefix: " + tPrefix);
                 if (!string.IsNullOrEmpty(tDriver)) sb.AppendLine("Driver: " + tDriver);
+                if (!string.IsNullOrEmpty(tPath)) sb.AppendLine("Path: " + tPath);
                 if (!string.IsNullOrEmpty(tDesc)) sb.AppendLine("Description: " + tDesc);
                 sb.AppendLine();
 
                 // Columns
                 sb.AppendLine("### Columns");
-                sb.AppendLine("Name\tType\tSize\tPicture\tDescription");
+                sb.AppendLine("Name\tType\tSize\tPicture\tDescription\tAttributes");
                 using (var cmd = new SQLiteCommand(
-                    "SELECT name, data_type, size, places, picture, description FROM columns WHERE table_id = @tid ORDER BY ordinal", conn))
+                    "SELECT * FROM columns WHERE table_id = @tid ORDER BY ordinal", conn))
                 {
                     cmd.Parameters.AddWithValue("@tid", tableId);
                     using (var reader = cmd.ExecuteReader())
@@ -1601,9 +1725,24 @@ namespace ClarionAssistant.Services
                             int pl = reader["places"] != DBNull.Value ? Convert.ToInt32(reader["places"]) : 0;
                             string sizeStr = sz > 0 ? sz.ToString() : "";
                             if (pl > 0) sizeStr += "." + pl;
-                            sb.AppendLine(string.Format("{0}\t{1}\t{2}\t{3}\t{4}",
+
+                            var attrs = new List<string>();
+                            string init = OptString(reader, "default_value");
+                            if (!string.IsNullOrEmpty(init)) attrs.Add("initial=" + init);
+                            string derived = OptString(reader, "derived_from");
+                            if (!string.IsNullOrEmpty(derived)) attrs.Add("derived_from=" + derived);
+                            string baseType = OptString(reader, "base_type");
+                            if (!string.IsNullOrEmpty(baseType)) attrs.Add("base_type=" + baseType);
+                            string ext = OptString(reader, "external_name");
+                            if (!string.IsNullOrEmpty(ext)) attrs.Add("external_name=" + ext);
+                            if (OptFlag(reader, "is_binary")) attrs.Add("BINARY");
+                            if (OptFlag(reader, "is_password")) attrs.Add("PASSWORD");
+                            if (OptFlag(reader, "is_read_only")) attrs.Add("READONLY");
+
+                            sb.AppendLine(string.Format("{0}\t{1}\t{2}\t{3}\t{4}\t{5}",
                                 reader["name"], dt, sizeStr, reader["picture"],
-                                Truncate(reader["description"]?.ToString(), 40)));
+                                Truncate(reader["description"]?.ToString(), 40),
+                                string.Join("; ", attrs)));
                         }
                     }
                 }
@@ -1612,21 +1751,26 @@ namespace ClarionAssistant.Services
                 // Keys
                 sb.AppendLine("### Keys");
                 using (var cmd = new SQLiteCommand(
-                    @"SELECT k.id, k.name, k.is_primary, k.is_unique, k.is_auto_increment, k.is_exclude
-                      FROM keys k WHERE k.table_id = @tid", conn))
+                    @"SELECT * FROM keys k WHERE k.table_id = @tid", conn))
                 {
                     cmd.Parameters.AddWithValue("@tid", tableId);
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
                         {
-                            long keyId = reader.GetInt64(0);
+                            long keyId = Convert.ToInt64(reader["id"]);
                             string kName = reader["name"]?.ToString() ?? "";
                             var flags = new List<string>();
-                            if (Convert.ToInt32(reader["is_primary"]) == 1) flags.Add("PRIMARY");
-                            if (Convert.ToInt32(reader["is_unique"]) == 1) flags.Add("UNIQUE");
-                            if (Convert.ToInt32(reader["is_auto_increment"]) == 1) flags.Add("AUTO");
-                            if (Convert.ToInt32(reader["is_exclude"]) == 1) flags.Add("EXCLUDE");
+                            if (OptFlag(reader, "is_primary")) flags.Add("PRIMARY");
+                            if (OptFlag(reader, "is_unique")) flags.Add("UNIQUE");
+                            if (OptFlag(reader, "is_auto_increment")) flags.Add("AUTO");
+                            if (OptFlag(reader, "is_exclude")) flags.Add("EXCLUDE");
+                            // Clarion keys: CaseSensitive absent in the .dctx = NOCASE. Only stated for dictionary
+                            // tables, and only once the database has the column (a pre-#267 db must not claim NOCASE).
+                            if (fromDctx && attributesIngested)
+                                flags.Add(OptFlag(reader, "is_case_sensitive") ? "CASE" : "NOCASE");
+                            string kExt = OptString(reader, "external_name");
+                            if (!string.IsNullOrEmpty(kExt)) flags.Add("external_name=" + kExt);
 
                             // Get key columns
                             var keyCols = new List<string>();
@@ -2332,6 +2476,72 @@ namespace ClarionAssistant.Services
         {
             int result;
             return int.TryParse(s, out result) ? result : defaultValue;
+        }
+
+        /// <summary>schema_metadata key set by IngestDctx: the SchemaVersion whose attribute set that ingest captured.</summary>
+        public const string DctxAttributesMetadataKey = "dctx_attributes_version";
+
+        private static string ReadMetadata(SQLiteConnection conn, string key)
+        {
+            try
+            {
+                using (var cmd = new SQLiteCommand("SELECT value FROM schema_metadata WHERE key = @k", conn))
+                {
+                    cmd.Parameters.AddWithValue("@k", key);
+                    var v = cmd.ExecuteScalar();
+                    return v == null || v == DBNull.Value ? null : v.ToString();
+                }
+            }
+            catch (SQLiteException)
+            {
+                return null;
+            }
+        }
+
+        private static bool HasField(IDataRecord reader, string column)
+        {
+            for (int i = 0; i < reader.FieldCount; i++)
+                if (string.Equals(reader.GetName(i), column, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>A column that may not exist in an older database: "" when missing or NULL.</summary>
+        private static string OptString(IDataRecord reader, string column)
+        {
+            if (!HasField(reader, column)) return "";
+            object v = reader[column];
+            return v == null || v == DBNull.Value ? "" : v.ToString();
+        }
+
+        /// <summary>A 0/1 column that may not exist in an older database: false when missing or NULL.</summary>
+        private static bool OptFlag(IDataRecord reader, string column)
+        {
+            if (!HasField(reader, column)) return false;
+            object v = reader[column];
+            return v != null && v != DBNull.Value && Convert.ToInt64(v) == 1;
+        }
+
+        /// <summary>A .dctx boolean attribute: present and "true" (the IDE writes lower case; absent = false).</summary>
+        private static bool IsTrue(XmlElement elem, string attribute)
+        {
+            return string.Equals(elem.GetAttribute(attribute), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>An absent/empty optional attribute is stored as NULL, so "IS NOT NULL" finds the ones that carry it.</summary>
+        private static object NullIfEmpty(string s)
+        {
+            return string.IsNullOrEmpty(s) ? (object)DBNull.Value : s;
+        }
+
+        /// <summary>The GH #267 per-field .dctx attributes beyond the original column set.</summary>
+        private sealed class DctxFieldAttributes
+        {
+            public string DerivedFrom;
+            public string BaseType;
+            public string ExternalName;
+            public bool IsBinary;
+            public bool IsPassword;
+            public bool IsReadOnly;
         }
 
         #endregion
