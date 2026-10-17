@@ -149,6 +149,47 @@ namespace ClarionAssistant.Services
             return null;
         }
 
+        /// <summary>
+        /// GH #205: EVERY trusted IDE pane, whatever solution it has open, one per IDE process (several panes of one IDE
+        /// are one IDE). For write_file/append_to_file's open-tab check: a native tab in ANY IDE clobbers the file on its
+        /// next save, so the check is not limited to the IDE of this server's solution. The same trust rules as
+        /// <see cref="Discover"/> (stale records are deleted). Empty with <paramref name="reason"/> when there is none.
+        /// </summary>
+        public static List<Endpoint> DiscoverAll(out string reason, Action<string> log = null)
+        {
+            reason = null;
+            var all = new List<Endpoint>();
+            int records = 0;
+            try
+            {
+                string dir = DirectoryPath;
+                if (Directory.Exists(dir))
+                {
+                    foreach (var file in Directory.GetFiles(dir, "*.json"))
+                    {
+                        records++;
+                        string why;
+                        var ep = ReadTrusted(file, out why);
+                        if (ep == null)
+                        {
+                            if (why != null && why.StartsWith("stale", StringComparison.Ordinal))
+                            {
+                                try { File.Delete(file); } catch { }
+                                Log(log, "[tab-sync] deleted " + why + " (" + Path.GetFileName(file) + ")");
+                            }
+                            else Log(log, "[tab-sync] skipped " + Path.GetFileName(file) + ": " + why);
+                            continue;
+                        }
+                        if (!all.Exists(e => e.Pid == ep.Pid)) all.Add(ep);
+                    }
+                }
+            }
+            catch (Exception ex) { reason = "the IDE endpoint records could not be read: " + ex.Message; return new List<Endpoint>(); }
+            if (all.Count == 0)
+                reason = records == 0 ? "no IDE has a Clarion Assistant pane running" : "no running IDE could be verified";
+            return all;
+        }
+
         // A record, or null with why ("stale ..." when it must be deleted).
         private static Endpoint ReadTrusted(string file, out string why)
         {

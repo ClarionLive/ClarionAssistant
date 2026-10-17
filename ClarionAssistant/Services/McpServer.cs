@@ -509,9 +509,10 @@ namespace ClarionAssistant.Services
             }
 
             // The editor-agnostic half, served by clarion-mcp-server.exe as its own stdio process
-            // (ticket d051fbd1). Together with the entry above this partitions all the tools (119 as of 44a1b10c;
-            // clarion-mcp-server --selftest prints the live split): clarion-assistant keeps the 58 that drive the
-            // IDE, including get_live_text, which the standalone's lsp_diagnostics calls back; clarion-tools serves the other 61.
+            // (ticket d051fbd1). Together with the entry above this partitions all the tools (120 as of GH #205;
+            // clarion-mcp-server --selftest prints the live split): clarion-assistant keeps the 59 that drive the
+            // IDE, including get_live_text, which the standalone's lsp_diagnostics calls back, and editor_tab_sync,
+            // which its write_file/append_to_file call back (GH #205); clarion-tools serves the other 61.
             //
             // --strict-mcp-config means the plugin's own clarion-tools entry never reaches this
             // pane, so declaring it here is not a duplicate - it is the ONLY way those tools arrive

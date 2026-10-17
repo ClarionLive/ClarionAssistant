@@ -502,6 +502,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86" }
+            # GH #205: write_file / append_to_file vs an open native editor tab - refuse under unsaved changes (file
+            # untouched), reload a clean tab only AFTER a successful write, the override, the CA Editor note, and the
+            # could-not-check line when no IDE answers. The IDE half is pinned by OpenTabGuard.SourceScan.ps1.
+            @{ Name = "OpenTabGuard.Test"
+               Sources = @("tests\OpenTabGuard.Test.cs", "Services\OpenTabGuard.cs")
+               Refs = @("System.dll", "System.Core.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

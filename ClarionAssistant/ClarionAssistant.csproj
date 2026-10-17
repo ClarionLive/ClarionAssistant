@@ -200,6 +200,7 @@
     <Compile Include="ClarionBindingAssemblyResolver.cs" />
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="EditorLiveTextProvider.cs" />
+    <Compile Include="NativeTabSync.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
     <Compile Include="ActiveDocumentRestoreCommand.cs" />
     <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />
@@ -272,6 +273,7 @@
     <Compile Include="Services\EverythingService.cs" />
     <Compile Include="Services\McpPathPolicy.cs" />
     <Compile Include="Services\McpPathGate.cs" />
+    <Compile Include="Services\OpenTabGuard.cs" />
     <Compile Include="Services\SchemaGraphService.cs" />
     <Compile Include="Services\NpgsqlLoader.cs" />
     <Compile Include="Terminal\SchemaSourcesView.cs" />

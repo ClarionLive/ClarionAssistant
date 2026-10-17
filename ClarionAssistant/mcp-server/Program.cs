@@ -8,7 +8,7 @@ namespace ClarionAssistant.McpServer
     /// clarion-mcp-server — standalone host for the editor-agnostic half of Clarion Assistant's
     /// MCP tools, over stdio, with no Clarion IDE running (ticket d051fbd1).
     ///
-    /// Serves 61 of the addin's 119 tools (as of 44a1b10c; --selftest prints the live split). The other 58 drive the IDE itself and are withheld by
+    /// Serves 61 of the addin's 120 tools (as of GH #205; --selftest prints the live split). The other 59 drive the IDE itself and are withheld by
     /// McpTool.IdeOnly — an MCP client reads the tool list as a contract, so a tool that can only
     /// throw is worse than an absent one.
     ///
@@ -477,6 +477,14 @@ namespace ClarionAssistant.McpServer
             {
                 Console.Error.WriteLine(ServerName + ": instance coordination unavailable - " + ex.Message);
             }
+
+            // GH #205: write_file / append_to_file are served HERE, with no editors, so before writing they ask every
+            // running IDE whether a NATIVE editor tab holds the file (refuse if it has unsaved changes, reload it after
+            // the write if not), over the pane endpoint (editor_tab_sync). Any IDE, not just this solution's: a stale tab
+            // in any of them clobbers the file on its next save. Set with or without a workspace, before serving.
+            ClarionAssistant.Services.IdeTabClient.Log = ClarionAssistant.Services.LspTrace.Write;
+            ClarionAssistant.Services.OpenTabGuard.Probe = ClarionAssistant.Services.IdeTabClient.Probe;
+            ClarionAssistant.Services.OpenTabGuard.Reload = ClarionAssistant.Services.IdeTabClient.Reload;
 
             if (workspace != null)
             {
