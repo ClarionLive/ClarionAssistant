@@ -3656,6 +3656,26 @@ namespace ClarionAssistant.Terminal
             catch { return false; }
         }
 
+        private readonly GeneratedSourceFlag _generatedFlag = new GeneratedSourceFlag();
+
+        /// <summary>GH #263 Q2 follow-up (GeneratedSourceWatch, UI thread): re-check every file-mode tab whose page
+        /// has had its setSource, and post the new generatedSource to the ones whose answer changed.</summary>
+        internal static void RefreshGeneratedSourceFlags()
+        {
+            List<ModernEmbeditorViewContent> snapshot;
+            lock (_instances) { snapshot = new List<ModernEmbeditorViewContent>(_instances); }
+            foreach (var inst in snapshot)
+            {
+                try
+                {
+                    if (!inst._fileMode || inst._disposed || inst._panel == null) continue;
+                    string msg = inst._generatedFlag.Update(inst.IsGeneratedSourceFile());
+                    if (msg != null) inst._panel.PostJson(msg);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] generatedSource refresh: " + ex.Message); }
+            }
+        }
+
         /// <summary>JSON object of role→data-URI for the captured native icons (empty {} if none).</summary>
         private string NativeIconsJson()
         {
@@ -4977,6 +4997,8 @@ namespace ClarionAssistant.Terminal
                 try { snippetsJson = SnippetStore.ToJson(SnippetStore.Load()); }
                 catch { snippetsJson = "[]"; }
 
+                // GH #263 Q2: computed once here, then kept current by GeneratedSourceWatch when apps open/close.
+                bool generatedSource = _fileMode && IsGeneratedSourceFile();
                 string json = "{\"type\":\"setSource\"," +
                     "\"title\":" + JsonString(_title) + "," +
                     "\"language\":" + JsonString(_language) + "," +
@@ -4985,7 +5007,7 @@ namespace ClarionAssistant.Terminal
                     // GH #263 Q2: a generated module opened as a plain file gets plain attribute names on the hover
                     // card, not edit chips (the next generate would overwrite the edit). File mode only: the
                     // embeditor's own module is guarded by its slots.
-                    "\"generatedSource\":" + (_fileMode && IsGeneratedSourceFile() ? "true" : "false") + "," +
+                    "\"generatedSource\":" + (generatedSource ? "true" : "false") + "," +
                     // 1c685f2e item 7: the same flag that decides LocalOptions().SlotChecks. This FILE MODE tab never
                     // runs the slot checks (ticket 564aa142), so the page skips slotDiagnostics. (The CA Editor overlay
                     // omits the flag; the page treats a missing one as on, and the overlay does run them.)
@@ -5012,6 +5034,8 @@ namespace ClarionAssistant.Terminal
                     "\"snippets\":" + snippetsJson + "," +
                     "\"sourceUrl\":\"https://" + VIRTUAL_HOST + "/source.txt\"}";
                 _panel.PostJson(json);
+                if (_fileMode) { _generatedFlag.MarkSent(generatedSource); GeneratedSourceWatch.EnsureWired(); }
+                else _generatedFlag.Reset();
             }
             catch (Exception ex)
             {

@@ -206,6 +206,33 @@ async function main() {
         check('control: a real file link still navigates', nav.length === 1 && nav[0].line === 12, JSON.stringify(nav));
     }
 
+    section('the host re-sends generatedSource after the tab loaded (an app opened or closed later)');
+    {
+        const { html } = require('./local-first-loader');
+        check('the page routes a {type:"generatedSource"} message to applyGeneratedSourceFlag',
+            /msg\.type === 'generatedSource'[\s\S]{0,400}applyGeneratedSourceFlag\(msg\.value\)/.test(html));
+        check('...and a setSource still pending takes the newer answer with it',
+            /msg\.type === 'generatedSource'[\s\S]{0,400}pending\.generatedSource = msg\.value === true/.test(html));
+
+        const e = load({ lines: LINES }); const log = rig(e); e.fileMode = true; e.embedRanges = [[1, 3]];
+        let md = await showCard(e, cardWith());
+        check('tab opened before its app: chips are live', md && md.indexOf('file:///clarion-attr/edit/') >= 0);
+        e.api.applyGeneratedSourceFlag(true);                    // the app opened: this file is one of its modules
+        check('the flag flips on', e.generatedSource === true);
+        click(e, hrefOf(ADD_HIDE));
+        check('a chip still on screen from before the flip does nothing', log.edits.length === 0 && e.model.getLineContent(2) === DECL);
+        e.model._v++;   // a new version: the shared local hover is asked again
+        md = await showCard(e, cardWith());
+        check('the next card shows plain names', md && md.indexOf('clarion-attr') < 0 && /`HIDE`/.test(md), md);
+        e.api.applyGeneratedSourceFlag(false);                   // the app closed again
+        e.model._v++;   // a new version: the shared local hover is asked again
+        md = await showCard(e, cardWith());
+        check('flag off again: chips are back', e.generatedSource === false && md && md.indexOf('file:///clarion-attr/edit/') >= 0);
+        e.fileMode = false;
+        e.api.applyGeneratedSourceFlag(true);
+        check('outside file mode the flag stays off (the CA Embeditor guards its module by its slots)', e.generatedSource === false);
+    }
+
     section('Monaco upgrade guard: without _hideWidgets, fall back to the public showHover action');
     {
         const e = load({ lines: LINES }); const log = rig(e, { noHideWidgets: true });
