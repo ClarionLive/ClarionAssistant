@@ -3514,6 +3514,13 @@ namespace ClarionAssistant.Terminal
             try { foreach (Control child in c.Controls) ScanForNav(child, log, depth + 1); } catch { }
         }
 
+        /// <summary>GH #263 Q2: is this file-mode tab's file a module an open app generates?</summary>
+        private bool IsGeneratedSourceFile()
+        {
+            try { return new AppTreeService().IsGeneratedModuleOfOpenApp(_filePath); }
+            catch { return false; }
+        }
+
         /// <summary>JSON object of role→data-URI for the captured native icons (empty {} if none).</summary>
         private string NativeIconsJson()
         {
@@ -4840,6 +4847,10 @@ namespace ClarionAssistant.Terminal
                     "\"language\":" + JsonString(_language) + "," +
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"fileMode\":" + (_fileMode ? "true" : "false") + "," +
+                    // GH #263 Q2: a generated module opened as a plain file gets plain attribute names on the hover
+                    // card, not edit chips (the next generate would overwrite the edit). File mode only: the
+                    // embeditor's own module is guarded by its slots.
+                    "\"generatedSource\":" + (_fileMode && IsGeneratedSourceFile() ? "true" : "false") + "," +
                     // 1c685f2e item 7: the same flag that decides LocalOptions().SlotChecks. This FILE MODE tab never
                     // runs the slot checks (ticket 564aa142), so the page skips slotDiagnostics. (The CA Editor overlay
                     // omits the flag; the page treats a missing one as on, and the overlay does run them.)

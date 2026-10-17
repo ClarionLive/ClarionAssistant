@@ -1054,6 +1054,9 @@
     var liveLinked = false;       // true when THIS tab holds the native embed open — its save is already save-and-exit
     var fileMode = false;         // true when the tab edits a plain source FILE — whole buffer editable,
                                   // no slot guard/decorations, save posts full text, embed nav disabled
+    var generatedSource = false;  // file mode only: the host says this file is a module of an open app, i.e.
+                                  // template-generated, so edits are lost on the next generate (GH #263 Q2:
+                                  // hover attribute chips render as plain names there)
     var reloadArmed = false;      // two-click confirm for Reload (discards edits)
     var isDirty = false;          // unsaved-changes flag — drives the ● indicator in the title banner
     var baseTitle = '(no procedure)';   // filename/procedure name without the dirty marker
@@ -1747,6 +1750,7 @@
         embedRanges = msg.editableRanges || [];
         saveEnabled = !!msg.saveEnabled;
         fileMode = !!msg.fileMode;
+        generatedSource = fileMode && msg.generatedSource === true;   // the embeditor's own module is fine: its slots guard it
         // The slot checks run unless the host turns them off (the Embeditor's file-mode tab: LSP only). The CA
         // Editor overlay keeps them over the whole file, so this is NOT the same switch as fileMode. (1c685f2e)
         slotChecksEnabled = msg.slotChecks !== false;
@@ -5991,66 +5995,144 @@
     // and tested there; this page only checks the original text and applies the edit as one undo step.
     // file: links because hover markdown is untrusted (no command: links) and file: is the link kind
     // the opener below already receives. The chips are drawn by the CSS (a[data-href*="/clarion-attr/"]).
+    //
+    // The payload is UNTRUSTED (GH #263): it comes from the language server, and a file: link can also
+    // reach the opener from a ctrl+click on link-shaped text in the buffer itself. So a click applies
+    // only when ALL of this holds, and otherwise changes nothing and throws nothing:
+    //   * the payload is one the card on screen carried (attrCardTarget.payloads), not any link-shaped text;
+    //   * it decodes to a well-formed edit list: integer positions, `o` holding the original text of EVERY
+    //     line l..el, columns inside those lines, string `t`, edits that do not overlap;
+    //   * every line it touches still reads as `o` says, and is editable (lineIsEditable);
+    //   * the edits go to the card's own model, in the editor showing it.
+    var ATTR_LINK_ROOT = '/clarion-attr/';            // every link under it is ours: never navigation, never open-file
     var ATTR_EDIT_LINK_PATH = '/clarion-attr/edit/';
-    var attrCardTarget = null;   // { model, line, column } — the hovered keyword of the card last shown
+    var ATTR_EDIT_MAX_PAYLOAD = 16384;                // a real one is a few hundred characters
+    var ATTR_EDIT_MAX_EDITS = 32;
+    // Any markdown link to file:///clarion-attr/... (titled or not) and the edit payloads in a card.
+    var ATTR_LINK_MD_RX = /\[([^\]\r\n]*)\]\(file:\/\/\/clarion-attr\/[^)\s]*(?:\s+"[^"\r\n]*")?\)/g;
+    var ATTR_EDIT_PAYLOAD_RX = /\(file:\/\/\/clarion-attr\/edit\/([A-Za-z0-9_-]+)/g;
+    var attrCardTarget = null;   // { model, line, column, payloads } — the hovered keyword of the card last
+                                 // shown with live links, and the payloads that card carried
 
     // Card markdown on its way to the screen: remember where it was hovered, so a click knows its
     // anchor. Where the declaration cannot be edited (read-only, outside the embed points of the CA
-    // Embeditor) the links become plain names: the card still lists them, but offers no edit.
+    // Embeditor, a GENERATED module opened as a plain file) the links become plain names: the card
+    // still lists them, but offers no edit.
     function prepareAttributeLinks(markdown, model, position) {
         var md = String(markdown || '');
-        if (md.indexOf('file://' + ATTR_EDIT_LINK_PATH) < 0) return md;
-        attrCardTarget = { model: model, line: position.lineNumber, column: position.column };
-        if (!lineIsEditable(position.lineNumber)) {
-            return md.replace(/\[([A-Z0-9]+)\]\(file:\/\/\/clarion-attr\/edit\/[A-Za-z0-9_-]+ "[^"]*"\)/g, '`$1`');
+        if (md.indexOf('file://' + ATTR_LINK_ROOT) < 0) return md;
+        if (!model || !position || !lineIsEditable(position.lineNumber)) {
+            attrCardTarget = null;
+            return md.replace(ATTR_LINK_MD_RX, function (all, name) { return '`' + name.replace(/`/g, '') + '`'; });
         }
+        var payloads = {}, m;
+        ATTR_EDIT_PAYLOAD_RX.lastIndex = 0;
+        while ((m = ATTR_EDIT_PAYLOAD_RX.exec(md)) !== null) payloads[m[1]] = true;
+        attrCardTarget = { model: model, line: position.lineNumber, column: position.column, payloads: payloads };
         return md;
     }
 
+    // Can a chip edit this line? Not when the page is read-only, not outside the editable ranges (the
+    // embed points in the CA Embeditor; the whole buffer in file mode), and never in a GENERATED module
+    // opened as a plain file (generatedSource, from the host): the next generate would overwrite the edit.
     function lineIsEditable(line) {
+        if (generatedSource) return false;
         if (isReadOnlyNow()) return false;
-        return liveEditableRanges().some(function (r) { return line >= r[0] && line <= r[1]; });
+        var ranges = liveEditableRanges() || [];
+        return ranges.some(function (r) { return line >= r[0] && line <= r[1]; });
     }
 
+    function isWholeNumber(v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v; }
+
+    // payload → the validated edit list, or null for anything malformed (never throws).
     function decodeAttributeEdits(payload) {
-        var b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-        while (b64.length % 4) b64 += '=';
-        var bin = atob(b64), bytes = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        return JSON.parse(new TextDecoder('utf-8').decode(bytes)).e || [];
+        if (typeof payload !== 'string' || !payload || payload.length > ATTR_EDIT_MAX_PAYLOAD ||
+            !/^[A-Za-z0-9_-]+$/.test(payload)) return null;
+        try {
+            var b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+            while (b64.length % 4) b64 += '=';
+            var bin = atob(b64), bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var obj = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+            var edits = obj && obj.e;
+            if (!Array.isArray(edits) || !edits.length || edits.length > ATTR_EDIT_MAX_EDITS) return null;
+            for (var k = 0; k < edits.length; k++) {
+                var x = edits[k];
+                if (!x || typeof x !== 'object') return null;
+                if (!isWholeNumber(x.l) || !isWholeNumber(x.el) || !isWholeNumber(x.c) || !isWholeNumber(x.ec)) return null;
+                if (x.el < x.l || x.c < 0 || x.ec < 0 || typeof x.t !== 'string') return null;
+                // `o` must prove EVERY line the edit spans, or a line it changes would go unchecked.
+                if (!Array.isArray(x.o) || x.o.length !== x.el - x.l + 1) return null;
+                for (var j = 0; j < x.o.length; j++) if (typeof x.o[j] !== 'string') return null;
+                if (x.c > x.o[0].length || x.ec > x.o[x.o.length - 1].length) return null;
+                if (x.l === x.el && x.ec < x.c) return null;
+            }
+            return edits;
+        } catch (e) { return null; }
+    }
+
+    // Is this file: URI one of ours (any case, any host)? The opener keeps every such link away from navigation.
+    function isAttributeLinkUri(uri) {
+        return !!uri && uri.scheme === 'file' && String(uri.path || '').toLowerCase().indexOf(ATTR_LINK_ROOT) === 0;
+    }
+
+    // The editor (main pane or split pane) that shows `model`, or null.
+    function editorShowingModel(model) {
+        var eds = [typeof editor !== 'undefined' ? editor : null, typeof editor2 !== 'undefined' ? editor2 : null];
+        for (var i = 0; i < eds.length; i++) {
+            var e = eds[i];
+            if (e && typeof e.getModel === 'function' && e.getModel() === model) return e;
+        }
+        return null;
     }
 
     // A chip was clicked: check the lines the edits touch still read as they did when the card was
     // made, apply all edits as one undo step, then refresh the card. If the text has moved on, nothing
-    // is applied — the card is just shown again, freshly computed from the current text.
+    // is applied — the card is just shown again, freshly computed from the current text. A payload
+    // that is not the card's, or not well formed, does nothing at all. Returns true when it edited.
     function applyAttributeEditLink(payload) {
-        var t = attrCardTarget;
-        if (!t || !t.model || t.model.isDisposed()) return;
-        var ed = null;
-        [editor, typeof editor2 !== 'undefined' ? editor2 : null].forEach(function (e) {
-            if (e && e.getModel && e.getModel() === t.model) ed = ed || e;
-        });
-        if (!ed) return;
-        var edits;
-        try { edits = decodeAttributeEdits(payload); } catch (e) { return; }
-        var anchor = t.line, count = t.model.getLineCount(), ops = [], current = true;
-        edits.forEach(function (e) {
-            var first = anchor + e.l, last = anchor + e.el;
-            for (var i = 0; i < (e.o || []).length; i++) {
-                var ln = first + i;
-                if (ln < 1 || ln > count || t.model.getLineContent(ln) !== e.o[i] || !lineIsEditable(ln)) current = false;
+        var t = attrCardTarget, ed = null, applied = false;
+        try {
+            if (!t || !t.model || t.model.isDisposed() || !t.payloads ||
+                !Object.prototype.hasOwnProperty.call(t.payloads, payload)) return false;
+            ed = editorShowingModel(t.model);
+            if (!ed) return false;
+            var edits = decodeAttributeEdits(payload);
+            if (!edits) return false;
+            var count = t.model.getLineCount(), ops = [], spans = [], current = true;
+            for (var k = 0; k < edits.length && current; k++) {
+                var x = edits[k], first = t.line + x.l, last = t.line + x.el;
+                if (first < 1 || last > count) { current = false; break; }
+                for (var i = 0; i < x.o.length; i++) {
+                    if (t.model.getLineContent(first + i) !== x.o[i] || !lineIsEditable(first + i)) { current = false; break; }
+                }
+                spans.push({ sl: first, sc: x.c, el: last, ec: x.ec });
+                ops.push({ range: new monaco.Range(first, x.c + 1, last, x.ec + 1), text: x.t });
             }
-            ops.push({ range: new monaco.Range(first, e.c + 1, last, e.ec + 1), text: e.t });
-        });
-        if (current && ops.length) {
-            ed.executeEdits('clarion-attr', ops);   // one undo step
-            ed.focus();
-        }
+            // Overlapping edits are malformed (executeEdits would throw on them): apply none.
+            spans.sort(function (a, b) { return a.sl - b.sl || a.sc - b.sc; });
+            for (var s = 1; s < spans.length; s++) {
+                var p = spans[s - 1], q = spans[s];
+                if (q.sl < p.el || (q.sl === p.el && q.sc < p.ec)) return false;
+            }
+            if (current && ops.length) {
+                // One undo step of its own: executeEdits pushes no undo stop, so without these the
+                // edit could merge with the typing before or after it.
+                if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+                ed.executeEdits('clarion-attr', ops);
+                if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+                ed.focus();
+                applied = true;
+            }
+        } catch (e) { return applied; }
         // Refresh the card: post the edited buffer NOW instead of after the IDLE_SYNC_MS typing pause
         // (the server card must arrive within FALLBACK_LSP_DEADLINE_MS, or the plain keyword card wins),
         // then show the hover again on the same keyword — the new card moves the name across.
-        if (idleSyncTimer) { clearTimeout(idleSyncTimer); idleSync(); }
-        reshowHover(ed, t.line, t.column);
+        try {
+            if (idleSyncTimer) { clearTimeout(idleSyncTimer); idleSync(); }
+            reshowHover(ed, t.line, t.column);
+        } catch (e) { /* the refresh is a nicety; the edit (if any) stands */ }
+        return applied;
     }
 
     // Show the hover at (line, column) without moving the cursor, through Monaco's content-hover
@@ -6058,21 +6140,29 @@
     // its own "show hover" action passes mode 1 = Immediate, source 1 = Keyboard, so the card stays up
     // while the mouse sits on it). If that API is not there, fall back to the public "show hover"
     // action, which hovers at the cursor: move the cursor there first.
+    // MONACO PIN: these internals were checked against Monaco 0.52.2 (MONACO_VERSION). Whoever upgrades
+    // Monaco (ticket af046356) must re-check the contribution id, showContentHover's signature and the
+    // private _hideWidgets. Both methods are feature-detected; if either is missing the public action
+    // below is used, so an upgrade degrades to "the cursor moves to the keyword", not to an error.
     function reshowHover(ed, line, column) {
+        if (!ed) return;
         try {
-            var c = ed.getContribution && ed.getContribution('editor.contrib.contentHover');
-            if (c && typeof c.showContentHover === 'function') {
+            var c = typeof ed.getContribution === 'function' ? ed.getContribution('editor.contrib.contentHover') : null;
+            if (c && typeof c.showContentHover === 'function' && typeof c._hideWidgets === 'function') {
                 // Close the open card first: showContentHover keeps the current result when the new
                 // anchor equals the open card's (`_currentResult.anchor.equals(...)`), so a second
                 // click on the same declaration would leave the old card up. `_hideWidgets` is the
-                // controller's own (private) close.
-                if (typeof c._hideWidgets === 'function') c._hideWidgets();
+                // controller's own (private) close. Without it showContentHover alone would leave that
+                // stale card up, so it is required, not optional.
+                c._hideWidgets();
                 c.showContentHover(new monaco.Range(line, column, line, column), 1, 1, false);
                 return;
             }
         } catch (e) { /* fall back below */ }
-        ed.setPosition({ lineNumber: line, column: column });
-        ed.trigger('clarion-attr', 'editor.action.showHover', {});
+        try {
+            ed.setPosition({ lineNumber: line, column: column });
+            ed.trigger('clarion-attr', 'editor.action.showHover', {});
+        } catch (e) { /* nothing more to try */ }
     }
     // ---- end attribute edit links ----
 
@@ -6374,9 +6464,12 @@
         monaco.editor.registerLinkOpener({
             open: function (uri) {
                 if (!uri || uri.scheme !== 'file') return false;
-                // Attribute edit links on a control card (see applyAttributeEditLink).
-                if (uri.path.indexOf(ATTR_EDIT_LINK_PATH) === 0) {
-                    applyAttributeEditLink(uri.path.slice(ATTR_EDIT_LINK_PATH.length));
+                // Attribute edit links on a control card (see applyAttributeEditLink). EVERY link under
+                // /clarion-attr/ is swallowed here, whatever follows it and whether or not it applies, so
+                // none of them ever reaches openLocation (the host's navigation/open-file path).
+                if (isAttributeLinkUri(uri)) {
+                    var ap = String(uri.path || '');
+                    if (ap.indexOf(ATTR_EDIT_LINK_PATH) === 0) applyAttributeEditLink(ap.slice(ATTR_EDIT_LINK_PATH.length));
                     return true;
                 }
                 // Hover footers only ever emit a bare #L<line> (see HoverFormatter.locationLink on the

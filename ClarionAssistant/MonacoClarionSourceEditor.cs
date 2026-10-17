@@ -733,6 +733,7 @@ namespace ClarionAssistant
                     + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
                     + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
+                    + "\"generatedSource\":" + (IsGeneratedSourceFile() ? "true" : "false") + ","   // GH #263 Q2
                     + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
                     + "\"breakpointsEnabled\":true,"
                     + "\"designerEnabled\":true,"
@@ -1558,6 +1559,7 @@ namespace ClarionAssistant
                     + "\"chromeBg1\":" + MonacoEditorControl.JsonString(_chromeBg1 ?? "") + ","
                     + "\"chromeBg2\":" + MonacoEditorControl.JsonString(_chromeBg2 ?? "") + ","
                     + "\"fileMode\":true,"
+                    + "\"generatedSource\":" + (IsGeneratedSourceFile() ? "true" : "false") + ","   // GH #263 Q2 (KEEP IN SYNC)
                     + "\"readOnly\":" + (fileReadOnly ? "true" : "false") + ","
                     + "\"breakpointsEnabled\":true,"
                     + "\"designerEnabled\":true,"
@@ -2324,6 +2326,14 @@ namespace ClarionAssistant
         private bool IsFileReadOnly()
         {
             try { return !string.IsNullOrEmpty(_filePath) && File.Exists(_filePath) && new FileInfo(_filePath).IsReadOnly; }
+            catch { return false; }
+        }
+
+        // GH #263 Q2: a module an open app generates. The page then shows a control hover card's attribute
+        // names as plain text instead of edit chips, since the next generate would overwrite the edit.
+        private bool IsGeneratedSourceFile()
+        {
+            try { return new Services.AppTreeService().IsGeneratedModuleOfOpenApp(_filePath); }
             catch { return false; }
         }
 
