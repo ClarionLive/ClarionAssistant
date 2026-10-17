@@ -200,6 +200,14 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "ClarionClDiagnosis.Test"
                Sources = @("tests\ClarionClDiagnosis.Test.cs", "Services\ClarionClDiagnosis.cs")
                Refs = @("System.dll") }
+            # GH #204 (708139c0): app vs. source project detection and the real output path (.cwproj OutputPath per
+            # configuration, else the .red), plus a source scan that the three ClarionCL tools use them.
+            @{ Name = "ClarionBuildTarget.Test"
+               Sources = @("tests\ClarionBuildTarget.Test.cs", "Services\ClarionBuildTarget.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\RedFileService.cs", "Services\EncodingHelper.cs", "Services\RedResolution.cs",
+                           "CodeGraph\Parsing\SolutionParser.cs", "CodeGraph\Parsing\Models\SolutionProject.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll")
+               Args = @($RepoDir) }
             # PR #228: the embeditor finds the generated module through the .red's build sections too.
             @{ Name = "EmbedLspContext.RedResolve.Test"
                Sources = @("tests\EmbedLspContext.RedResolve.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
