@@ -30,6 +30,7 @@ namespace ClarionAssistant.McpServer
             string clarionVersion = null;
             string configDir = null;     // --clarion-config-dir (e1df6c2e)
             bool pickServer = false;     // --pick-server (e1df6c2e)
+            string pickOut = null;       // --pick-out <file> (e1df6c2e pipeline run 1)
             bool unknownArg = false;
 
             for (int i = 0; i < args.Length; i++)
@@ -145,6 +146,17 @@ namespace ClarionAssistant.McpServer
                         // solution on stdout, the reason on stderr, and exit. See ServerPicker.
                         pickServer = true;
                         break;
+                    case "--pick-out":
+                        // With --pick-server: write the answer to this file INSTEAD of stdout. The launcher runs the
+                        // pick directly (no for /f, no call: those re-expand % in the client's arguments), so its
+                        // stdout is the MCP stream and must carry nothing (pipeline run 1).
+                        if (i + 1 < args.Length) { pickOut = args[++i]; }
+                        else
+                        {
+                            Console.Error.WriteLine(ServerName + ": --pick-out needs a file path.");
+                            return 64;
+                        }
+                        break;
                     default:
                         if (a.StartsWith("--solution=", StringComparison.OrdinalIgnoreCase))
                             solution = a.Substring("--solution=".Length);
@@ -170,7 +182,7 @@ namespace ClarionAssistant.McpServer
             }
 
             string configDirEnv = Environment.GetEnvironmentVariable(StandaloneConfigDir.EnvVar);
-            if (pickServer) return RunPickServer(solution, clarionVersion, configDir, configDirEnv);
+            if (pickServer) return RunPickServer(solution, clarionVersion, configDir, configDirEnv, pickOut);
 
             // DEFAULT IS TO SERVE. An MCP client launches this with no arguments and immediately
             // starts talking JSON-RPC on the pipe; printing usage and exiting 64 (the old spike
@@ -193,8 +205,14 @@ namespace ClarionAssistant.McpServer
             {
                 string own = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 string launchSln = workspace.CurrentSolutionPath;
+                // The pick is re-made against the SAME bootstrap the launcher asked (pipeline run 1), so its downgrade
+                // guard and warning come out as they did there; without the variable, against this server.
+                string bootstrap = Environment.GetEnvironmentVariable(BootstrapEnvVar);
+                if (string.IsNullOrEmpty(bootstrap)) bootstrap = own;
                 workspace.ServerChosenBy = ServerPicker.DescribeLaunch(launcherMode, own,
-                    () => ServerPicker.PickForMachine(launchSln, clarionVersion, configDir, configDirEnv, Environment.CurrentDirectory));
+                    () => ServerPicker.PickForMachine(launchSln, clarionVersion, configDir, configDirEnv, Environment.CurrentDirectory, bootstrap),
+                    () => ServerPicker.FindInstalled(ClarionAssistant.Services.ClarionVersionService.InstalledClarionRoot()),
+                    Environment.GetEnvironmentVariable(PickedEnvVar));
                 Console.Error.WriteLine(ServerName + ": " + workspace.ServerChosenBy);
             }
 
@@ -338,25 +356,39 @@ namespace ClarionAssistant.McpServer
         /// </summary>
         internal const string LauncherEnvVar = "CLARION_MCP_LAUNCHER";
 
+        /// <summary>Set by the launcher: the server it asked to pick (the bootstrap), so a re-made pick uses the same one.</summary>
+        internal const string BootstrapEnvVar = "CLARION_MCP_BOOTSTRAP";
+
+        /// <summary>Set by the launcher with CLARION_MCP_LAUNCHER=fallback: the picked server that failed to start.</summary>
+        internal const string PickedEnvVar = "CLARION_MCP_PICKED";
+
         /// <summary>
-        /// --pick-server (e1df6c2e): the launcher's question "which installed server for this solution?". Exactly one
-        /// line on stdout - the exe path - because the launcher reads it with for /f; the reason goes to stderr, which
-        /// the MCP client logs. Exit 0 with a path; 3 when no server is installed anywhere it looked (the launcher then
-        /// keeps the server it already found). Writes nothing anywhere else.
+        /// --pick-server (e1df6c2e): the launcher's question "which installed server for this solution?". The answer -
+        /// one exe path - goes to the --pick-out file when given (what the launcher uses), else as one line on stdout;
+        /// the reason goes to stderr, which the MCP client logs. Exit 0 with a path; 3 when no server is installed
+        /// anywhere it looked (the launcher then keeps the server it already found). Never reads stdin: the launcher
+        /// runs this on the MCP client's pipe. The pick is never an OLDER server than this one unless pinned
+        /// (ServerPicker.Pick).
         /// </summary>
-        private static int RunPickServer(string solution, string clarionVersion, string configDir, string configDirEnv)
+        private static int RunPickServer(string solution, string clarionVersion, string configDir, string configDirEnv,
+                                         string pickOut)
         {
             try
             {
                 var ws = StandaloneWorkspace.Resolve(solution, Environment.CurrentDirectory, clarionVersion);
                 var pick = ServerPicker.PickForMachine(ws.LaunchSolutionPath, clarionVersion, configDir, configDirEnv,
-                    Environment.CurrentDirectory);
-                if (pick.Server == null)
-                {
-                    Console.Error.WriteLine("clarion-tools: " + pick.Note);
-                    return 3;
-                }
+                    Environment.CurrentDirectory, System.Reflection.Assembly.GetExecutingAssembly().Location);
                 Console.Error.WriteLine("clarion-tools: " + pick.Note);
+                if (pick.Server == null) return 3;
+                if (!string.IsNullOrEmpty(pickOut))
+                {
+                    // In the OEM code page, no BOM, no newline: cmd's `set /p X=<file` reads raw bytes as the console
+                    // code page and keeps everything up to the end of the line.
+                    var oem = System.Text.Encoding.GetEncoding(
+                        System.Globalization.CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+                    File.WriteAllBytes(pickOut, oem.GetBytes(pick.Server.ExePath));
+                    return 0;
+                }
                 Console.Out.WriteLine(pick.Server.ExePath);
                 Console.Out.Flush();
                 return 0;

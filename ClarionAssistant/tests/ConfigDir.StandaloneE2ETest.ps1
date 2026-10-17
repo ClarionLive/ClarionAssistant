@@ -57,7 +57,9 @@ $fakeRoot = Join-Path $work 'FakeClarion11'
 $fakeServer = Join-Path $fakeRoot 'accessory\addins\ClarionAssistant\clarion-mcp-server.exe'
 $name = 'CA E2E Clarion 11.0.99999'
 New-Item -ItemType Directory -Force $sol, $recs, (Split-Path $fakeServer), (Join-Path $fakeRoot 'bin') | Out-Null
-[System.IO.File]::WriteAllText($fakeServer, 'placeholder')   # the pick only needs it to exist
+# A copy of the real server, so its version equals the bootstrap's and the downgrade guard lets it be picked (case 7);
+# case 7b swaps in a file with no version, which the guard must refuse.
+Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
 $sln = Join-Path $sol 'app.sln'
 [System.IO.File]::WriteAllText($sln, '')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -190,6 +192,28 @@ try {
     Assert-That ($p7.ExitCode -eq 0) "7: --pick-server should exit 0, got $($p7.ExitCode)"
     Assert-That ($outLines.Count -eq 1 -and $outLines[0] -eq $fakeServer) "7: stdout should be exactly the version's own server '$fakeServer', got: $out7"
     Assert-That (([string]$err7.Result) -match 'clarion-assistant\.json') "7: stderr should say the json chose it, got: $($err7.Result)"
+
+    # ---- 7b: the version's own server is NOT a Clarion Assistant this new (no version at all): refused ----
+    [System.IO.File]::WriteAllText($fakeServer, 'placeholder, no version resource')
+    $p7b = Start-Server ('--pick-server --pick-out "' + (Join-Path $work 'pick.txt') + '"') @{ CLARION_ROOTS = $fakeRoot }
+    $p7b.StandardInput.Close()
+    $err7b = $p7b.StandardError.ReadToEndAsync()
+    $out7b = $p7b.StandardOutput.ReadToEnd()
+    [void]$p7b.WaitForExit(30000)
+    $picked7b = if (Test-Path (Join-Path $work 'pick.txt')) { [System.IO.File]::ReadAllText((Join-Path $work 'pick.txt')) } else { '' }
+    Write-Host ("  7b  exit={0} pick-out={1} stderr={2}" -f $p7b.ExitCode, $picked7b, ($err7b.Result -replace '\s+', ' ')) -ForegroundColor DarkGray
+    Assert-That ($p7b.ExitCode -eq 0 -and $picked7b -eq $exe) "7b: an older/unversioned server must be refused and the bootstrap ('$exe') named instead, got '$picked7b'"
+    Assert-That ([string]::IsNullOrEmpty($out7b)) "7b: with --pick-out nothing may go to stdout, got: $out7b"
+    Assert-That (([string]$err7b.Result) -match 'REFUSED' -and ([string]$err7b.Result) -match 'version unreadable') "7b: stderr should say it REFUSED the downgrade and why, got: $($err7b.Result)"
+
+    # ---- 7c: --clarion-version PINS that Clarion: the unversioned server is picked, with a WARNING ----
+    $p7c = Start-Server ('--pick-server --clarion-version "' + $name + '"') @{ CLARION_ROOTS = $fakeRoot }
+    $p7c.StandardInput.Close()
+    $err7c = $p7c.StandardError.ReadToEndAsync()
+    $out7c = $p7c.StandardOutput.ReadToEnd()
+    [void]$p7c.WaitForExit(30000)
+    Assert-That ($out7c.Trim() -eq $fakeServer -and ([string]$err7c.Result) -match 'WARNING') "7c: a pinned downgrade should be picked with a WARNING, got '$($out7c.Trim())': $($err7c.Result)"
+    Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
 
     # ---- 8: launched by the launcher: serverChosenBy ----
     $r8 = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }; Show '8' $r8
