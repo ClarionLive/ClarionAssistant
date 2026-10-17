@@ -112,14 +112,22 @@ static class CodeGraphIndexerModuleLinkTest
             "  CODE");
 
         // ---- a class under the Clarion install: its MODULE file is NOT followed ----
-        Write(Path.Combine(clarionLib, "ABFAKE.INC"),
-            "FakeABC             CLASS,TYPE,MODULE('ABFAKE.CLW'),LINK('ABFAKE.CLW')",
-            "  Go                  PROCEDURE()",
-            "                    END");
         Write(Path.Combine(clarionLib, "ABFAKE.CLW"),
             "  MEMBER()",
             "FakeABC.Go PROCEDURE()",
             "  CODE");
+        // An install .inc the walk must not even read: its own INCLUDE and MODULE are never followed.
+        Write(Path.Combine(clarionLib, "ABFAKE.INC"),
+            "  INCLUDE('ABDEEP.INC'),ONCE",
+            "FakeABC             CLASS,TYPE,MODULE('ABFAKE.CLW'),LINK('ABFAKE.CLW')",
+            "  Go                  PROCEDURE()",
+            "                    END");
+        Write(Path.Combine(clarionLib, "ABDEEP.INC"),
+            "DeepABC             CLASS,TYPE,MODULE('ABDEEP.CLW')",
+            "  Go                  PROCEDURE()",
+            "                    END");
+        // The app's OWN class naming a .clw under the install: not followed either.
+        Write(Path.Combine(clarionLib, "ROOTIMPL.CLW"), "  MEMBER()", "AppRootThing.Go PROCEDURE()", "  CODE");
 
         // ---- configuration: CfgPick.clw exists for Debug and for Release ----
         Write(Path.Combine(root, "cfg", "CfgPick.inc"),
@@ -175,14 +183,18 @@ static class CodeGraphIndexerModuleLinkTest
             "  END",
             "  CODE");
         Write(Path.Combine(app2, "App2Lib.inc"),
+            "  INCLUDE('ABFAKE.INC'),ONCE",
             "App2Thing           CLASS,TYPE,MODULE('App2Thing.clw')",
             "  Run                 PROCEDURE()",
+            "                    END",
+            "AppRootThing        CLASS,TYPE,MODULE('ROOTIMPL.CLW')",
+            "  Go                  PROCEDURE()",
             "                    END");
         Write(Path.Combine(app2, "lib2", "App2Thing.clw"), "  MEMBER()", "App2Thing.Run PROCEDURE()", "  CODE");
         Write(Path.Combine(app2, "Clarion110.red"),
             "[Common]",
-            "*.inc = " + lib,
-            "*.clw = " + lib + ";.\\lib2",
+            "*.inc = " + lib + ";" + clarionLib,
+            "*.clw = " + lib + ";.\\lib2;" + clarionLib,
             "");
 
         string slnPath = Path.Combine(sln, "ModuleLink.sln");
@@ -267,8 +279,8 @@ static class CodeGraphIndexerModuleLinkTest
             r.Scalar("SELECT COUNT(*) FROM symbols WHERE name='App2Thing.Run' AND decl_kind='implementation'") == 1));
         list.Add(kv("A8 an unresolvable MODULE target is recorded unresolved (Ghost.clw)",
             r.Scalar("SELECT COUNT(*) FROM indexed_files WHERE pass='pass2c-module' AND outcome='unresolved' AND file_name='Ghost.clw'") >= 1));
-        list.Add(kv("A9 a MODULE target under the Clarion install is recorded skipped_clarion_install",
-            r.Scalar("SELECT COUNT(*) FROM indexed_files WHERE pass='pass2c-module' AND outcome='skipped_clarion_install' AND file_name='ABFAKE.CLW'") == 1));
+        list.Add(kv("A9 the walk stops at an .inc under the Clarion install, recorded ONCE per run though two apps include it",
+            r.Scalar("SELECT COUNT(*) FROM indexed_files WHERE pass='pass2c-module' AND outcome='skipped_clarion_install' AND file_name='ABFAKE.INC'") == 1));
         return list;
     }
 
@@ -277,6 +289,7 @@ static class CodeGraphIndexerModuleLinkTest
         string root = Path.Combine(Path.GetTempPath(), "ca-modlink-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(root);
         var opened = new List<CodeGraphDatabase>();
+        string legacyDbForStale = null;
         try
         {
             string slnPath = BuildFixture(root);
@@ -305,6 +318,22 @@ static class CodeGraphIndexerModuleLinkTest
                   "P2", "the Clarion-install class's .clw is not parsed");
             Check(on.Scalar("SELECT COUNT(*) FROM indexed_files WHERE file_name LIKE 'ghost.lib'") == 0,
                   "P3", "a LINK naming a .lib is not treated as source");
+            Check(on.Scalar("SELECT COUNT(*) FROM indexed_files WHERE file_name IN ('ABFAKE.CLW','ABDEEP.INC','ABDEEP.CLW')") == 0,
+                  "P3b", "the install .inc is not read: its INCLUDE (ABDEEP.INC) and MODULE (ABFAKE.CLW) leave no trace");
+            Check(on.Scalar("SELECT COUNT(*) FROM indexed_files WHERE pass='pass2c-module' AND outcome='skipped_clarion_install' AND file_name='ROOTIMPL.CLW'") == 1 &&
+                  on.Scalar("SELECT COUNT(*) FROM symbols WHERE name='AppRootThing.Go' AND decl_kind='implementation'") == 0,
+                  "P3c", "an app class naming a .clw under the install is not followed, and says so once");
+
+            // Which indexer built the database (pipeline follow-up, adversary LOW).
+            Console.WriteLine("-- indexer version / feature level");
+            Check(on.Text("SELECT value FROM index_metadata WHERE key='indexer_feature_level'") == CodeGraphIndexer.FeatureLevel.ToString() &&
+                  !string.IsNullOrEmpty(on.Text("SELECT value FROM index_metadata WHERE key='indexer_version'")) &&
+                  on.Result.FeatureLevel == CodeGraphIndexer.FeatureLevel && on.Result.CoverageText().Contains("Indexer: "),
+                  "V1", "the database and the result carry the indexer version and feature level");
+            string onDesc = CodeGraphIndexer.DescribeDatabase(Path.Combine(root, "on.db"));
+            Check(onDesc.Contains("feature level " + CodeGraphIndexer.FeatureLevel) && !onDesc.Contains("STALE"),
+                  "V2", "a current database is described without STALE: " + onDesc);
+            legacyDbForStale = Path.Combine(root, "legacy.db");
             Check(on.Scalar("SELECT COUNT(*) FROM indexed_files WHERE pass='pass2c-module' AND outcome='resolved_parsed' AND resolved_path='" +
                             Q(Path.Combine(lib, "ctQ_ActiveThreads.clw")) + "'") == 1 &&
                   on.Scalar("SELECT COUNT(*) FROM symbols WHERE name='ctQ_ActiveThreads.Helper' AND decl_kind='implementation'") == 1,
@@ -323,6 +352,12 @@ static class CodeGraphIndexerModuleLinkTest
             string legacyPick = legacy.Text("SELECT resolved_path FROM indexed_files WHERE pass='pass2c-module' AND file_name='CfgPick.clw'");
             Check(legacyPick != null && legacyPick.IndexOf("cfgDebug", StringComparison.OrdinalIgnoreCase) >= 0,
                   "K2", "no configuration keeps the old order (Common, Debug, Release) - got " + (legacyPick ?? "(none)"));
+            // A database an older indexer wrote has no feature-level row: listings must call it stale.
+            legacy.Db.ExecuteQuery("DELETE FROM index_metadata WHERE key IN ('indexer_feature_level','indexer_version')");
+            legacy.Db.Close(); opened.Remove(legacy.Db);
+            string staleDesc = CodeGraphIndexer.DescribeDatabase(legacyDbForStale);
+            Check(staleDesc.Contains("feature level 1") && staleDesc.Contains("STALE"),
+                  "V3", "a database without the feature-level row is described STALE: " + staleDesc);
 
             // ---------------- #244 item 3: honest coverage ----------------
             Console.WriteLine("-- coverage / status (#244 item 3)");
@@ -333,8 +368,8 @@ static class CodeGraphIndexerModuleLinkTest
                   "S2", ".cwproj-listed files: 4 listed, 1 unresolved (Missing.clw) - got " + res.CwprojFilesListed + "/" + res.CwprojFilesUnresolved);
             Check(res.ModuleFilesIndexed == 5,
                   "S3", "MODULE/LINK files indexed = 5 (ctQ_ActiveThreads, _TS, ctBase, CfgPick, App2Thing) - got " + res.ModuleFilesIndexed);
-            Check(res.ModuleTargetsUnresolved == 2 && res.ModuleTargetsSkipped == 1,
-                  "S4", "MODULE/LINK unresolved = 2 (Ghost.clw, once per project), skipped = 1 (ABFAKE.CLW) - got " +
+            Check(res.ModuleTargetsUnresolved == 2 && res.ModuleTargetsSkipped == 2,
+                  "S4", "MODULE/LINK unresolved = 2 (Ghost.clw, once per project), skipped = 2 (ABFAKE.INC once for both apps, ROOTIMPL.CLW) - got " +
                         res.ModuleTargetsUnresolved + "/" + res.ModuleTargetsSkipped);
             Check(res.Status == IndexResult.StatusWarning && res.Headline.StartsWith("CodeGraph indexed with warnings"),
                   "S5", "1 of 3 projects missing is a WARNING, not success and not partial - got " + res.Status);

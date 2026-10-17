@@ -418,6 +418,32 @@ namespace ClarionCodeGraph.Graph
             }
         }
 
+        /// <summary>
+        /// Every index_metadata row of the database at <paramref name="dbPath"/>, opened READ-ONLY (no schema
+        /// creation, no WAL write), for listings that must not touch a database they only describe. Empty when the
+        /// file is missing, is not a CodeGraph database, or cannot be read. Never throws.
+        /// </summary>
+        public static Dictionary<string, string> ReadMetadataReadOnly(string dbPath)
+        {
+            var meta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(dbPath) || !File.Exists(dbPath)) return meta;
+            try
+            {
+                using (var conn = new SQLiteConnection("Data Source=" + dbPath + ";Version=3;Read Only=True;"))
+                {
+                    conn.Open();
+                    using (var cmd = new SQLiteCommand("SELECT key, value FROM index_metadata", conn))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                            meta[reader.GetValue(0).ToString()] = reader.IsDBNull(1) ? null : reader.GetValue(1).ToString();
+                    }
+                }
+            }
+            catch { }
+            return meta;
+        }
+
         // --- Raw Query ---
 
         public DataTable ExecuteQuery(string sql, Dictionary<string, object> parameters = null)

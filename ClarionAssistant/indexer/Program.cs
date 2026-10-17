@@ -207,6 +207,8 @@ namespace ClarionIndexer
                 Console.WriteLine("  \"symbolCount\": " + result.SymbolCount + ",");
                 // #244 item 3: "success" means the run finished; "status" says how much it covered.
                 Console.WriteLine("  \"status\": " + JsonEscape(result.Status) + ",");
+                Console.WriteLine("  \"indexerVersion\": " + JsonEscape(result.IndexerVersion) + ",");
+                Console.WriteLine("  \"featureLevel\": " + result.FeatureLevel + ",");
                 Console.WriteLine("  \"projectsResolved\": " + result.ProjectsResolved + ",");
                 Console.WriteLine("  \"projectsUnresolved\": " + result.ProjectsUnresolved + ",");
                 Console.WriteLine("  \"cwprojFilesListed\": " + result.CwprojFilesListed + ",");
