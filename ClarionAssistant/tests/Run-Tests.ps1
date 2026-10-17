@@ -508,6 +508,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "OpenTabGuard.Test"
                Sources = @("tests\OpenTabGuard.Test.cs", "Services\OpenTabGuard.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # GH #205 pipeline run 1: the open-tab check matches a tab by FILE IDENTITY - a REAL junction, hard link,
+            # subst drive, symlink and 8.3 name (the last three skipped, never passed, when this machine cannot make them).
+            @{ Name = "FileIdentity.Test"
+               Sources = @("tests\FileIdentity.Test.cs", "Services\FileIdentity.cs")
+               Refs = @("System.dll") }
+            # GH #205 pipeline run 1: IDEs asked in parallel inside one budget, a timed-out IDE skipped for a minute; and
+            # one endpoint record per IDE whichever of its servers runs (no chat pane needed).
+            @{ Name = "IdeFanOut.Test"
+               Sources = @("tests\IdeFanOut.Test.cs", "Services\IdeFanOut.cs", "Services\EndpointOwnership.cs", "Services\OpenTabGuard.cs")
+               Refs = @("System.dll", "System.Core.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

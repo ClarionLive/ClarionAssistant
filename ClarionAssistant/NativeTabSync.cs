@@ -14,25 +14,26 @@ namespace ClarionAssistant
     /// GH #205: the IDE half of <see cref="OpenTabGuard"/>. Answers "is this file open in a NATIVE Clarion editor tab, and
     /// does that tab have unsaved edits?" and reloads a clean native tab from disk after write_file / append_to_file
     /// changed the file. Behind the IdeOnly tool editor_tab_sync (which the standalone clarion-mcp-server calls over the
-    /// pane's endpoint), and wired straight into OpenTabGuard.Probe/Reload for an addin that serves write_file itself.
-    /// Registered by LspAutostartCommand at addin start, so it works with no chat tab open.
+    /// IDE's endpoint, IdeCallbackHost), and wired straight into OpenTabGuard.Probe/Reload for an addin that serves
+    /// write_file itself. Registered by LspAutostartCommand at addin start, so it works with no chat tab open.
     ///
-    /// WHICH TAB IS NATIVE. A source tab is a TextEditorDisplayBindingWrapper (ClarionEditor : CommonClarionEditor :
-    /// TextEditorDisplayBindingWrapper, reflected on C10 and C12). When it is a MonacoClarionEditor whose CA Editor is UP,
-    /// the visible editor is the CA Editor, whose own disk watcher offers a reload: reported as ca-editor, never
-    /// reloaded here. Every other wrapper on the path is native. Views that are not text editors (the CA Embeditor's
-    /// file tab, a diff) are not this tool's business and are not reported.
+    /// WHICH TAB. Every open text-editor view (TextEditorDisplayBindingWrapper: ClarionEditor : CommonClarionEditor :
+    /// TextEditorDisplayBindingWrapper, reflected on C10 and C12) whose file is THE SAME FILE as any spelling asked about,
+    /// by FILE IDENTITY (FileIdentity: volume serial + file index, then the resolved final path), so a tab opened through
+    /// a junction, a subst drive, a symlink, an 8.3 name or a hard link is found (pipeline run 1). Of those, a
+    /// MonacoClarionEditor whose CA Editor is UP is the CA Editor (its own disk watcher offers a reload; its native shell
+    /// is always clean, so IsDirty would lie): reported as ca-editor, never reloaded here. The rest are native. Views
+    /// that are not text editors (the CA Embeditor's file tab, a diff) are not this tool's business.
     ///
     /// THE RELOAD is SharpDevelop's own: AbstractViewContent.Load(fileName), the call its FileChangeWatcher makes when
-    /// the user accepts "file changed outside, reload?". It re-reads the file (encoding detected as at open), sets
-    /// IsDirty false, re-arms the watcher and re-adds the bookmarks. The caret line and column are put back (clamped).
-    /// It is REFUSED when the tab is dirty at reload time (it may have been typed into since the check), so a reload
-    /// can never drop edits. The tab's undo history starts afresh, as with any reload.
+    /// the user accepts "file changed outside, reload?", with the TAB'S OWN file name (so the tab keeps its title). It
+    /// re-reads the file (encoding detected as at open), sets IsDirty false, re-arms the watcher and re-adds bookmarks.
+    /// The caret line and column are put back (clamped). It is REFUSED when the tab is dirty at reload time (it may have
+    /// been typed into since the check), so a reload can never drop edits. The tab's undo history starts afresh.
     ///
-    /// THREADING. Called on an MCP worker thread. Both operations need the IDE's object model, so they are POSTED to
-    /// the UI thread and waited for at most a bound, never Invoke'd (the sync-over-async stall). A timed-out check is
-    /// an unreachable answer (the write tool then says the tabs could not be checked); a timed-out reload is reported
-    /// as not reloaded. A late-running posted call finishes and is discarded; the reload still re-checks IsDirty.
+    /// THREADING. Called on an MCP worker thread; the IDE's object model is touched only on the UI thread through
+    /// UiThreadCall (posted, bounded wait, never Invoke). A timed-out check is unreachable (the write tool then says the
+    /// tabs could not be checked); a timed-out reload is reported as not reloaded.
     /// </summary>
     internal static class NativeTabSync
     {
@@ -47,85 +48,88 @@ namespace ClarionAssistant
             OpenTabGuard.LocalCheck = Check;
             OpenTabGuard.LocalReload = Reload;
             // The addin serving write_file itself (no standalone exe): ask this IDE directly.
-            OpenTabGuard.Probe = path => new List<TabProbe> { Check(path) };
-            OpenTabGuard.Reload = (path, tab) => Reload(path);
+            OpenTabGuard.Probe = paths => new List<TabProbe> { Check(paths) };
+            OpenTabGuard.Reload = (paths, tab) => Reload(paths);
         }
 
-        internal static TabProbe Check(string path)
+        internal static TabProbe Check(IList<string> paths)
         {
             TabProbe answer = null;
-            string failure = OnUi(() => { answer = CheckOnUi(path); }, CheckWaitMs);
-            if (failure != null) answer = new TabProbe { Reachable = false, Reason = failure };
+            var probes = Probes(paths);   // file identities: off the UI thread
+            string failure = Why(UiThreadCall.Run(_ui, () => { answer = CheckOnUi(probes); }, CheckWaitMs, out Exception error), error, CheckWaitMs);
+            if (failure != null) answer = new TabProbe { Reachable = false, Reason = failure, TimedOut = failure.Contains("did not answer") };
             answer.Ide = "IDE " + System.Diagnostics.Process.GetCurrentProcess().Id;
-            MonacoSpikeLog.Write("[tab-sync] check " + path + " -> " + (answer.Reachable
+            MonacoSpikeLog.Write("[tab-sync] check " + Join(paths) + " -> " + (answer.Reachable
                 ? answer.Kind + (answer.Dirty ? " dirty" : " clean") : "unreachable: " + answer.Reason));
             return answer;
         }
 
-        internal static TabReload Reload(string path)
+        internal static TabReload Reload(IList<string> paths)
         {
             TabReload answer = null;
-            string failure = OnUi(() => { answer = ReloadOnUi(path); }, ReloadWaitMs);
+            var probes = Probes(paths);
+            string failure = Why(UiThreadCall.Run(_ui, () => { answer = ReloadOnUi(probes); }, ReloadWaitMs, out Exception error), error, ReloadWaitMs);
             if (failure != null) answer = new TabReload { Reloaded = false, Reason = failure };
-            MonacoSpikeLog.Write("[tab-sync] reload " + path + " -> " + (answer.Reloaded
+            MonacoSpikeLog.Write("[tab-sync] reload " + Join(paths) + " -> " + (answer.Reloaded
                 ? "reloaded, caret line " + answer.Line : "not reloaded: " + answer.Reason));
             return answer;
         }
 
-        // Runs work on the UI thread with a bounded wait; null on success, else why it did not run in time.
-        private static string OnUi(Action work, int waitMs)
+        private static string Why(UiThreadCall.Outcome o, Exception error, int waitMs)
         {
-            var ui = _ui;
-            if (ui == null) return "the IDE's editor check is not registered";
-            Exception error = null;
-            var done = new ManualResetEventSlim(false);
-            SendOrPostCallback cb = _ =>
+            switch (o)
             {
-                try { work(); }
-                catch (Exception ex) { error = ex; }
-                finally { try { done.Set(); } catch (ObjectDisposedException) { } }
-            };
-            if (SynchronizationContext.Current == ui) cb(null);
-            else
-            {
-                ui.Post(cb, null);
-                if (!done.Wait(waitMs))
-                    return "the IDE's UI thread did not answer within " + (waitMs / 1000) + " s";
+                case UiThreadCall.Outcome.Ran: return null;
+                case UiThreadCall.Outcome.TimedOut: return "the IDE's UI thread did not answer within " + (waitMs / 1000) + " s";
+                case UiThreadCall.Outcome.NoUiThread: return "the IDE's editor check is not registered";
+                default: return "the editor lookup failed: " + (error != null ? error.Message : "unknown error");
             }
-            done.Dispose();
-            return error != null ? "the editor lookup failed: " + error.Message : null;
         }
 
-        private static TabProbe CheckOnUi(string path)
+        private static List<FileIdentity.Probe> Probes(IList<string> paths)
         {
-            // The CA Editor first: its native shell stays clean by design, so IsDirty would lie about it.
-            if (MonacoClarionEditor.IsOpenInOverlay(path))
-            {
-                bool caDirty;
-                MonacoClarionEditor.TryGetLiveTabState(path, out caDirty);
-                return new TabProbe { Reachable = true, Kind = OpenTabGuard.KindCaEditor, Dirty = caDirty };
-            }
-            bool open = false, dirty = false;
-            foreach (var w in NativeViewsOf(path))
-            {
-                open = true;
-                if (w.IsDirty) dirty = true;
-            }
-            return new TabProbe { Reachable = true, Kind = open ? OpenTabGuard.KindNative : OpenTabGuard.KindNone, Dirty = dirty };
+            var list = new List<FileIdentity.Probe>();
+            if (paths != null) foreach (var p in paths) if (!string.IsNullOrEmpty(p)) list.Add(FileIdentity.Of(p));
+            return list;
         }
 
-        private static TabReload ReloadOnUi(string path)
+        private static string Join(IList<string> paths) { return paths == null ? "" : string.Join(" | ", new List<string>(paths).ToArray()); }
+
+        private static TabProbe CheckOnUi(List<FileIdentity.Probe> probes)
         {
-            if (MonacoClarionEditor.IsOpenInOverlay(path))
-                return new TabReload { Reason = "it is now in the CA Editor, which offers its own reload" };
-            var views = NativeViewsOf(path);
-            if (views.Count == 0) return new TabReload { Reason = "the tab is no longer open" };
-            foreach (var w in views)
+            bool caOpen = false, caDirty = false, nativeOpen = false, nativeDirty = false;
+            foreach (var w in ViewsOf(probes))
+            {
+                var me = w as MonacoClarionEditor;
+                if (me != null && me.OverlayUp) { caOpen = true; if (me.OverlayDirty) caDirty = true; }
+                else { nativeOpen = true; if (w.IsDirty) nativeDirty = true; }
+            }
+            // A native tab is the one that loses data, so it decides when both kinds hold the file.
+            if (nativeOpen) return new TabProbe { Reachable = true, Kind = OpenTabGuard.KindNative, Dirty = nativeDirty };
+            if (caOpen) return new TabProbe { Reachable = true, Kind = OpenTabGuard.KindCaEditor, Dirty = caDirty };
+            return new TabProbe { Reachable = true, Kind = OpenTabGuard.KindNone };
+        }
+
+        private static TabReload ReloadOnUi(List<FileIdentity.Probe> probes)
+        {
+            var natives = new List<TextEditorDisplayBindingWrapper>();
+            foreach (var w in ViewsOf(probes))
+            {
+                var me = w as MonacoClarionEditor;
+                if (me != null && me.OverlayUp) continue;   // the CA Editor offers its own reload
+                natives.Add(w);
+            }
+            if (natives.Count == 0) return new TabReload { Reason = "the tab is no longer open in the native editor" };
+            foreach (var w in natives)
                 if (w.IsDirty) return new TabReload { Reason = "the tab has unsaved changes now, so reloading would lose them" };
-            if (!File.Exists(path)) return new TabReload { Reason = "the file is not on disk" };
 
             int caretLine = 0;
-            foreach (var w in views) caretLine = ReloadKeepingCaret(w, path);
+            foreach (var w in natives)
+            {
+                string own = FileNameOf(w);
+                if (string.IsNullOrEmpty(own) || !File.Exists(own)) return new TabReload { Reason = "the tab's file is not on disk" };
+                caretLine = ReloadKeepingCaret(w, own);
+            }
             return new TabReload { Reloaded = true, Line = caretLine };
         }
 
@@ -161,8 +165,8 @@ namespace ClarionAssistant
             catch { return 0; }
         }
 
-        // The open text-editor views of path whose visible editor is the native one. UI thread.
-        private static List<TextEditorDisplayBindingWrapper> NativeViewsOf(string path)
+        // Every open text-editor view of the file (any spelling, by identity). UI thread.
+        private static List<TextEditorDisplayBindingWrapper> ViewsOf(List<FileIdentity.Probe> probes)
         {
             var found = new List<TextEditorDisplayBindingWrapper>();
             var seen = new HashSet<object>();
@@ -171,23 +175,21 @@ namespace ClarionAssistant
                 var w = vc as TextEditorDisplayBindingWrapper;
                 if (w == null || seen.Contains(w)) return;
                 seen.Add(w);
-                if (!SamePath(FileNameOf(w), path)) return;
-                var me = w as MonacoClarionEditor;
-                if (me != null && MonacoClarionEditor.IsOpenInOverlay(path)) return;   // the CA Editor covers it
-                found.Add(w);
+                if (FileIdentity.MatchesAny(FileNameOf(w), probes)) found.Add(w);
             };
 
-            try
+            foreach (var p in probes)
             {
-                if (ICSharpCode.SharpDevelop.FileService.IsOpen(path))
+                try
                 {
-                    var window = ICSharpCode.SharpDevelop.FileService.GetOpenFile(path);
+                    if (!ICSharpCode.SharpDevelop.FileService.IsOpen(p.Full)) continue;
+                    var window = ICSharpCode.SharpDevelop.FileService.GetOpenFile(p.Full);
                     if (window != null) { consider(window.ViewContent); consider(window.ActiveViewContent); }
                 }
+                catch { }
             }
-            catch { }
 
-            // And every view, in case FileService's own path match missed it (different spelling of the same file).
+            // And every view: FileService matches by path text, so an alias is only found here.
             try
             {
                 var wb = WorkbenchSingleton.Workbench;
@@ -203,13 +205,6 @@ namespace ClarionAssistant
         {
             try { var f = w.FileName; if (!string.IsNullOrEmpty(f)) return f; } catch { }
             try { return w.TextEditorControl.FileName; } catch { return null; }
-        }
-
-        private static bool SamePath(string a, string b)
-        {
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-            try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); } catch { }
-            return string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
         }
     }
 }

@@ -247,6 +247,18 @@ namespace ClarionAssistant.Services
         }
 
         public int GetToolCount() { return _tools.Count; }
+
+        /// <summary>
+        /// GH #205: keep only <paramref name="names"/> and drop every other tool. For the addin's IDE callback endpoint
+        /// (IdeCallbackHost), which must serve the standalone server's call-backs (get_live_text, editor_tab_sync) with
+        /// no chat pane open, and nothing else: it is not a tool surface for a model.
+        /// </summary>
+        public void RetainOnly(params string[] names)
+        {
+            var keep = new HashSet<string>(names ?? new string[0], StringComparer.OrdinalIgnoreCase);
+            foreach (var name in _tools.Keys.ToList())
+                if (!keep.Contains(name)) _tools.Remove(name);
+        }
         public IAppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)
@@ -1805,13 +1817,14 @@ IdeOnly = true,
                 {
                     string path = McpJsonRpc.GetString(args, "path");
                     string content = McpJsonRpc.GetString(args, "content", "");
+                    string asked = path;   // GH #205: the caller's spelling, which the IDE also matches tabs against
                     string refusal = McpPathGate.GatePath("write_file", path, PathAccess.Write, _workspace, out path);
                     if (refusal != null) return refusal;
                     // GH #205: never underneath a native editor tab's stale buffer. OpenTabGuard asks the IDE first:
                     // a tab with unsaved changes refuses (nothing written, not even the folder); a clean one is
                     // reloaded after the write; the result says what happened to any open tab.
                     string target = path;
-                    return OpenTabGuard.Run(target, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
+                    return OpenTabGuard.Run(target, asked, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
                     {
                         string dir = Path.GetDirectoryName(target);
                         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
@@ -1845,6 +1858,7 @@ IdeOnly = true,
                 {
                     string path = McpJsonRpc.GetString(args, "path");
                     string text = McpJsonRpc.GetString(args, "text", "");
+                    string asked = path;   // GH #205: the caller's spelling, which the IDE also matches tabs against
                     string refusal = McpPathGate.GatePath("append_to_file", path, PathAccess.Write, _workspace, out path);
                     if (refusal != null) return refusal;
                     if (!File.Exists(path))
@@ -1864,7 +1878,7 @@ IdeOnly = true,
                     //
                     // GH #205: the same open-tab guard as write_file (refuse under a dirty native tab, reload a clean one).
                     string target = path;
-                    return OpenTabGuard.Run(target, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
+                    return OpenTabGuard.Run(target, asked, OpenTabGuard.ParseFlag(args, OpenTabGuard.OverrideArg), () =>
                     {
                         try
                         {
@@ -3145,6 +3159,7 @@ COMMON QUERIES:
                     new Dictionary<string, string>
                     {
                         { "file_path", "Absolute path of the file" },
+                        { OpenTabGuard.AlsoPathArg, "Optional: another spelling of the same file (the caller's, before link resolution); tabs are matched against both, by file identity" },
                         { "action", "'check' or 'reload'" }
                     },
                     new[] { "file_path", "action" }),
@@ -3154,11 +3169,12 @@ COMMON QUERIES:
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     string action = (McpJsonRpc.GetString(args, "action") ?? "").Trim().ToLowerInvariant();
                     if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    var spellings = OpenTabGuard.Spellings(filePath, McpJsonRpc.GetString(args, OpenTabGuard.AlsoPathArg));
                     if (action == "check")
                     {
                         var check = OpenTabGuard.LocalCheck;
                         TabProbe p;
-                        try { p = check != null ? check(filePath) : null; }
+                        try { p = check != null ? check(spellings) : null; }
                         catch (Exception ex) { p = new TabProbe { Reachable = false, Reason = "the editor lookup failed: " + ex.Message }; }
                         return OpenTabGuard.CheckToWire(p);
                     }
@@ -3166,7 +3182,7 @@ COMMON QUERIES:
                     {
                         var reload = OpenTabGuard.LocalReload;
                         TabReload r;
-                        try { r = reload != null ? reload(filePath) : null; }
+                        try { r = reload != null ? reload(spellings) : null; }
                         catch (Exception ex) { r = new TabReload { Reason = "the reload failed: " + ex.Message }; }
                         return OpenTabGuard.ReloadToWire(r);
                     }

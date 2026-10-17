@@ -140,8 +140,9 @@ namespace ClarionAssistant.Services
                     _listenerThread.Start();
 
                     // 44a1b10c: let the standalone clarion-mcp-server find this pane, to ask it for an open editor's
-                    // text (get_live_text). Removed in Stop.
-                    IdeEndpointRecord.Publish(port, _sessionToken);
+                    // text (get_live_text) and, GH #205, for its open tabs (editor_tab_sync). Removed in Stop. ONE record
+                    // per IDE: the first running server publishes, the others stand by (see JoinEndpoint).
+                    JoinEndpoint();
 
                     lock (_reclaimLock)
                     {
@@ -149,7 +150,7 @@ namespace ClarionAssistant.Services
                         _reclaimedPort = 0;
                         // The listener rides along as the timer state, so a tick can tell it belongs
                         // to this run and not to one a restart has since replaced.
-                        if (port != preferredPort)
+                        if (port != preferredPort && ReclaimPreferredPort)
                             _reclaimTimer = new System.Threading.Timer(TryReclaimPreferredPort, _listener,
                                                                        ReclaimIntervalMs, ReclaimIntervalMs);
                     }
@@ -362,6 +363,28 @@ namespace ClarionAssistant.Services
             return false;
         }
 
+        /// <summary>
+        /// When the preferred port is taken, keep retrying it (the chat pane: external clients are configured for
+        /// 19372). False for the IDE callback endpoint (IdeCallbackHost), whose port nobody is configured for.
+        /// </summary>
+        public bool ReclaimPreferredPort { get; set; } = true;
+
+        // GH #205: ONE endpoint record per IDE process, whichever of its servers (the chat pane's, the always-on
+        // IdeCallbackHost's) is running. Both serve get_live_text and editor_tab_sync, so either answers the standalone
+        // server; publishing both would leave it two records for one IDE. The first running server publishes; when it
+        // stops, the record moves to another running one, so closing the chat pane never leaves the IDE unreachable.
+        private static readonly EndpointOwnership<McpServer> _endpoint = new EndpointOwnership<McpServer>();
+
+        /// <summary>The server whose record is published for this IDE, or null. For diagnostics.</summary>
+        internal static McpServer EndpointOwner { get { return _endpoint.Owner; } }
+
+        private static bool Serving(McpServer s) { return s._running && s._sessionToken != null; }
+        private static void PublishRecord(McpServer s) { IdeEndpointRecord.Publish(s._port, s._sessionToken); }
+        private static void WithdrawRecord(McpServer s) { IdeEndpointRecord.Remove(s._port); }
+
+        private void JoinEndpoint() { _endpoint.Join(this, Serving, PublishRecord); }
+        private void LeaveEndpoint() { _endpoint.Leave(this, Serving, PublishRecord, WithdrawRecord); }
+
         public void Stop()
         {
             bool wasRunning = _running;
@@ -372,7 +395,7 @@ namespace ClarionAssistant.Services
                 StopReclaimTimer();
                 _reclaimedPort = 0;
             }
-            if (wasRunning) IdeEndpointRecord.Remove(_port);   // 44a1b10c: withdraw the endpoint before the port closes
+            if (wasRunning) LeaveEndpoint();   // 44a1b10c: withdraw the endpoint before the port closes (GH #205: hand it on)
 
             // Close all SSE connections
             foreach (var kvp in _sseClients)

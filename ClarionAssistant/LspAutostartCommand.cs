@@ -90,6 +90,12 @@ namespace ClarionAssistant
             try { NativeTabSync.Register(); }
             catch (Exception ex) { Debug.WriteLine("[LspAutostart] native tab sync failed: " + ex.Message); }
 
+            // GH #205 pipeline run 1: and the endpoint the standalone server calls those through (editor_tab_sync,
+            // get_live_text), plus the IDE's open solution record, with NO chat pane. They used to exist only while a chat
+            // pane's McpServer ran. One endpoint record per IDE (McpServer hands it between its servers).
+            try { IdeCallbackHost.Start(); }
+            catch (Exception ex) { Debug.WriteLine("[LspAutostart] IDE callback host failed: " + ex.Message); }
+
             // fc420c30: the MCP editor tools reach the CA Editor (Monaco) instead of the native document hidden under it.
             // At addin start, on the UI thread, so it works with no chat tab and the router knows the UI thread.
             try

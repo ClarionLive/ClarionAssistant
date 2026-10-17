@@ -18,6 +18,8 @@ namespace ClarionAssistant.Services
         public bool Dirty;
         /// <summary>Host-private handle the reload goes back through (the standalone's endpoint). Opaque here.</summary>
         public object Handle;
+        /// <summary>Unreachable because it ran out of time (not refused, not down): IdeFanOut stops asking it for a while.</summary>
+        public bool TimedOut;
     }
 
     /// <summary>The outcome of reloading one native tab from disk.</summary>
@@ -68,10 +70,30 @@ namespace ClarionAssistant.Services
         public const string KindCaEditor = "ca-editor";
         public const string OverrideArg = "overwrite_open_buffer";
 
-        public static Func<string, List<TabProbe>> Probe;
-        public static Func<string, TabProbe, TabReload> Reload;
-        public static Func<string, TabProbe> LocalCheck;
-        public static Func<string, TabReload> LocalReload;
+        // Every delegate takes ALL the spellings of the target (pipeline run 1): the gated, link-resolved path first, then
+        // the path as the caller gave it. The IDE matches a tab against any of them by file identity (FileIdentity), so a
+        // tab opened through a junction, a subst drive, a symlink or an 8.3 name is still found.
+        public static Func<IList<string>, List<TabProbe>> Probe;
+        public static Func<IList<string>, TabProbe, TabReload> Reload;
+        public static Func<IList<string>, TabProbe> LocalCheck;
+        public static Func<IList<string>, TabReload> LocalReload;
+
+        /// <summary>editor_tab_sync's optional second spelling of file_path.</summary>
+        public const string AlsoPathArg = "also_path";
+
+        /// <summary>The distinct, non-empty spellings, <paramref name="primary"/> first.</summary>
+        public static List<string> Spellings(string primary, string alsoPath)
+        {
+            var list = new List<string>();
+            foreach (var p in new[] { primary, alsoPath })
+            {
+                if (string.IsNullOrEmpty(p)) continue;
+                bool dup = false;
+                foreach (var q in list) if (string.Equals(q.TrimEnd('\\'), p.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) dup = true;
+                if (!dup) list.Add(p);
+            }
+            return list;
+        }
 
         /// <summary>Why the tabs could not be checked when no host wired a probe (a bare test host, say).</summary>
         public const string NoProbeReason = "this server has no connection to a Clarion IDE";
@@ -147,11 +169,19 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string Run(string path, bool overwriteOpenBuffer, Func<string> write)
         {
+            return Run(path, null, overwriteOpenBuffer, write);
+        }
+
+        /// <summary>As above; <paramref name="askedPath"/> is the path as the caller spelled it, before the path gate
+        /// resolved it to <paramref name="path"/>. The IDE is asked about both.</summary>
+        public static string Run(string path, string askedPath, bool overwriteOpenBuffer, Func<string> write)
+        {
+            var spellings = Spellings(path, askedPath);
             List<TabProbe> probes = null;
             var probe = Probe;
             if (probe != null)
             {
-                try { probes = probe(path); }
+                try { probes = probe(spellings); }
                 catch (Exception ex)
                 {
                     probes = new List<TabProbe> { new TabProbe { Reachable = false, Reason = "the IDE check failed: " + ex.Message } };
@@ -166,20 +196,20 @@ namespace ClarionAssistant.Services
             if (result.StartsWith("Error", StringComparison.Ordinal)) return result;   // nothing new on disk: nothing to reload
 
             var lines = new List<string>();
-            foreach (var tab in d.ReloadAfter) lines.Add(ReloadNote(path, tab));
+            foreach (var tab in d.ReloadAfter) lines.Add(ReloadNote(spellings, tab));
             lines.AddRange(d.Notes);
             if (lines.Count == 0) return result;
             return result + "\n" + string.Join("\n", lines.ToArray());
         }
 
-        private static string ReloadNote(string path, TabProbe tab)
+        private static string ReloadNote(IList<string> spellings, TabProbe tab)
         {
-            string name = SafeName(path);
+            string name = SafeName(spellings.Count > 0 ? spellings[0] : "");
             TabReload r = null;
             var reload = Reload;
             if (reload != null)
             {
-                try { r = reload(path, tab); }
+                try { r = reload(spellings, tab); }
                 catch (Exception ex) { r = new TabReload { Reloaded = false, Reason = ex.Message }; }
             }
             if (r != null && r.Reloaded)

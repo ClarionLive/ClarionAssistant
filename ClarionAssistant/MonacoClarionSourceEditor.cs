@@ -1887,6 +1887,11 @@ namespace ClarionAssistant
         /// that is <see cref="IsOpenInNativeEditor"/>, whose unsaved edits the tools cannot see.</summary>
         internal static bool IsOpenInOverlay(string path) { return OpenTabHasOverlay(path) == true; }
 
+        /// <summary>GH #205: is THIS tab's CA Editor up (the visible editor), and does it hold unsaved edits? Per instance,
+        /// so NativeTabSync can classify a tab it matched by file identity rather than by path text.</summary>
+        internal bool OverlayUp { get { return _editor != null; } }
+        internal bool OverlayDirty { get { return _overlayDirty; } }
+
         /// <summary>fc420c30: is <paramref name="path"/> open in a source tab showing the NATIVE Clarion editor?</summary>
         internal static bool IsOpenInNativeEditor(string path) { return OpenTabHasOverlay(path) == false; }
 

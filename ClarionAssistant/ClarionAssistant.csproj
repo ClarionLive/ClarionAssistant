@@ -201,6 +201,8 @@
     <Compile Include="LspAutostartCommand.cs" />
     <Compile Include="EditorLiveTextProvider.cs" />
     <Compile Include="NativeTabSync.cs" />
+    <Compile Include="IdeCallbackHost.cs" />
+    <Compile Include="UiThreadCall.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
     <Compile Include="ActiveDocumentRestoreCommand.cs" />
     <Compile Include="EmbedEditorMonitorAutostartCommand.cs" />
@@ -274,6 +276,8 @@
     <Compile Include="Services\McpPathPolicy.cs" />
     <Compile Include="Services\McpPathGate.cs" />
     <Compile Include="Services\OpenTabGuard.cs" />
+    <Compile Include="Services\FileIdentity.cs" />
+    <Compile Include="Services\EndpointOwnership.cs" />
     <Compile Include="Services\SchemaGraphService.cs" />
     <Compile Include="Services\NpgsqlLoader.cs" />
     <Compile Include="Terminal\SchemaSourcesView.cs" />

@@ -90,28 +90,14 @@ namespace ClarionAssistant
             if (ui == null) return null;
 
             SharedLspBridge.LiveText answer = null;
-            Exception failure = null;
-            var done = new ManualResetEventSlim(false);
-            SendOrPostCallback read = _ =>
-            {
-                try { answer = ReadEmbeditorDocumentOnUi(path); }
-                catch (Exception ex) { failure = ex; }
-                finally { try { done.Set(); } catch (ObjectDisposedException) { } }
-            };
-
-            if (SynchronizationContext.Current == ui)
-                read(null);   // already on the UI thread: read inline, nothing to wait for
-            else
-            {
-                ui.Post(read, null);
-                if (!done.Wait(UiWaitMs))
-                    return new SharedLspBridge.LiveText
-                    {
-                        Reason = "the IDE's UI thread did not answer within " + (UiWaitMs / 1000) + " s, so an open embeditor could not be checked"
-                    };
-            }
-            done.Dispose();
-            if (failure != null)
+            Exception failure;
+            var outcome = UiThreadCall.Run(ui, () => { answer = ReadEmbeditorDocumentOnUi(path); }, UiWaitMs, out failure);
+            if (outcome == UiThreadCall.Outcome.TimedOut)
+                return new SharedLspBridge.LiveText
+                {
+                    Reason = "the IDE's UI thread did not answer within " + (UiWaitMs / 1000) + " s, so an open embeditor could not be checked"
+                };
+            if (outcome == UiThreadCall.Outcome.Failed)
                 return new SharedLspBridge.LiveText { Reason = "reading the open embeditor failed: " + failure.Message };
             return answer;
         }
@@ -137,11 +123,7 @@ namespace ClarionAssistant
             };
         }
 
-        private static bool SamePath(string a, string b)
-        {
-            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-            try { a = Path.GetFullPath(a); b = Path.GetFullPath(b); } catch { }
-            return string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
-        }
+        // GH #205: by file identity (FileIdentity), so a module reached through a junction/subst/8.3 alias still matches.
+        private static bool SamePath(string a, string b) { return FileIdentity.SameFile(a, b); }
     }
 }
