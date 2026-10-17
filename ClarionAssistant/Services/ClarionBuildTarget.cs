@@ -390,7 +390,8 @@ namespace ClarionAssistant.Services
                 if (!red.Sections.TryGetValue(s, out sec)) continue;
                 foreach (var e in sec.Entries)
                 {
-                    if (!GlobMatch(fileName, e.Pattern)) continue;
+                    // The resolver's own matcher, so this lookup and resolve_red_path never disagree on an entry.
+                    if (string.IsNullOrEmpty(e.Pattern) || !RedFileService.MatchesPattern(fileName, e.Pattern)) continue;
                     section = sec.Name;
                     pattern = e.Pattern;
                     rawEntry = e.RawPath;
@@ -398,14 +399,6 @@ namespace ClarionAssistant.Services
                 }
             }
             return null;
-        }
-
-        /// <summary>A .red pattern (<c>*</c> and <c>?</c> wildcards) against a file name, ignoring case.</summary>
-        internal static bool GlobMatch(string fileName, string pattern)
-        {
-            if (string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(pattern)) return false;
-            string rx = "^" + Regex.Escape(pattern.Trim()).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-            return Regex.IsMatch(fileName, rx, RegexOptions.IgnoreCase);
         }
 
         // ------------------------------------------------------------------ result text
@@ -427,8 +420,10 @@ namespace ClarionAssistant.Services
             if (info == null) return "";
             if (info.Error != null) { sb.AppendLine("PROJECT: " + info.Error); return sb.ToString(); }
             RefreshOutput(info);
+            // NOT COMPILED on every project line: an existing, recent OUTPUT below must not read as "it built".
             sb.AppendLine("PROJECT: " + Path.GetFileName(info.CwprojPath) + " - " + KindLabel(info.Kind)
                 + (info.AppPath != null ? " from " + info.AppPath : "")
+                + " - NOT COMPILED by this call"
                 + " [" + string.Join("; ", info.Evidence.ToArray()) + "]");
             sb.AppendLine(DescribeOutput(info));
             foreach (string n in info.Notes) sb.AppendLine("  note: " + n);
@@ -457,7 +452,9 @@ namespace ClarionAssistant.Services
         /// <summary>The result's first line for a ClarionCL /ag run: never worded as a successful BUILD.</summary>
         internal static string GenerationHeadline(bool success)
         {
-            return success ? "GENERATION SUCCEEDED (generated, not compiled)" : "GENERATION FAILED (nothing is compiled by this tool)";
+            // Says outright that nothing was compiled: a recent OUTPUT file further down must not read as "it built".
+            return (success ? "GENERATION SUCCEEDED" : "GENERATION FAILED")
+                 + " — NOT COMPILED: no .exe/.dll was produced by this call";
         }
 
         /// <summary>The MSBuild command line that compiles <paramref name="info"/>'s project (the IDE's build, headless).</summary>

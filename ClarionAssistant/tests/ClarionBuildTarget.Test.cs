@@ -76,7 +76,7 @@ static class ClarionBuildTargetTest
             string red = Path.Combine(slnDir, "Clarion120.red");
             Write(red, "[Debug32]\r\n*.obj = .\\Obj\r\n*.dll = .\\bin\r\n*.lib = .\\lib\r\n"
                      + "[Release32]\r\n*.dll = .\\relbin\r\n"
-                     + "[Common]\r\n*.clw = .\\Source\r\nPRMX*.exe = %ROOT%\\special\r\n*.exe = ..\\exebin\r\n*.dll = .\r\n");
+                     + "[Common]\r\n*.clw = .\\Source\r\nPRMX1.exe = %ROOT%\\special\r\n*.exe = ..\\exebin\r\n*.dll = .\r\n");
             var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "ROOT", "C:\\Clarion12" } };
             var svc = new RedFileService();
             Ok("the fixture .red loads", svc.Load(red, macros));
@@ -151,7 +151,7 @@ static class ClarionBuildTargetTest
             string prmxDir = Path.Combine(slnDir, "prmx");
             Write(Path.Combine(prmxDir, "PRMX1.cwproj"), Cwproj("PRMX1", "Exe", null, null, false));
             var prmx = ClarionBuildTarget.Inspect(Path.Combine(prmxDir, "PRMX1.cwproj"), "Debug", svc, null);
-            Ok("O the FIRST matching pattern wins (PRMX*.exe before *.exe), macros expanded",
+            Ok("O the FIRST matching entry wins (exact PRMX1.exe before *.exe), macros expanded",
                Same(prmx.OutputFile, "C:\\Clarion12\\special\\PRMX1.exe"), prmx.OutputFile);
 
             // A project-local version-named .red supersedes the solution's.
@@ -199,9 +199,25 @@ static class ClarionBuildTargetTest
             Ok("O ...and the PROJECT line carries kind + evidence", Has(described, "PROJECT: PRM002.cwproj - app-generated from") && Has(described, "Generated>true"), described);
 
             // ---- G: .red patterns ----
-            Ok("G glob: *.dll, PRM*.dll, *.dl? match PRM002.dll; *.clw does not",
-               ClarionBuildTarget.GlobMatch("PRM002.dll", "*.dll") && ClarionBuildTarget.GlobMatch("PRM002.dll", "PRM*.dll")
-               && ClarionBuildTarget.GlobMatch("prm002.DLL", "*.dl?") && !ClarionBuildTarget.GlobMatch("PRM002.dll", "*.clw"));
+            // ---- G: the output lookup matches .red entries exactly as the resolver does (one matcher) ----
+            string starDir = Path.Combine(slnDir, "star");
+            Write(Path.Combine(starDir, "Clarion120.red"), "[Common]\r\n*.* = .\\allout\r\n*.exe = .\\later\r\n");
+            Write(Path.Combine(starDir, "STAR.cwproj"), Cwproj("STAR", "Exe", null, null, false));
+            var star = ClarionBuildTarget.Inspect(Path.Combine(starDir, "STAR.cwproj"), "Debug", svc, null);
+            Ok("G *.* is a catch-all that wins when it comes first", Same(star.OutputFile, Path.Combine(starDir, "allout", "STAR.exe")), star.OutputFile);
+            string modDir = Path.Combine(slnDir, "star2");
+            Write(Path.Combine(modDir, "Clarion120.red"), "[Common]\r\n*.* = .\\allout\r\n");
+            Write(Path.Combine(modDir, "MODX.cwproj"), Cwproj("MODX", "Module", null, null, false));
+            var modx = ClarionBuildTarget.Inspect(Path.Combine(modDir, "MODX.cwproj"), "Debug", svc, null);
+            Ok("G *.* matches even a name with no dot (unknown OutputType), as RedFileService does",
+               Same(modx.OutputFile, Path.Combine(modDir, "allout", "MODX")), modx.OutputFile);
+            Write(modx.OutputFile, "x");
+            var modRed = RedFileService.ForProjectDirectory(modDir, svc);
+            Ok("G ...and the resolver finds the file at exactly that path",
+               Same(modRed.ResolveFrom("MODX", modDir, "Common"), modx.OutputFile), modRed.ResolveFrom("MODX", modDir, "Common"));
+            Write(star.OutputFile, "MZ");
+            var starRed = RedFileService.ForProjectDirectory(starDir, svc);
+            Ok("G ...same for STAR.exe", Same(starRed.ResolveFrom("STAR.exe", starDir, "Common"), star.OutputFile), starRed.ResolveFrom("STAR.exe", starDir, "Common"));
             Ok("G extensions: Exe/WinExe .exe, Library .dll, Lib .lib, other null",
                ClarionBuildTarget.OutputExtension("WinExe") == ".exe" && ClarionBuildTarget.OutputExtension("Exe") == ".exe"
                && ClarionBuildTarget.OutputExtension("Library") == ".dll" && ClarionBuildTarget.OutputExtension("Lib") == ".lib"
@@ -209,8 +225,13 @@ static class ClarionBuildTargetTest
 
             // ---- H ----
             Ok("H the ClarionCL headline never claims a build",
-               !Has(ClarionBuildTarget.GenerationHeadline(true), "BUILD") && Has(ClarionBuildTarget.GenerationHeadline(true), "not compiled")
-               && !Has(ClarionBuildTarget.GenerationHeadline(false), "BUILD SUCCEEDED"));
+               !Has(ClarionBuildTarget.GenerationHeadline(true), "BUILD") && !Has(ClarionBuildTarget.GenerationHeadline(false), "BUILD"));
+            Ok("H ...and says outright nothing was compiled, success or failure",
+               Has(ClarionBuildTarget.GenerationHeadline(true), "GENERATION SUCCEEDED — NOT COMPILED: no .exe/.dll was produced by this call")
+               && Has(ClarionBuildTarget.GenerationHeadline(false), "GENERATION FAILED — NOT COMPILED: no .exe/.dll was produced by this call"),
+               ClarionBuildTarget.GenerationHeadline(true));
+            Ok("H every PROJECT line (build_solution's per-project lines too) says NOT COMPILED by this call",
+               Has(ClarionBuildTarget.Describe(app), "NOT COMPILED by this call") && Has(ClarionBuildTarget.Describe(src), "NOT COMPILED by this call"));
             Ok("H the note says generated, not compiled", Has(ClarionBuildTarget.GenerateOnlyNote, "generated, not compiled"));
 
             // ---- W: the registry routes the three tools through this ----
