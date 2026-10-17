@@ -386,6 +386,17 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86"
                Args = @($RepoDir) }
+            # GH #267 (b9260ec6): the .dctx ingest carries key CaseSensitive/AutoNumber/ExternalName, field InitialValue/
+            # DerivedFrom/BaseType/ExternalName/Binary/Password/ReadOnly and table Path; get_table shows them; a pre-#267
+            # database answers read-only and gains the columns on EnsureDatabase; the SQLite merge path still ingests.
+            @{ Name = "SchemaGraphService.Ingest.Test"
+               Sources = @("tests\SchemaGraphService.Ingest.Test.cs", "Services\SchemaGraphService.cs", "Services\NpgsqlLoader.cs",
+                           "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Data.dll", "System.Xml.dll", "System.Security.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86"
+               Args = @((Join-Path $TestDir "fixtures\schemagraph-gh267\attrs.dctx")) }
             # PR #237: the active tab re-selected on solution reopen - a view opening before the reopen loop
             # (the .app tab from Recent Applications) neither gives up the restore nor lets the loop record
             # over the saved choice; the store's temp file is per process and never left behind. IDE stubbed.
