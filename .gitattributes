@@ -3,3 +3,5 @@
 # checkout. These are legal documents we redistribute on someone else's behalf --
 # keep them byte-identical to what was published.
 third-party/** -text
+# Same for a bundled skill's own licence (session-viewer, MIT, by Dinko Bacun).
+marketplace/plugins/clarion-assistant/skills/session-viewer/LICENSE -text
