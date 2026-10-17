@@ -94,7 +94,7 @@ static class McpPathPolicyTest
                 CaDataDir = ca,
                 UserProfile = me,
                 ExtraDeniedPaths = Path.Combine(sol, "Secrets") + "; Customers ;*\\*.pfx",
-                ExtraAllowedRoots = users + ";relative\\folder;\\\\server\\share"
+                ExtraAllowedRoots = users + ";relative\\folder"
             };
             var p = McpPathPolicy.Build(full());
 
@@ -104,8 +104,12 @@ static class McpPathPolicyTest
             Allowed(p, "new file in a not-yet-existing subfolder of the solution (write)", Path.Combine(sol, "new", "deeper", "x.clw"), PathAccess.Write);
             Allowed(p, "the solution folder itself", sol);
             Allowed(p, "project folder beside the solution", Path.Combine(proj, "a.cwproj"));
-            Allowed(p, "Clarion root", Path.Combine(clarion, "libsrc", "win", "abfile.inc"));
-            Allowed(p, ".red search folder", Path.Combine(redDir, "x.inc"), PathAccess.Write);
+            Allowed(p, "Clarion root (read)", Path.Combine(clarion, "libsrc", "win", "abfile.inc"));
+            Denied(p, "Clarion root is read-only (no overwriting the install or dropping an addin)", Path.Combine(clarion, "accessory", "addins", "ClarionAssistant", "x.dll"), PathAccess.Write);
+            Allowed(p, ".red search folder outside the solution (read)", Path.Combine(redDir, "x.inc"));
+            Denied(p, ".red search folder outside the solution is read-only", Path.Combine(redDir, "x.inc"), PathAccess.Write);
+            Allowed(p, "project folder outside the solution (read)", Path.Combine(proj, "a.clw"));
+            Denied(p, "project folder outside the solution is read-only", Path.Combine(proj, "a.clw"), PathAccess.Write);
             Allowed(p, "own profile via an explicit Mcp.AllowedRoots entry", Path.Combine(me, "Documents", "notes.txt"));
             Allowed(p, "Public profile via an explicit Mcp.AllowedRoots entry", Path.Combine(users, "Public", "x.txt"));
 
@@ -113,6 +117,9 @@ static class McpPathPolicyTest
             Denied(p, "sibling-prefix trick (Sol vs Solution2)", sibFile);
             Denied(p, "sibling-prefix trick, folder itself", sibling);
             Denied(p, "a drive-root .red entry is skipped, not trusted", Path.Combine(Path.GetPathRoot(root), "Windows", "win.ini"));
+            // On a drive that holds no protected folder the protected-folder rule cannot catch it: the drive-root rule must.
+            Denied(McpPathPolicy.Build(new PathPolicyInputs { RedPaths = new List<string> { "Q:\\" }, UserProfile = me }),
+                "a drive-root .red entry on a drive with no protected folder is skipped too", "Q:\\Libs\\x.inc");
 
             Console.WriteLine("=== traversal ===");
             Denied(p, "'..' out of the solution", Path.Combine(sol, "..", "Solution2", "Main.clw"));
@@ -138,7 +145,22 @@ static class McpPathPolicyTest
             Denied(p, "alternate data stream", solFile + ":hidden");
             Denied(p, "wildcard character", Path.Combine(sol, "*.clw"));
             Denied(p, "control character", sol + "\\a\nb.clw");
-            Ok("UNC setting entry is ignored, not trusted", ContainsLike(p.Ignored, "\\\\server\\share"));
+            // Adversary HIGH: a VM shared folder / team share is a real place to keep a solution. Only the developer's
+            // OWN setting may allow one; never an automatic root. (Lexical checks: no SMB traffic from the harness.)
+            var share = McpPathPolicy.Build(new PathPolicyInputs { ExtraAllowedRoots = "\\\\server\\share\\Team", UserProfile = me });
+            Ok("explicit Mcp.AllowedRoots UNC entry allows that share", share.CheckLexical("\\\\server\\share\\Team\\App\\Main.clw", PathAccess.Read).Allowed);
+            Ok("...but not a sibling folder on the same share", !share.CheckLexical("\\\\server\\share\\Other\\x.clw", PathAccess.Read).Allowed);
+            Ok("...nor another share", !share.CheckLexical("\\\\server\\other\\x.clw", PathAccess.Read).Allowed);
+            Ok("...and '..' cannot climb out of it", !share.CheckLexical("\\\\server\\share\\Team\\..\\Other\\x.clw", PathAccess.Read).Allowed);
+            var uncSln = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = "\\\\server\\share\\Sol", RedPaths = new List<string> { "\\\\server\\libs" }, UserProfile = me });
+            Ok("a solution on a share is NOT an automatic root", uncSln.Roots.Count == 0);
+            Ok("...and the policy says so (SolutionNote names the folder and the setting)",
+                uncSln.SolutionNote != null && uncSln.SolutionNote.Contains("\\\\server\\share\\Sol") && uncSln.SolutionNote.Contains(McpPathPolicy.AllowedRootsSetting), uncSln.SolutionNote);
+            var uncD = uncSln.Check("\\\\server\\share\\Sol\\Main.clw", PathAccess.Read);
+            Ok("...and the refusal for its files carries that note", !uncD.Allowed && uncD.Refusal("read_file", "x").Contains("network drive"), uncD.Hint);
+            var uncFixed = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = "\\\\server\\share\\Sol", ExtraAllowedRoots = "\\\\server\\share\\Sol", UserProfile = me });
+            Ok("adding the share to Mcp.AllowedRoots clears the note", uncFixed.SolutionNote == null, uncFixed.SolutionNote);
+            Ok("device path still refused even as an explicit root", McpPathPolicy.Build(new PathPolicyInputs { ExtraAllowedRoots = "\\\\?\\C:\\" }).Roots.Count == 0);
             Ok("relative setting entry is ignored, not trusted", ContainsLike(p.Ignored, "relative\\folder"));
 
             Console.WriteLine("=== deny wins inside an allowed root ===");
@@ -162,7 +184,16 @@ static class McpPathPolicyTest
             var wt = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = wtSol, UserProfile = me, CaDataDir = ca });
             Allowed(wt, "solution under a worktree's .claude: file readable", wtFile);
             Allowed(wt, "solution under a worktree's .claude: folder listable", wtSol);
-            Denied(wt, "solution under a worktree's .claude: file not writable", wtFile, PathAccess.Write);
+            // Debugger MEDIUM: a .claude segment immediately followed by "worktrees" is Claude Code's worktree container,
+            // so it does not write-deny the checkout below it. Any other .claude segment still does, deeper ones too.
+            Allowed(wt, "solution under .claude\\worktrees: file writable", wtFile, PathAccess.Write);
+            Denied(wt, "...but a .claude INSIDE that worktree is still write-denied", Path.Combine(wtSol, ".claude", "settings.json"), PathAccess.Write);
+            Allowed(wt, "...and still readable", Path.Combine(wtSol, ".claude", "settings.json"));
+            Denied(wt, "...a .sln inside the worktree is still a boundary file", Path.Combine(wtSol, "x.sln"), PathAccess.Write);
+            string notWt = Mk(root, "Repo2", ".claude", "agents", "Sol3");
+            var nwt = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = notWt, UserProfile = me });
+            Denied(nwt, ".claude followed by anything but 'worktrees' still write-denies", Path.Combine(notWt, "a.clw"), PathAccess.Write);
+            Ok("HasWriteDeniedClaudeSegment: the container itself (nothing below) still denies", McpPathPolicy.HasWriteDeniedClaudeSegment("C:\\r\\.claude\\worktrees"));
             // The user's own Claude config: credentials and transcripts. Refused even though `users` is an explicit root.
             string meClaude = Mk(me, ".claude");
             Touch(Path.Combine(meClaude, ".credentials.json"));
@@ -273,6 +304,106 @@ static class McpPathPolicyTest
             Denied(nothing, "no roots at all: everything refused", solFile);
             Ok("no roots at all: summary says there are none", nothing.RootSummary().StartsWith("there are none"));
             Ok("no roots at all: Everything has nothing to search", nothing.SearchRoots().Count == 0);
+
+            Console.WriteLine("=== security gate run 1: automatic roots cannot widen themselves ===");
+            // A model that could write the .sln added a project at ..\..\..\Users\me\x.cwproj: the profile became a root.
+            var widened = McpPathPolicy.Build(new PathPolicyInputs
+            {
+                SolutionDir = sol,
+                ProjectDirs = new List<string> { me, users, Path.Combine(me, "AppData") },
+                RedPaths = new List<string> { users },
+                UserProfile = me,
+                ProtectedDirs = new List<string> { Path.Combine(me, "AppData", "Roaming") }
+            });
+            Denied(widened, ".sln project pointing AT the profile: profile not a root", Path.Combine(me, "Documents", "notes.txt"));
+            Denied(widened, ".red entry CONTAINING the profile: not a root", Path.Combine(me, "Documents", "notes.txt"));
+            Ok("...and both are reported as skipped", ContainsLike(widened.SkippedRoots, me) && ContainsLike(widened.SkippedRoots, users));
+            Ok("a project folder that contains a protected folder (AppData\\Roaming) is skipped", ContainsLike(widened.SkippedRoots, Path.Combine(me, "AppData")));
+            Allowed(widened, "...the solution itself still works", solFile, PathAccess.Write);
+            string inProfileSol = Mk(me, "source", "repos", "MyApp");
+            var inside = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = inProfileSol, UserProfile = me });
+            Allowed(inside, "a solution INSIDE the profile (%USERPROFILE%\\source\\...) is still a root", Path.Combine(inProfileSol, "Main.clw"), PathAccess.Write);
+            Ok("...and is not reported as skipped", inside.SkippedRoots.Count == 0 && inside.SolutionNote == null);
+            var profAsSol = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = me, UserProfile = me });
+            Ok("a solution folder that IS the profile is not a root, with a note", profAsSol.Roots.Count == 0 && profAsSol.SolutionNote != null, profAsSol.SolutionNote);
+            Allowed(McpPathPolicy.Build(new PathPolicyInputs { ExtraAllowedRoots = me, UserProfile = me }),
+                "...but the developer's own Mcp.AllowedRoots may name the profile", Path.Combine(me, "Documents", "notes.txt"));
+            string jProfile = Path.Combine(root, "JProfile");
+            if (MakeJunction(jProfile, users))
+            {
+                var viaJ = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, RedPaths = new List<string> { jProfile }, UserProfile = me });
+                Ok("a .red entry that reaches the profile through a junction is skipped", ContainsLike(viaJ.SkippedRoots, jProfile));
+                Denied(viaJ, "...so the profile is not reachable through it", Path.Combine(jProfile, "me", "Documents", "notes.txt"));
+                try { Directory.Delete(jProfile); } catch { }
+            }
+            else Ok("could create the profile junction", false, "mklink /J failed");
+
+            Console.WriteLine("=== boundary files are never written by the MCP tools ===");
+            foreach (string bf in new[] { "Sol.sln", "App.cwproj", "Clarion120.red", "clarion-assistant.json", "ClarionProperties.xml", "SOL.SLN" })
+            {
+                var w = p.Check(Path.Combine(sol, bf), PathAccess.Write);
+                Ok(bf + " write refused", !w.Allowed, w.Allowed ? "was allowed" : null);
+                Ok(bf + " refusal says it defines the scope and names Claude Code's Edit tool",
+                    !w.Allowed && w.Hint != null && w.Hint.Contains("define which folders") && w.Hint.Contains("Edit tool"), w.Hint);
+                Allowed(p, bf + " still readable", Path.Combine(sol, bf));
+            }
+            Denied(p, "boundary file under an EXPLICIT root still not writable", Path.Combine(me, "x.sln"), PathAccess.Write);
+            Allowed(p, "a .slnx-like name is not a boundary file", Path.Combine(sol, "notes.sln.txt"), PathAccess.Write);
+
+            Console.WriteLine("=== most specific root decides ===");
+            string c12 = Mk(root, "C12");
+            string exSol = Mk(c12, "Examples", "Sol");
+            var nestedRoots = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = exSol, ClarionRoots = new List<string> { c12 }, UserProfile = me });
+            Allowed(nestedRoots, "solution inside the Clarion root stays writable", Path.Combine(exSol, "Main.clw"), PathAccess.Write);
+            Denied(nestedRoots, "...the rest of the Clarion root is not", Path.Combine(c12, "libsrc", "win", "abfile.inc"), PathAccess.Write);
+            // ...and the other way round: a Clarion kept INSIDE the solution folder (a portable install in the repo). The
+            // solution root is listed first, so "first containing root wins" would make the Clarion install writable.
+            string portable = Mk(root, "Portable");
+            string portableC12 = Mk(portable, "C12");
+            var portableRoots = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = portable, ClarionRoots = new List<string> { portableC12 }, UserProfile = me });
+            Denied(portableRoots, "Clarion root INSIDE the solution folder stays read-only", Path.Combine(portableC12, "bin", "x.dll"), PathAccess.Write);
+            Allowed(portableRoots, "...while the solution around it is writable", Path.Combine(portable, "Main.clw"), PathAccess.Write);
+            var explicitC12 = McpPathPolicy.Build(new PathPolicyInputs { ClarionRoots = new List<string> { c12 }, ExtraAllowedRoots = c12, UserProfile = me });
+            Allowed(explicitC12, "Mcp.AllowedRoots naming the Clarion root makes it writable", Path.Combine(c12, "accessory", "template", "x.tpl"), PathAccess.Write);
+
+            Console.WriteLine("=== token stores ===");
+            string localCa = Mk(root, "Local", "ClarionAssistant");
+            Touch(Path.Combine(localCa, "ide-endpoint", "1234-5000.json"));
+            var tok = McpPathPolicy.Build(new PathPolicyInputs { LocalCaDir = localCa, UserProfile = me, ExtraAllowedRoots = Path.Combine(root, "Local") });
+            Denied(tok, "%LOCALAPPDATA%\\ClarionAssistant\\ide-endpoint (bearer tokens) refused even under an explicit root", Path.Combine(localCa, "ide-endpoint", "1234-5000.json"));
+            Denied(tok, "...the folder itself", Path.Combine(localCa, "ide-endpoint"));
+            Denied(tok, "WebView2 profile (cookies) refused", Path.Combine(localCa, "WebView2Data", "EBWebView", "Default", "Cookies"));
+            Allowed(tok, "the rest of that root still readable", Path.Combine(localCa, "monaco-spike.log"));
+            Denied(p, "mcp-config.json anywhere", Path.Combine(sol, "mcp-config.json"));
+            Denied(p, "mcp-config-vscode.json anywhere", Path.Combine(sol, "sub", "mcp-config-vscode.json"));
+            Denied(p, ".git-credentials anywhere", Path.Combine(me, ".git-credentials"));
+            Denied(p, ".npmrc anywhere", Path.Combine(sol, ".npmrc"));
+
+            Console.WriteLine("=== pattern denies follow a junctioned base ===");
+            string realCa = Mk(root, "RealRoaming", "ClarionAssistant");
+            Touch(Path.Combine(realCa, "settings.txt"));
+            Touch(Path.Combine(realCa, "embed.log"));
+            string jRoaming = Path.Combine(root, "JRoaming");
+            if (MakeJunction(jRoaming, Path.Combine(root, "RealRoaming")))
+            {
+                var jca = McpPathPolicy.Build(new PathPolicyInputs { CaDataDir = Path.Combine(jRoaming, "ClarionAssistant"), UserProfile = me });
+                Denied(jca, "junctioned CA folder: settings.txt by its REAL path", Path.Combine(realCa, "settings.txt"));
+                Denied(jca, "junctioned CA folder: settings.txt by the junction path", Path.Combine(jRoaming, "ClarionAssistant", "settings.txt"));
+                Denied(jca, "junctioned CA folder: mcp-*.json by its REAL path", Path.Combine(realCa, "mcp-extra.json"));
+                Ok("junctioned CA folder: settings.txt by its REAL path, lexical check (Everything)", !jca.CheckLexical(Path.Combine(realCa, "settings.txt"), PathAccess.Read).Allowed);
+                Allowed(jca, "...its log still readable by the real path", Path.Combine(realCa, "embed.log"));
+                Denied(jca, "...and not writable by the real path", Path.Combine(realCa, "embed.log"), PathAccess.Write);
+                try { Directory.Delete(jRoaming); } catch { }
+            }
+            else Ok("could create the roaming junction", false, "mklink /J failed");
+
+            Console.WriteLine("=== trailing dot / space segments ===");
+            var dotD = Denied(p, "segment ending in a dot", sol + "\\x.\\Main.clw");
+            Ok("...says why", dotD.Reason != null && dotD.Reason.Contains("dot"), dotD.Reason);
+            Denied(p, "segment ending in a space", sol + "\\x \\Main.clw");
+            Denied(p, "file name ending in a dot", sol + "\\Main.clw.");
+            Denied(p, "'...' segment", sol + "\\...\\Main.clw");
+            Allowed(p, "'.' and '..' segments still normalise", sol + "\\.\\sub\\..\\Main.clw");
 
             Console.WriteLine("=== Everything query rules ===");
             Ok("bare '*' refused", McpPathPolicy.IsBareWildcard("*"));

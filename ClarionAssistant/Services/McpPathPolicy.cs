@@ -50,6 +50,12 @@ namespace ClarionAssistant.Services
         /// <summary>CLAUDE_CONFIG_DIR when set: Claude Code's config folder moved out of the profile. Denied like
         /// %USERPROFILE%\.claude (credentials, transcripts).</summary>
         public string ClaudeConfigDir;
+        /// <summary>%LOCALAPPDATA%\ClarionAssistant: never a root; its ide-endpoint records (bearer tokens) and WebView2
+        /// profiles (cookies) are denied outright, in case a developer's own root covers it.</summary>
+        public string LocalCaDir;
+        /// <summary>Folders an AUTOMATIC root may never equal or contain (%APPDATA%, %LOCALAPPDATA%, %PROGRAMDATA%,
+        /// %WINDIR%, Program Files...). The user profile is always added. Only Mcp.AllowedRoots may name one.</summary>
+        public List<string> ProtectedDirs = new List<string>();
     }
 
     /// <summary>
@@ -61,17 +67,30 @@ namespace ClarionAssistant.Services
     ///
     /// THE MODEL.
     ///   Allowed roots - solution folder, its project folders, the build's Clarion root, the IDE's install, the .red's
-    ///                   search folders, plus Mcp.AllowedRoots / CLARION_MCP_ALLOWED_ROOTS. Readable and writable.
-    ///                   %APPDATA%\ClarionAssistant is a READ-ONLY root (the logs the assistant is told to read).
-    ///                   Automatic roots never widen to a whole drive: a .red entry or project folder that IS a
-    ///                   drive root is skipped. Only the developer's own setting can name a drive root.
+    ///                   search folders, plus Mcp.AllowedRoots / CLARION_MCP_ALLOWED_ROOTS.
+    ///                   WRITABLE: the solution folder (and project / .red folders inside it) and Mcp.AllowedRoots.
+    ///                   READ-ONLY: the Clarion root, the IDE install, project and .red folders OUTSIDE the solution
+    ///                   folder, and %APPDATA%\ClarionAssistant. The most specific root containing a path decides, so a
+    ///                   solution inside C:\Clarion12\Examples stays writable while C:\Clarion12\accessory does not.
+    ///                   AUTOMATIC ROOTS ARE ATTACKER-INFLUENCED: the .sln, .cwproj and .red that name them are files in
+    ///                   the solution (pipeline run 1, security gate HIGH: write a project "..\..\..\Users\me\x.cwproj"
+    ///                   into the .sln and the next call had the whole profile as a read/write root). So the boundary
+    ///                   files are write-denied (below), and an automatic root that equals or CONTAINS a protected
+    ///                   folder (the profile, %APPDATA%, %LOCALAPPDATA%, %PROGRAMDATA%, %WINDIR%, Program Files, a drive
+    ///                   root - lexically or through a junction) is skipped and reported. A solution INSIDE the profile
+    ///                   (%USERPROFILE%\source\...) is fine; a root that would swallow the profile is not. Only the
+    ///                   developer's own Mcp.AllowedRoots may name such a folder.
     ///   Deny          - wins over every allow, and the built-in rules cannot be switched off: UNC and device paths,
     ///                   network drives, \.ssh\ \.aws\ (and a few other credential folders), the user's Claude
     ///                   config (%USERPROFILE%\.claude, %USERPROFILE%\.claude-*, CLAUDE_CONFIG_DIR) and any
     ///                   .credentials.json, other users' profiles, CA's own secrets (settings.txt holds the MCP token; mcp-*.json the tab tokens;
     ///                   copilot\ the Copilot login), and ANY write into %APPDATA%\ClarionAssistant - otherwise the
     ///                   model could rewrite Mcp.AllowedRoots and widen its own scope. Plus Mcp.DeniedPaths.
-    ///   Write-only    - any OTHER .claude folder (a project's own, or the one a worktree lives under) stays
+    ///   Write-only    - the BOUNDARY FILES, wherever they are: *.sln, *.cwproj, *.red, clarion-assistant.json,
+    ///                   ClarionProperties.xml. They decide what the roots are, so a tool that could write them could
+    ///                   widen its own scope; the developer edits them, or Claude Code's own Edit tool, which their
+    ///                   permission rules govern.
+    ///                 - any OTHER .claude folder (a project's own, or the one a worktree lives under) stays
     ///                   READABLE - CLAUDE.md and project skills are instructions the model is meant to read - but
     ///                   is never writable, so the model cannot write .claude\settings*.json to grant itself
     ///                   permissions or rewrite its own CLAUDE.md. (Fully denying every .claude segment refused
@@ -105,14 +124,26 @@ namespace ClarionAssistant.Services
         /// the user's own (which is fully denied by prefix in <see cref="Build"/>).</summary>
         public static readonly string[] WriteDeniedSegments = { ".claude" };
 
-        /// <summary>File names denied (read and write) wherever they appear.</summary>
-        public static readonly string[] DeniedFileNames = { ".credentials.json" };
+        /// <summary>File names denied (read and write) wherever they appear: credentials and bearer-token configs.</summary>
+        public static readonly string[] DeniedFileNames = { ".credentials.json", ".git-credentials", ".npmrc", ".netrc", "_netrc" };
+
+        /// <summary>File-name wildcards denied (read and write) wherever they appear: CA's MCP configs carry its bearer token.</summary>
+        public static readonly string[] DeniedFileNamePatterns = { "mcp-config*.json" };
+
+        /// <summary>File-name wildcards that may be read but never written: the files that DEFINE the roots.</summary>
+        public static readonly string[] BoundaryFilePatterns = { "*.sln", "*.cwproj", "*.red", "clarion-assistant.json", "ClarionProperties.xml" };
+
+        private const string BoundaryHint =
+            "These files define which folders the Clarion Assistant file tools may reach, so the MCP tools never write them. " +
+            "The developer edits them, or Claude Code's own Edit tool does, which the developer's permission rules govern.";
 
         public sealed class Root
         {
             public string Lexical;   // GetFullPath form
             public string Resolved;  // link/8.3-resolved form (== Lexical when nothing to resolve)
             public bool Writable;
+            public bool Explicit;    // from Mcp.AllowedRoots / the env var: wins a tie
+            public bool Network;     // a share or network drive - only ever explicit
             public string Source;    // "solution", "project", "clarion", "red", "setting", "ca-data"
         }
 
@@ -124,46 +155,72 @@ namespace ClarionAssistant.Services
             public bool WriteOnly;
             public bool BuiltIn;
             public string Text;       // as shown to the developer
+            public string Hint;       // overrides the default hint
         }
 
         private readonly List<Root> _roots = new List<Root>();
         private readonly List<DenyRule> _deny = new List<DenyRule>();
         private readonly List<string> _ignored = new List<string>();
+        private readonly List<string> _skipped = new List<string>();
+        private readonly List<string> _protected = new List<string>();
         private readonly Dictionary<char, bool> _networkDrive = new Dictionary<char, bool>();
         private string _usersDir, _userProfile, _publicProfile;
+
+        private static readonly List<Regex> DeniedLeafRegexes = LeafRegexes(DeniedFileNamePatterns);
+        private static readonly List<Regex> BoundaryLeafRegexes = LeafRegexes(BoundaryFilePatterns);
 
         public IList<Root> Roots { get { return _roots.AsReadOnly(); } }
         /// <summary>Setting entries that were not usable (relative, UNC, invalid), each as "entry (reason)".</summary>
         public IList<string> Ignored { get { return _ignored.AsReadOnly(); } }
+        /// <summary>AUTOMATIC roots refused because they equal or contain a protected folder, each as "root (why)".
+        /// McpPathGate audits these.</summary>
+        public IList<string> SkippedRoots { get { return _skipped.AsReadOnly(); } }
 
         private McpPathPolicy() { }
+
+        /// <summary>
+        /// Set when the open solution's own folder could not be a root (a network drive or share, or a folder that
+        /// contains a protected one): appended to every outside-root refusal and reported by get_solution_info, so the
+        /// developer is told rather than left with a solution whose files are silently unreachable. Null otherwise.
+        /// </summary>
+        public string SolutionNote { get; private set; }
 
         public static McpPathPolicy Build(PathPolicyInputs inputs)
         {
             var p = new McpPathPolicy();
             if (inputs == null) inputs = new PathPolicyInputs();
 
-            // ---- deny first: roots that fall inside a denied area are dropped below
+            // ---- protected folders: no AUTOMATIC root may equal or contain one
             string profile = Lexical(inputs.UserProfile);
+            if (profile != null) p.AddProtected(profile);
+            if (inputs.ProtectedDirs != null) foreach (string d in inputs.ProtectedDirs) p.AddProtected(Lexical(d));
+
+            // ---- deny first: roots that fall inside a denied area are dropped below
             if (profile != null)
             {
                 p._userProfile = profile;
                 p._usersDir = Lexical(System.IO.Path.GetDirectoryName(profile));
                 if (p._usersDir != null) p._publicProfile = p._usersDir + "\\Public";
                 // The user's Claude Code config: credentials and every session transcript. Read AND write.
-                p.AddBuiltInPrefix(profile + "\\.claude", profile + "\\.claude\\");
-                p.AddBuiltInPattern(profile + "\\.claude-*", false);   // alternate profiles (.claude-work, ...)
-                p.AddBuiltInPattern(profile + "\\.claude.json*", false); // Claude Code's user config file (+ backups)
+                p.AddBuiltInPrefix(profile + "\\.claude", profile + "\\.claude\\", false);
+                p.AddBuiltInPattern(profile, "\\.claude-*", false);     // alternate profiles (.claude-work, ...)
+                p.AddBuiltInPattern(profile, "\\.claude.json*", false); // Claude Code's user config file (+ backups)
             }
             string claudeDir = Lexical(inputs.ClaudeConfigDir);
-            if (claudeDir != null && !IsDriveRoot(claudeDir)) p.AddBuiltInPrefix(claudeDir, claudeDir + "\\ (CLAUDE_CONFIG_DIR)");
+            if (claudeDir != null && !IsDriveRoot(claudeDir)) p.AddBuiltInPrefix(claudeDir, claudeDir + "\\ (CLAUDE_CONFIG_DIR)", false);
             string ca = Lexical(inputs.CaDataDir);
             if (ca != null)
             {
-                p.AddBuiltInPattern(ca + "\\settings.txt*", false);
-                p.AddBuiltInPattern(ca + "\\mcp-*.json*", false);
-                p._deny.Add(new DenyRule { Prefix = ca + "\\copilot", BuiltIn = true, Text = ca + "\\copilot\\" });
-                p._deny.Add(new DenyRule { Prefix = ca, WriteOnly = true, BuiltIn = true, Text = ca + "\\ (writes)" });
+                p.AddBuiltInPattern(ca, "\\settings.txt*", false);
+                p.AddBuiltInPattern(ca, "\\mcp-*.json*", false);
+                p.AddBuiltInPrefix(ca + "\\copilot", ca + "\\copilot\\", false);
+                p.AddBuiltInPrefix(ca, ca + "\\ (writes)", true);
+            }
+            string localCa = Lexical(inputs.LocalCaDir);
+            if (localCa != null)
+            {
+                p.AddBuiltInPrefix(localCa + "\\ide-endpoint", localCa + "\\ide-endpoint\\ (IDE bearer tokens)", false);
+                p.AddBuiltInPattern(localCa, "\\WebView2Data*", false);  // browser profiles: cookies, storage
             }
             foreach (string entry in SplitList(inputs.ExtraDeniedPaths))
             {
@@ -174,33 +231,68 @@ namespace ClarionAssistant.Services
                     string full = Lexical(entry);
                     if (full == null) { p._ignored.Add(entry + " (" + DeniedPathsSetting + ": invalid path)"); continue; }
                     p._deny.Add(new DenyRule { Prefix = full, Text = entry });
-                    string res = ResolveForRoot(full);
+                    string res = IsNetworkPathStatic(full) ? null : ResolveForRoot(full);
                     if (res != null && !Same(res, full)) p._deny.Add(new DenyRule { Prefix = res, Text = entry });
                 }
                 else
                     p._deny.Add(new DenyRule { Segment = entry.Trim('\\', '/'), Text = entry });
             }
 
-            // ---- roots
+            // ---- roots. Writable only where the developer's own solution (or setting) says so.
+            string sol = Lexical(inputs.SolutionDir);
             p.AddRoot(inputs.SolutionDir, "solution", true, false);
-            if (inputs.ProjectDirs != null) foreach (string d in inputs.ProjectDirs) p.AddRoot(d, "project", true, false);
-            if (inputs.ClarionRoots != null) foreach (string d in inputs.ClarionRoots) p.AddRoot(d, "clarion", true, false);
-            if (inputs.RedPaths != null) foreach (string d in inputs.RedPaths) p.AddRoot(d, "red", true, false);
+            if (inputs.ProjectDirs != null)
+                foreach (string d in inputs.ProjectDirs) p.AddRoot(d, "project", InsideSolution(d, sol), false);
+            if (inputs.ClarionRoots != null) foreach (string d in inputs.ClarionRoots) p.AddRoot(d, "clarion", false, false);
+            if (inputs.RedPaths != null) foreach (string d in inputs.RedPaths) p.AddRoot(d, "red", InsideSolution(d, sol), false);
             foreach (string entry in SplitList(inputs.ExtraAllowedRoots)) p.AddRoot(entry, "setting", true, true);
             p.AddRoot(inputs.CaDataDir, "ca-data", false, false);
+
+            // An explicit root covering the solution folder answers the note.
+            if (p.SolutionNote != null && sol != null)
+                foreach (var r in p._roots)
+                    if (r.Explicit && (IsUnder(sol, r.Lexical) || IsUnder(sol, r.Resolved))) { p.SolutionNote = null; break; }
             return p;
         }
 
-        private void AddBuiltInPrefix(string full, string text)
+        private static bool InsideSolution(string dir, string sol)
         {
-            _deny.Add(new DenyRule { Prefix = full, BuiltIn = true, Text = text });
-            string res = ResolveForRoot(full);   // the folder may itself be a junction (OneDrive, moved profile)
-            if (res != null && !Same(res, full)) _deny.Add(new DenyRule { Prefix = res, BuiltIn = true, Text = text });
+            string lex = Lexical(dir);
+            return sol != null && lex != null && IsUnder(lex, sol);
         }
 
-        private void AddBuiltInPattern(string wildcard, bool writeOnly)
+        private void AddProtected(string full)
         {
-            _deny.Add(new DenyRule { Pattern = WildcardRegex(wildcard), WriteOnly = writeOnly, BuiltIn = true, Text = wildcard });
+            if (full == null) return;
+            if (!_protected.Contains(full)) _protected.Add(full);
+            if (IsNetworkPathStatic(full)) return;
+            string res = ResolveForRoot(full);
+            if (res != null && !_protected.Contains(res)) _protected.Add(res);
+        }
+
+        private void AddBuiltInPrefix(string full, string text, bool writeOnly)
+        {
+            _deny.Add(new DenyRule { Prefix = full, BuiltIn = true, WriteOnly = writeOnly, Text = text });
+            string res = ResolveForRoot(full);   // the folder may itself be a junction (OneDrive, moved profile)
+            if (res != null && !Same(res, full)) _deny.Add(new DenyRule { Prefix = res, BuiltIn = true, WriteOnly = writeOnly, Text = text });
+        }
+
+        /// <summary>A wildcard under <paramref name="baseDir"/>, for the lexical AND the link-resolved form of the base
+        /// (security gate MEDIUM: a junctioned %APPDATA% reached settings.txt through its real path).</summary>
+        private void AddBuiltInPattern(string baseDir, string suffix, bool writeOnly)
+        {
+            _deny.Add(new DenyRule { Pattern = WildcardRegex(baseDir + suffix), WriteOnly = writeOnly, BuiltIn = true, Text = baseDir + suffix });
+            string res = ResolveForRoot(baseDir);
+            if (res != null && !Same(res, baseDir))
+                _deny.Add(new DenyRule { Pattern = WildcardRegex(res + suffix), WriteOnly = writeOnly, BuiltIn = true, Text = baseDir + suffix });
+        }
+
+        /// <summary>The protected folder <paramref name="root"/> equals or contains, or null.</summary>
+        private string ContainsProtected(string root)
+        {
+            foreach (string pr in _protected)
+                if (IsUnder(pr, root)) return pr;
+            return null;
         }
 
         private void AddRoot(string raw, string source, bool writable, bool explicitSetting)
@@ -211,19 +303,51 @@ namespace ClarionAssistant.Services
             if (lex == null)
             {
                 if (explicitSetting) _ignored.Add(raw + " (" + AllowedRootsSetting + ": " + why + ")");
+                else if (source == "solution") SolutionNote = raw + " cannot be used by the file tools (" + why + ")";
                 return;
             }
-            if (IsNetworkDrive(lex)) { if (explicitSetting) _ignored.Add(raw + " (network drive)"); return; }
+            bool network = IsNetworkPath(lex);
+            if (network && !explicitSetting)
+            {
+                // Network locations only through the developer's own setting (adversary HIGH: VM shared folders and
+                // team shares). Say so when it is the open solution itself that drops out.
+                if (source == "solution")
+                    SolutionNote = lex + " is on a network drive; add it to " + AllowedRootsSetting + " to allow the file tools there";
+                _skipped.Add(lex + " (" + source + ": network location; only " + AllowedRootsSetting + " may name one)");
+                return;
+            }
             string res = ResolveForRoot(lex) ?? lex;
-            if (!IsLocalDrivePath(res)) { if (explicitSetting) _ignored.Add(raw + " (resolves to a network or device location)"); return; }
-            if (!explicitSetting && IsDriveRoot(res)) return;          // automatic roots never widen to a whole drive
+            if (!network && !IsLocalDrivePath(res))
+            {
+                if (explicitSetting) { network = true; }    // a local name for a network target, allowed explicitly
+                else
+                {
+                    if (source == "solution")
+                        SolutionNote = lex + " resolves to the network location " + res + "; add it to " + AllowedRootsSetting + " to allow the file tools there";
+                    _skipped.Add(lex + " (" + source + ": resolves to network location " + res + ")");
+                    return;
+                }
+            }
+            if (!explicitSetting)
+            {
+                // An automatic root comes from files in the solution (.sln, .cwproj, .red, clarion-assistant.json).
+                string hit = IsDriveRoot(lex) || IsDriveRoot(res) ? "a whole drive" : (ContainsProtected(lex) ?? ContainsProtected(res));
+                if (hit != null)
+                {
+                    if (source == "solution")
+                        SolutionNote = lex + " contains " + hit + ", so it is not used as a root; add the folder to " + AllowedRootsSetting + " if that is really intended";
+                    _skipped.Add(lex + " (" + source + ": equals or contains protected folder " + hit + ")");
+                    return;
+                }
+            }
             foreach (var r in _roots)
                 if (Same(r.Lexical, lex) && Same(r.Resolved, res))
                 {
                     if (writable) r.Writable = true;
+                    if (explicitSetting) r.Explicit = true;
                     return;
                 }
-            _roots.Add(new Root { Lexical = lex, Resolved = res, Writable = writable, Source = source });
+            _roots.Add(new Root { Lexical = lex, Resolved = res, Writable = writable, Explicit = explicitSetting, Network = network, Source = source });
         }
 
         // ------------------------------------------------------------------ checks
@@ -231,7 +355,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The full check for a file tool: lexical rules, then the link-resolved real path. Touches the file system
         /// only for drive type and the nearest existing ancestor's final path, and only after the lexical rules
-        /// passed - so a UNC path is refused without any SMB traffic.
+        /// passed - so a UNC path outside every explicit network root is refused without any SMB traffic.
         /// </summary>
         public PathDecision Check(string path, PathAccess access)
         {
@@ -247,13 +371,28 @@ namespace ClarionAssistant.Services
             return Decide(path, access, false);
         }
 
+        private bool UnderNetworkRoot(string full)
+        {
+            foreach (var r in _roots)
+                if (r.Network && (IsUnder(full, r.Lexical) || IsUnder(full, r.Resolved))) return true;
+            return false;
+        }
+
+        private string OutsideHint()
+        {
+            return "To allow it, add its folder to the " + AllowedRootsSetting + " setting (semicolon-separated) in %APPDATA%\\ClarionAssistant\\settings.txt, or to the " + AllowedRootsEnv + " environment variable of the MCP server."
+                 + (SolutionNote != null ? " Note: " + SolutionNote + "." : "");
+        }
+
         private PathDecision Decide(string input, PathAccess access, bool resolve)
         {
             string why;
             string lex = Canonical(input, out why);
             if (lex == null) return Refuse(null, why, "This cannot be overridden: give a full local path such as C:\\MyApp\\Main.clw.");
-            if (IsNetworkDrive(lex))
-                return Refuse(lex, "it is on a network drive", "Network locations are always refused and cannot be allowed by a setting.");
+            if (IsNetworkPath(lex) && !UnderNetworkRoot(lex))
+                return Refuse(lex, IsUncPath(lex) ? "UNC paths (\\\\server\\share) are refused unless " + AllowedRootsSetting + " names the share" : "it is on a network drive",
+                    "Network locations are allowed only by an explicit " + AllowedRootsSetting + " entry (or " + AllowedRootsEnv + ") naming them."
+                    + (SolutionNote != null ? " Note: " + SolutionNote + "." : ""));
 
             string real = lex;
             if (resolve)
@@ -261,13 +400,14 @@ namespace ClarionAssistant.Services
                 real = ResolveNearest(lex);
                 if (real == null)
                     return Refuse(lex, "its real location could not be determined (link or short name did not resolve)", "This fails closed and cannot be overridden.");
-                if (!IsLocalDrivePath(real))
-                    return Refuse(lex, "it resolves to '" + real + "', which is not a local drive path", "Network and device targets are always refused.");
+                if (!IsLocalDrivePath(real) && !(IsUncPath(real) && UnderNetworkRoot(real)))
+                    return Refuse(lex, "it resolves to '" + real + "', which is not a local drive path", "Network targets are allowed only by an explicit " + AllowedRootsSetting + " entry naming them.");
             }
 
             DenyRule hit = FindDeny(lex, access) ?? (Same(real, lex) ? null : FindDeny(real, access));
             if (hit != null)
             {
+                if (hit.Hint != null) return Refuse(real, "it matches the built-in rule '" + hit.Text + "'", hit.Hint);
                 if (hit.BuiltIn)
                     return Refuse(real, "it matches the built-in deny rule '" + hit.Text + "'", "Built-in deny rules win over every allowed root and cannot be overridden.");
                 return Refuse(real, "it matches your " + DeniedPathsSetting + " entry '" + hit.Text + "'",
@@ -277,19 +417,48 @@ namespace ClarionAssistant.Services
             if (other != null)
                 return Refuse(real, "it is inside another user's profile (" + other + ")", "Other users' profiles are always refused.");
 
-            bool inReadOnly = false;
+            // The MOST SPECIFIC root containing the path decides; on a tie an explicit root wins, then read-only.
+            Root best = null;
+            int bestLen = -1;
             foreach (var r in _roots)
             {
-                bool inside = resolve ? IsUnder(real, r.Resolved) || (Same(real, lex) && IsUnder(lex, r.Lexical))
-                                      : IsUnder(lex, r.Lexical) || IsUnder(lex, r.Resolved);
-                if (!inside) continue;
-                if (access == PathAccess.Read || r.Writable) return new PathDecision { Allowed = true, Path = real };
-                inReadOnly = true;
+                int len = -1;
+                if (resolve)
+                {
+                    if (IsUnder(real, r.Resolved)) len = r.Resolved.Length;
+                    else if (Same(real, lex) && IsUnder(lex, r.Lexical)) len = r.Lexical.Length;
+                }
+                else
+                {
+                    if (IsUnder(lex, r.Lexical)) len = r.Lexical.Length;
+                    else if (IsUnder(lex, r.Resolved)) len = r.Resolved.Length;
+                }
+                if (len < 0) continue;
+                if (access == PathAccess.Read) return new PathDecision { Allowed = true, Path = real };
+                bool better = len > bestLen
+                    || (len == bestLen && best != null && ((r.Explicit && !best.Explicit) || (r.Explicit == best.Explicit && !r.Writable && best.Writable)));
+                if (better) { best = r; bestLen = len; }
             }
-            if (inReadOnly)
-                return Refuse(real, "it is in a read-only root (Clarion Assistant's own data folder)", "Write tools never write there; this cannot be overridden.");
-            return Refuse(real, "it is outside every allowed root (" + RootSummary() + ")",
-                "To allow it, add its folder to the " + AllowedRootsSetting + " setting (semicolon-separated) in %APPDATA%\\ClarionAssistant\\settings.txt, or to the " + AllowedRootsEnv + " environment variable of the MCP server.");
+            if (best != null)
+            {
+                if (best.Writable) return new PathDecision { Allowed = true, Path = real };
+                return Refuse(real, "it is in a read-only root (" + best.Lexical + ", " + ReadOnlyWhy(best.Source) + ")",
+                    best.Source == "ca-data" ? "Write tools never write there; this cannot be overridden."
+                    : "The MCP write tools only write inside the open solution folder. To allow writes here, add the folder to " + AllowedRootsSetting + ".");
+            }
+            return Refuse(real, "it is outside every allowed root (" + RootSummary() + ")", OutsideHint());
+        }
+
+        private static string ReadOnlyWhy(string source)
+        {
+            switch (source)
+            {
+                case "clarion": return "the Clarion / IDE install";
+                case "red": return "a .red search folder outside the solution";
+                case "project": return "a project folder outside the solution folder";
+                case "ca-data": return "Clarion Assistant's own data folder";
+                default: return source;
+            }
         }
 
         private static PathDecision Refuse(string path, string reason, string hint)
@@ -309,15 +478,40 @@ namespace ClarionAssistant.Services
             foreach (string seg in DeniedSegments)
                 if (HasSegment(full, seg))
                     return new DenyRule { BuiltIn = true, Text = "*\\" + seg + "\\*" };
-            string leaf = System.IO.Path.GetFileName(full);
+            string leaf = System.IO.Path.GetFileName(full) ?? "";
             foreach (string name in DeniedFileNames)
                 if (Same(leaf, name))
                     return new DenyRule { BuiltIn = true, Text = "*\\" + name };
+            for (int i = 0; i < DeniedLeafRegexes.Count; i++)
+                if (DeniedLeafRegexes[i].IsMatch(leaf))
+                    return new DenyRule { BuiltIn = true, Text = "*\\" + DeniedFileNamePatterns[i] };
             if (access == PathAccess.Write)
-                foreach (string seg in WriteDeniedSegments)
-                    if (HasSegment(full, seg))
-                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\" + seg + "\\* (writes)" };
+            {
+                for (int i = 0; i < BoundaryLeafRegexes.Count; i++)
+                    if (BoundaryLeafRegexes[i].IsMatch(leaf))
+                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = BoundaryFilePatterns[i] + " (writes)", Hint = BoundaryHint };
+                if (HasWriteDeniedClaudeSegment(full))
+                    return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\.claude\\* (writes)" };
+            }
             return null;
+        }
+
+        /// <summary>
+        /// A .claude segment that write-denies. ".claude\worktrees\..." is where Claude Code keeps git worktrees -
+        /// whole checkouts the developer works in - so THAT occurrence does not deny what is below it (debugger
+        /// MEDIUM). Any other .claude segment does, including a deeper one inside a worktree
+        /// (.claude\worktrees\x\.claude\settings.json).
+        /// </summary>
+        public static bool HasWriteDeniedClaudeSegment(string full)
+        {
+            string[] segs = full.Split('\\');
+            for (int i = 0; i < segs.Length; i++)
+            {
+                if (!Same(segs[i], ".claude")) continue;
+                bool worktreeContainer = i + 1 < segs.Length && Same(segs[i + 1], "worktrees") && i + 2 < segs.Length && segs[i + 2].Length > 0;
+                if (!worktreeContainer) return true;
+            }
+            return false;
         }
 
         private string OtherProfileHit(string full)
@@ -381,7 +575,11 @@ namespace ClarionAssistant.Services
 
         private static readonly Regex DeviceName = new Regex(@"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]|CONIN\$|CONOUT\$|CLOCK\$)$", RegexOptions.IgnoreCase);
 
-        /// <summary>The lexical canonical form, or null with the reason. Never touches the file system.</summary>
+        /// <summary>
+        /// The lexical canonical form - "X:\..." or a UNC "\\server\share\..." - or null with the reason. Never
+        /// touches the file system. A UNC form is only syntax here: <see cref="Decide"/> refuses it unless an explicit
+        /// Mcp.AllowedRoots entry names the share. Device and NT forms (\\?\, \\.\, \??\) are always refused.
+        /// </summary>
         public static string Canonical(string input, out string why)
         {
             why = null;
@@ -392,13 +590,31 @@ namespace ClarionAssistant.Services
                 if (c < 0x20) { why = "it contains a control character"; return null; }
                 if (c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') { why = "it contains a wildcard or reserved character"; return null; }
             }
-            if (s.StartsWith("\\\\") || s.StartsWith("\\??\\")) { why = "UNC and device paths (\\\\server\\share, \\\\?\\, \\\\.\\) are always refused"; return null; }
-            if (!(s.Length >= 3 && char.IsLetter(s[0]) && s[1] == ':' && s[2] == '\\')) { why = "it is not a fully qualified local path (X:\\...); relative paths are refused"; return null; }
-            if (s.IndexOf(':', 2) >= 0) { why = "it names an alternate data stream"; return null; }
-            foreach (string seg in s.Substring(3).Split('\\'))
+            if (s.StartsWith("\\\\.\\") || s.StartsWith("\\??\\") || s.StartsWith("\\\\?\\") || s == "\\\\?" || s == "\\\\.")
+            { why = "device and NT paths (\\\\?\\, \\\\.\\, \\??\\) are always refused"; return null; }
+            bool unc = s.StartsWith("\\\\");
+            string body;
+            if (unc)
             {
-                if (seg.Length == 0) continue;
-                string stem = seg.TrimEnd(' ', '.');
+                string[] parts = s.Substring(2).Split('\\');
+                if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) { why = "it is not a complete UNC path (\\\\server\\share)"; return null; }
+                if (s.IndexOf(':') >= 0) { why = "it names an alternate data stream"; return null; }
+                body = s.Substring(2);
+            }
+            else
+            {
+                if (!(s.Length >= 3 && char.IsLetter(s[0]) && s[1] == ':' && s[2] == '\\')) { why = "it is not a fully qualified local path (X:\\...); relative paths are refused"; return null; }
+                if (s.IndexOf(':', 2) >= 0) { why = "it names an alternate data stream"; return null; }
+                body = s.Substring(3);
+            }
+            foreach (string seg in body.Split('\\'))
+            {
+                if (seg.Length == 0 || seg == "." || seg == "..") continue;
+                // Windows silently strips a trailing dot or space ("x." is "x"), so a name that ends in one is not
+                // the name the rules would judge. Security gate LOW: refuse it rather than reason about it.
+                char last = seg[seg.Length - 1];
+                if (last == '.' || last == ' ') { why = "a path segment ends in a dot or a space ('" + seg + "')"; return null; }
+                string stem = seg;
                 int dot = stem.IndexOf('.');
                 if (dot >= 0) stem = stem.Substring(0, dot);
                 if (DeviceName.IsMatch(stem.Trim())) { why = "it names a reserved device (" + seg + ")"; return null; }
@@ -406,8 +622,40 @@ namespace ClarionAssistant.Services
             string full;
             try { full = System.IO.Path.GetFullPath(s); }
             catch (Exception ex) { why = "it is not a valid path (" + ex.GetType().Name + ")"; return null; }
-            if (!IsLocalDrivePath(full)) { why = "it does not stay a local drive path once normalised"; return null; }
+            if (unc ? !IsUncPath(full) : !IsLocalDrivePath(full)) { why = "it does not keep its form once normalised"; return null; }
+            if (unc)
+            {
+                // ".." must not climb above \\server\share.
+                string root = System.IO.Path.GetPathRoot(full) ?? "";
+                if (root.TrimEnd('\\').Split('\\').Length < 4) { why = "it is not a complete UNC path (\\\\server\\share)"; return null; }
+            }
             return TrimEnd(full);
+        }
+
+        public static bool IsUncPath(string full)
+        {
+            return full != null && full.StartsWith("\\\\") && !full.StartsWith("\\\\?\\") && !full.StartsWith("\\\\.\\");
+        }
+
+        /// <summary>A share, or a drive letter Windows reports as a network drive (cached per letter).</summary>
+        private bool IsNetworkPath(string full)
+        {
+            return IsUncPath(full) || IsNetworkDrive(full);
+        }
+
+        /// <summary>The uncached form, for Build-time inputs that are not checked per path.</summary>
+        private static bool IsNetworkPathStatic(string full)
+        {
+            if (IsUncPath(full)) return true;
+            try { return new DriveInfo(full.Substring(0, 1)).DriveType == DriveType.Network; }
+            catch { return true; }
+        }
+
+        private static List<Regex> LeafRegexes(string[] patterns)
+        {
+            var list = new List<Regex>();
+            foreach (string p in patterns) list.Add(WildcardRegex(p));
+            return list;
         }
 
         private static string Lexical(string input)

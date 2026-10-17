@@ -48,37 +48,81 @@ namespace ClarionAssistant.Services
 
         public static McpPathPolicy BuildPolicy(IWorkspaceContext ws)
         {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             var inputs = new PathPolicyInputs
             {
                 CaDataDir = CaDataDir(),
+                LocalCaDir = string.IsNullOrEmpty(local) ? null : Path.Combine(local, "ClarionAssistant"),
                 UserProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ClaudeConfigDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"),
                 ExtraAllowedRoots = Join(Setting(McpPathPolicy.AllowedRootsSetting), Environment.GetEnvironmentVariable(McpPathPolicy.AllowedRootsEnv)),
                 ExtraDeniedPaths = Join(Setting(McpPathPolicy.DeniedPathsSetting), Environment.GetEnvironmentVariable(McpPathPolicy.DeniedPathsEnv))
             };
+            // Security gate run 1: no automatic root may equal or contain one of these. Both Program Files folders by
+            // name - this process is 32-bit, where SpecialFolder.ProgramFiles answers the (x86) one.
+            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+            inputs.ProtectedDirs.Add(local);
+            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
+            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
+            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
+            inputs.ProtectedDirs.Add(Environment.GetEnvironmentVariable("ProgramW6432"));
+            inputs.ProtectedDirs.RemoveAll(string.IsNullOrEmpty);
+
             if (ws != null)
             {
                 string sln = null;
                 try { sln = ws.CurrentSolutionPath; } catch { }
+                List<string> projectDirs = null;
                 if (!string.IsNullOrEmpty(sln) && File.Exists(sln))
                 {
                     inputs.SolutionDir = Path.GetDirectoryName(Path.GetFullPath(sln));
-                    inputs.ProjectDirs.AddRange(ProjectDirs(sln));
+                    projectDirs = ProjectDirs(sln);
+                    inputs.ProjectDirs.AddRange(projectDirs);
                 }
                 try { var cfg = ws.CurrentVersionConfig; if (cfg != null) inputs.ClarionRoots.Add(cfg.RootPath); } catch { }
                 try { inputs.ClarionRoots.Add(ws.GetClarionInstallPath()); } catch { }
                 RedFileService red = null, active = null;
                 try { red = ws.RedFile; } catch { }
                 try { active = ws.ActiveRedFileService; } catch { }
-                AddRedPaths(inputs, red);
-                if (active != null && !ReferenceEquals(active, red)) AddRedPaths(inputs, active);
+                AddRedPaths(inputs, red, inputs.SolutionDir);
+                if (active != null && !ReferenceEquals(active, red)) AddRedPaths(inputs, active, inputs.SolutionDir);
+                // Pipeline run 1 (debugger MEDIUM): the compiler and resolve_red_path use each PROJECT's own .red,
+                // anchored at the project folder. The read-only / protected-folder rules apply to these the same way.
+                if (projectDirs != null)
+                {
+                    var fallback = red ?? active;
+                    foreach (string pd in projectDirs)
+                    {
+                        RedFileService projRed = null;
+                        try { projRed = RedFileService.ForProjectDirectory(pd, fallback); } catch { }
+                        if (projRed != null) AddRedPaths(inputs, projRed, pd);
+                    }
+                }
             }
-            return McpPathPolicy.Build(inputs);
+            var policy = McpPathPolicy.Build(inputs);
+            AuditSkipped(policy);
+            return policy;
         }
 
-        /// <summary>Every folder of every section of the .red. Relative entries hang off the solution folder; with no
-        /// solution they are skipped rather than anchored on the process CWD (the Clarion bin, in the IDE).</summary>
-        private static void AddRedPaths(PathPolicyInputs inputs, RedFileService red)
+        private static string _lastSkipped;
+
+        /// <summary>One audit line when the set of refused automatic roots changes (not one per call).</summary>
+        private static void AuditSkipped(McpPathPolicy policy)
+        {
+            string sig = string.Join(" | ", policy.SkippedRoots) + (policy.SolutionNote != null ? " || " + policy.SolutionNote : "");
+            lock (_slnLock)
+            {
+                if (sig == _lastSkipped) return;
+                _lastSkipped = sig;
+            }
+            if (sig.Length > 0) McpPathAudit.Write("path-policy", "SKIP-ROOT", sig, "automatic roots not used");
+        }
+
+        /// <summary>Every folder of every section of the .red. Relative entries hang off <paramref name="anchorDir"/> (the
+        /// solution folder for the solution's .red, the project folder for a project's own); with no anchor they are
+        /// skipped rather than anchored on the process CWD (the Clarion bin, in the IDE).</summary>
+        private static void AddRedPaths(PathPolicyInputs inputs, RedFileService red, string anchorDir)
         {
             if (red == null || red.Sections == null) return;
             foreach (var section in red.Sections.Values)
@@ -90,8 +134,8 @@ namespace ClarionAssistant.Services
                     if (string.IsNullOrEmpty(p) || RedFileService.HasUnexpandedMacro(p)) continue;
                     string full = RedFileService.IsFullyQualified(p)
                         ? RedFileService.AnchorAt(p, null)
-                        : (inputs.SolutionDir != null ? RedFileService.AnchorAt(p, inputs.SolutionDir) : null);
-                    if (full != null) inputs.RedPaths.Add(full);
+                        : (anchorDir != null ? RedFileService.AnchorAt(p, anchorDir) : null);
+                    if (full != null && !inputs.RedPaths.Contains(full)) inputs.RedPaths.Add(full);
                 }
             }
         }
@@ -131,9 +175,19 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static string GatePath(string tool, string path, PathAccess access, IWorkspaceContext ws, out string canonical)
         {
+            McpPathPolicy unused;
+            return GatePath(tool, path, access, ws, out canonical, out unused);
+        }
+
+        /// <summary>The same, also handing back the policy it judged by (list_directory filters its entries with it).
+        /// <paramref name="policy"/> is null whenever the call is refused.</summary>
+        public static string GatePath(string tool, string path, PathAccess access, IWorkspaceContext ws, out string canonical, out McpPathPolicy policy)
+        {
             canonical = null;
+            policy = null;
             PathDecision d;
-            try { d = BuildPolicy(ws).Check(path, access); }
+            McpPathPolicy built;
+            try { built = BuildPolicy(ws); d = built.Check(path, access); }
             catch (Exception ex)
             {
                 McpPathAudit.Write(tool, "DENY", path, "policy failed: " + ex.Message);
@@ -146,6 +200,7 @@ namespace ClarionAssistant.Services
             }
             McpPathAudit.Write(tool, "ALLOW", d.Path, access.ToString().ToLowerInvariant());
             canonical = d.Path;
+            policy = built;
             return null;
         }
 
@@ -176,8 +231,15 @@ namespace ClarionAssistant.Services
         /// The model's own path argument is gated like a file-tool path first.
         /// </summary>
         public static ScopedResult Search(string tool, IWorkspaceContext ws, string userQuery, string filters,
-                                          string pathArg, SearchOptions opts, int max)
+                                          string pathArg, SearchOptions callerOpts, int max)
         {
+            // A copy: paging and the regex rewrite below change it, and the caller's object is the caller's.
+            var src = callerOpts ?? new SearchOptions();
+            var opts = new SearchOptions
+            {
+                MaxResults = src.MaxResults, Offset = src.Offset, MatchCase = src.MatchCase,
+                MatchWholeWord = src.MatchWholeWord, Regex = src.Regex, SortBy = src.SortBy
+            };
             var result = new ScopedResult();
             McpPathPolicy policy;
             try { policy = BuildPolicy(ws); }
@@ -272,6 +334,13 @@ namespace ClarionAssistant.Services
     {
         private const long MaxBytes = 2 * 1024 * 1024;
         private static readonly object _lock = new object();
+        private static readonly int Pid = CurrentPid();
+
+        private static int CurrentPid()
+        {
+            try { using (var p = System.Diagnostics.Process.GetCurrentProcess()) return p.Id; }
+            catch { return 0; }
+        }
 
         public static string LogPath()
         {
@@ -289,7 +358,7 @@ namespace ClarionAssistant.Services
             try
             {
                 string line = string.Format("{0:yyyy-MM-dd HH:mm:ss.fff}\tpid={1}\t{2}\t{3}\t{4}\t{5}\r\n",
-                    DateTime.Now, System.Diagnostics.Process.GetCurrentProcess().Id,
+                    DateTime.Now, Pid,
                     Clean(tool), Clean(outcome), Clean(subject), Clean(detail));
                 string path = LogPath();
                 lock (_lock)

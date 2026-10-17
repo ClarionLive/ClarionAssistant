@@ -1899,15 +1899,9 @@ IdeOnly = true,
                     // A pattern is a file NAME pattern: no separators, no "..", no drive - it must not reach outside path.
                     if (pattern.IndexOf('\\') >= 0 || pattern.IndexOf('/') >= 0 || pattern.Contains("..") || pattern.IndexOf(':') >= 0)
                         return "Error: list_directory pattern must be a file-name pattern such as '*.inc' (no path separators, '..' or ':').";
-                    var policy = McpPathGate.BuildPolicy(_workspace);
-                    var decision = policy.Check(path, PathAccess.Read);
-                    if (!decision.Allowed)
-                    {
-                        McpPathAudit.Write("list_directory", "DENY", path, decision.Reason);
-                        return decision.Refusal("list_directory", path);
-                    }
-                    McpPathAudit.Write("list_directory", "ALLOW", decision.Path, "read");
-                    path = decision.Path;
+                    McpPathPolicy policy;
+                    string refusal = McpPathGate.GatePath("list_directory", path, PathAccess.Read, _workspace, out path, out policy);
+                    if (refusal != null) return refusal;
                     if (!Directory.Exists(path))
                         return "Error: directory not found: " + path;
                     // Entries a deny rule covers (e.g. settings.txt in CA's data folder) are left out of the listing.
@@ -2454,6 +2448,16 @@ COMMON QUERIES:
                         if (red.SkippedIncludes.Count > 0)
                             result["redSkippedIncludes"] = red.SkippedIncludes.ToArray();
                     }
+
+                    // GH #266 (adversary HIGH): when the file tools cannot use the solution's own folder (a network
+                    // drive or share, or a folder holding the profile), say so here rather than let every read fail.
+                    try
+                    {
+                        var policy = McpPathGate.BuildPolicy(_workspace);
+                        if (policy.SolutionNote != null) result["pathPolicy"] = policy.SolutionNote;
+                        if (policy.SkippedRoots.Count > 0) result["pathPolicySkippedRoots"] = policy.SkippedRoots.ToArray();
+                    }
+                    catch (Exception ex) { result["pathPolicy"] = "the path policy could not be evaluated: " + ex.Message; }
 
                     return result;
                 }
@@ -3156,6 +3160,13 @@ COMMON QUERIES:
                     if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
                     if (action == "check")
                     {
+                        // GH #266 (security gate LOW): a read gate, so this IdeOnly tool cannot be used to probe whether a
+                        // path outside the scope is open. A refusal is the wire's "error", which the caller treats as
+                        // "this IDE could not be asked" - never as permission to write.
+                        string checkedPath;
+                        string refused = McpPathGate.GatePath("editor_tab_sync", filePath, PathAccess.Read, _workspace, out checkedPath);
+                        if (refused != null)
+                            return OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, Reason = refused });
                         var check = OpenTabGuard.LocalCheck;
                         TabProbe p;
                         try { p = check != null ? check(filePath) : null; }
@@ -6394,10 +6405,14 @@ IdeOnly = true,
             "Use only with the developer's explicit go-ahead.";
 
         private const string PathScopeNote =
-            "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots (the open solution and its project folders, " +
-            "the Clarion root, the .red search folders, the Mcp.AllowedRoots setting; Clarion Assistant's own data folder read-only) are " +
-            "accepted. UNC/network paths, .ssh/.aws folders, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
-            "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable. A refused path " +
+            "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots are accepted. Readable: the open solution " +
+            "and its project folders, the Clarion root and IDE install, the .red search folders, Clarion Assistant's own data folder and " +
+            "the Mcp.AllowedRoots setting. WRITABLE: only the solution folder (and Mcp.AllowedRoots) - the Clarion root, .red and project " +
+            "folders outside the solution are read-only, and .sln/.cwproj/.red/clarion-assistant.json/ClarionProperties.xml are never " +
+            "written by these tools (they define the scope; the developer edits them). UNC/network paths (unless Mcp.AllowedRoots names " +
+            "them), .ssh/.aws folders, credential files, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
+            "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable, except a " +
+            "checkout under .claude\\worktrees. A refused path " +
             "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy' that names the setting which would " +
             "allow it - report that to the developer; do not retry with another spelling of the same path.";
 
