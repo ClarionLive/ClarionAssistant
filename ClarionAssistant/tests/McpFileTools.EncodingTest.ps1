@@ -94,6 +94,9 @@ function Invoke-Tool([string]$name, [hashtable]$arguments) {
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
     $psi.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+    # GH #266: the file tools only accept paths inside the path policy's roots, and %TEMP% is not one.
+    # The env var is the server-side extra root, so this needs no change to the developer's settings.txt.
+    $psi.EnvironmentVariables['CLARION_MCP_ALLOWED_ROOTS'] = $script:work
     $p = [System.Diagnostics.Process]::Start($psi)
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()
@@ -133,6 +136,7 @@ $oSlash = [char]0x00F8; $eAcute = [char]0x00E9
 
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ('ca-enc-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force $work | Out-Null
+$outside = $work + '-outside'
 
 Write-Host "=== write_file / append_to_file encoding preservation ($exe) ===" -ForegroundColor Cyan
 
@@ -355,9 +359,35 @@ try {
     $got = [IO.File]::ReadAllBytes($f)
     Assert-That ((Hex $got) -eq (Hex (Bytes "b"))) "append_to_file put a leading CRLF into an empty .txt. bytes: $(Hex $got)"
     Report-Block $b "append_to_file on a non-Clarion file breaks the line only when it lacks one"
+
+    # ------------------------------------------------------------ 11. path policy (GH #266), through the real exe
+    # A folder beside $work - same parent, longer name - is NOT inside the allowed root: the sibling-prefix
+    # trick. Every file tool must refuse it with the policy's error, and the write must not happen.
+    $b = $failures.Count
+    New-Item -ItemType Directory -Force $outside | Out-Null
+    $f = Join-Path $outside 'Escaped.clw'
+    $r = Invoke-Tool 'write_file' @{ path = $f; content = "! x" }
+    Assert-That ($r.IsError -and $r.Text -like '*refused by the Clarion Assistant path policy*') "write_file outside the roots was not refused by the policy: $($r.Text)"
+    Assert-That ($r.Text -like '*Mcp.AllowedRoots*') "the refusal does not name the setting that would allow it: $($r.Text)"
+    Assert-That (-not (Test-Path $f)) "a refused write_file still created the file"
+    [IO.File]::WriteAllBytes($f, (Bytes "! secret"))
+    $r = Invoke-Tool 'read_file' @{ path = $f }
+    Assert-That ($r.IsError -and $r.Text -notlike '*secret*') "read_file outside the roots was not refused: $($r.Text)"
+    $r = Invoke-Tool 'append_to_file' @{ path = $f; text = "! more" }
+    Assert-That ($r.IsError -and (Hex ([IO.File]::ReadAllBytes($f))) -eq (Hex (Bytes "! secret"))) "append_to_file outside the roots was not refused: $($r.Text)"
+    $r = Invoke-Tool 'list_directory' @{ path = $outside }
+    Assert-That ($r.IsError -and $r.Text -notlike '*Escaped*') "list_directory outside the roots was not refused: $($r.Text)"
+    $r = Invoke-Tool 'read_file' @{ path = ($work + '\..\' + (Split-Path $outside -Leaf) + '\Escaped.clw') }
+    Assert-That ($r.IsError -and $r.Text -like '*path policy*') "read_file with '..' out of the root was not refused: $($r.Text)"
+    $r = Invoke-Tool 'read_file' @{ path = '\\127.0.0.1\c$\Windows\win.ini' }
+    Assert-That ($r.IsError -and $r.Text -like '*UNC*') "read_file of a UNC path was not refused as UNC: $($r.Text)"
+    $r = Invoke-Tool 'read_file' @{ path = (Join-Path $work 'Empty.txt') }
+    Assert-That (-not $r.IsError) "read_file INSIDE the allowed root was refused: $($r.Text)"
+    Report-Block $b "file tools refuse paths outside the allowed roots (sibling prefix, '..', UNC) and allow inside"
 }
 finally {
     Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

@@ -454,6 +454,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\ParseResult.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # GH #266: the path policy the MCP file tools and the Everything tools go through - allowed roots,
+            # deny-wins, canonicalisation (sibling prefix, '..', UNC/device, case, separators), a REAL junction
+            # and 8.3 name, CA's read-only data folder, and the no-solution scope.
+            @{ Name = "McpPathPolicy.Test"
+               Sources = @("tests\McpPathPolicy.Test.cs", "Services\McpPathPolicy.cs")
+               Refs = @("System.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

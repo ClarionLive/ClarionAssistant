@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="installer/clarion-assistant-256.png" alt="Clarion Assistant" width="128" height="128">
 </p>
 
@@ -87,6 +87,11 @@ Ask *"show me my past sessions"* (or type `/session-viewer`) and Claude lists th
 The skill is Dinko Bačun's ([@bdinko](https://github.com/bdinko)), from [bdinko/session-viewer](https://github.com/bdinko/session-viewer), MIT licence, bundled at Dinko's invitation. Thank you, Dinko. Our copy adds a few fixes that we are offering back upstream: the most visible one is that, when a project has no transcript folder of its own, it no longer shows the sessions of an unrelated project with a similar folder name.
 
 The README's skills list was also out of date: it said 22 skills and left out `clarion-appgen`, `clarion-solution` and `stringtheory`, which were already shipping. It now lists all 26.
+
+### The file and Everything search tools stay inside your solution ([#266](https://github.com/ClarionLive/ClarionAssistant/issues/266))
+<!-- release-docs: covered=security -->
+
+Claude Code's permission rules never apply to MCP tools, so `read_file`, `write_file`, `append_to_file` and `list_directory` accepted any path, and `search_files`, `search_files_advanced`, `search_content` and `find_duplicates` searched the whole Everything index: every drive and every user profile. They are now limited to the open solution and its projects, the Clarion root and the `.red` search folders. UNC paths, network drives, `.ssh` / `.aws` / `.claude` folders and other users' profiles are always refused. Everything results are checked one by one, so nothing in a query can widen the search, `max_results` is enforced at 1000, and `*` on its own is refused. `search_content` reads file contents, so it is now **off by default**. A refused path returns an error that names the setting which would allow it, and every gated path and query is recorded in `%APPDATA%\ClarionAssistant\mcp-path-audit.log`. Filename search stays on: with its scope limited it has no reason to be opt-in. Settings `Mcp.AllowedRoots`, `Mcp.DeniedPaths` and `Mcp.EverythingContentSearch` are described under [Path scope for the file and search tools](#path-scope-for-the-file-and-search-tools). Thanks to @oleendrebergerud for the detailed report.
 
 ## What's New in v6.0
 
@@ -733,7 +738,7 @@ Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with th
 | `run_command` | Execute any command-line tool |
 | `execute_command` | Execute a shell command |
 
-### File System & Search (7 tools)
+### File System & Search (8 tools)
 | Tool | Description |
 |---|---|
 | `read_file` | Read file content from disk with optional line range |
@@ -742,7 +747,30 @@ Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with th
 | `list_directory` | List files in a directory with optional pattern filter |
 | `search_files` | Search for files by name |
 | `search_files_advanced` | Advanced file search with Everything integration (path, extension, size, date filters) |
-| `search_content` | Search file contents by text |
+| `search_content` | Search file contents by text (off by default, see below) |
+| `find_duplicates` | Find files with the same name |
+
+#### Path scope for the file and search tools
+
+Claude Code's permission rules (`Read(...)`, `Bash(...)` and so on) only apply to its built-in tools; they never see an MCP tool. So the seven tools above, and `find_duplicates`, enforce their own boundary on the server side ([#266](https://github.com/ClarionLive/ClarionAssistant/issues/266)):
+
+- **Allowed roots:** the open solution's folder and its project folders, the build's Clarion root and the IDE's install, and every folder in the active `.red`. A `.red` entry that is a whole drive (`C:\`) is skipped. `%APPDATA%\ClarionAssistant` is readable (its logs) but never writable.
+- **Always refused**, even inside an allowed root: UNC and device paths (`\\server\share`, `\\?\`, `\\.\`), network drives, any `.ssh`, `.aws`, `.claude`, `.gnupg`, `.azure`, `.kube` or `.docker` folder, other users' profiles, and Clarion Assistant's own `settings.txt`, `mcp-*.json` and `copilot\` folder.
+- **Paths are checked once they are canonical:** `..` is resolved first, `C:\Sol` does not contain `C:\Solution2`, case does not matter, and 8.3 short names, junctions and symbolic links are followed to where they really point.
+- **Everything searches** are scoped to the same roots and every result is checked again before it is returned, so a `path:` or `|` in the query cannot widen them. `max_results` is capped at 1000, and a query that names nothing (`*`, `*.*`) is refused.
+- **With no solution open**, the Clarion roots, the `.red`'s absolute folders and your extra roots still apply.
+- **A refusal is an error, not an empty result.** It names the setting that would allow the path.
+- **Audit log:** every gated path and every Everything query is written, with its outcome, to `%APPDATA%\ClarionAssistant\mcp-path-audit.log`.
+
+Settings, in `%APPDATA%\ClarionAssistant\settings.txt`:
+
+| Setting | Effect |
+|---|---|
+| `Mcp.AllowedRoots=D:\Shared\Templates;E:\Libs` | Extra allowed roots, separated by semicolons (readable and writable). The environment variable `CLARION_MCP_ALLOWED_ROOTS` on the server adds to it. |
+| `Mcp.DeniedPaths=D:\Work\Customers;Invoices;*\*.pfx` | Extra denied paths. A full path covers that folder and everything below it, a bare name matches a folder or file of that name anywhere, and `*` is a wildcard over the full path. `CLARION_MCP_DENIED_PATHS` adds to it. A denied path always wins over an allowed root. |
+| `Mcp.EverythingContentSearch=true` | Turns `search_content` on. It searches file **contents**, so it is off by default. |
+
+To turn the Everything tools off completely, deny them in Claude Code's `permissions.deny`, e.g. `"mcp__clarion-tools__search_files"`, `"mcp__clarion-tools__search_files_advanced"`, `"mcp__clarion-tools__search_content"` and `"mcp__clarion-tools__find_duplicates"`. The prefix depends on how the server is registered: `mcp__clarion-assistant__` for the in-IDE server, `mcp__plugin_clarion-assistant_clarion-tools__` for the plugin.
 
 ### Project & IDE (4 tools)
 | Tool | Description |
