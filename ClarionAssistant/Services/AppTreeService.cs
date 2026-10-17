@@ -482,6 +482,39 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// GH #263 Q2: is <paramref name="filePath"/> a GENERATED module of any open app (a procedure's module,
+        /// an App.Modules entry, or the app's own &lt;app&gt;.clw PROGRAM module)? The CA Editor passes the answer
+        /// to its page so a control hover card shows plain attribute names instead of edit chips there. Same
+        /// distinct-app walk as CountOpenAppViews. Any reflection failure answers false (chips shown), the
+        /// pre-#263 behaviour. GeneratedModuleMatch holds the comparison and its rules.
+        /// </summary>
+        public bool IsGeneratedModuleOfOpenApp(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath)) return false;
+            try
+            {
+                var modules = new List<string>();
+                var appFiles = new List<string>();
+                foreach (var app in DistinctOpenApps())
+                {
+                    string f = (GetProp(app, "FileName") ?? GetProp(app, "Name") ?? "").ToString();
+                    if (f.Length > 0) appFiles.Add(f);
+                    var procs = GetProp(app, "Procedures") as System.Collections.IEnumerable;
+                    if (procs != null)
+                        foreach (var proc in procs)
+                            modules.Add(ProcedureOpenFlow.ModuleNameOf(GetProp(proc, "Module")));
+                    // App.Modules is not proven on every Clarion build: GetProp answers null when it is absent.
+                    var mods = GetProp(app, "Modules") as System.Collections.IEnumerable;
+                    if (mods != null && !(mods is string))
+                        foreach (var mod in mods)
+                            modules.Add(ProcedureOpenFlow.ModuleNameOf(mod));
+                }
+                return GeneratedModuleMatch.IsGeneratedModule(filePath, modules, appFiles);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
         /// Get detailed info about procedures in the app (name, type, prototype, module).
         /// </summary>
         public List<Dictionary<string, object>> GetProcedureDetails()

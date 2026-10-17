@@ -299,7 +299,14 @@ namespace ClarionAssistant.Services
                 var initParams = new Dictionary<string, object>
                 {
                     { "processId", Process.GetCurrentProcess().Id },
-                    { "capabilities", new Dictionary<string, object>() },
+                    // experimental.clarionAttributeEditLinks: the Monaco page applies the attribute edit
+                    // links the server puts on a control card (file:///clarion-attr/edit/..., see
+                    // monaco-embeditor.html applyAttributeEditLink). A server that does not know it ignores it.
+                    { "capabilities", new Dictionary<string, object>
+                        {
+                            { "experimental", new Dictionary<string, object> { { "clarionAttributeEditLinks", true } } }
+                        }
+                    },
                     { "rootUri", workspaceUri },
                     { "workspaceFolders", new object[]
                         {

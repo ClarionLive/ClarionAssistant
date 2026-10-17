@@ -140,6 +140,10 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # GH #263 Q2: a generated module opened as a plain file shows attribute names, not chips.
+            @{ Name = "GeneratedModuleMatch.Test"
+               Sources = @("tests\GeneratedModuleMatch.Test.cs", "Services\GeneratedModuleMatch.cs")
+               Refs = @("System.dll") }
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }

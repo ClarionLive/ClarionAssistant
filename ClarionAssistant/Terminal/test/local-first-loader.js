@@ -74,6 +74,7 @@ function load(opts) {
         posted, providers, timers, triggers,
         pendingRequests: {}, reqSeq: 0, fileMode: false, embedRanges: [[1, 100]],
         keywordCaseMode: 'upper', commitKeysEnabled: true, snippetsList: [],
+        linkOpeners: [], generatedSource: false, isReadOnlyNow() { return false; },
         clock: 0,
         postToHost(obj) { posted.push(JSON.parse(JSON.stringify(obj))); },
         setTimeout(fn, ms) { const t = { id: timers.length + 1, fn, ms, cleared: false, fired: false }; timers.push(t); return t.id; },
@@ -91,7 +92,7 @@ function load(opts) {
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp.push(p); },
             },
             editor: {
-                registerLinkOpener() { },
+                registerLinkOpener(o) { env.linkOpeners.push(o); },   // GH #263: hover-attribute-chips.test.js clicks through it
                 setModelMarkers(m, owner, list) { (env.markers = env.markers || {})[owner] = list; },
                 getModelMarkers(f) { return (env.markers && env.markers[f.owner]) || []; },
                 TrackedRangeStickiness: { AlwaysGrowsWhenTypingAtEdges: 0 },
@@ -112,7 +113,8 @@ function load(opts) {
         set(t, k, v) { t[k] = v; return true; },
     });
     const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync', 'applySpanMap', 'noteBufferEdit',
-        'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource', 'deliverHostReply'];
+        'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource', 'deliverHostReply',
+        'prepareAttributeLinks', 'applyAttributeEditLink', 'decodeAttributeEdits', 'isAttributeLinkUri'];
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
     env.api = new Function('__scope', 'with (__scope) {\n' + SRC + '\nreturn ' + ret + ';\n}')(scope);
