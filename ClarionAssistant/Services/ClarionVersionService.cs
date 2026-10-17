@@ -18,6 +18,13 @@ namespace ClarionAssistant.Services
         public Dictionary<string, string> Macros { get; set; }
 
         /// <summary>
+        /// The ClarionProperties.xml this entry was parsed from, or null when it was not parsed from one (a test
+        /// fake). GH #244 / e1df6c2e: every Clarion's file carries a copy of every version's entry, so WHICH file
+        /// an entry came from decides its macros, and get_solution_info reports it.
+        /// </summary>
+        public string SourcePropertiesXml { get; set; }
+
+        /// <summary>
         /// The entry's &lt;IsWindowsVersion&gt;: true for a Win32 Clarion, false for a Clarion.NET
         /// (Clarion#) compiler entry, null when the XML does not say.
         /// </summary>
@@ -353,6 +360,48 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// e1df6c2e (GH #244): detect from a settings folder NAMED outright - one Clarion relocated with
+        /// <c>/ConfigDir=</c>, which a host that is not that IDE cannot discover. Reads
+        /// <c>&lt;configDir&gt;\ClarionProperties.xml</c> and nothing else; when <paramref name="clarionRoot"/> has a
+        /// <c>bin\Clarion.exe</c>, it stands in as the host exe so the root/bin narrowing works as in
+        /// <see cref="DetectForInstall"/>. Null when the folder has no readable ClarionProperties.xml: the caller asked
+        /// for THIS folder, so no other one is tried.
+        /// </summary>
+        public static ClarionVersionInfo DetectInConfigDir(string configDir, string clarionRoot)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(configDir)) return null;
+                string xml = Path.Combine(configDir, "ClarionProperties.xml");
+                if (!File.Exists(xml)) return null;
+                var info = ParsePropertiesXml(xml);
+                if (info == null) return null;
+                info.HostIsNotIde = true;
+                string exe = string.IsNullOrEmpty(clarionRoot) ? null : Path.Combine(clarionRoot, "bin", "Clarion.exe");
+                if (exe != null && File.Exists(exe))
+                {
+                    info.ClarionExePath = exe;
+                    try
+                    {
+                        var fv = FileVersionInfo.GetVersionInfo(exe);
+                        info.ClarionExeVersion = new Version(fv.FileMajorPart, fv.FileMinorPart, fv.FileBuildPart, fv.FilePrivatePart);
+                    }
+                    catch { }
+                }
+                return info;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>e1df6c2e: a version NAMED outright, looked up in the one settings folder <paramref name="configDir"/>
+        /// only (exact name first, then case-insensitive). Null when that folder does not list it.</summary>
+        public static ClarionVersionConfig FindNamedInConfigDir(string configDir, string name)
+        {
+            var info = DetectInConfigDir(configDir, null);
+            return info != null ? FindIn(info.Versions, name) : null;
+        }
+
+        /// <summary>
         /// Exact-then-case-insensitive match on the version NAME as ClarionProperties.xml records
         /// it. Nothing fuzzier: "Clarion11" and "Clarion11.1" are different installs, and a
         /// helpful prefix match between them would pick the wrong compiler with no way to tell.
@@ -605,7 +654,11 @@ namespace ClarionAssistant.Services
                         if (versionNode.Name == "Properties" && versionNode.Attributes["name"] != null)
                         {
                             var config = ParseVersionConfig(versionNode);
-                            if (config != null) info.Versions.Add(config);
+                            if (config != null)
+                            {
+                                config.SourcePropertiesXml = xmlPath;   // e1df6c2e: which file this entry came from
+                                info.Versions.Add(config);
+                            }
                         }
                     }
                 }

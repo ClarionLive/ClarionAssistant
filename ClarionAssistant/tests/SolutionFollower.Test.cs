@@ -217,7 +217,8 @@ static class SolutionFollowerTest
                     "resolve_red_path / get_red_search_paths report the version of the scope's snapshot");
                 string snapImpl = Between(ws, "public SolutionScope Snapshot()", "public ClarionVersionConfig VersionConfigFor(");
                 Check(snapImpl != null && snapImpl.Contains("ScopeOf(src.Path, src.Record, src)")
-                      && snapImpl.Contains("VersionConfigFor(sln, rec, out note)"),
+                      // e1df6c2e: the call gained ", out settings" (the settings folder note); still the same rec.
+                      && snapImpl.Contains("VersionConfigFor(sln, rec, out note"),
                     "the snapshot's version is decided from the SAME record read as its solution");
                 // Run 1 (code review): the two "no solution" replies speak one vocabulary; one version resolver.
                 Check(info != null && !info.Contains("lastSelectedPath") && Count(info, "{ \"switchedFrom\", slnPath }") == 1,

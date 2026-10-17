@@ -463,6 +463,36 @@ namespace ClarionAssistant.Services
                 return _cacheValue;
             }
         }
+        /// <summary>
+        /// e1df6c2e: the records of EVERY live IDE that has <paramref name="solutionPath"/> open, whoever launched this
+        /// process. A server started by the Claude Code plugin has no --ide-pid, yet an IDE running on the same
+        /// solution knows things it cannot (its /ConfigDir settings folder). Each record is read and verified exactly
+        /// as <see cref="ReadDetails"/> does (pid, liveness, writer identity), so a dead or reused-pid record is never
+        /// returned. Empty, never null; never throws.
+        /// </summary>
+        public static List<Details> FindLiveForSolution(string solutionPath)
+        {
+            var found = new List<Details>();
+            try
+            {
+                if (string.IsNullOrEmpty(solutionPath)) return found;
+                string dir = DirectoryPath;
+                if (!Directory.Exists(dir)) return found;
+                foreach (string f in Directory.GetFiles(dir, "ide-*.json"))
+                {
+                    string stem = Path.GetFileNameWithoutExtension(f);
+                    int pid;
+                    if (!int.TryParse(stem.Substring(4), out pid) || pid <= 0) continue;
+                    string note;
+                    bool transient;
+                    var d = ReadDetails(pid, out note, out transient);
+                    if (d != null && SameFile(d.Solution, solutionPath)) found.Add(d);
+                }
+            }
+            catch { }
+            return found;
+        }
+
         /// <summary>Test hook: forget what this process last wrote, so Publish writes again.</summary>
         internal static void ResetForTest()
         {

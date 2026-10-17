@@ -23,8 +23,15 @@ namespace ClarionAssistant.McpServer
     /// state that the tools already report properly, and killing the process over it would take
     /// the other 46 tools down with it.
     /// </summary>
-    internal sealed class StandaloneWorkspace : IWorkspaceContext, IVersionNoteSource, ISolutionSourceInfo, ISolutionScopedWorkspace
+    internal sealed class StandaloneWorkspace : IWorkspaceContext, IVersionNoteSource, ISolutionSourceInfo, ISolutionScopedWorkspace,
+                                                IServerLaunchInfo
     {
+        /// <summary>e1df6c2e: why the plugin launcher started this server, or null when it did not (set by Program).</summary>
+        public string ServerChosenBy { get; set; }
+
+        /// <summary>The solution as resolved at launch (--solution or the working directory), not followed.</summary>
+        public string LaunchSolutionPath { get { return _solutionPath; } }
+
         private readonly object _lock = new object();
 
         /// <summary>
@@ -234,9 +241,9 @@ namespace ClarionAssistant.McpServer
 
         private ClarionVersionConfig ResolveVersionFor(string solutionPath, IdeSolutionRecord.Details rec)
         {
-            string note;
-            var cfg = VersionConfigFor(solutionPath, rec, out note);
-            lock (_lock) { _versionConfig = cfg; _versionNote = note; }
+            string note, settings;
+            var cfg = VersionConfigFor(solutionPath, rec, out note, out settings);
+            lock (_lock) { _versionConfig = cfg; _versionNote = note; _settingsNote = settings; }
             return cfg;
         }
 
@@ -270,9 +277,9 @@ namespace ClarionAssistant.McpServer
         /// <summary>Everything keyed on <paramref name="sln"/>, the version decided from the record <paramref name="rec"/>.</summary>
         private SolutionScope ScopeOf(string sln, IdeSolutionRecord.Details rec, SolutionSourceSnapshot src)
         {
-            string note;
-            var cfg = VersionConfigFor(sln, rec, out note);
-            lock (_lock) { _versionConfig = cfg; _versionNote = note; }
+            string note, settings;
+            var cfg = VersionConfigFor(sln, rec, out note, out settings);
+            lock (_lock) { _versionConfig = cfg; _versionNote = note; _settingsNote = settings; }
             var red = RedFileFor(sln, cfg);
             return new SolutionScope
             {
@@ -280,6 +287,7 @@ namespace ClarionAssistant.McpServer
                 SolutionPath = sln,
                 Version = cfg,
                 VersionNote = note == null ? null : note.Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " "),
+                SettingsNote = settings,
                 Red = red,
                 IndexLibraryPaths = LibraryPathsFrom(red),
                 DbPath = DbPathFor(sln)
@@ -299,12 +307,15 @@ namespace ClarionAssistant.McpServer
         /// </summary>
         public ClarionVersionConfig VersionConfigFor(string solutionPath, out string note)
         {
-            return VersionConfigFor(solutionPath, ReadIdeRecord(), out note);
+            string settings;
+            return VersionConfigFor(solutionPath, ReadIdeRecord(), out note, out settings);
         }
 
         /// <summary>As above, decided from the IDE record <paramref name="rec"/> the caller already read (9e1bd280 run 1).</summary>
-        private ClarionVersionConfig VersionConfigFor(string solutionPath, IdeSolutionRecord.Details rec, out string note)
+        private ClarionVersionConfig VersionConfigFor(string solutionPath, IdeSolutionRecord.Details rec, out string note,
+                                                      out string settingsNote)
         {
+            settingsNote = null;
             lock (_lock)
             {
                 if (!_hostResolved)
@@ -325,60 +336,175 @@ namespace ClarionAssistant.McpServer
                     return null;
                 }
 
-                string recordKey = rec == null ? "-" : (rec.Solution + "|" + rec.VersionChoice + "|" + rec.ConfigDir);
+                // e1df6c2e: WHICH SETTINGS FOLDER, decided first - it is what the version is looked up in. Live IDEs on
+                // this solution: the launching one when its record is about it, else any (the plugin's server has no
+                // --ide-pid). Read before the cache check, because the folder is part of what the answer depends on.
+                var pin = SolutionClarionVersion.ReadPin(solutionPath);
+                var live = LiveRecordsFor(solutionPath, rec);
+                var dirChoice = StandaloneConfigDir.Resolve(live, _configDirArg, _configDirEnv, pin,
+                    _baseDir, null, null);
+
+                string recordKey = (rec == null ? "-" : (rec.Solution + "|" + rec.VersionChoice + "|" + rec.ConfigDir))
+                    + "|" + dirChoice.Source + "|" + dirChoice.Path + "|" + dirChoice.Error;
                 string cacheKey = (solutionPath ?? "").ToLowerInvariant();
 
                 CachedVersion cached;
                 if (_versionCache.TryGetValue(cacheKey, out cached) && cached.RecordKey == recordKey)
                 {
                     note = cached.Note;
+                    settingsNote = cached.SettingsNote;
                     return cached.Config;
+                }
+
+                if (dirChoice.Error != null)
+                {
+                    // Named but unusable: no version at all, said so - never the default folder in its place.
+                    note = "no Clarion version: " + dirChoice.Error;
+                    settingsNote = dirChoice.Error;
+                    _versionCache[cacheKey] = new CachedVersion { RecordKey = recordKey, Config = null, Note = note, SettingsNote = settingsNote };
+                    return null;
                 }
 
                 SolutionVersionChoice choice;
                 try
                 {
-                    string pinNote;
-                    string pinned = SolutionClarionVersion.Read(solutionPath, out pinNote);
                     var info = _hostInfo;
+                    Func<string, ClarionVersionConfig> findNamed;
+                    string prefsDir;
+                    if (dirChoice.Path != null)
+                    {
+                        // The relocated folder IS this Clarion's settings: detect from it, look names up in it and
+                        // nowhere else (a name it does not list is "matches nothing", not another folder's copy).
+                        info = ClarionVersionService.DetectInConfigDir(dirChoice.Path, _hostRoot);
+                        var inDir = info;
+                        findNamed = name => FindIn(inDir, name);
+                        prefsDir = Path.Combine(dirChoice.Path, "preferences");
+                    }
+                    else
+                    {
+                        // Every settings folder is searched, since a NAMED version needs no host Clarion to pick
+                        // the folder (#247); the copy in that entry's OWN folder beats this Clarion's (#244).
+                        var host = info;
+                        findNamed = name => ClarionVersionService.FindNamedVersion(host, name);
+                        prefsDir = info != null ? IdeSolutionPreferences.PreferencesDirFor(info.PropertiesXmlPath) : null;
+                    }
                     choice = SolutionVersionResolver.Resolve(new SolutionVersionInputs
                     {
                         SolutionPath = solutionPath,
                         CommandLineVersion = _versionOverride,
-                        PinnedVersion = pinned,
-                        PinNote = pinNote,
+                        PinnedVersion = pin.Version,
+                        PinNote = pin.Note,
                         IdeRecord = rec,
-                        PreferencesDir = info != null ? IdeSolutionPreferences.PreferencesDirFor(info.PropertiesXmlPath) : null,
+                        PreferencesDir = prefsDir,
                         HostInfo = info,
                         HostRoot = _hostRoot,
-                        // Every settings folder is searched, since a NAMED version needs no host Clarion to pick
-                        // the folder (#247); the copy in that entry's OWN folder beats this Clarion's (#244).
-                        FindNamed = name => ClarionVersionService.FindNamedVersion(info, name)
+                        FindNamed = findNamed
                     });
                 }
                 catch (Exception ex)
                 {
                     note = "no Clarion version: resolution failed - " + ex.Message;
-                    _versionCache[cacheKey] = new CachedVersion { RecordKey = recordKey, Config = null, Note = note };
+                    settingsNote = dirChoice.Note;
+                    _versionCache[cacheKey] = new CachedVersion { RecordKey = recordKey, Config = null, Note = note, SettingsNote = settingsNote };
                     return null;
                 }
 
-                note = (choice.Note ?? "").Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
+                note = OneLine(choice.Note);
+                settingsNote = OneLine(dirChoice.Note);
+                if (choice.Config != null && !string.IsNullOrEmpty(choice.Config.SourcePropertiesXml))
+                    settingsNote = "read " + choice.Config.SourcePropertiesXml + " - " + settingsNote;
                 string was = cached != null && cached.Config != null ? cached.Config.Name : null;
                 string now = choice.Config != null ? choice.Config.Name : null;
                 if (cached != null && !string.Equals(was, now, StringComparison.Ordinal))
                     LspTrace.Write("[StandaloneWorkspace] Clarion version for " + (solutionPath ?? "(no solution)")
                         + " changed: " + note);
-                _versionCache[cacheKey] = new CachedVersion { RecordKey = recordKey, Config = choice.Config, Note = note };
+                _versionCache[cacheKey] = new CachedVersion { RecordKey = recordKey, Config = choice.Config, Note = note, SettingsNote = settingsNote };
                 return choice.Config;
             }
         }
+
+        private static string OneLine(string s)
+        {
+            return (s ?? "").Replace("\r\n", " ").Replace("\r", " ").Replace("\n", " ");
+        }
+
+        /// <summary>Exact, then case-insensitive, as ClarionVersionService.FindIn - over a folder's own entries.</summary>
+        private static ClarionVersionConfig FindIn(ClarionVersionInfo info, string name)
+        {
+            if (info == null || info.Versions == null || string.IsNullOrEmpty(name)) return null;
+            return info.Versions.Find(v => v != null && v.Name == name)
+                ?? info.Versions.Find(v => v != null && string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// e1df6c2e: the live IDE records for <paramref name="solutionPath"/> - the launching IDE's when it is about this
+        /// solution, else every live IDE's on it (scanned at most every few seconds per solution; one directory
+        /// listing). Empty when none.
+        /// </summary>
+        private List<IdeSolutionRecord.Details> LiveRecordsFor(string solutionPath, IdeSolutionRecord.Details rec)
+        {
+            var list = new List<IdeSolutionRecord.Details>();
+            if (string.IsNullOrEmpty(solutionPath)) return list;
+            if (rec != null && SolutionFollower.SamePath(rec.Solution, solutionPath))
+            {
+                list.Add(rec);
+                return list;
+            }
+            string key = solutionPath.ToLowerInvariant();
+            CachedLive c;
+            if (_liveCache.TryGetValue(key, out c) && (DateTime.UtcNow - c.At).TotalSeconds < 3) return c.Records;
+            var found = IdeSolutionRecord.FindLiveForSolution(solutionPath);
+            _liveCache[key] = new CachedLive { At = DateTime.UtcNow, Records = found };
+            return found;
+        }
+
+        private sealed class CachedLive
+        {
+            public DateTime At;
+            public List<IdeSolutionRecord.Details> Records;
+        }
+
+        private readonly Dictionary<string, CachedLive> _liveCache = new Dictionary<string, CachedLive>();
+
+        /// <summary>--clarion-config-dir, or null (e1df6c2e).</summary>
+        private string _configDirArg;
+        /// <summary>CLARION_CONFIG_DIR, or null (e1df6c2e).</summary>
+        private string _configDirEnv;
+        /// <summary>What a relative --clarion-config-dir / CLARION_CONFIG_DIR is relative to.</summary>
+        private string _baseDir;
+
+        /// <summary>
+        /// e1df6c2e: the settings folder named on the command line (--clarion-config-dir) and in the environment
+        /// (CLARION_CONFIG_DIR), relative ones anchored at <paramref name="baseDir"/>. Set before serving, by Program.
+        /// </summary>
+        public void SetConfigDirSources(string commandLine, string environment, string baseDir)
+        {
+            lock (_lock)
+            {
+                _configDirArg = string.IsNullOrWhiteSpace(commandLine) ? null : commandLine;
+                _configDirEnv = string.IsNullOrWhiteSpace(environment) ? null : environment;
+                _baseDir = baseDir;
+                _versionCache.Clear();
+            }
+        }
+
+        /// <summary>
+        /// e1df6c2e: which ClarionProperties.xml the current version came from and why that settings folder - the
+        /// line printed at startup and returned as get_solution_info's settingsChosenBy. Null until resolved.
+        /// </summary>
+        public string SettingsNote
+        {
+            get { lock (_lock) { return _settingsNote; } }
+        }
+
+        private string _settingsNote;
 
         private sealed class CachedVersion
         {
             public string RecordKey;
             public ClarionVersionConfig Config;
             public string Note;
+            public string SettingsNote;
         }
 
         private bool _hostResolved;

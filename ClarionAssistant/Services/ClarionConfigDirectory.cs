@@ -92,14 +92,23 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static bool IsNonDefault()
         {
-            string cfg = Resolve();
+            return IsOutsideDefaultRoot(Resolve());
+        }
+
+        /// <summary>
+        /// e1df6c2e: is <paramref name="cfg"/> a settings folder OUTSIDE the default %APPDATA%\SoftVelocity\Clarion
+        /// tree - one relocated with /ConfigDir? The same test as <see cref="IsNonDefault"/>, for a folder some other
+        /// process reported (the standalone server reading an IDE's published record). False for null.
+        /// </summary>
+        public static bool IsOutsideDefaultRoot(string cfg)
+        {
             if (string.IsNullOrEmpty(cfg)) return false;
 
             string defaultRoot = DefaultConfigRoot();
             if (string.IsNullOrEmpty(defaultRoot)) return false;
 
             // Prefix match with a separator guard so "...\ClarionX" is not read as inside "...\Clarion".
-            string a = cfg.TrimEnd('\\', '/');
+            string a = Normalize(cfg) ?? cfg.TrimEnd('\\', '/');
             string b = defaultRoot.TrimEnd('\\', '/');
             if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase)) return false;
             return !a.StartsWith(b + "\\", StringComparison.OrdinalIgnoreCase);

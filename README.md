@@ -93,6 +93,23 @@ The README's skills list was also out of date: it said 22 skills and left out `c
 
 Claude Code's permission rules never apply to MCP tools, so `read_file`, `write_file`, `append_to_file` and `list_directory` accepted any path, and `search_files`, `search_files_advanced`, `search_content` and `find_duplicates` searched the whole Everything index: every drive and every user profile. They are now limited to the open solution and its projects, the Clarion root and the `.red` search folders. UNC paths, network drives, `.ssh` / `.aws` / `.claude` folders and other users' profiles are always refused. Everything results are checked one by one, so nothing in a query can widen the search, `max_results` is enforced at 1000, and `*` on its own is refused. `search_content` reads file contents, so it is now **off by default**. A refused path returns an error that names the setting which would allow it, and every gated path and query is recorded in `%APPDATA%\ClarionAssistant\mcp-path-audit.log`. Filename search stays on: with its scope limited it has no reason to be opt-in. Settings `Mcp.AllowedRoots`, `Mcp.DeniedPaths` and `Mcp.EverythingContentSearch` are described under [Path scope for the file and search tools](#path-scope-for-the-file-and-search-tools). Thanks to @oleendrebergerud for the detailed report.
 
+<!-- release-docs: covered=version,mcp-server,launcher -->
+### The standalone server reads `/ConfigDir` settings, and the plugin starts your project's Clarion ([#244](https://github.com/ClarionLive/ClarionAssistant/issues/244))
+
+- **Settings moved with `/ConfigDir=` are read.** A Clarion started with `/ConfigDir=<folder>` keeps its `ClarionProperties.xml` (versions, macros, redirection) in that folder. The standalone `clarion-mcp-server` has no Clarion command line to read it from, so it read the default `%APPDATA%\SoftVelocity\Clarion\<version>` folder instead, with the wrong macros. Name the folder in one of these places. The first one that applies wins:
+  1. an IDE that has the solution open and runs with `/ConfigDir` (Clarion Assistant reads it from the IDE, nothing to set);
+  2. `--clarion-config-dir <folder>` on the server's command line;
+  3. the `CLARION_CONFIG_DIR` environment variable;
+  4. `"configDir"` in the solution's `clarion-assistant.json`, a path relative to that file or using `%VARIABLES%`:
+
+     ```json
+     { "clarionVersion": "Clarion 11.0.13244", "configDir": "C:\\Clarion11\\Settings" }
+     ```
+
+  A folder you name that has no `ClarionProperties.xml` is reported as an error. The server never reads a different folder in its place.
+- **`get_solution_info` says which settings it read.** `settingsFile` is the `ClarionProperties.xml` the version came from, and `settingsChosenBy` says why that folder was used. The server also writes both to stderr at startup.
+- **The plugin launcher starts the server for your project's Clarion.** It used to start the newest installed Clarion's server, whatever the project. It now asks, in order: `--clarion-version`, `clarionVersion` in `clarion-assistant.json`, the Clarion your projects' `.Version` resources say generated them, then an IDE that has the solution open. Only when none of these applies does it start the newest server, and it says so. `get_solution_info` reports the choice as `serverChosenBy`. `CLARION_MCP_SERVER` still names a server outright. A new `CLARION_ROOTS` variable (folders separated by semicolons) adds Clarion installs outside `C:\ClarionXX` that the installer did not record.
+
 ## What's New in v6.0
 
 6.0 is a major release. Claude's editor and embed tools now work on the text you see in the CA Editor and CA Embeditor, the bundled language server moves to v1.0.8 with incremental sync, hover, completion and diagnostics are more accurate, and the CA Editor gains keymap profiles. Full notes: **[docs/releases/v6.0.0.md](docs/releases/v6.0.0.md)**.

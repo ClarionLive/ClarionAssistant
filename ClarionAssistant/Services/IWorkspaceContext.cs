@@ -113,6 +113,16 @@ namespace ClarionAssistant.Services
     }
 
     /// <summary>
+    /// Optional, for the standalone MCP server started by the Claude Code plugin's launcher (e1df6c2e): why THIS
+    /// server - the one installed under which Clarion - was started, including when that was only the newest-installed
+    /// fallback. Null when the server was not started by the launcher.
+    /// </summary>
+    public interface IServerLaunchInfo
+    {
+        string ServerChosenBy { get; }
+    }
+
+    /// <summary>
     /// Optional, for a workspace whose solution can move under it (the standalone MCP server follows the IDE, 9e1bd280):
     /// everything keyed on the solution, for a solution the CALLER snapshotted. An operation reads the solution ONCE and
     /// derives its version, .red, library paths and database from that, so a switch mid-operation cannot mix two
@@ -144,6 +154,9 @@ namespace ClarionAssistant.Services
         public ClarionVersionConfig Version { get; internal set; }
         /// <summary>Which tier chose <see cref="Version"/>, or why there is none.</summary>
         public string VersionNote { get; internal set; }
+        /// <summary>e1df6c2e: which settings folder (ClarionProperties.xml) the version came from and why, or null when
+        /// the host does not say (the addin: the IDE's own).</summary>
+        public string SettingsNote { get; internal set; }
         /// <summary>The solution's .red: its folder's own version-named one, else its version's. Null without a version.</summary>
         public RedFileService Red { get; internal set; }
         /// <summary>The library (.inc) paths an index of the solution uses, or null.</summary>
