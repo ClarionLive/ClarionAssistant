@@ -93,12 +93,14 @@ All of these take a `timeout` in seconds (default 120) and kill the process on e
 - `append_to_file` -Append text to an existing file
 - `list_directory` -List files in a directory with optional pattern filter
 
-### Everything Search (instant, all indexed drives)
+These four, and the Everything tools below, only accept paths inside the **allowed roots**: the open solution and its project folders, the Clarion root, the .red search folders, and the developer's `Mcp.AllowedRoots` setting (`%APPDATA%\ClarionAssistant` is read-only). UNC/network paths, `.ssh`/`.aws`/`.claude` folders and other users' profiles are always refused. A refusal is an error starting `Error: <tool> refused by the Clarion Assistant path policy` that names the setting which would allow it: tell the developer, and do not retry the same path under another spelling.
+
+### Everything Search (instant, scoped to the allowed roots)
 Never for a file the compiler or template engine finds: those resolve through the .red (rule 12).
 - `search_files` -Instant file/folder name search via Everything (voidtools).
 - `search_files_advanced` -File search with path, extension, size, and date filters.
-- `search_content` -Search text content within files (requires Everything content indexing).
-- `find_duplicates` -Find duplicate files by filename across all indexed drives.
+- `search_content` -Search text content within files (requires Everything content indexing; OFF unless the developer sets `Mcp.EverythingContentSearch=true`).
+- `find_duplicates` -Find duplicate files by filename within the allowed roots.
 
 ### Solution, Projects & Redirection
 **ALWAYS find Clarion files through the active .red — see Critical Rule 12.**

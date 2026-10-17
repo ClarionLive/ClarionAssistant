@@ -9,6 +9,9 @@ namespace ClarionAssistant.Services
     /// <summary>
     /// P/Invoke wrapper for Everything SDK — provides instant file search via the Everything service.
     /// Requires Everything (voidtools.com) to be installed and running.
+    ///
+    /// GH #266: this is the RAW index - the whole machine. MCP tools must not call <see cref="Search"/> directly;
+    /// they go through McpPathGate.Search, which scopes the query and filters every result by the path policy.
     /// </summary>
     public static class EverythingService
     {
@@ -93,6 +96,9 @@ namespace ClarionAssistant.Services
 
         private static readonly object _lock = new object();
 
+        /// <summary>The most results one SDK query may return (GH #266). Callers page with <see cref="SearchOptions.Offset"/>.</summary>
+        public const int MaxResultsCeiling = 1000;
+
         /// <summary>
         /// Check if Everything service is available.
         /// </summary>
@@ -134,8 +140,10 @@ namespace ClarionAssistant.Services
                     Everything_SetMatchCase(options.MatchCase);
                     Everything_SetMatchWholeWord(options.MatchWholeWord);
                     Everything_SetRegex(options.Regex);
-                    Everything_SetMax((uint)options.MaxResults);
-                    Everything_SetOffset(0);
+                    // GH #266: never hand the SDK a negative (cast to a huge uint) or an unbounded count.
+                    int max = options.MaxResults <= 0 ? 100 : Math.Min(options.MaxResults, MaxResultsCeiling);
+                    Everything_SetMax((uint)max);
+                    Everything_SetOffset((uint)Math.Max(0, options.Offset));
                     Everything_SetRequestFlags(EVERYTHING_REQUEST_FILE_NAME | EVERYTHING_REQUEST_PATH | EVERYTHING_REQUEST_FULL_PATH_AND_FILE_NAME);
                     Everything_SetSort((uint)GetSortOrder(options.SortBy));
 
@@ -226,6 +234,8 @@ namespace ClarionAssistant.Services
     public class SearchOptions
     {
         public int MaxResults { get; set; } = 100;
+        /// <summary>First result to return (paging). The MCP tools never expose it; McpPathGate pages with it.</summary>
+        public int Offset { get; set; }
         public bool MatchCase { get; set; }
         public bool MatchWholeWord { get; set; }
         public bool Regex { get; set; }

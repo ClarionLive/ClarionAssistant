@@ -1738,7 +1738,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "read_file",
-                Description = "Read content of a file from disk. Optionally specify start_line and end_line to read a specific line range (1-based, inclusive).",
+                Description = "Read content of a file from disk. Optionally specify start_line and end_line to read a specific line range (1-based, inclusive). " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1751,6 +1751,9 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     string path = McpJsonRpc.GetString(args, "path");
+                    // GH #266: the policy BEFORE File.Exists, so a refused path's existence is not disclosed.
+                    string refusal = McpPathGate.GatePath("read_file", path, PathAccess.Read, _workspace, out path);
+                    if (refusal != null) return refusal;
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
 
@@ -1783,7 +1786,7 @@ IdeOnly = true,
                 Description = "Write content to a file on disk. Creates the file if it doesn't exist, overwrites if it does. " +
                               "Clarion source (.clw/.inc/.equ/.int/.trn/.tpw/.tpl) is written with CRLF, no BOM, and in the file's " +
                               "existing encoding (the ANSI code page for a new or all-ASCII file); a character that encoding cannot " +
-                              "hold is refused rather than written as '?'.",
+                              "hold is refused rather than written as '?'. " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1796,6 +1799,8 @@ IdeOnly = true,
                 {
                     string path = McpJsonRpc.GetString(args, "path");
                     string content = McpJsonRpc.GetString(args, "content", "");
+                    string refusal = McpPathGate.GatePath("write_file", path, PathAccess.Write, _workspace, out path);
+                    if (refusal != null) return refusal;
                     string dir = Path.GetDirectoryName(path);
                     if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                         Directory.CreateDirectory(dir);
@@ -1813,7 +1818,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "append_to_file",
-                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM.",
+                Description = "Append text to the end of an existing file, on a new line. A line break (CRLF) is inserted first only if the file is non-empty and does not already end with one; an empty file gets no leading break. Clarion source (.clw/.inc/...) keeps its own encoding and CRLF endings, no BOM. " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1826,6 +1831,8 @@ IdeOnly = true,
                 {
                     string path = McpJsonRpc.GetString(args, "path");
                     string text = McpJsonRpc.GetString(args, "text", "");
+                    string refusal = McpPathGate.GatePath("append_to_file", path, PathAccess.Write, _workspace, out path);
+                    if (refusal != null) return refusal;
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
                     // Appends DIRECTLY rather than through IEditorService. That indirection made
@@ -1855,7 +1862,7 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "list_directory",
-                Description = "List files in a directory with an optional search pattern (e.g., '*.inc')",
+                Description = "List files in a directory with an optional search pattern (e.g., '*.inc'). " + PathScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -1868,9 +1875,24 @@ IdeOnly = true,
                 {
                     string path = McpJsonRpc.GetString(args, "path");
                     string pattern = McpJsonRpc.GetString(args, "pattern", "*");
+                    if (string.IsNullOrEmpty(pattern)) pattern = "*";
+                    // A pattern is a file NAME pattern: no separators, no "..", no drive - it must not reach outside path.
+                    if (pattern.IndexOf('\\') >= 0 || pattern.IndexOf('/') >= 0 || pattern.Contains("..") || pattern.IndexOf(':') >= 0)
+                        return "Error: list_directory pattern must be a file-name pattern such as '*.inc' (no path separators, '..' or ':').";
+                    var policy = McpPathGate.BuildPolicy(_workspace);
+                    var decision = policy.Check(path, PathAccess.Read);
+                    if (!decision.Allowed)
+                    {
+                        McpPathAudit.Write("list_directory", "DENY", path, decision.Reason);
+                        return decision.Refusal("list_directory", path);
+                    }
+                    McpPathAudit.Write("list_directory", "ALLOW", decision.Path, "read");
+                    path = decision.Path;
                     if (!Directory.Exists(path))
                         return "Error: directory not found: " + path;
-                    var files = Directory.GetFiles(path, pattern);
+                    // Entries a deny rule covers (e.g. settings.txt in CA's data folder) are left out of the listing.
+                    var files = Directory.GetFiles(path, pattern)
+                        .Where(f => policy.CheckLexical(f, PathAccess.Read).Allowed);
                     return string.Join("\n", files.Select(f => Path.GetFileName(f)));
                 }
             });
@@ -4111,15 +4133,22 @@ IdeOnly = true,
             });
 
             // ── Everything Search Tools ──────────────────────────────────────
+            //
+            // GH #266: these used to search the WHOLE Everything index - every drive, every profile - and Claude
+            // Code's permission rules never see an MCP tool. Every query now goes through McpPathGate.Search: it is
+            // scoped server-side to the path policy's roots and every result is filtered again before it is
+            // returned. max_results is clamped (1..1000), queries that name nothing are refused, and
+            // search_content (file CONTENTS) is off unless Mcp.EverythingContentSearch=true.
 
             Register(new McpTool
             {
                 Name = "search_files",
-                Description = "Instant file search using Everything (voidtools). Searches file/folder names across all indexed drives.",
+                Description = "Instant file search using Everything (voidtools). Searches file/folder names within the allowed roots only " +
+                              "(the solution and project folders, the Clarion root, the .red search folders, Mcp.AllowedRoots). " + SearchScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "query", "Search query for file names" },
-                    { "max_results?", "Maximum results to return (default: 100, max: 1000)" },
+                    { "query", "Search query for file names (must name something: bare '*' or '*.*' is refused)" },
+                    { "max_results?", "Maximum results to return (default: 100, max: 1000, enforced)" },
                     { "match_case?", "Enable case-sensitive search (true/false)" },
                     { "match_whole_word?", "Match whole words only (true/false)" },
                     { "regex?", "Enable regular expression search (true/false)" }
@@ -4129,21 +4158,23 @@ IdeOnly = true,
                 {
                     string query = args.ContainsKey("query") ? args["query"]?.ToString() : null;
                     if (string.IsNullOrEmpty(query)) return "Error: query is required.";
+                    if (McpPathGate.IsBareWildcard(query))
+                        return BareWildcardRefusal("search_files", query);
 
+                    int max = McpPathGate.ClampMax(GetIntArg(args, "max_results", 100), 100);
                     var opts = new SearchOptions
                     {
-                        MaxResults = GetIntArg(args, "max_results", 100),
                         MatchCase = GetBoolArg(args, "match_case"),
                         MatchWholeWord = GetBoolArg(args, "match_whole_word"),
                         Regex = GetBoolArg(args, "regex")
                     };
 
-                    var result = EverythingService.Search(query, opts);
-                    if (result.HasError) return "Error: " + result.Error;
-                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\"";
+                    var result = McpPathGate.Search("search_files", _workspace, query, null, null, opts, max);
+                    if (result.Error != null) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\" within the allowed roots." + ScanNote(result);
 
                     var sb = new StringBuilder();
-                    sb.AppendLine("Found " + result.TotalResults + " results (showing " + result.Items.Count + "):");
+                    sb.AppendLine("Found " + result.Items.Count + " results within the allowed roots:" + ScanNote(result));
                     sb.AppendLine();
                     foreach (var item in result.Items)
                         sb.AppendLine("[" + item.Type + "] " + item.FullPath);
@@ -4154,15 +4185,15 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "search_files_advanced",
-                Description = "Advanced file search with path, extension, size, and date filters using Everything.",
+                Description = "Advanced file search with path, extension, size, and date filters using Everything, within the allowed roots only. " + SearchScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
-                    { "query", "Search query for file names" },
-                    { "path?", "Limit search to specific path" },
+                    { "query", "Search query for file names ('*' is accepted only together with path or extension)" },
+                    { "path?", "Limit search to a folder inside the allowed roots (a folder outside them is refused)" },
                     { "extension?", "Filter by file extension (e.g., 'txt', 'pdf', 'clw')" },
                     { "size?", "Filter by file size (e.g., '>1mb', '<100kb', '1gb..2gb')" },
                     { "date_modified?", "Filter by date modified (e.g., 'today', 'yesterday', 'thisweek', '2024')" },
-                    { "max_results?", "Maximum results to return (default: 100, max: 1000)" },
+                    { "max_results?", "Maximum results to return (default: 100, max: 1000, enforced)" },
                     { "match_case?", "Enable case-sensitive search (true/false)" },
                     { "match_whole_word?", "Match whole words only (true/false)" },
                     { "regex?", "Enable regular expression search (true/false)" },
@@ -4174,42 +4205,44 @@ IdeOnly = true,
                     string query = args.ContainsKey("query") ? args["query"]?.ToString() : null;
                     if (string.IsNullOrEmpty(query)) return "Error: query is required.";
 
-                    // Build Everything search query with filters
-                    var sb = new StringBuilder();
                     string path = GetStringArg(args, "path");
                     string ext = GetStringArg(args, "extension");
                     string size = GetStringArg(args, "size");
                     string dateMod = GetStringArg(args, "date_modified");
 
-                    if (!string.IsNullOrEmpty(path)) sb.Append("path:\"" + path + "\" ");
-                    if (!string.IsNullOrEmpty(ext)) sb.Append("ext:" + ext + " ");
-                    if (!string.IsNullOrEmpty(size)) sb.Append("size:" + size + " ");
-                    if (!string.IsNullOrEmpty(dateMod)) sb.Append("dm:" + dateMod + " ");
-                    sb.Append(query);
+                    // A bare query is fine once a folder or an extension says what is being listed (still in scope).
+                    if (McpPathGate.IsBareWildcard(query) && string.IsNullOrEmpty(path) && McpPathGate.IsBareWildcard(ext))
+                        return BareWildcardRefusal("search_files_advanced", query);
 
+                    var filters = new StringBuilder();
+                    if (!string.IsNullOrEmpty(ext)) filters.Append("ext:" + ext + " ");
+                    if (!string.IsNullOrEmpty(size)) filters.Append("size:" + size + " ");
+                    if (!string.IsNullOrEmpty(dateMod)) filters.Append("dm:" + dateMod + " ");
+
+                    int max = McpPathGate.ClampMax(GetIntArg(args, "max_results", 100), 100);
                     var opts = new SearchOptions
                     {
-                        MaxResults = GetIntArg(args, "max_results", 100),
                         MatchCase = GetBoolArg(args, "match_case"),
                         MatchWholeWord = GetBoolArg(args, "match_whole_word"),
                         Regex = GetBoolArg(args, "regex"),
                         SortBy = GetStringArg(args, "sort_by")
                     };
 
-                    var result = EverythingService.Search(sb.ToString(), opts);
-                    if (result.HasError) return "Error: " + result.Error;
-                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\"";
+                    var result = McpPathGate.Search("search_files_advanced", _workspace, McpPathGate.IsBareWildcard(query) ? "" : query,
+                                                    filters.ToString(), path, opts, max);
+                    if (result.Error != null) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found matching \"" + query + "\" within the allowed roots." + ScanNote(result);
 
-                    var filters = new List<string>();
-                    if (!string.IsNullOrEmpty(path)) filters.Add("path: \"" + path + "\"");
-                    if (!string.IsNullOrEmpty(ext)) filters.Add("extension: " + ext);
-                    if (!string.IsNullOrEmpty(size)) filters.Add("size: " + size);
-                    if (!string.IsNullOrEmpty(dateMod)) filters.Add("date modified: " + dateMod);
+                    var filterNames = new List<string>();
+                    if (!string.IsNullOrEmpty(path)) filterNames.Add("path: \"" + path + "\"");
+                    if (!string.IsNullOrEmpty(ext)) filterNames.Add("extension: " + ext);
+                    if (!string.IsNullOrEmpty(size)) filterNames.Add("size: " + size);
+                    if (!string.IsNullOrEmpty(dateMod)) filterNames.Add("date modified: " + dateMod);
 
                     var output = new StringBuilder();
-                    output.Append("Found " + result.TotalResults + " results");
-                    if (filters.Count > 0) output.Append(" (filtered by " + string.Join(", ", filters) + ")");
-                    output.AppendLine(" (showing " + result.Items.Count + "):");
+                    output.Append("Found " + result.Items.Count + " results within the allowed roots");
+                    if (filterNames.Count > 0) output.Append(" (filtered by " + string.Join(", ", filterNames) + ")");
+                    output.AppendLine(":" + ScanNote(result));
                     output.AppendLine();
                     foreach (var item in result.Items)
                         output.AppendLine("[" + item.Type + "] " + item.FullPath);
@@ -4220,38 +4253,33 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "find_duplicates",
-                Description = "Find duplicate files by filename across all indexed drives using Everything.",
+                Description = "Find duplicate files by filename using Everything, within the allowed roots only. " + SearchScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "filename", "Filename to search for duplicates" },
-                    { "path?", "Limit search to specific path" },
-                    { "max_results?", "Maximum results to return (default: 50)" }
+                    { "path?", "Limit search to a folder inside the allowed roots" },
+                    { "max_results?", "Maximum results to return (default: 50, max: 1000, enforced)" }
                 }),
                 RequiresUiThread = false,
                 Handler = args =>
                 {
                     string filename = args.ContainsKey("filename") ? args["filename"]?.ToString() : null;
                     if (string.IsNullOrEmpty(filename)) return "Error: filename is required.";
+                    if (McpPathGate.IsBareWildcard(filename))
+                        return BareWildcardRefusal("find_duplicates", filename);
 
-                    string searchQuery = filename;
-                    string path = GetStringArg(args, "path");
-                    if (!string.IsNullOrEmpty(path)) searchQuery = "path:\"" + path + "\" " + searchQuery;
+                    int max = McpPathGate.ClampMax(GetIntArg(args, "max_results", 50), 50);
+                    var opts = new SearchOptions { MatchWholeWord = true };
 
-                    var opts = new SearchOptions
-                    {
-                        MaxResults = GetIntArg(args, "max_results", 50),
-                        MatchWholeWord = true
-                    };
+                    var result = McpPathGate.Search("find_duplicates", _workspace, filename, null, GetStringArg(args, "path"), opts, max);
+                    if (result.Error != null) return "Error: " + result.Error;
+                    if (result.Items.Count == 0) return "No files found with name \"" + filename + "\" within the allowed roots." + ScanNote(result);
 
-                    var result = EverythingService.Search(searchQuery, opts);
-                    if (result.HasError) return "Error: " + result.Error;
-                    if (result.Items.Count == 0) return "No files found with name \"" + filename + "\"";
-
-                    if (result.TotalResults == 1)
-                        return "Found only 1 instance of \"" + filename + "\":\n\n[" + result.Items[0].Type + "] " + result.Items[0].FullPath;
+                    if (result.Items.Count == 1)
+                        return "Found only 1 instance of \"" + filename + "\" within the allowed roots:\n\n[" + result.Items[0].Type + "] " + result.Items[0].FullPath;
 
                     var sb = new StringBuilder();
-                    sb.AppendLine("Found " + result.TotalResults + " instances of \"" + filename + "\" (showing " + result.Items.Count + "):");
+                    sb.AppendLine("Found " + result.Items.Count + " instances of \"" + filename + "\" within the allowed roots:" + ScanNote(result));
                     sb.AppendLine();
                     foreach (var item in result.Items)
                         sb.AppendLine("[" + item.Type + "] " + item.FullPath);
@@ -4262,47 +4290,55 @@ IdeOnly = true,
             Register(new McpTool
             {
                 Name = "search_content",
-                Description = "Search for text content within files using Everything. Requires Everything content indexing to be enabled.",
+                Description = "Search for text content within files using Everything, within the allowed roots only. Requires Everything content " +
+                              "indexing, AND is off by default: the developer must set " + McpPathPolicy.ContentSearchSetting + "=true in " +
+                              "%APPDATA%\\ClarionAssistant\\settings.txt. Until then every call returns an error saying so. " + SearchScopeNote,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "content", "Text content to search for within files" },
                     { "file_types?", "Limit to specific file types, semicolon-separated (e.g., 'clw;inc;txt')" },
-                    { "path?", "Limit search to specific path" },
-                    { "max_results?", "Maximum results to return (default: 50)" }
+                    { "path?", "Limit search to a folder inside the allowed roots" },
+                    { "max_results?", "Maximum results to return (default: 50, max: 1000, enforced)" }
                 }),
                 RequiresUiThread = false,
                 Handler = args =>
                 {
+                    if (!McpPathGate.ContentSearchEnabled())
+                    {
+                        McpPathAudit.Write("search_content", "DENY", GetStringArg(args, "content"), "content search disabled");
+                        return "Error: search_content is disabled. It searches file CONTENTS, so it is off by default (GH #266). " +
+                               "The developer can enable it by adding " + McpPathPolicy.ContentSearchSetting + "=true to " +
+                               "%APPDATA%\\ClarionAssistant\\settings.txt. Use read_file or the LSP/CodeGraph tools meanwhile.";
+                    }
+
                     string content = args.ContainsKey("content") ? args["content"]?.ToString() : null;
                     if (string.IsNullOrEmpty(content)) return "Error: content is required.";
+                    if (McpPathGate.IsBareWildcard(content))
+                        return BareWildcardRefusal("search_content", content);
+                    if (content.IndexOf('"') >= 0)
+                        return "Error: search_content: the text cannot contain a double quote (\"); it is sent as content:\"...\".";
 
-                    var sb = new StringBuilder();
-                    string path = GetStringArg(args, "path");
+                    var filters = new StringBuilder();
                     string fileTypes = GetStringArg(args, "file_types");
-
                     if (!string.IsNullOrEmpty(fileTypes))
                     {
-                        var types = fileTypes.Split(';');
                         var parts = new List<string>();
-                        foreach (var t in types)
+                        foreach (var t in fileTypes.Split(';'))
                         {
                             string trimmed = t.Trim();
                             if (!string.IsNullOrEmpty(trimmed)) parts.Add("ext:" + trimmed);
                         }
-                        if (parts.Count > 0) sb.Append("(" + string.Join(" | ", parts) + ") ");
+                        if (parts.Count > 0) filters.Append("<" + string.Join("|", parts) + "> ");
                     }
 
-                    if (!string.IsNullOrEmpty(path)) sb.Append("path:\"" + path + "\" ");
-                    sb.Append("content:\"" + content + "\"");
-
-                    var opts = new SearchOptions { MaxResults = GetIntArg(args, "max_results", 50) };
-
-                    var result = EverythingService.Search(sb.ToString(), opts);
-                    if (result.HasError) return "Error: " + result.Error + " Note: Content search requires Everything to have content indexing enabled.";
-                    if (result.Items.Count == 0) return "No files found containing \"" + content + "\". Note: Content search requires Everything to have content indexing enabled.";
+                    int max = McpPathGate.ClampMax(GetIntArg(args, "max_results", 50), 50);
+                    var result = McpPathGate.Search("search_content", _workspace, "content:\"" + content + "\"", filters.ToString(),
+                                                    GetStringArg(args, "path"), new SearchOptions(), max);
+                    if (result.Error != null) return "Error: " + result.Error + " Note: Content search requires Everything to have content indexing enabled.";
+                    if (result.Items.Count == 0) return "No files found containing \"" + content + "\" within the allowed roots. Note: Content search requires Everything to have content indexing enabled." + ScanNote(result);
 
                     var output = new StringBuilder();
-                    output.AppendLine("Found " + result.TotalResults + " files containing \"" + content + "\" (showing " + result.Items.Count + "):");
+                    output.AppendLine("Found " + result.Items.Count + " files containing \"" + content + "\" within the allowed roots:" + ScanNote(result));
                     output.AppendLine();
                     foreach (var item in result.Items)
                         output.AppendLine("[" + item.Type + "] " + item.FullPath);
@@ -6105,6 +6141,36 @@ IdeOnly = true,
             catch { }
 
             return null;
+        }
+
+        #endregion
+
+        #region Path policy (GH #266)
+
+        /// <summary>Appended to the file tools' descriptions: the model must know a refusal is a boundary, not a missing file.</summary>
+        private const string PathScopeNote =
+            "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots (the open solution and its project folders, " +
+            "the Clarion root, the .red search folders, the Mcp.AllowedRoots setting; Clarion Assistant's own data folder read-only) are " +
+            "accepted, and UNC/network paths, .ssh/.aws/.claude folders and other users' profiles are always refused. A refused path " +
+            "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy' that names the setting which would " +
+            "allow it - report that to the developer; do not retry with another spelling of the same path.";
+
+        /// <summary>Appended to the Everything tools' descriptions.</summary>
+        private const string SearchScopeNote =
+            "Results outside the allowed roots are never returned, whatever the query or path says. Queries that name nothing ('*', '*.*') " +
+            "are refused, max_results is capped at 1000, and a refusal is an error naming the setting that would allow it (Mcp.AllowedRoots), " +
+            "not an empty result.";
+
+        private static string BareWildcardRefusal(string tool, string query)
+        {
+            McpPathAudit.Write(tool, "DENY", query, "bare wildcard");
+            return "Error: " + tool + " refused: the query '" + query + "' names nothing (a bare wildcard would enumerate the whole index). " +
+                   "Include part of a file name, e.g. '*.clw' or 'Main'.";
+        }
+
+        private static string ScanNote(McpPathGate.ScopedResult r)
+        {
+            return r.ScanCapped ? " (stopped after scanning " + McpPathGate.ScanCap + " index entries; narrow the query)" : "";
         }
 
         #endregion
