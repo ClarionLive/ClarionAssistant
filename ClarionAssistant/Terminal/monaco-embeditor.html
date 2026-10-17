@@ -9567,6 +9567,19 @@
                 // May arrive before the async source fetch fills the model — park until applySource's tail.
                 if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(msg.slots);
                 else pendingRestoreSlots = msg.slots;
+            } else if (msg.type === 'offerSavedEdits') {
+                // GH #179: a save that reported ok but never reached the procedure (the Generator faulted after it).
+                // OFFERED, never applied: Restore puts the text in as unsaved edits (the same path as restoreSlots),
+                // Discard forgets it, and the toast's own dismiss leaves it to be offered again at the next open.
+                var offered = msg.slots;
+                showActionToast(msg.message, false, [
+                    { label: 'Restore', onClick: function () {
+                        if (embedRanges.length && editor && editor.getModel().getLineCount() > 1) restoreSlotContents(offered);
+                        else pendingRestoreSlots = offered;
+                        postToHost({ action: 'savedEditsOffer', choice: 'restore' });
+                    } },
+                    { label: 'Discard', onClick: function () { postToHost({ action: 'savedEditsOffer', choice: 'discard' }); } }
+                ]);
             } else if (msg.type === 'restoreSlotsFailed') {
                 showToast('Your unsaved edits from the interrupted embeditor session could not be restored (the generated source changed underneath them).', false);
             }

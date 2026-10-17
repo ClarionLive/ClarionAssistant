@@ -281,7 +281,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # detaches and never cancels, recovery files are BOM-free and atomic, the stash restores per slot.
             @{ Name = "EmbedSaveFlow.Test"
                Sources = @("tests\EmbedSaveFlow.Test.cs", "Services\EmbedSaveFlow.cs", "Services\EmbedRecovery.cs",
-                           "Services\TextLines.cs")
+                           "Services\EmbedSaveJournal.cs", "Services\TextLines.cs")
                Refs = @("System.dll", "System.Core.dll") }
             # ... and the ordering in the IDE-coupled callers that the harness above can't reach (red on 3904549).
             @{ Name = "EmbedSaveOrder.SourceScan"

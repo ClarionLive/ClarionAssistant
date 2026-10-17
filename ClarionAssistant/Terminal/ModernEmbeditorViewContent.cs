@@ -2019,7 +2019,11 @@ namespace ClarionAssistant.Terminal
         {
             _isInitialized = success;
             if (_embedOverlay && success) RemoveOverlayCover();
+            // An in-memory stash for this procedure is restored as before; the save journal then waits for its own
+            // next open, so two restores never compete for the same slots (GH #179).
+            bool memStash = _embedOverlay && PeekStash(_procedureName) != null;
             if (_embedOverlay && success) TryRestoreStashedEdits();   // re-apply edits an external teardown stashed (d19c036d)
+            if (!_fileMode && success && !memStash) CheckSaveJournal();   // a save that did not survive the Generator (GH #179)
             FocusIfActiveTab();   // #66 round-4: the INITIAL open never fires SwitchedTo (the tab is born selected)
         }
 
@@ -2068,6 +2072,113 @@ namespace ClarionAssistant.Terminal
             catch (Exception ex) { ClarionAssistant.MonacoSpikeLog.Write("TryRestoreStashedEdits error: " + ex.Message); }
         }
 
+        // ---------------- save journal (GH #179, 254e4353) ----------------
+        // ok=True from SaveLive means "handed to Clarion", not "persisted": the Generator can fault ~60 ms later and
+        // take the edit with it. Every embed save is journaled BEFORE the native round-trip and the journal is kept
+        // through ok=True; THIS method, on the next open of the procedure, decides from the freshly loaded slots
+        // whether that save landed. See Services.EmbedSaveJournal for why the open, not a timer, is the proof.
+        private string _journalApp;              // app identity the journal is keyed by (captured once)
+        private bool _journalChecked;            // CheckSaveJournal runs once per view
+        private Services.EmbedSaveJournal.Entry _offeredJournal;   // the entry the page is offering, if any
+
+        private string JournalApp()
+        {
+            if (_journalApp == null) _journalApp = TryGetCurrentAppKey() ?? "";
+            return _journalApp;
+        }
+
+        private void CheckSaveJournal()
+        {
+            if (_journalChecked || _panel == null || string.IsNullOrEmpty(_procedureName)) return;
+            _journalChecked = true;
+            try
+            {
+                var e = Services.EmbedSaveJournal.Read(JournalApp(), _procedureName);
+                if (e == null) return;
+                var v = Services.EmbedSaveJournal.Assess(e, _originalSlotTexts);
+                MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": entry of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") +
+                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)) -> " + v);
+                var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                if (v == Services.EmbedSaveJournal.Verdict.Persisted)
+                {
+                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // it landed: nothing to say
+                    return;
+                }
+                string when = e.Written.ToString("yyyy-MM-dd HH:mm");
+                if (v == Services.EmbedSaveJournal.Verdict.Diverged)
+                {
+                    // Changed since (e.g. edited in Clarion's own embeditor): offering it would overwrite newer work.
+                    string rec = Services.EmbedSaveJournal.Archive(e, "this embed has changed since");
+                    MonacoSpikeLog.Write("[save-journal] archived " + rec);
+                    _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(
+                        "Your CA Embeditor save of " + _procedureName + " on " + when + " could not be confirmed, and this embed " +
+                        "has changed since, so it was not offered back. A copy was kept in " + rec + ".") + "}");
+                    return;
+                }
+                var slots = Services.EmbedSaveJournal.RestoredSlots(e, _originalSlotTexts);
+                if (slots == null) return;
+                _offeredJournal = e;
+                _panel.PostJson("{\"type\":\"offerSavedEdits\",\"message\":" + ser.Serialize(
+                    "Your CA Embeditor save of " + _procedureName + " on " + when + " is not in this embed: Clarion appears to " +
+                    "have stopped right after it. Restore it as unsaved edits? Nothing changes until you choose, and you " +
+                    "review it before saving.") + ",\"slots\":" + ser.Serialize(slots) + "}");
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] open check error: " + ex.Message); }
+        }
+
+        /// <summary>{action:"savedEditsOffer", choice:"restore"|"discard"} — the developer answered the offer.
+        /// Restore: the page has put the text in as unsaved edits; the journal becomes a dated recovery file (a disk
+        /// copy until they save, and it no longer looks like an unconfirmed save). Discard: retired. Dismissing the
+        /// toast sends nothing, and the offer comes back at the next open.</summary>
+        private void HandleSavedEditsOffer(string rawJson)
+        {
+            try
+            {
+                var e = _offeredJournal;
+                if (e == null) return;
+                var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
+                object c;
+                string choice = data != null && data.TryGetValue("choice", out c) && c != null ? c.ToString() : "";
+                if (choice == "restore")
+                {
+                    _offeredJournal = null;
+                    string rec = Services.EmbedSaveJournal.Archive(e, "it was restored into the CA Embeditor as unsaved edits");
+                    MonacoSpikeLog.Write("[save-journal] restored into the editor; copy kept in " + rec);
+                }
+                else if (choice == "discard")
+                {
+                    _offeredJournal = null;
+                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);
+                    MonacoSpikeLog.Write("[save-journal] discarded by the developer (" + _procedureName + ")");
+                }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] offer answer error: " + ex.Message); }
+        }
+
+        /// <summary>Journal this save before Clarion gets it. Never throws and never blocks the save: a journal
+        /// that cannot be written is logged, and the save goes ahead as it did before.</summary>
+        private void BeginSaveJournal(List<string> current)
+        {
+            if (string.IsNullOrEmpty(_procedureName)) return;
+            try
+            {
+                string archived;
+                string path = Services.EmbedSaveJournal.Begin(JournalApp(), _procedureName, _originalSlotTexts, current, out archived);
+                if (archived != null) MonacoSpikeLog.Write("[save-journal] an unconfirmed earlier save was archived to " + archived);
+                if (path != null) MonacoSpikeLog.Write("[save-journal] kept " + path);
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] write FAILED (saving anyway): " + ex.Message); }
+        }
+
+        /// <summary>The save did not go through and the text is still in the editor: the journal claims a save
+        /// that never happened, so it goes.</summary>
+        private void RetireSaveJournal(string why)
+        {
+            if (string.IsNullOrEmpty(_procedureName)) return;
+            if (Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName))
+                MonacoSpikeLog.Write("[save-journal] retired — " + why);
+        }
+
         /// <summary>Hand the freshly loaded Monaco page keyboard focus + claim the CA Find pad — but only
         /// if OUR tab is the active document (same initial-open gap the CA Editor had: a new tab is born
         /// selected, so SwitchedTo never fires for it and nothing focused the page).</summary>
@@ -2089,6 +2200,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnUnknownAction(MonacoEditorControl editor, string action, string rawJson)
         {
             if (action == "embedState") HandleEmbedState(rawJson);
+            else if (action == "savedEditsOffer") HandleSavedEditsOffer(rawJson);
         }
 
         /// <summary>{action:"embedState"} — the page's per-edit mirror of its edited slot texts (see the
@@ -2855,6 +2967,12 @@ namespace ClarionAssistant.Terminal
             // own right for a first-call cost, so it gets its own mark rather than being folded into "enter".
             mark("liveCheck(live=" + live + ",overlay=" + _embedOverlay + ",slots=" + current.Count + ")");
 
+            // GH #179: journal the text BEFORE Clarion gets it, and keep it through ok=True. The Generator can fault
+            // after every line below has run (reporter: AV 60 ms after "refreshPadSources DONE"), so nothing on the
+            // success path retires it; the next open of this procedure does (CheckSaveJournal).
+            BeginSaveJournal(current);
+            mark("saveJournal");
+
             // OVERLAY save-and-exit (a5bbf005). The Monaco surface must come OFF the embed host BEFORE the native
             // embed closes: closing it disposes the ClaGenEditor host panel, which would otherwise cascade-dispose
             // our WebView2 child on the native close stack (the documented freeze).
@@ -2888,7 +3006,10 @@ namespace ClarionAssistant.Terminal
                     msg += KeepTypedDuringSave(current, true);
                 }
                 else if (editorIntact)
+                {
                     RecordNativeWrites(current, o.WrittenSlots);   // a partial write stays in the native buffer: ours
+                    RetireSaveJournal("save refused or failed; the text is still in the CA Embeditor");
+                }
                 else
                 {
                     // Past the point of no return: the surface is gone and the native save failed. The text must
@@ -2934,6 +3055,8 @@ namespace ClarionAssistant.Terminal
             // The prime suspect: Save() RE-OPENS the native embeditor and pumps DoEvents, which is where a
             // one-time-per-session lazy ABC class load would be paid (see the warmup_abc tool).
             mark((live ? "SaveLive" : "Save(re-open)") + " ok=" + ok);
+            // Tab mode keeps its surface on a failure, so the text is still in the editor (GH #179).
+            if (!ok) RetireSaveJournal("save did not go through; the text is still in the editor tab");
 
             // A successful live save closed the native embed (SAVE-AND-EXIT) — drop the live link so Dispose won't
             // try to cancel an already-closed embed, and clear the global live pointer if it's us.
