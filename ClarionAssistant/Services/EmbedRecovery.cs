@@ -87,7 +87,7 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private static string SafeName(string s)
+        internal static string SafeName(string s)
         {
             if (string.IsNullOrEmpty(s)) return "embed";
             var bad = Path.GetInvalidFileNameChars();

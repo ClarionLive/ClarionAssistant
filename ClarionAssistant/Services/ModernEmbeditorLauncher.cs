@@ -136,6 +136,10 @@ namespace ClarionAssistant.Services
                 EnsureRedirectionLoaded();   // f64ba833
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
                 MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
+                // GH #179: the app THIS embed belongs to, while it is still open (keys the save journal).
+                string embedApp = null;
+                try { embedApp = appTree.GetOpenEmbedAppFileName(); } catch { }
+                MonacoSpikeLog.Write("[embed-ctx] embed app: " + (embedApp ?? "unknown (save journal off for this view)"));
 
                 // OpenAndMirror leaves the embeditor open; we made no edits, so discard/close to free the lock.
                 try { appTree.CancelEmbeditor(); } catch { }
@@ -152,12 +156,14 @@ namespace ClarionAssistant.Services
                 var ctx = WindowsFormsSynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
                 string capProc = procName; string capSrc = source; List<int[]> capRanges = ranges; bool capDark = isDark;
                 EmbedLspContext capLspCtx = lspCtx;
+                string capApp = embedApp;
                 ctx.Post(_ =>
                 {
                     try
                     {
                         var view = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc,
                             false, 0, capLspCtx);
+                        view.EmbedAppFile = capApp;
                         WorkbenchSingleton.Workbench.ShowView(view);
                     }
                     catch (Exception ex)
@@ -247,6 +253,10 @@ namespace ClarionAssistant.Services
                 EnsureRedirectionLoaded();   // f64ba833
                 try { lspCtx = EmbedLspContext.TryCapture(appTree); } catch { }
                 MonacoSpikeLog.Write("[embed-ctx] " + (EmbedLspContext.LastCaptureResult ?? "?"));   // f64ba833: a failed capture used to be silent
+                // GH #179: the app THIS embed belongs to (keys the save journal).
+                string embedApp = null;
+                try { embedApp = appTree.GetOpenEmbedAppFileName(); } catch { }
+                MonacoSpikeLog.Write("[embed-ctx] embed app: " + (embedApp ?? "unknown (save journal off for this view)"));
 
                 // Read the native caret position NOW (before the embed closes under us) so Monaco lands at the
                 // embed point the developer had the cursor on — not the last-saved cursor for this procedure.
@@ -261,6 +271,7 @@ namespace ClarionAssistant.Services
                 EmbedLspContext capLspCtx = lspCtx;
                 var capHost = host; var capCover = preCover; var capEditor = appTree.GetOpenClaGenEditor();
                 var capPwee = openPwee;
+                string capApp = embedApp;
                 ctx.Post(_ =>
                 {
                     try
@@ -273,6 +284,7 @@ namespace ClarionAssistant.Services
                             return;
                         }
                         var overlay = new ModernEmbeditorViewContent(capProc, capSrc, capRanges, "clarion", capDark, capProc, false, capNativeLine, capLspCtx);
+                        overlay.EmbedAppFile = capApp;
                         overlay.ShowAsEmbedOverlay(h, capEditor ?? new AppTreeService().GetOpenClaGenEditor(), capCover,
                             capPwee ?? new AppTreeService().GetOpenPweeDetails());
                     }

@@ -78,6 +78,8 @@ namespace ClarionAssistant.Services
         public static string Begin(string app, string proc, IList<string> baseline, IList<string> saved, out string archived)
         {
             archived = null;
+            // No app, no journal (pipeline run 1): an entry filed under a guessed app is read back by the wrong one.
+            if (string.IsNullOrWhiteSpace(app)) return null;
             if (baseline == null || saved == null || baseline.Count != saved.Count) return null;
             var e = new Entry { App = app ?? "", Proc = proc ?? "", Written = DateTime.Now, SlotCount = saved.Count };
             try { e.Pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { }
@@ -101,6 +103,7 @@ namespace ClarionAssistant.Services
         /// (torn, truncated, wrong format, or for a different app/procedure): such a file is never offered.</summary>
         public static Entry Read(string app, string proc)
         {
+            if (string.IsNullOrWhiteSpace(app)) return null;
             string path = PathFor(app, proc);
             try
             {
@@ -118,6 +121,7 @@ namespace ClarionAssistant.Services
         /// <summary>Delete the journal for this app + procedure. Never throws; true when nothing is left.</summary>
         public static bool Retire(string app, string proc)
         {
+            if (string.IsNullOrWhiteSpace(app)) return true;   // never journaled without an app
             try
             {
                 string path = PathFor(app, proc);
@@ -127,11 +131,58 @@ namespace ClarionAssistant.Services
             catch { return false; }
         }
 
+        /// <summary>What to do with a journal entry when its procedure opens (pipeline run 1).</summary>
+        public enum Action
+        {
+            /// <summary>It landed AND was read back by a later process, so it came from the saved .app: delete.</summary>
+            Retire,
+            /// <summary>It landed, but only in THIS session's in-memory .app, which a crash can still lose: keep it,
+            /// say nothing. A later session decides.</summary>
+            Keep,
+            /// <summary>It did not land: offer it back.</summary>
+            Offer,
+            /// <summary>It cannot be placed or the embed changed since: keep a dated copy, do not offer.</summary>
+            Archive
+        }
+
+        /// <summary>
+        /// The open-time decision. A reopen in the SAME process showing the saved text proves only that Clarion
+        /// took it into the app in memory; the .app on disk may still lack it (pipeline run 1, adversary), so that
+        /// entry is kept. No IDE app-saved notification is hooked, so "a different process read it back" is the
+        /// proof that it reached the saved .app. An entry that did not land in a later process means Clarion
+        /// stopped before the app was saved, or the app was closed without saving: both are offered.
+        /// </summary>
+        public static Action Decide(Entry e, IList<string> fresh, int currentPid)
+        {
+            switch (Assess(e, fresh))
+            {
+                case Verdict.Persisted: return e.Pid != currentPid ? Action.Retire : Action.Keep;
+                case Verdict.Lost: return Action.Offer;
+                default: return Action.Archive;
+            }
+        }
+
         /// <summary>What the freshly opened slots say about this entry. Compared per changed slot, ignoring line
-        /// endings and trailing whitespace (so a normalisation by Clarion on save is not mistaken for a loss).</summary>
+        /// endings and trailing whitespace (so a normalisation by Clarion on save is not mistaken for a loss).
+        /// Slots are matched by POSITION only while the slot count is unchanged. The slot list holds every embed
+        /// point, so adding a control in the window designer shifts it (pipeline run 1, debugger); the slot model
+        /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots:
+        /// every one found means it landed. Otherwise the entry cannot be put back by position: Diverged.</summary>
         public static Verdict Assess(Entry e, IList<string> fresh)
         {
-            if (e == null || fresh == null || fresh.Count != e.SlotCount) return Verdict.Diverged;
+            if (e == null || fresh == null) return Verdict.Diverged;
+            if (fresh.Count != e.SlotCount)
+            {
+                var present = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var f in fresh) present.Add(Loose(f));
+                for (int k = 0; k < e.Index.Count; k++)
+                {
+                    string s = Loose(e.Saved[k]);
+                    if (s == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
+                    if (!present.Contains(s)) return Verdict.Diverged;
+                }
+                return Verdict.Persisted;
+            }
             bool allSaved = true, allBaseline = true;
             for (int k = 0; k < e.Index.Count; k++)
             {
@@ -338,13 +389,6 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private static string SafeName(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "embed";
-            var bad = System.IO.Path.GetInvalidFileNameChars();
-            var sb = new StringBuilder(s.Length);
-            foreach (char c in s) sb.Append(Array.IndexOf(bad, c) >= 0 ? '_' : c);
-            return sb.ToString();
-        }
+        private static string SafeName(string s) { return EmbedRecovery.SafeName(s); }
     }
 }

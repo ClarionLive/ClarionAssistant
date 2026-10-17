@@ -482,6 +482,48 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// The .app file of the app whose view HOSTS the open native embeditor, or null (GH #179 save journal). The
+        /// ClaGenEditor is one of its app view's SecondaryViewContents, so this ties the embed to its own app by
+        /// object identity instead of FindAppViewContent's "active window, else the first app view", which with a CA
+        /// tab active and several apps open names the wrong one. Null when no embed is open, when no app view holds
+        /// it, or when two different apps appear to (ambiguous): callers skip rather than guess.
+        /// </summary>
+        public string GetOpenEmbedAppFileName()
+        {
+            try
+            {
+                var editor = GetClaGenEditor();
+                var workbench = WorkbenchSingleton.Workbench;
+                if (editor == null || workbench == null) return null;
+                string found = null;
+                Func<object, bool> consider = item =>
+                {
+                    if (item == null) return true;
+                    var vc = GetProp(item, "App") != null ? item : (GetProp(item, "ViewContent") ?? GetProp(item, "ActiveViewContent"));
+                    var app = vc != null ? GetProp(vc, "App") : null;
+                    if (app == null) return true;
+                    bool hosts = ReferenceEquals(vc, editor);
+                    if (!hosts && GetProp(vc, "SecondaryViewContents") is System.Collections.IEnumerable secs)
+                        foreach (var s in secs) if (ReferenceEquals(s, editor)) { hosts = true; break; }
+                    if (!hosts) return true;
+                    string fn = (GetProp(app, "FileName") ?? "").ToString();
+                    if (fn.Length == 0) return true;
+                    if (found != null && !string.Equals(found, fn, StringComparison.OrdinalIgnoreCase)) return false;   // ambiguous
+                    found = fn;
+                    return true;
+                };
+                if (!consider(GetProp(workbench, "ActiveWorkbenchWindow"))) return null;
+                foreach (var cn in new[] { "WorkbenchWindowCollection", "ViewContentCollection", "PrimaryViewContents", "Windows" })
+                {
+                    if (!(GetProp(workbench, cn) is System.Collections.IEnumerable coll)) continue;
+                    foreach (var item in coll) if (!consider(item)) return null;
+                }
+                return found;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
         /// GH #263 Q2: is <paramref name="filePath"/> a GENERATED module of any open app (a procedure's module,
         /// an App.Modules entry, or the app's own &lt;app&gt;.clw PROGRAM module)? The CA Editor passes the answer
         /// to its page so a control hover card shows plain attribute names instead of edit chips there. Same

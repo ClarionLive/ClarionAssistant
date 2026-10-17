@@ -391,6 +391,31 @@ static class EmbedSaveFlowTest
                 EmbedSaveJournal.Assess(e, new List<string> { "  x = 99", O1, O2 }) == EmbedSaveJournal.Verdict.Diverged);
             Ok("slot count changed -> Diverged", EmbedSaveJournal.Assess(e, new List<string> { O0, O1 }) == EmbedSaveJournal.Verdict.Diverged);
 
+            // Pipeline run 1, adversary: a same-session reopen showing the saved text proves only the in-memory .app.
+            int me = System.Diagnostics.Process.GetCurrentProcess().Id;
+            Ok("written with this process's pid", e.Pid == me);
+            Ok("same session, reopen shows the saved text -> Keep (not retired, no offer)",
+                EmbedSaveJournal.Decide(e, saved, me) == EmbedSaveJournal.Action.Keep);
+            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.Action.Retire);
+            Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me) == EmbedSaveJournal.Action.Offer &&
+                EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.Action.Offer);
+            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1) == EmbedSaveJournal.Action.Archive);
+
+            // Pipeline run 1, debugger: a control added in the designer adds embed points, shifting every slot.
+            var shifted = new List<string> { saved[0], "", "  ! new control's embed", O1, big };
+            Ok("slot count changed after a landed save -> Persisted (no false alert)",
+                EmbedSaveJournal.Assess(e, shifted) == EmbedSaveJournal.Verdict.Persisted);
+            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1) == EmbedSaveJournal.Action.Retire);
+            var shiftedLost = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
+            Ok("slot count changed and the save is missing -> Diverged (archived, not offered by position)",
+                EmbedSaveJournal.Assess(e, shiftedLost) == EmbedSaveJournal.Verdict.Diverged);
+
+            // Pipeline run 1, debugger: an unknown app is never guessed.
+            Ok("no app: nothing journaled", EmbedSaveJournal.Begin(null, "NoApp", origT, saved, out arch) == null &&
+                EmbedSaveJournal.Begin("  ", "NoApp", origT, saved, out arch) == null &&
+                Directory.GetFiles(EmbedSaveJournal.Folder, "NoApp*").Length == 0);
+            Ok("no app: nothing read", EmbedSaveJournal.Read(null, "BrowseDepartment") == null);
+
             Ok("retire removes it", EmbedSaveJournal.Retire(App, "BrowseDepartment") && !File.Exists(jp) &&
                 EmbedSaveJournal.Read(App, "BrowseDepartment") == null);
 
