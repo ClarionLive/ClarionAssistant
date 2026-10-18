@@ -96,6 +96,44 @@ static class FileIdentityTest
             Ok("a tab on an unreachable share does not match a local target", !netMatch);
             Ok("...and is not even opened (3 unreachable-share tabs in under 100 ms)", netMs < 100, netMs + " ms");
 
+            Console.WriteLine("-- a network path is NEVER opened (pipeline run 4: NTLM leak)");
+            var opened = new List<string>();
+            var realOpener = FileIdentity.Opener;
+            FileIdentity.Opener = path => { lock (opened) opened.Add(path); return realOpener(path); };
+            try
+            {
+                string[] network = { @"\\attacker\s\x.clw", @"\\attacker@80\DavWWWRoot\x.clw", @"\\attacker@SSL@443\x.clw",
+                                     @"\\?\UNC\attacker\s\x.clw", "//attacker/s/x.clw", @"\\?\GLOBALROOT\Device\Mup\attacker\s\x.clw",
+                                     @"\\.\UNC\attacker\s\x.clw" };
+                foreach (var net in network)
+                {
+                    Ok("network by text: " + net, FileIdentity.IsNetworkPath(net));
+                    var probe = FileIdentity.Of(net);
+                    Ok("Of() of it is lexical only, marked network: " + net, probe.Network && !probe.HasId && probe.Final == null);
+                    FileIdentity.MatchesAny(real, new List<FileIdentity.Probe> { probe });   // a local tab vs a network spelling
+                    FileIdentity.MatchesAny(net, localProbe);                                 // a network tab vs a local target
+                    FileIdentity.SameFile(net, real);
+                    FileIdentity.SameFile(real, net);
+                }
+                bool leaked = false;
+                lock (opened) foreach (var o in opened) if (FileIdentity.IsNetworkPath(o) || o.IndexOf("attacker", StringComparison.OrdinalIgnoreCase) >= 0) leaked = true;
+                Ok("the opener was never asked to open any of them", !leaked, string.Join(" | ", opened.ToArray()));
+                Ok("...while a local path still is opened (the seam is live)", opened.Contains(real));
+                Ok(@"\\?\C:\ and \\.\C:\ on a local drive are not network", !FileIdentity.IsNetworkPath(@"\\?\" + real) && !FileIdentity.IsNetworkPath(@"\\.\" + real));
+            }
+            finally { FileIdentity.Opener = realOpener; }
+
+            Console.WriteLine("-- lexical matching normalises text without I/O (pipeline run 4)");
+            Ok(@"C:\a\..\b\x.clw matches C:\b\x.clw", FileIdentity.LexicalMatch(@"C:\a\..\b\x.clw", new[] { @"C:\b\x.clw" }));
+            Ok(@"C:\b\.\x.clw matches C:\b\x.clw", FileIdentity.LexicalMatch(@"C:\b\.\x.clw", new[] { @"C:\b\x.clw" }));
+            Ok(@"doubled separators and / collapse", FileIdentity.LexicalMatch(@"C:\b\\x.clw", new[] { "C:/b/x.clw" }));
+            Ok(@".. never climbs above the root", FileIdentity.NormalizeText(@"C:\..\..\x.clw") == @"C:\x.clw", FileIdentity.NormalizeText(@"C:\..\..\x.clw"));
+            Ok(@"a UNC root keeps server and share", FileIdentity.NormalizeText(@"\\srv\share\..\x.clw") == @"\\srv\share\x.clw", FileIdentity.NormalizeText(@"\\srv\share\..\x.clw"));
+            Ok(@"a \\?\UNC root keeps server and share", FileIdentity.NormalizeText(@"\\?\UNC\srv\share\a\..\x.clw") == @"\\?\UNC\srv\share\x.clw", FileIdentity.NormalizeText(@"\\?\UNC\srv\share\a\..\x.clw"));
+            Ok(@"a \\?\C: root is kept", FileIdentity.NormalizeText(@"\\?\C:\a\..\x.clw") == @"\\?\C:\x.clw", FileIdentity.NormalizeText(@"\\?\C:\a\..\x.clw"));
+            Ok(@"different files still differ", !FileIdentity.LexicalMatch(@"C:\a\x.clw", new[] { @"C:\b\x.clw" }));
+            Ok(@"case does not matter", FileIdentity.LexicalMatch(@"c:\B\X.CLW", new[] { @"C:\b\x.clw" }));
+
             Console.WriteLine("-- junction (mklink /J)");
             if (Cmd("mklink /J \"" + junction + "\" \"" + Path.Combine(root, "src") + "\"") == 0 && Directory.Exists(junction))
             {
