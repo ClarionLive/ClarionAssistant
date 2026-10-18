@@ -3153,6 +3153,12 @@ COMMON QUERIES:
                 {
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    // GH #205 pipeline run 3 (security LOW): this returns buffer TEXT, so it is read-gated by the #266
+                    // path policy like read_file. A refusal is returned as is; the standalone's lsp_diagnostics then
+                    // checks the file on disk and says why (IdeLiveTextClient: "the IDE refused").
+                    string liveChecked;
+                    string liveRefused = McpPathGate.GatePath("get_live_text", filePath, PathAccess.Read, _workspace, out liveChecked);
+                    if (liveRefused != null) return liveRefused;
                     var provider = SharedLspBridge.LiveTextProvider;
                     SharedLspBridge.LiveText live = null;
                     if (provider != null)
@@ -3211,15 +3217,18 @@ COMMON QUERIES:
                         // "this IDE could not be asked" - never as permission to write.
                         string checkedPath;
                         string refused = McpPathGate.GatePath("editor_tab_sync", filePath, PathAccess.Read, _workspace, out checkedPath);
-                        // GH #205 pipeline run 2: with a workspace, a refusal means "outside this IDE's roots" (a second IDE
-                        // on another solution): the writer notes it. With NO workspace it is a mis-wired host whose policy
-                        // refuses everything: a failed check, which refuses the write rather than passing silently.
-                        if (refused != null)
-                            return OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, OutOfScope = _workspace != null, Reason = refused });
-                        var check = OpenTabGuard.LocalCheck;
-                        TabProbe p;
-                        try { p = check != null ? check(spellings) : null; }
-                        catch (Exception ex) { p = new TabProbe { Reachable = false, Reason = "the editor lookup failed: " + ex.Message }; }
+                        // GH #205 pipeline run 3: the gate's verdict does NOT stop the tab lookup (the IDE's roots and the
+                        // writer's differ). A refused path is looked up by name only; out of scope only with no matching
+                        // tab, an "outside every allowed root" refusal and a solution open; else a failed check.
+                        bool hasSolution = false;
+                        try
+                        {
+                            string sln = _workspace != null ? _workspace.CurrentSolutionPath : null;
+                            hasSolution = !string.IsNullOrEmpty(sln) && File.Exists(sln);
+                        }
+                        catch { }
+                        var p = OpenTabGuard.CheckGated(refused, spellings, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
+                            note => McpPathAudit.Write("editor_tab_sync", "LOOKUP", filePath, note));
                         return OpenTabGuard.CheckToWire(p);
                     }
                     if (action == "reload")

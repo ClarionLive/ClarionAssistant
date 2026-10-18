@@ -922,27 +922,54 @@ namespace ClarionAssistant.McpServer
                     failures.Add("the call-back endpoint did not answer a tab check for a solution file (Reachable=" + answered.Reachable
                                  + ", " + (answered.Reason ?? answered.Kind) + ") - every write would go ahead unchecked");
 
-                // A file OUTSIDE that IDE's solution: the gate refuses it, and with a workspace in place that is "out of
-                // scope" (a second IDE on another solution), which the writer only notes - not a failed check.
-                var outside = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
-                    withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object>
-                        { { "file_path", Path.Combine(Path.GetTempPath(), "ca-selftest-outside-205.clw") }, { "action", "check" } })
-                        as Dictionary<string, object>, "selftest");
+                // Pipeline run 3: files OUTSIDE that IDE's roots. The gate refuses them, but the tab lookup still runs, by
+                // name only: a dirty tab holding one must be answered (the writer then refuses), and only with no tab is
+                // it "out of scope" (a second IDE on another solution), which the writer notes.
+                string dirtyOutside = Path.Combine(Path.GetTempPath(), "ca-selftest-outside-dirty-205.clw");
+                string cleanOutside = Path.Combine(Path.GetTempPath(), "ca-selftest-outside-205.clw");
+                ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical = paths => new ClarionAssistant.Services.TabProbe
+                {
+                    Reachable = true,
+                    Kind = paths.Contains(dirtyOutside) ? ClarionAssistant.Services.OpenTabGuard.KindNative : ClarionAssistant.Services.OpenTabGuard.KindNone,
+                    Dirty = paths.Contains(dirtyOutside)
+                };
+                Func<ClarionAssistant.Services.McpToolRegistry, string, ClarionAssistant.Services.TabProbe> ask = (reg, f) =>
+                    ClarionAssistant.Services.OpenTabGuard.CheckFromWire(reg.ExecuteTool("editor_tab_sync",
+                        new Dictionary<string, object> { { "file_path", f }, { "action", "check" } }) as Dictionary<string, object>, "selftest");
+
+                var dirty = ask(withWs, dirtyOutside);
+                if (!dirty.Reachable || dirty.Kind != ClarionAssistant.Services.OpenTabGuard.KindNative || !dirty.Dirty)
+                    failures.Add("a DIRTY tab holding a file outside the IDE's roots was not reported (Reachable=" + dirty.Reachable
+                                 + ", " + (dirty.Reason ?? dirty.Kind) + ") - the write would go under it");
+                var outside = ask(withWs, cleanOutside);
                 if (outside.Reachable || !outside.OutOfScope || outside.Answered)
-                    failures.Add("a file outside the IDE's solution is not reported as out of scope (Reachable=" + outside.Reachable
+                    failures.Add("a file outside the IDE's roots with no tab is not reported as out of scope (Reachable=" + outside.Reachable
                                  + ", OutOfScope=" + outside.OutOfScope + ") - writes outside a running IDE's solution would be refused");
+
+                var noSln = ClarionAssistant.Services.McpToolRegistry.BuildIdeCallbackRegistry(new GateProbeEditorService(),
+                    new ClarionAssistant.Services.ClarionClassParser(), new SelfTestWorkspace(null), null);
+                var noSlnAnswer = ask(noSln, cleanOutside);
+                if (noSlnAnswer.Reachable || !noSlnAnswer.Answered || noSlnAnswer.OutOfScope)
+                    failures.Add("an IDE with NO solution open answered 'out of scope' or 'not open' for a refused file - it cannot vouch for it");
+
+                // Pipeline run 3 (security LOW): get_live_text returns buffer TEXT, so it is read-gated like read_file.
+                var liveOut = withWs.ExecuteTool("get_live_text", new Dictionary<string, object> { { "file_path", cleanOutside } }) as string;
+                if (liveOut == null || !liveOut.StartsWith("Error: get_live_text refused by the Clarion Assistant path policy", StringComparison.Ordinal))
+                    failures.Add("get_live_text answered for a file outside the IDE's roots: " + (liveOut ?? "(a JSON answer)"));
+                var liveIn = withWs.ExecuteTool("get_live_text", new Dictionary<string, object> { { "file_path", module } });
+                if (liveIn is string && ((string)liveIn).StartsWith("Error", StringComparison.Ordinal))
+                    failures.Add("get_live_text refused a file inside the IDE's solution: " + liveIn);
 
                 var noWs = ClarionAssistant.Services.McpToolRegistry.BuildIdeCallbackRegistry(new GateProbeEditorService(),
                     new ClarionAssistant.Services.ClarionClassParser(), null, null);
-                var refused = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
-                    noWs.ExecuteTool("editor_tab_sync", args) as Dictionary<string, object>, "selftest");
-                if (refused.Reachable)
-                    failures.Add("negative control: with NO workspace the check still answered - this check cannot tell a broken host from a working one");
-                else if (!refused.Answered || refused.OutOfScope)
+                var refused = ask(noWs, module);
+                if (refused.Reachable && refused.Kind == ClarionAssistant.Services.OpenTabGuard.KindNone)
+                    failures.Add("negative control: with NO workspace the check answered 'not open' - this check cannot tell a broken host from a working one");
+                else if (!refused.Reachable && (!refused.Answered || refused.OutOfScope))
                     failures.Add("a refused check with no workspace reads as 'no IDE' or 'out of scope': the write tools would only note it and write");
 
                 if (failures.Count == tabFailuresBefore)
-                    Console.WriteLine("  ok  IDE call-back endpoint answers a solution file's tab check (and refuses, loudly, with no workspace)");
+                    Console.WriteLine("  ok  IDE call-back endpoint: solution file answered; dirty tab outside its roots answered; out of scope only with no tab; no solution or no workspace = failed check");
             }
             catch (Exception ex)
             {
@@ -951,6 +978,7 @@ namespace ClarionAssistant.McpServer
             finally
             {
                 ClarionAssistant.Services.OpenTabGuard.LocalCheck = savedCheck;
+                ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical = null;
                 try { if (tabRoot != null) Directory.Delete(tabRoot, true); } catch { }
             }
 

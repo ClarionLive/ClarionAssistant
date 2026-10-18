@@ -28,7 +28,8 @@ namespace ClarionAssistant.Services
     public static class IdeTabClient
     {
         public const int CheckBudgetMs = 3000;
-        /// <summary>Longer: a reload re-reads and re-highlights the file on the IDE's UI thread (NativeTabSync waits 8 s).</summary>
+        /// <summary>Longer: a reload re-reads and re-highlights the file on the IDE's UI thread. NativeTabSync's two UI
+        /// waits total 1.5 + 7.5 = 9 s, so the IDE's own "did not answer" arrives inside this budget with 1 s for HTTP.</summary>
         public const int ReloadBudgetMs = 10000;
 
         public static Action<string> Log;

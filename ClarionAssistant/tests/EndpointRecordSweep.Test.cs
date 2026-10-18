@@ -55,6 +55,20 @@ static class EndpointRecordSweepTest
             Ok("an unreadable record (maybe mid-replace) is left alone", File.Exists(garbled));
             Ok("the new record is written", File.Exists(Path.Combine(dir, me.Id + "-19405.json")));
             Ok("a sweep with nothing stale deletes nothing", IdeEndpointRecord.SweepStale() == 0);
+
+            // Pipeline run 3: a record whose pid/port is not a number used to THROW out of discovery (Convert.ToInt32
+            // outside any try), so one bad file hid every IDE.
+            string badLive = Path.Combine(dir, me.Id + "-19406.json");
+            File.WriteAllText(badLive, "{\"pid\":\"abc\",\"port\":1e12,\"token\":\"t\",\"startTime\":\"" + me.StartTime.ToUniversalTime().ToString("o")
+                + "\",\"writtenAt\":\"" + DateTime.UtcNow.ToString("o") + "\"}");
+            string badDead = Path.Combine(dir, dead + "-19407.json");
+            File.WriteAllText(badDead, "{\"pid\":\"abc\",\"port\":\"x\",\"token\":\"t\"}");
+            string reason;
+            System.Collections.Generic.List<IdeEndpointRecord.Endpoint> eps = null;
+            try { eps = IdeEndpointRecord.DiscoverAll(out reason); } catch (Exception ex) { reason = "THREW " + ex.GetType().Name; }
+            Ok("a record with a non-numeric pid/port does not abort discovery", eps != null && eps.Exists(e => e.Pid == me.Id), eps == null ? "threw" : eps.Count + " found");
+            Ok("...it is skipped but KEPT while its file name's pid is running (not provably stale)", File.Exists(badLive));
+            Ok("...and deleted once its file name's pid is not running (provably stale)", !File.Exists(badDead));
         }
         catch (Exception ex) { fail++; Console.WriteLine("  [FAIL] harness threw: " + ex); }
         finally { try { Directory.Delete(root, true); } catch { } }

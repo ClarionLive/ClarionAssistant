@@ -46,7 +46,11 @@ namespace ClarionAssistant
     internal static class NativeTabSync
     {
         internal const int CheckWaitMs = 2000;
-        internal const int ReloadWaitMs = 8000;
+        // Pipeline run 3: a reload's two UI calls (snapshot, then reload) total 1.5 + 7.5 = 9 s, inside the standalone's
+        // 10 s ReloadBudgetMs (IdeTabClient) with 1 s left for the HTTP round trip, so a slow reload is reported by the
+        // IDE ("did not answer within 7 s") instead of being cut off by the client as a bare timeout.
+        internal const int ReloadSnapshotWaitMs = 1500;
+        internal const int ReloadWaitMs = 7500;
         private static SynchronizationContext _ui;
 
         /// <summary>One open text-editor view, as read on the UI thread.</summary>
@@ -64,6 +68,7 @@ namespace ClarionAssistant
         {
             _ui = SynchronizationContext.Current;
             OpenTabGuard.LocalCheck = Check;
+            OpenTabGuard.LocalCheckLexical = CheckLexical;
             OpenTabGuard.LocalReload = Reload;
             // The addin serving write_file itself (no standalone exe): ask this IDE directly.
             OpenTabGuard.Probe = paths => new List<TabProbe> { Check(paths) };
@@ -71,6 +76,22 @@ namespace ClarionAssistant
         }
 
         internal static TabProbe Check(IList<string> paths)
+        {
+            return CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check");
+        }
+
+        /// <summary>
+        /// Pipeline run 3: the check for a path the #266 gate REFUSED. The tab lookup still runs - a refused path can
+        /// still be open in a dirty tab, and writing under it is the #205 data loss - but by path TEXT only
+        /// (FileIdentity.Lexical over the full paths): no file handle is opened and no I/O touches the refused path.
+        /// Answers kind + dirty of a matching tab, or kind none.
+        /// </summary>
+        internal static TabProbe CheckLexical(IList<string> paths)
+        {
+            return CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical");
+        }
+
+        private static TabProbe CheckWith(IList<string> paths, Func<List<TabSnap>, List<TabSnap>> match, string label)
         {
             TabProbe answer;
             List<TabSnap> snaps = null;
@@ -86,11 +107,11 @@ namespace ClarionAssistant
                 };
             else
             {
-                try { answer = Classify(Match(snaps, Probes(paths))); }
+                try { answer = Classify(match(snaps)); }
                 catch (Exception ex) { answer = new TabProbe { Reachable = false, Answered = true, Reason = "the editor lookup failed: " + ex.Message }; }
             }
             answer.Ide = "IDE " + System.Diagnostics.Process.GetCurrentProcess().Id;
-            MonacoSpikeLog.Write("[tab-sync] check " + Join(paths) + " -> " + (answer.Reachable
+            MonacoSpikeLog.Write("[tab-sync] " + label + " " + Join(paths) + " -> " + (answer.Reachable
                 ? answer.Kind + (answer.Dirty ? " dirty" : " clean") : "unreachable: " + answer.Reason));
             return answer;
         }
@@ -100,9 +121,9 @@ namespace ClarionAssistant
             TabReload answer = null;
             List<TabSnap> snaps = null;
             Exception error;
-            var outcome = UiThreadCall.Run(_ui, () => { snaps = SnapshotOnUi(); }, CheckWaitMs, out error);
+            var outcome = UiThreadCall.Run(_ui, () => { snaps = SnapshotOnUi(); }, ReloadSnapshotWaitMs, out error);
             if (outcome != UiThreadCall.Outcome.Ran)
-                answer = new TabReload { Reason = Why(outcome, error, CheckWaitMs) };
+                answer = new TabReload { Reason = Why(outcome, error, ReloadSnapshotWaitMs) };
             else
             {
                 List<TabSnap> natives = null;
@@ -131,7 +152,9 @@ namespace ClarionAssistant
             switch (o)
             {
                 case UiThreadCall.Outcome.Ran: return null;
-                case UiThreadCall.Outcome.TimedOut: return "the IDE's UI thread did not answer within " + (waitMs / 1000) + " s";
+                case UiThreadCall.Outcome.TimedOut:
+                    return "the IDE's UI thread did not answer within "
+                        + (waitMs / 1000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " s";
                 case UiThreadCall.Outcome.NoUiThread: return "the IDE's editor check is not registered";
                 default: return "the editor lookup failed: " + (error != null ? error.Message : "unknown error");
             }
@@ -152,6 +175,29 @@ namespace ClarionAssistant
             var matched = new List<TabSnap>();
             if (snaps != null) foreach (var s in snaps) if (FileIdentity.MatchesAny(s.File, probes)) matched.Add(s);
             return matched;
+        }
+
+        // Path text only, for a path the policy refused. Not even Path.GetFullPath: on .NET Framework it expands 8.3
+        // segments with GetLongPathName, which touches the disk. Both sides are absolute already (a tab's FileName; the
+        // standalone sends gated or caller-given absolute paths), so separators and case are all that need evening out.
+        private static List<TabSnap> MatchLexical(List<TabSnap> snaps, IList<string> paths)
+        {
+            var wanted = new List<string>();
+            if (paths != null) foreach (var p in paths) if (!string.IsNullOrEmpty(p)) wanted.Add(FullText(p));
+            var matched = new List<TabSnap>();
+            if (snaps != null)
+                foreach (var s in snaps)
+                {
+                    if (string.IsNullOrEmpty(s.File)) continue;
+                    string f = FullText(s.File);
+                    foreach (var w in wanted) if (FileIdentity.Lexical(f, w)) { matched.Add(s); break; }
+                }
+            return matched;
+        }
+
+        private static string FullText(string p)
+        {
+            return p.Replace('/', '\\');
         }
 
         private static TabProbe Classify(List<TabSnap> matched)
