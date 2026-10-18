@@ -24,8 +24,17 @@ namespace ClarionAssistant.Services
         public string Refusal(string tool, string input)
         {
             return "Error: " + tool + " refused by the Clarion Assistant path policy (GH #266): '" + (input ?? "") + "' - "
-                 + Reason + ". " + Hint;
+                 + Reason + ". " + Hint + " " + WorkaroundNote;
         }
+
+        /// <summary>
+        /// On EVERY refusal (adversary run 2): Mcp.AllowedRoots lives in settings.txt, which the model cannot touch, so a
+        /// hint that only names it leaves the model looking for another way in. Name the sanctioned ways, and the
+        /// unsanctioned one.
+        /// </summary>
+        public const string WorkaroundNote =
+            "Use Claude Code's own Edit/Write tools for this file (they ask the developer), or ask the developer to add the folder to " +
+            "Mcp.AllowedRoots. Do not use run_command or other tools to work around this refusal.";
     }
 
     /// <summary>
@@ -56,6 +65,12 @@ namespace ClarionAssistant.Services
         /// <summary>Folders an AUTOMATIC root may never equal or contain (%APPDATA%, %LOCALAPPDATA%, %PROGRAMDATA%,
         /// %WINDIR%, Program Files...). The user profile is always added. Only Mcp.AllowedRoots may name one.</summary>
         public List<string> ProtectedDirs = new List<string>();
+        /// <summary>Folders an automatic PROJECT or .red root may not even sit inside (%APPDATA%, %LOCALAPPDATA%,
+        /// %PROGRAMDATA%): DPAPI keys, gh tokens and browser profiles live there (security gate run 2).</summary>
+        public List<string> ConfinedDirs = new List<string>();
+        /// <summary>Every file the .red parser actually loaded, {include}d ones too, whatever their extension:
+        /// boundary files, never written by the MCP tools.</summary>
+        public List<string> RedFiles = new List<string>();
     }
 
     /// <summary>
@@ -133,6 +148,14 @@ namespace ClarionAssistant.Services
         /// <summary>File-name wildcards that may be read but never written: the files that DEFINE the roots.</summary>
         public static readonly string[] BoundaryFilePatterns = { "*.sln", "*.cwproj", "*.red", "clarion-assistant.json", "ClarionProperties.xml" };
 
+        /// <summary>Files that run commands when a tool reads its config: git (core.fsmonitor, hooks, filters), MCP server
+        /// lists, editor tasks. Readable; never written by the MCP tools (security gate run 2 MEDIUM).</summary>
+        public static readonly string[] ExecConfigFilePatterns = { ".mcp.json", ".gitattributes", ".gitmodules", "*.code-workspace" };
+        public static readonly string[] VsCodeExecFiles = { "tasks.json", "settings.json", "launch.json" };
+
+        private const string ExecConfigHint =
+            "This file can make git, an MCP client or an editor run commands, so the Clarion Assistant MCP tools never write it.";
+
         private const string BoundaryHint =
             "These files define which folders the Clarion Assistant file tools may reach, so the MCP tools never write them. " +
             "The developer edits them, or Claude Code's own Edit tool does, which the developer's permission rules govern.";
@@ -163,11 +186,13 @@ namespace ClarionAssistant.Services
         private readonly List<string> _ignored = new List<string>();
         private readonly List<string> _skipped = new List<string>();
         private readonly List<string> _protected = new List<string>();
+        private readonly List<string> _confined = new List<string>();
         private readonly Dictionary<char, bool> _networkDrive = new Dictionary<char, bool>();
         private string _usersDir, _userProfile, _publicProfile;
 
         private static readonly List<Regex> DeniedLeafRegexes = LeafRegexes(DeniedFileNamePatterns);
         private static readonly List<Regex> BoundaryLeafRegexes = LeafRegexes(BoundaryFilePatterns);
+        private static readonly List<Regex> ExecLeafRegexes = LeafRegexes(ExecConfigFilePatterns);
 
         public IList<Root> Roots { get { return _roots.AsReadOnly(); } }
         /// <summary>Setting entries that were not usable (relative, UNC, invalid), each as "entry (reason)".</summary>
@@ -194,6 +219,21 @@ namespace ClarionAssistant.Services
             string profile = Lexical(inputs.UserProfile);
             if (profile != null) p.AddProtected(profile);
             if (inputs.ProtectedDirs != null) foreach (string d in inputs.ProtectedDirs) p.AddProtected(Lexical(d));
+            if (inputs.ConfinedDirs != null)
+                foreach (string d in inputs.ConfinedDirs)
+                {
+                    string c = Lexical(d);
+                    if (c == null) continue;
+                    p._confined.Add(c);
+                    string cr = IsNetworkPathStatic(c) ? null : ResolveForRoot(c);
+                    if (cr != null && !Same(cr, c)) p._confined.Add(cr);
+                }
+            if (inputs.RedFiles != null)
+                foreach (string f in inputs.RedFiles)
+                {
+                    string rf = Lexical(f);
+                    if (rf != null) p.AddBuiltInPrefix(rf, rf + " (a file the .red loads)", true, BoundaryHint);
+                }
 
             // ---- deny first: roots that fall inside a denied area are dropped below
             if (profile != null)
@@ -240,11 +280,12 @@ namespace ClarionAssistant.Services
 
             // ---- roots. Writable only where the developer's own solution (or setting) says so.
             string sol = Lexical(inputs.SolutionDir);
+            string solRes = sol == null || IsNetworkPathStatic(sol) ? sol : (ResolveForRoot(sol) ?? sol);
             p.AddRoot(inputs.SolutionDir, "solution", true, false);
             if (inputs.ProjectDirs != null)
-                foreach (string d in inputs.ProjectDirs) p.AddRoot(d, "project", InsideSolution(d, sol), false);
+                foreach (string d in inputs.ProjectDirs) p.AddRoot(d, "project", InsideSolution(d, sol, solRes), false);
             if (inputs.ClarionRoots != null) foreach (string d in inputs.ClarionRoots) p.AddRoot(d, "clarion", false, false);
-            if (inputs.RedPaths != null) foreach (string d in inputs.RedPaths) p.AddRoot(d, "red", InsideSolution(d, sol), false);
+            if (inputs.RedPaths != null) foreach (string d in inputs.RedPaths) p.AddRoot(d, "red", InsideSolution(d, sol, solRes), false);
             foreach (string entry in SplitList(inputs.ExtraAllowedRoots)) p.AddRoot(entry, "setting", true, true);
             p.AddRoot(inputs.CaDataDir, "ca-data", false, false);
 
@@ -255,10 +296,18 @@ namespace ClarionAssistant.Services
             return p;
         }
 
-        private static bool InsideSolution(string dir, string sol)
+        /// <summary>
+        /// Writable only when BOTH the typed path and its link-resolved form are inside the solution's resolved folder
+        /// (security gate run 2 MEDIUM: a junction inside the solution, named by the .red or .sln, pointing outside it,
+        /// was a writable root by its typed name alone).
+        /// </summary>
+        private static bool InsideSolution(string dir, string sol, string solRes)
         {
             string lex = Lexical(dir);
-            return sol != null && lex != null && IsUnder(lex, sol);
+            if (sol == null || lex == null || !IsUnder(lex, sol)) return false;
+            if (IsNetworkPathStatic(lex)) return IsUnder(lex, solRes ?? sol);
+            string res = ResolveForRoot(lex);
+            return res != null && IsUnder(res, solRes ?? sol);
         }
 
         private void AddProtected(string full)
@@ -270,11 +319,11 @@ namespace ClarionAssistant.Services
             if (res != null && !_protected.Contains(res)) _protected.Add(res);
         }
 
-        private void AddBuiltInPrefix(string full, string text, bool writeOnly)
+        private void AddBuiltInPrefix(string full, string text, bool writeOnly, string hint = null)
         {
-            _deny.Add(new DenyRule { Prefix = full, BuiltIn = true, WriteOnly = writeOnly, Text = text });
+            _deny.Add(new DenyRule { Prefix = full, BuiltIn = true, WriteOnly = writeOnly, Text = text, Hint = hint });
             string res = ResolveForRoot(full);   // the folder may itself be a junction (OneDrive, moved profile)
-            if (res != null && !Same(res, full)) _deny.Add(new DenyRule { Prefix = res, BuiltIn = true, WriteOnly = writeOnly, Text = text });
+            if (res != null && !Same(res, full)) _deny.Add(new DenyRule { Prefix = res, BuiltIn = true, WriteOnly = writeOnly, Text = text, Hint = hint });
         }
 
         /// <summary>A wildcard under <paramref name="baseDir"/>, for the lexical AND the link-resolved form of the base
@@ -331,7 +380,10 @@ namespace ClarionAssistant.Services
             if (!explicitSetting)
             {
                 // An automatic root comes from files in the solution (.sln, .cwproj, .red, clarion-assistant.json).
-                string hit = IsDriveRoot(lex) || IsDriveRoot(res) ? "a whole drive" : (ContainsProtected(lex) ?? ContainsProtected(res));
+                // A drive-root NAME is fine when it resolves to a folder (a SUBST drive for the solution, debugger LOW);
+                // a drive root it really is, or one that does not resolve elsewhere, is not.
+                bool wholeDrive = IsDriveRoot(res) || (IsDriveRoot(lex) && Same(res, lex));
+                string hit = wholeDrive ? "a whole drive" : (ContainsProtected(lex) ?? ContainsProtected(res));
                 if (hit != null)
                 {
                     if (source == "solution")
@@ -339,6 +391,15 @@ namespace ClarionAssistant.Services
                     _skipped.Add(lex + " (" + source + ": equals or contains protected folder " + hit + ")");
                     return;
                 }
+                // Project and .red roots may not even sit INSIDE %APPDATA% / %LOCALAPPDATA% / %PROGRAMDATA% (security gate
+                // run 2 MEDIUM: a hostile .sln opened %APPDATA%\Microsoft\Protect read-only).
+                if (source == "project" || source == "red")
+                    foreach (string c in _confined)
+                        if (IsUnder(lex, c) || IsUnder(res, c))
+                        {
+                            _skipped.Add(lex + " (" + source + ": inside " + c + "; only " + AllowedRootsSetting + " may name a folder there)");
+                            return;
+                        }
             }
             foreach (var r in _roots)
                 if (Same(r.Lexical, lex) && Same(r.Resolved, res))
@@ -490,6 +551,16 @@ namespace ClarionAssistant.Services
                 for (int i = 0; i < BoundaryLeafRegexes.Count; i++)
                     if (BoundaryLeafRegexes[i].IsMatch(leaf))
                         return new DenyRule { BuiltIn = true, WriteOnly = true, Text = BoundaryFilePatterns[i] + " (writes)", Hint = BoundaryHint };
+                if (HasSegment(full, ".git"))
+                    return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\.git\\* (writes)", Hint = ExecConfigHint };
+                for (int i = 0; i < ExecLeafRegexes.Count; i++)
+                    if (ExecLeafRegexes[i].IsMatch(leaf))
+                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = ExecConfigFilePatterns[i] + " (writes)", Hint = ExecConfigHint };
+                string parent = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(full) ?? "") ?? "";
+                if (Same(parent, ".vscode"))
+                    foreach (string v in VsCodeExecFiles)
+                        if (Same(leaf, v))
+                            return new DenyRule { BuiltIn = true, WriteOnly = true, Text = ".vscode\\" + v + " (writes)", Hint = ExecConfigHint };
                 if (HasWriteDeniedClaudeSegment(full))
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\.claude\\* (writes)" };
             }
@@ -806,6 +877,67 @@ namespace ClarionAssistant.Services
                 return s;
             }
             finally { CloseHandle(h); }
+        }
+    }
+
+    /// <summary>
+    /// One built policy, reused while nothing it was built from has changed (code review run 2: every gated call re-read
+    /// each project's .red and resolved ~8 protected folders). The caller supplies a SIGNATURE of the inputs - the .sln
+    /// and every loaded .red with their timestamps, the settings values, the env vars - and the policy is rebuilt when it
+    /// changes, or after <see cref="MaxAge"/> regardless (a junction re-pointed under an unchanged name changes no
+    /// timestamp). Fail closed: a null signature (some input could not be read) is never cached, and a build that throws
+    /// caches nothing.
+    /// </summary>
+    public sealed class PolicyCache
+    {
+        private readonly object _lock = new object();
+        private string _sig;
+        private McpPathPolicy _policy;
+        private DateTime _builtUtc;
+
+        public TimeSpan MaxAge = TimeSpan.FromSeconds(30);
+        /// <summary>How many times a policy was actually built (for the harness).</summary>
+        public int Builds { get; private set; }
+
+        public McpPathPolicy Get(string signature, Func<McpPathPolicy> build, DateTime nowUtc)
+        {
+            if (signature != null)
+                lock (_lock)
+                    if (_policy != null && _sig == signature && nowUtc >= _builtUtc && nowUtc - _builtUtc < MaxAge)
+                        return _policy;
+            McpPathPolicy p = build();
+            lock (_lock)
+            {
+                Builds++;
+                if (signature != null) { _sig = signature; _policy = p; _builtUtc = nowUtc; }
+                else { _sig = null; _policy = null; }
+            }
+            return p;
+        }
+
+        /// <summary>The parts joined unambiguously; null when any part is null (an input that could not be read).</summary>
+        public static string Signature(IList<string> parts)
+        {
+            var sb = new StringBuilder();
+            foreach (string s in parts)
+            {
+                if (s == null) return null;
+                sb.Append(s.Length).Append(':').Append(s).Append('|');
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>"path@ticks/length", "path@dir" or "path@absent"; null when the file system could not be asked.</summary>
+        public static string FileStamp(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return "@none";
+            try
+            {
+                var fi = new FileInfo(path);
+                if (fi.Exists) return path + "@" + fi.LastWriteTimeUtc.Ticks + "/" + fi.Length;
+                return path + (Directory.Exists(path) ? "@dir" : "@absent");
+            }
+            catch { return null; }
         }
     }
 }

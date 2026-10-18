@@ -1525,12 +1525,13 @@ IdeOnly = true,
                 Name = "export_txa",
 IdeOnly = true,
                 Description = "Export the ENTIRE current Clarion app to a TXA (Text Application) file. This always exports all procedures. To work with individual procedure code, use open_procedure_embed instead. " +
-                              "Write the file inside the solution folder (e.g. a subfolder of it) so read_file can open it afterwards: " +
-                              "%TEMP% is OUTSIDE the file tools' read scope (GH #266) unless the developer adds it to Mcp.AllowedRoots.",
+                              "Write the file to a subfolder of the solution that is in .gitignore (e.g. <solution>\\exports\\, not under .claude) " +
+                              "so read_file can open it afterwards and it is not committed by accident: %TEMP% is OUTSIDE the file tools' read " +
+                              "scope (GH #266) unless the developer adds it to Mcp.AllowedRoots.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "path", "Absolute path for the output TXA file - inside the solution folder, not %TEMP%, so read_file can open it" }
+                        { "path", "Absolute path for the output TXA file - in a git-ignored subfolder of the solution (not %TEMP%, not under .claude), so read_file can open it" }
                     },
                     new[] { "path" }),
                 RequiresUiThread = true,
@@ -1666,13 +1667,14 @@ IdeOnly = true,
                 Name = "export_dctx",
 IdeOnly = true,
                 Description = "Export the currently open Clarion data dictionary to a .dctx text file. The dictionary must be open in the IDE (use open_dictionary first). The .dctx format is a human-readable text representation of the dictionary. " +
-                              "Leave path empty, or write the file inside the solution folder (e.g. a subfolder of it), so read_file can open it " +
-                              "afterwards: the default (the .dct's own folder) is inside that scope when the dictionary lives in the solution. " +
+                              "Leave path empty, or write the file to a subfolder of the solution that is in .gitignore (e.g. <solution>\\exports\\, " +
+                              "not under .claude), so read_file can open it afterwards and it is not committed by accident: the default (the .dct's " +
+                              "own folder) is inside that scope when the dictionary lives in the solution. " +
                               "%TEMP% is OUTSIDE the file tools' read scope (GH #266) unless the developer adds it to Mcp.AllowedRoots.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "path", "Absolute path for the output .dctx file (optional — defaults to same folder as the .dct with .dctx extension). Keep it inside the solution folder, not %TEMP%, so read_file can open it." }
+                        { "path", "Absolute path for the output .dctx file (optional — defaults to same folder as the .dct with .dctx extension). Keep it in a git-ignored subfolder of the solution (not %TEMP%, not under .claude), so read_file can open it." }
                     }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -6432,13 +6434,17 @@ IdeOnly = true,
             "Scoped by the Clarion Assistant path policy: only paths inside the allowed roots are accepted. Readable: the open solution " +
             "and its project folders, the Clarion root and IDE install, the .red search folders, Clarion Assistant's own data folder and " +
             "the Mcp.AllowedRoots setting. WRITABLE: only the solution folder (and Mcp.AllowedRoots) - the Clarion root, .red and project " +
-            "folders outside the solution are read-only, and .sln/.cwproj/.red/clarion-assistant.json/ClarionProperties.xml are never " +
-            "written by these tools (they define the scope; the developer edits them). UNC/network paths (unless Mcp.AllowedRoots names " +
+            "folders outside the solution are read-only, and .sln/.cwproj/.red (and files a .red includes)/clarion-assistant.json/" +
+            "ClarionProperties.xml are never written by these tools (they define the scope; the developer edits them), nor are files " +
+            "that make tools run commands (.git\\*, .gitattributes, .gitmodules, .mcp.json, .vscode\\tasks|settings|launch.json, " +
+            "*.code-workspace). UNC/network paths (unless Mcp.AllowedRoots names " +
             "them), .ssh/.aws folders, credential files, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
             "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable, except a " +
             "checkout under .claude\\worktrees. A refused path " +
             "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy' that names the setting which would " +
-            "allow it - report that to the developer; do not retry with another spelling of the same path.";
+            "allow it - report that to the developer; do not retry with another spelling of the same path. " +
+            "Use Claude Code's own Edit/Write tools for such a file (they ask the developer), or ask the developer to add the folder " +
+            "to Mcp.AllowedRoots; never run_command or another tool to work around a refusal.";
 
         /// <summary>Appended to the Everything tools' descriptions.</summary>
         private const string SearchScopeNote =

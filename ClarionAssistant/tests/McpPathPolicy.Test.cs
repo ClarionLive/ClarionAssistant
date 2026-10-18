@@ -405,6 +405,123 @@ static class McpPathPolicyTest
             Denied(p, "'...' segment", sol + "\\...\\Main.clw");
             Allowed(p, "'.' and '..' segments still normalise", sol + "\\.\\sub\\..\\Main.clw");
 
+            Console.WriteLine("=== security gate run 2 ===");
+            // 1. A junction INSIDE the solution, named by the .red, pointing OUTSIDE it: readable root, never writable.
+            string inLink = Path.Combine(sol, "LinkedLibs");
+            if (MakeJunction(inLink, outside))
+            {
+                var linked = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, RedPaths = new List<string> { inLink }, UserProfile = me });
+                Denied(linked, "junction in the solution to outside it: not writable through the .red root", Path.Combine(inLink, "new.clw"), PathAccess.Write);
+                Denied(linked, "...nor by its real path", Path.Combine(outside, "new.clw"), PathAccess.Write);
+                Allowed(linked, "...still readable (the .red names it)", Path.Combine(inLink, "secret.txt"));
+                try { Directory.Delete(inLink); } catch { }
+            }
+            else Ok("could create the in-solution junction", false, "mklink /J failed");
+            string inSub = Mk(sol, "Libs");
+            Allowed(McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, RedPaths = new List<string> { inSub }, UserProfile = me }),
+                "a plain .red folder inside the solution stays writable", Path.Combine(inSub, "x.inc"), PathAccess.Write);
+
+            // 2. Automatic project / .red roots may not sit INSIDE %APPDATA% / %LOCALAPPDATA% / %PROGRAMDATA%.
+            string fakeRoaming = Mk(me, "AppData", "Roaming");
+            string fakeLocal = Mk(me, "AppData", "Local");
+            string protect = Mk(fakeRoaming, "Microsoft", "Protect");
+            string chrome = Mk(fakeLocal, "Google", "Chrome", "User Data");
+            Touch(Path.Combine(protect, "masterkey"));
+            var confined = McpPathPolicy.Build(new PathPolicyInputs
+            {
+                SolutionDir = sol, UserProfile = me,
+                ProjectDirs = new List<string> { protect },
+                RedPaths = new List<string> { chrome },
+                ConfinedDirs = new List<string> { fakeRoaming, fakeLocal }
+            });
+            Denied(confined, ".sln project inside %APPDATA% (Microsoft\\Protect) is not a root", Path.Combine(protect, "masterkey"));
+            Denied(confined, ".red entry inside %LOCALAPPDATA% (Chrome User Data) is not a root", Path.Combine(chrome, "Default", "Cookies"));
+            Ok("...both reported as skipped", ContainsLike(confined.SkippedRoots, protect) && ContainsLike(confined.SkippedRoots, "User Data"));
+            Allowed(McpPathPolicy.Build(new PathPolicyInputs { UserProfile = me, ConfinedDirs = new List<string> { fakeRoaming }, ExtraAllowedRoots = protect }),
+                "...but Mcp.AllowedRoots may name a folder there", Path.Combine(protect, "masterkey"));
+            string jConfined = Path.Combine(root, "JProtect");
+            if (MakeJunction(jConfined, protect))
+            {
+                var viaJc = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = me, RedPaths = new List<string> { jConfined }, ConfinedDirs = new List<string> { fakeRoaming } });
+                Ok("...and a junction into %APPDATA% is caught by its resolved form", ContainsLike(viaJc.SkippedRoots, jConfined));
+                try { Directory.Delete(jConfined); } catch { }
+            }
+            else Ok("could create the confined junction", false, "mklink /J failed");
+
+            // 3. Files that make git / an MCP client / an editor run commands: readable, never written.
+            foreach (string rel in new[] { ".git\\config", ".git\\hooks\\pre-commit", ".mcp.json", ".vscode\\tasks.json", ".vscode\\settings.json",
+                                           ".vscode\\launch.json", ".gitattributes", ".gitmodules", "App.code-workspace", "sub\\.GIT\\config" })
+            {
+                var w = p.Check(Path.Combine(sol, rel), PathAccess.Write);
+                Ok(rel + " write refused", !w.Allowed && w.Hint != null && w.Hint.Contains("run commands"), w.Allowed ? "was allowed" : w.Hint);
+                Allowed(p, rel + " readable", Path.Combine(sol, rel));
+            }
+            Allowed(p, ".gitignore stays writable", Path.Combine(sol, ".gitignore"), PathAccess.Write);
+            Allowed(p, ".vscode\\extensions.json stays writable", Path.Combine(sol, ".vscode", "extensions.json"), PathAccess.Write);
+            Allowed(p, "a settings.json outside .vscode stays writable", Path.Combine(sol, "cfg", "settings.json"), PathAccess.Write);
+
+            // 4. Every refusal names the sanctioned ways round it, and forbids the rest.
+            foreach (var d in new[] { p.Check(Path.Combine(outside, "secret.txt"), PathAccess.Read),
+                                      p.Check(Path.Combine(clarion, "x.tpl"), PathAccess.Write),
+                                      p.Check(Path.Combine(sol, ".ssh", "id_rsa"), PathAccess.Read),
+                                      p.Check(Path.Combine(sol, "x.sln"), PathAccess.Write) })
+            {
+                string text = d.Refusal("write_file", "x");
+                Ok("refusal names Claude Code's Edit/Write tools and forbids run_command: " + d.Reason,
+                    text.Contains("Claude Code's own Edit/Write tools") && text.Contains("Do not use run_command"), text);
+            }
+
+            // 5. A solution at the root of a SUBST drive is a folder, not a whole drive.
+            char free = FreeDriveLetter();
+            if (free != '\0' && Subst(free + ":", sol))
+            {
+                try
+                {
+                    var substSol = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = free + ":\\", UserProfile = me });
+                    Allowed(substSol, "solution at the root of a SUBST drive is a root", free + ":\\Main.clw", PathAccess.Write);
+                    Ok("...and is not reported as a whole drive", substSol.SolutionNote == null, substSol.SolutionNote);
+                }
+                finally { Subst(free + ":", null); }
+            }
+            else Ok("could create a SUBST drive", false, "no free letter or subst failed");
+            var realDrive = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = Path.GetPathRoot(root), UserProfile = me });
+            Ok("a solution at a REAL drive root is still refused", realDrive.Roots.Count == 0 && realDrive.SolutionNote != null, realDrive.SolutionNote);
+
+            // 6. Every file the .red parser loaded is a boundary file, whatever its extension ({include}).
+            string inc = Touch(Path.Combine(sol, "redirect-extra.inc"));
+            var withInc = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = me, RedFiles = new List<string> { Path.Combine(sol, "Clarion120.red"), inc } });
+            var incW = withInc.Check(inc, PathAccess.Write);
+            Ok(".red {include} with a .inc name: write refused as a boundary file", !incW.Allowed && incW.Hint != null && incW.Hint.Contains("define which folders"), incW.Hint);
+            Allowed(withInc, "...still readable", inc);
+            Allowed(withInc, "...another .inc in the solution is writable", Path.Combine(sol, "other.inc"), PathAccess.Write);
+
+            Console.WriteLine("=== policy cache ===");
+            var cache = new PolicyCache();
+            var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            Func<McpPathPolicy> mk = () => McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = me });
+            var c1 = cache.Get("sig-A", mk, t0);
+            var c2 = cache.Get("sig-A", mk, t0.AddSeconds(1));
+            Ok("same signature: the built policy is reused", ReferenceEquals(c1, c2) && cache.Builds == 1, "builds=" + cache.Builds);
+            var c3 = cache.Get("sig-B", mk, t0.AddSeconds(2));
+            Ok("changed signature: rebuilt", !ReferenceEquals(c2, c3) && cache.Builds == 2, "builds=" + cache.Builds);
+            var c4 = cache.Get("sig-B", mk, t0.AddSeconds(2) + cache.MaxAge);
+            Ok("older than MaxAge: rebuilt even with the same signature", !ReferenceEquals(c3, c4) && cache.Builds == 3, "builds=" + cache.Builds);
+            cache.Get(null, mk, t0.AddSeconds(40)); cache.Get(null, mk, t0.AddSeconds(40));
+            Ok("no signature (an input unreadable): never cached", cache.Builds == 5, "builds=" + cache.Builds);
+            bool threw = false;
+            try { cache.Get("sig-C", () => { throw new IOException("boom"); }, t0.AddSeconds(41)); } catch (IOException) { threw = true; }
+            var c6 = cache.Get("sig-C", mk, t0.AddSeconds(41));
+            Ok("a build that throws caches nothing (fail closed)", threw && c6 != null && cache.Builds == 6, "builds=" + cache.Builds);
+            string redFile = Touch(Path.Combine(sol, "Clarion120.red"));
+            string s1 = PolicyCache.Signature(new List<string> { "sln", PolicyCache.FileStamp(redFile) });
+            File.AppendAllText(redFile, "\r\n*.inc = C:\\Elsewhere");
+            File.SetLastWriteTimeUtc(redFile, DateTime.UtcNow.AddMinutes(1));
+            string s2 = PolicyCache.Signature(new List<string> { "sln", PolicyCache.FileStamp(redFile) });
+            Ok("editing a .red changes the signature", s1 != null && s2 != null && s1 != s2);
+            Ok("a null part makes the whole signature null", PolicyCache.Signature(new List<string> { "a", null }) == null);
+            Ok("signature parts cannot run together ('ab'+'c' vs 'a'+'bc')",
+                PolicyCache.Signature(new List<string> { "ab", "c" }) != PolicyCache.Signature(new List<string> { "a", "bc" }));
+
             Console.WriteLine("=== Everything query rules ===");
             Ok("bare '*' refused", McpPathPolicy.IsBareWildcard("*"));
             Ok("bare '*.*' refused", McpPathPolicy.IsBareWildcard("*.*"));
@@ -451,6 +568,30 @@ static class McpPathPolicyTest
                 pr.StandardOutput.ReadToEnd(); pr.StandardError.ReadToEnd();
                 pr.WaitForExit(15000);
                 return pr.ExitCode == 0 && Directory.Exists(link);
+            }
+        }
+        catch { return false; }
+    }
+
+    static char FreeDriveLetter()
+    {
+        for (char c = 'Z'; c >= 'M'; c--)
+            if (!Directory.Exists(c + ":\\") && Array.IndexOf(Environment.GetLogicalDrives(), c + ":\\") < 0) return c;
+        return '\0';
+    }
+
+    /// <summary>subst X: target, or subst X: /d when target is null.</summary>
+    static bool Subst(string drive, string target)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("subst.exe", target == null ? drive + " /d" : drive + " \"" + target + "\"")
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            using (var pr = Process.Start(psi))
+            {
+                pr.StandardOutput.ReadToEnd(); pr.StandardError.ReadToEnd();
+                pr.WaitForExit(15000);
+                return pr.ExitCode == 0 && (target == null || Directory.Exists(drive + "\\"));
             }
         }
         catch { return false; }

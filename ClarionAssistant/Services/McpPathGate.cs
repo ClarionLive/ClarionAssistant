@@ -46,9 +46,77 @@ namespace ClarionAssistant.Services
             return string.Equals((Setting(McpPathPolicy.ContentSearchSetting) ?? "").Trim(), "true", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static readonly PolicyCache _cache = new PolicyCache();
+
         public static McpPathPolicy BuildPolicy(IWorkspaceContext ws)
         {
+            // ONE read of the workspace: the signature and the build come from the same snapshot, so a solution switch
+            // between them cannot cache solution B's policy under solution A's signature.
+            string sln = null, cfgRoot = null, installRoot = null;
+            RedFileService red = null, active = null;
+            if (ws != null)
+            {
+                try { sln = ws.CurrentSolutionPath; } catch { }
+                try { var cfg = ws.CurrentVersionConfig; if (cfg != null) cfgRoot = cfg.RootPath; } catch { }
+                try { installRoot = ws.GetClarionInstallPath(); } catch { }
+                try { red = ws.RedFile; } catch { }
+                try { active = ws.ActiveRedFileService; } catch { }
+            }
+            bool hasSln = !string.IsNullOrEmpty(sln) && File.Exists(sln);
+            List<string> projectDirs = hasSln ? ProjectDirs(sln) : new List<string>();
+
+            string signature = null;
+            try { signature = Signature(sln, cfgRoot, installRoot, red, active, projectDirs); }
+            catch { signature = null; }   // never cached then
+
+            var policy = _cache.Get(signature, () => Build(hasSln ? sln : null, cfgRoot, installRoot, red, active, projectDirs), DateTime.UtcNow);
+            AuditSkipped(policy);
+            return policy;
+        }
+
+        private static readonly string[] EnvInputs =
+            { McpPathPolicy.AllowedRootsEnv, McpPathPolicy.DeniedPathsEnv, "CLAUDE_CONFIG_DIR", "ProgramW6432" };
+
+        /// <summary>Everything the policy is built from, with file timestamps; null part = unreadable = no caching.</summary>
+        private static string Signature(string sln, string cfgRoot, string installRoot, RedFileService red, RedFileService active,
+                                        List<string> projectDirs)
+        {
+            var parts = new List<string>
+            {
+                sln ?? "", PolicyCache.FileStamp(sln), cfgRoot ?? "", installRoot ?? "",
+                Setting(McpPathPolicy.AllowedRootsSetting) ?? "", Setting(McpPathPolicy.DeniedPathsSetting) ?? "",
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) ?? "",
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) ?? ""
+            };
+            foreach (string e in EnvInputs) parts.Add(Environment.GetEnvironmentVariable(e) ?? "");
+            AddRedStamps(parts, red);
+            if (active != null && !ReferenceEquals(active, red)) AddRedStamps(parts, active);
+            foreach (string pd in projectDirs)
+            {
+                parts.Add(pd);
+                // A project's own .red can appear, change or vanish without the .sln changing.
+                string[] reds;
+                try { reds = Directory.Exists(pd) ? Directory.GetFiles(pd, "*.red") : new string[0]; }
+                catch { return null; }
+                Array.Sort(reds, StringComparer.OrdinalIgnoreCase);
+                foreach (string r in reds) parts.Add(PolicyCache.FileStamp(r));
+            }
+            return PolicyCache.Signature(parts);
+        }
+
+        private static void AddRedStamps(List<string> parts, RedFileService red)
+        {
+            if (red == null) { parts.Add("no-red"); return; }
+            parts.Add(red.RedFilePath ?? "");
+            foreach (string f in red.LoadedFiles) parts.Add(PolicyCache.FileStamp(f));
+        }
+
+        private static McpPathPolicy Build(string sln, string cfgRoot, string installRoot, RedFileService red, RedFileService active,
+                                           List<string> projectDirs)
+        {
             string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string programData = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData);
             var inputs = new PathPolicyInputs
             {
                 CaDataDir = CaDataDir(),
@@ -60,49 +128,43 @@ namespace ClarionAssistant.Services
             };
             // Security gate run 1: no automatic root may equal or contain one of these. Both Program Files folders by
             // name - this process is 32-bit, where SpecialFolder.ProgramFiles answers the (x86) one.
-            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
+            inputs.ProtectedDirs.Add(roaming);
             inputs.ProtectedDirs.Add(local);
-            inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+            inputs.ProtectedDirs.Add(programData);
             inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.Windows));
             inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles));
             inputs.ProtectedDirs.Add(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86));
             inputs.ProtectedDirs.Add(Environment.GetEnvironmentVariable("ProgramW6432"));
             inputs.ProtectedDirs.RemoveAll(string.IsNullOrEmpty);
+            // Run 2: project and .red roots may not even sit inside these.
+            inputs.ConfinedDirs.Add(roaming);
+            inputs.ConfinedDirs.Add(local);
+            inputs.ConfinedDirs.Add(programData);
+            inputs.ConfinedDirs.RemoveAll(string.IsNullOrEmpty);
 
-            if (ws != null)
+            if (sln != null)
             {
-                string sln = null;
-                try { sln = ws.CurrentSolutionPath; } catch { }
-                List<string> projectDirs = null;
-                if (!string.IsNullOrEmpty(sln) && File.Exists(sln))
+                inputs.SolutionDir = Path.GetDirectoryName(Path.GetFullPath(sln));
+                inputs.ProjectDirs.AddRange(projectDirs);
+            }
+            inputs.ClarionRoots.Add(cfgRoot);
+            inputs.ClarionRoots.Add(installRoot);
+            AddRedPaths(inputs, red, inputs.SolutionDir);
+            if (active != null && !ReferenceEquals(active, red)) AddRedPaths(inputs, active, inputs.SolutionDir);
+            // Pipeline run 1 (debugger MEDIUM): the compiler and resolve_red_path use each PROJECT's own .red,
+            // anchored at the project folder. The read-only / protected-folder rules apply to these the same way.
+            if (sln != null)
+            {
+                var fallback = red ?? active;
+                foreach (string pd in projectDirs)
                 {
-                    inputs.SolutionDir = Path.GetDirectoryName(Path.GetFullPath(sln));
-                    projectDirs = ProjectDirs(sln);
-                    inputs.ProjectDirs.AddRange(projectDirs);
-                }
-                try { var cfg = ws.CurrentVersionConfig; if (cfg != null) inputs.ClarionRoots.Add(cfg.RootPath); } catch { }
-                try { inputs.ClarionRoots.Add(ws.GetClarionInstallPath()); } catch { }
-                RedFileService red = null, active = null;
-                try { red = ws.RedFile; } catch { }
-                try { active = ws.ActiveRedFileService; } catch { }
-                AddRedPaths(inputs, red, inputs.SolutionDir);
-                if (active != null && !ReferenceEquals(active, red)) AddRedPaths(inputs, active, inputs.SolutionDir);
-                // Pipeline run 1 (debugger MEDIUM): the compiler and resolve_red_path use each PROJECT's own .red,
-                // anchored at the project folder. The read-only / protected-folder rules apply to these the same way.
-                if (projectDirs != null)
-                {
-                    var fallback = red ?? active;
-                    foreach (string pd in projectDirs)
-                    {
-                        RedFileService projRed = null;
-                        try { projRed = RedFileService.ForProjectDirectory(pd, fallback); } catch { }
-                        if (projRed != null) AddRedPaths(inputs, projRed, pd);
-                    }
+                    RedFileService projRed = null;
+                    try { projRed = RedFileService.ForProjectDirectory(pd, fallback); } catch { }
+                    // Even when it is the solution's own .red, its relative entries anchor at THIS project.
+                    if (projRed != null) AddRedPaths(inputs, projRed, pd);
                 }
             }
-            var policy = McpPathPolicy.Build(inputs);
-            AuditSkipped(policy);
-            return policy;
+            return McpPathPolicy.Build(inputs);
         }
 
         private static string _lastSkipped;
@@ -124,7 +186,11 @@ namespace ClarionAssistant.Services
         /// skipped rather than anchored on the process CWD (the Clarion bin, in the IDE).</summary>
         private static void AddRedPaths(PathPolicyInputs inputs, RedFileService red, string anchorDir)
         {
-            if (red == null || red.Sections == null) return;
+            if (red == null) return;
+            // Every file the parser loaded - the .red and each {include}, whatever its extension - is a boundary file.
+            foreach (string f in red.LoadedFiles)
+                if (!string.IsNullOrEmpty(f) && !inputs.RedFiles.Contains(f)) inputs.RedFiles.Add(f);
+            if (red.Sections == null) return;
             foreach (var section in red.Sections.Values)
             {
                 if (section == null || section.Entries == null) continue;
@@ -254,7 +320,8 @@ namespace ClarionAssistant.Services
             if (roots.Count == 0)
             {
                 result.Error = tool + " refused by the Clarion Assistant path policy (GH #266): there are no allowed roots to search ("
-                             + policy.RootSummary() + "). Open a solution, or add folders to the " + McpPathPolicy.AllowedRootsSetting + " setting.";
+                             + policy.RootSummary() + "). Open a solution, or add folders to the " + McpPathPolicy.AllowedRootsSetting + " setting. "
+                             + PathDecision.WorkaroundNote;
                 McpPathAudit.Write(tool, "DENY", userQuery, "no roots");
                 return result;
             }
