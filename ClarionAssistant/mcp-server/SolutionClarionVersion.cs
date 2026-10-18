@@ -143,7 +143,13 @@ namespace ClarionAssistant.McpServer
             if (map.TryGetValue("allowOlderServer", out rawAllow) && rawAllow != null)
             {
                 if (rawAllow is bool) pin.AllowOlderServer = (bool)rawAllow;
-                else notes.Add(path + " has an \"allowOlderServer\" that is not true or false; it is ignored.");
+                else
+                {
+                    // Pipeline run 3: a non-boolean ("false" in quotes, 0, ...) is read as FALSE, the safe side - not
+                    // ignored back to the default true.
+                    pin.AllowOlderServer = false;
+                    notes.Add(path + " has an \"allowOlderServer\" that is not true or false; it is treated as false.");
+                }
             }
 
             object rawDir;

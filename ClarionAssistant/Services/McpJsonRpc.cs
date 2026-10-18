@@ -121,6 +121,22 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static object BuildInitializeResult(string serverName, string serverVersion)
         {
+            return BuildInitializeResult(serverName, serverVersion, null);
+        }
+
+        /// <summary>
+        /// As above, with the MCP "instructions" the client hands the model (e1df6c2e pipeline run 3: the standalone
+        /// server's downgrade WARNING, which stderr and a tool field left unread). Omitted when empty.
+        /// </summary>
+        public static object BuildInitializeResult(string serverName, string serverVersion, string instructions)
+        {
+            var result = BuildInitializeResultCore(serverName, serverVersion);
+            if (!string.IsNullOrEmpty(instructions)) result["instructions"] = instructions;
+            return result;
+        }
+
+        private static Dictionary<string, object> BuildInitializeResultCore(string serverName, string serverVersion)
+        {
             return new Dictionary<string, object>
             {
                 { "protocolVersion", "2025-03-26" },

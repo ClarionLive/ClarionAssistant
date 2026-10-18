@@ -118,10 +118,11 @@ function Get-Info([string]$arguments, [hashtable]$envVars) {
             $line = $p.StandardOutput.ReadLine()
             if ($null -eq $line) { throw "server closed stdout" }
             try { $r = $line | ConvertFrom-Json } catch { continue }
+            if ($r.id -eq 1) { $initInstr = [string]$r.result.instructions }
             if ($r.id -eq 2) {
                 $text = [string]$r.result.content[0].text
                 try { $info = $text | ConvertFrom-Json } catch { $info = $null }
-                return New-Object PSObject -Property @{ Info = $info; Text = $text }
+                return New-Object PSObject -Property @{ Info = $info; Text = $text; Instructions = $initInstr }
             }
         }
         throw "no answer to get_solution_info"
@@ -208,14 +209,15 @@ try {
     Assert-That ([string]::IsNullOrEmpty($out7b)) "7b: with --pick-out nothing may go to stdout, got: $out7b"
     Assert-That (([string]$err7b.Result) -match 'REFUSED' -and ([string]$err7b.Result) -match 'version unreadable') "7b: stderr should say it REFUSED the downgrade and why, got: $($err7b.Result)"
 
-    # ---- 7c: the json PINS that Clarion (default): the unversioned server is picked, with a WARNING ----
+    # ---- 7c: the json PINS that Clarion (default), but the server is BELOW THE SECURITY FLOOR (no version, cannot
+    #      answer --capabilities): a file in a repo can never start it (pipeline run 3) ----
     Set-Pin @{ clarionVersion = $name; configDir = $cfgA }
     $p7c = Start-Server '--pick-server' @{ CLARION_ROOTS = $fakeRoot }
     $p7c.StandardInput.Close()
     $err7c = $p7c.StandardError.ReadToEndAsync()
     $out7c = $p7c.StandardOutput.ReadToEnd()
     [void]$p7c.WaitForExit(30000)
-    Assert-That ($out7c.Trim() -eq $fakeServer -and ([string]$err7c.Result) -match 'WARNING' -and ([string]$err7c.Result) -match 'clarion-assistant\.json \(clarionVersion\) pins') "7c: a json-pinned downgrade should be picked with a WARNING, got '$($out7c.Trim())': $($err7c.Result)"
+    Assert-That ($out7c.Trim() -eq $exe -and ([string]$err7c.Result) -match 'REFUSED' -and ([string]$err7c.Result) -match 'security floor') "7c: a json pin must not start a server below the security floor, got '$($out7c.Trim())': $($err7c.Result)"
 
     # ---- 7d: --clarion-version pins it too, even over "allowOlderServer": false ----
     Set-Pin @{ clarionVersion = $name; configDir = $cfgA; allowOlderServer = $false }
@@ -228,11 +230,31 @@ try {
     Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
     Set-Pin @{ clarionVersion = $name; configDir = $cfgA }
 
-    # ---- 7e: launched by the launcher with the json-pinned downgrade: serverChosenBy carries the WARNING ----
+    # ---- 7e: launched by the launcher with that json pin: serverChosenBy says the floor refused it ----
     [System.IO.File]::WriteAllText($fakeServer, 'placeholder, no version resource')
     $r7e = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }
     Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
-    Assert-That (([string]$r7e.Info.serverChosenBy) -match 'WARNING' -and ([string]$r7e.Info.serverChosenBy) -match 'version unreadable') "7e: serverChosenBy should carry the downgrade WARNING, got: $($r7e.Info.serverChosenBy)"
+    Assert-That (([string]$r7e.Info.serverChosenBy) -match 'REFUSED' -and ([string]$r7e.Info.serverChosenBy) -match 'security floor') "7e: serverChosenBy should say the floor refused it, got: $($r7e.Info.serverChosenBy)"
+
+    # ---- 7f: a copy of the real server answers --capabilities at the floor ----
+    $cap = & $fakeServer --capabilities
+    Assert-That ((@($cap) -join "`n") -match ('path-policy=' + '\d+')) "7f: the server should answer --capabilities with path-policy=N, got: $cap"
+
+    # ---- 9: running OLDER than the bootstrap: the WARNING reaches the MODEL, in initialize's instructions ----
+    $csc = Join-Path (Split-Path $msbuild) 'Roslyn\csc.exe'
+    $newerDir = Join-Path $work 'newer'
+    New-Item -ItemType Directory -Force $newerDir | Out-Null
+    $newerSrc = Join-Path $newerDir 'n.cs'
+    [System.IO.File]::WriteAllText($newerSrc, '[assembly: System.Reflection.AssemblyFileVersion("99.0.0.0")] static class N { static void Main() { } }', $utf8)
+    $newerExe = Join-Path $newerDir 'clarion-mcp-server.exe'
+    & $csc /nologo /out:$newerExe $newerSrc | Out-Host
+    if (-not (Test-Path $newerExe)) { Write-Host "COULD NOT RUN: case 9's versioned stand-in did not compile." -ForegroundColor Red; exit 2 }
+    $r9w = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_MCP_BOOTSTRAP = $newerExe; CLARION_ROOTS = $fakeRoot }
+    Write-Host ("  9   instructions={0}" -f ($r9w.Instructions -replace '\s+', ' ')) -ForegroundColor DarkGray
+    Assert-That (([string]$r9w.Instructions) -match 'tell the developer' -and ([string]$r9w.Instructions) -match 'OLDER' -and ([string]$r9w.Instructions) -match '99\.0\.0\.0') "9: initialize instructions should carry the downgrade WARNING and ask the model to tell the developer, got: $($r9w.Instructions)"
+    Assert-That (([string]$r9w.Info.serverChosenBy) -match 'OLDER' -and ([string]$script:lastErr) -match 'WARNING: this Clarion Assistant server') "9: serverChosenBy and stderr should carry it too, got: $($r9w.Info.serverChosenBy)"
+    $r9n = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }
+    Assert-That ([string]::IsNullOrEmpty([string]$r9n.Instructions)) "9: a server that is not older must send no instructions, got: $($r9n.Instructions)"
 
     # ---- 8: launched by the launcher: serverChosenBy ----
     $r8 = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }; Show '8' $r8

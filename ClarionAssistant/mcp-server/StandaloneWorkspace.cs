@@ -29,6 +29,9 @@ namespace ClarionAssistant.McpServer
         /// <summary>e1df6c2e: why the plugin launcher started this server, or null when it did not (set by Program).</summary>
         public string ServerChosenBy { get; set; }
 
+        /// <summary>Pipeline run 3: the warning when this server is an older Clarion Assistant than it should be, or null (set by Program).</summary>
+        public string DowngradeWarning { get; set; }
+
         /// <summary>The solution as resolved at launch (--solution or the working directory), not followed.</summary>
         public string LaunchSolutionPath { get { return _solutionPath; } }
 
