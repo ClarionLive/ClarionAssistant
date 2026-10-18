@@ -410,7 +410,8 @@ static class EmbedSaveFlowTest
             string m12 = EmbedSaveJournal.OfferMessage(e, appT12);
             Ok("...worded with the .app's last write and both causes", m12.Contains("The app was last written on " +
                 appT12.ToString("yyyy-MM-dd HH:mm") + " without it") && m12.Contains("Clarion may have stopped before saving it") &&
-                m12.Contains("changed or reverted since") && m12.EndsWith("Restore it as unsaved edits?"), m12);
+                m12.Contains("changed or reverted since") && m12.Contains("or another IDE has this app open") &&
+                m12.EndsWith("Restore it as unsaved edits?"), m12);
             string mOld = EmbedSaveJournal.OfferMessage(e, e.Written.AddMinutes(-10));
             Ok(".app older than the save -> the crash/closed-unsaved wording", !EmbedSaveJournal.AppWrittenSince(e, e.Written.AddMinutes(-10)) &&
                 mOld.Contains("Clarion stopped before it was saved, or the app was closed without saving") && !mOld.Contains("last written"), mOld);
@@ -477,6 +478,24 @@ static class EmbedSaveFlowTest
                 string.Join(" | ", swept));
             Ok("sweep: a damaged file is left alone (it is never offered anyway)",
                 File.Exists(Path.Combine(EmbedSaveJournal.Folder, "Broken-x.pending")));
+
+            // Pipeline run 3: dated recovery copies older than 30 days are deleted; pending journals never are.
+            string oldCopy = Path.Combine(jdir, "OldCopy-20260101-000000.txt");
+            string newCopy = Path.Combine(jdir, "NewCopy-20261001-000000.txt");
+            string oldTxtx = Path.Combine(jdir, "Other.txtx");
+            File.WriteAllText(oldCopy, "old"); File.SetLastWriteTime(oldCopy, DateTime.Now.AddDays(-31));
+            File.WriteAllText(newCopy, "new"); File.SetLastWriteTime(newCopy, DateTime.Now.AddDays(-29));
+            File.WriteAllText(oldTxtx, "x"); File.SetLastWriteTime(oldTxtx, DateTime.Now.AddDays(-90));
+            string pendOld = EmbedSaveJournal.PathFor(App, "NewProc");
+            File.SetLastWriteTime(pendOld, DateTime.Now.AddDays(-90));
+            string inPending = Path.Combine(EmbedSaveJournal.Folder, "stray.txt");   // pins TopDirectoryOnly on its own
+            File.WriteAllText(inPending, "x"); File.SetLastWriteTime(inPending, DateTime.Now.AddDays(-90));
+            int pruned = EmbedRecovery.PruneOlderThan(EmbedSaveJournal.MaxAge, DateTime.Now);
+            Ok("prune: the 31-day-old copy is deleted, the 29-day-old one kept", pruned == 1 && !File.Exists(oldCopy) && File.Exists(newCopy),
+                "pruned=" + pruned);
+            Ok("prune: a pending journal file is never touched, however old", File.Exists(pendOld));
+            Ok("prune: never descends into the pending folder", File.Exists(inPending));
+            Ok("prune: only *.txt recovery copies (not other extensions)", File.Exists(oldTxtx));
 
             // Torn / damaged files are never offered.
             string full = EmbedSaveJournal.Serialize(EmbedSaveJournal.Read(App, "P2") ?? new EmbedSaveJournal.Entry());

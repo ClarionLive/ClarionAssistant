@@ -183,7 +183,8 @@ namespace ClarionAssistant.Services
             if (AppWrittenSince(e, appLastWrite))
                 return "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
                        "written on " + appLastWrite.Value.ToString("yyyy-MM-dd HH:mm") + " without it: Clarion may have stopped " +
-                       "before saving it, or it was changed or reverted since. Restore it as unsaved edits?";
+                       "before saving it, or it was changed or reverted since, or another IDE has this app open. " +
+                       "Restore it as unsaved edits?";
             return "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
                    "was saved, or the app was closed without saving. Restore it as unsaved edits?";
         }

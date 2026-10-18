@@ -87,6 +87,35 @@ namespace ClarionAssistant.Services
             }
         }
 
+        /// <summary>
+        /// Delete recovery copies (the top-level <c>*.txt</c> files this class writes) last written more than
+        /// <paramref name="maxAge"/> before <paramref name="now"/>, so Restore/Discard archives and failure copies
+        /// do not pile up forever (254e4353 pipeline run 3). Never descends into subfolders, so the save journal's
+        /// <c>pending\*.pending</c> files are never touched. Returns how many were deleted. Never throws.
+        /// </summary>
+        public static int PruneOlderThan(TimeSpan maxAge, DateTime now)
+        {
+            int n = 0;
+            try
+            {
+                string dir = Folder;
+                if (!Directory.Exists(dir)) return 0;
+                foreach (var f in Directory.GetFiles(dir, "*.txt", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        if (!string.Equals(Path.GetExtension(f), ".txt", StringComparison.OrdinalIgnoreCase)) continue;   // "*.txt" also matches *.txtx
+                        if (now - File.GetLastWriteTime(f) <= maxAge) continue;
+                        File.Delete(f);
+                        n++;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return n;
+        }
+
         internal static string SafeName(string s)
         {
             if (string.IsNullOrEmpty(s)) return "embed";
