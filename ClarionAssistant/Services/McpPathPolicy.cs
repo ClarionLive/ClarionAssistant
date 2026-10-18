@@ -153,6 +153,16 @@ namespace ClarionAssistant.Services
         public static readonly string[] ExecConfigFilePatterns = { ".mcp.json", ".gitattributes", ".gitmodules", "*.code-workspace" };
         public static readonly string[] VsCodeExecFiles = { "tasks.json", "settings.json", "launch.json" };
 
+        /// <summary>Instructions later assistant sessions load and follow: a prompt-injected model must not plant them
+        /// (security gate run 3 LOW). Readable; never written by the MCP tools.</summary>
+        public static readonly string[] InstructionFileNames = { "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md" };
+
+        private const string InstructionHint =
+            "This file holds instructions that later assistant sessions load and follow, so the Clarion Assistant MCP tools never write it.";
+
+        /// <summary>Leaf names git reads from a git dir; a planted BARE repo has them with no .git segment (run 3 LOW).</summary>
+        public static readonly string[] GitDirFileNames = { "HEAD", "config", "packed-refs", "FETCH_HEAD", "ORIG_HEAD" };
+
         private const string ExecConfigHint =
             "This file can make git, an MCP client or an editor run commands, so the Clarion Assistant MCP tools never write it.";
 
@@ -553,6 +563,12 @@ namespace ClarionAssistant.Services
                         return new DenyRule { BuiltIn = true, WriteOnly = true, Text = BoundaryFilePatterns[i] + " (writes)", Hint = BoundaryHint };
                 if (HasSegment(full, ".git"))
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\.git\\* (writes)", Hint = ExecConfigHint };
+                string bare = PlantedGitDirHit(full, leaf);
+                if (bare != null)
+                    return new DenyRule { BuiltIn = true, WriteOnly = true, Text = bare, Hint = ExecConfigHint };
+                foreach (string name in InstructionFileNames)
+                    if (Same(leaf, name))
+                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = name + " (writes)", Hint = InstructionHint };
                 for (int i = 0; i < ExecLeafRegexes.Count; i++)
                     if (ExecLeafRegexes[i].IsMatch(leaf))
                         return new DenyRule { BuiltIn = true, WriteOnly = true, Text = ExecConfigFilePatterns[i] + " (writes)", Hint = ExecConfigHint };
@@ -565,6 +581,47 @@ namespace ClarionAssistant.Services
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = "*\\.claude\\* (writes)" };
             }
             return null;
+        }
+
+        /// <summary>
+        /// A write into what looks like a git directory without a .git segment - a planted bare repo, whose
+        /// core.fsmonitor git honours when run inside it (security gate run 3 LOW). Cheap: the file system is asked only
+        /// when a name matches. Denied: HEAD / config / packed-refs / FETCH_HEAD / ORIG_HEAD in a folder that holds
+        /// objects\ and refs\ (or a HEAD file); anything under a hooks\ whose parent looks like that; and creating
+        /// objects\ or refs\ beside an existing HEAD file. Returns the rule text, or null.
+        /// </summary>
+        private static string PlantedGitDirHit(string full, string leaf)
+        {
+            try
+            {
+                foreach (string n in GitDirFileNames)
+                    if (Same(leaf, n))
+                    {
+                        string dir = System.IO.Path.GetDirectoryName(full);
+                        if (dir != null && LooksLikeGitDir(dir)) return leaf + " in a git directory (writes)";
+                        break;
+                    }
+                string[] segs = full.Split('\\');
+                string prefix = segs[0];
+                for (int i = 1; i < segs.Length; i++)
+                {
+                    string seg = segs[i];
+                    // prefix is the folder that holds segs[i]
+                    if (i < segs.Length - 1 && Same(seg, "hooks") && LooksLikeGitDir(prefix))
+                        return "hooks\\* in a git directory (writes)";
+                    if ((Same(seg, "objects") || Same(seg, "refs")) && File.Exists(prefix + "\\HEAD"))
+                        return seg + "\\ beside a git HEAD (writes)";
+                    prefix = prefix + "\\" + seg;
+                }
+            }
+            catch { return "a path whose git-directory check failed (writes)"; }   // fail closed
+            return null;
+        }
+
+        private static bool LooksLikeGitDir(string dir)
+        {
+            if (string.IsNullOrEmpty(dir)) return false;
+            return File.Exists(dir + "\\HEAD") || (Directory.Exists(dir + "\\objects") && Directory.Exists(dir + "\\refs"));
         }
 
         /// <summary>

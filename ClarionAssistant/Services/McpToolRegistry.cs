@@ -6459,8 +6459,9 @@ IdeOnly = true,
             "the Mcp.AllowedRoots setting. WRITABLE: only the solution folder (and Mcp.AllowedRoots) - the Clarion root, .red and project " +
             "folders outside the solution are read-only, and .sln/.cwproj/.red (and files a .red includes)/clarion-assistant.json/" +
             "ClarionProperties.xml are never written by these tools (they define the scope; the developer edits them), nor are files " +
-            "that make tools run commands (.git\\*, .gitattributes, .gitmodules, .mcp.json, .vscode\\tasks|settings|launch.json, " +
-            "*.code-workspace). UNC/network paths (unless Mcp.AllowedRoots names " +
+            "that make tools run commands (.git\\*, a bare repo's HEAD/config/hooks, .gitattributes, .gitmodules, .mcp.json, " +
+            ".vscode\\tasks|settings|launch.json, *.code-workspace), nor instruction files later sessions follow (CLAUDE.md, " +
+            "CLAUDE.local.md, AGENTS.md). UNC/network paths (unless Mcp.AllowedRoots names " +
             "them), .ssh/.aws folders, credential files, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
             "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable, except a " +
             "checkout under .claude\\worktrees. A refused path " +
