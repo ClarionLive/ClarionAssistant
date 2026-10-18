@@ -67,6 +67,11 @@ namespace ClarionAssistant.Services
         {
             if (string.IsNullOrEmpty(path)) return false;
             string p = path.Replace('/', '\\');
+            // Pipeline run 5: the NT object namespace (\??\UNC\host\share, \??\C:\...) is never a plain local path here.
+            if (p.StartsWith(@"\??\", StringComparison.Ordinal)) return true;
+            // \\.\ paths are normalised by Win32 ('..' climbs past the drive: \\.\C:\..\UNC\host\share is a share), so
+            // one with any '..' segment is treated as network rather than reasoned about.
+            if (p.StartsWith(@"\\.\", StringComparison.Ordinal) && HasDotDotSegment(p.Substring(4))) return true;
             if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal))
             {
                 string rest = p.Substring(4);
@@ -78,6 +83,12 @@ namespace ClarionAssistant.Services
         }
 
         private static bool IsDriveRooted(string p) { return p.Length >= 2 && p[1] == ':' && char.IsLetter(p[0]); }
+
+        private static bool HasDotDotSegment(string p)
+        {
+            foreach (var seg in p.Split('\\')) if (seg.Trim() == "..") return true;
+            return false;
+        }
 
         private static readonly object _driveLock = new object();
         private static readonly Dictionary<char, KeyValuePair<bool, int>> _driveCache = new Dictionary<char, KeyValuePair<bool, int>>();
@@ -236,7 +247,9 @@ namespace ClarionAssistant.Services
         private static void Query(string path, out bool hasId, out Id id, out string final)
         {
             hasId = false; id = new Id(); final = null;
-            if (IsNetworkPath(path)) return;   // pipeline run 4: never opened (NTLM leak); the callers already check, this is the floor
+            // Pipeline runs 4-5: never opened (NTLM leak). The callers already check; this is the floor, and it holds for
+            // every spelling Win32 would route to a share: UNC, \\?\UNC\, \??\..., \\.\ with '..', a remote drive letter.
+            if (IsNetworkPath(path)) return;
             IntPtr h;
             try { var open = Opener; h = open != null ? open(path) : IntPtr.Zero; }
             catch { return; }

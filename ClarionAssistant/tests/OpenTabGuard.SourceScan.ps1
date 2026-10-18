@@ -146,7 +146,7 @@ Check ($policySrc.Contains('"it is outside every allowed root (') -and $gateSrc.
     'out of scope comes from the gate''s structured flag (the decision''s Reason, pinned to McpPathPolicy''s wording), never the refusal text'
 $disp = Text 'Services\McpDispatcher.cs'
 Check ($disp.Contains('"Error executing tool ''" + toolName + "'': " + ex.Message') -and $src.Contains('throw new ArgumentException("Unknown tool: " + name);') -and
-       $guardSrc.Contains('reply.StartsWith("Error executing tool ''editor_tab_sync''"') -and (Text 'Services\IdeTabClient.cs').Contains('OpenTabGuard.FromCheckReply(text,')) `
+       $guardSrc.Contains('UnknownToolReply = "Error executing tool ''editor_tab_sync'': Unknown tool: editor_tab_sync";') -and $guardSrc.Contains('string.Equals(reply.Trim(), UnknownToolReply, StringComparison.Ordinal)') -and (Text 'Services\IdeTabClient.cs').Contains('OpenTabGuard.FromCheckReply(text,')) `
     'an older addin''s "Unknown tool" reply (the dispatcher''s real wording) is recognised by the standalone'
 Check ($nts.Contains('OpenTabGuard.LocalCheckLexical = CheckLexical;') -and $nts.Contains('FileIdentity.LexicalMatch(s.File, paths)') -and
        -not (Method $nts 'private static List<TabSnap> MatchLexical(').Contains('GetFullPath')) `
