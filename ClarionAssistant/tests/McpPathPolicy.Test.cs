@@ -468,7 +468,7 @@ static class McpPathPolicyTest
             {
                 string text = d.Refusal("write_file", "x");
                 Ok("refusal names Claude Code's Edit/Write tools and forbids run_command: " + d.Reason,
-                    text.Contains("Claude Code's own Edit/Write tools") && text.Contains("Do not use run_command"), text);
+                    text.Contains("assistant's own Edit/Write tools") && text.Contains("Do not use run_command"), text);
             }
 
             // 5. A solution at the root of a SUBST drive is a folder, not a whole drive.
@@ -525,11 +525,55 @@ static class McpPathPolicyTest
                 var w = p.Check(Path.Combine(sol, rel), PathAccess.Write);
                 string text = w.Refusal("write_file", "x");
                 Ok(rel + " write refused, with the standard Edit/Write wording",
-                    !w.Allowed && w.Hint != null && w.Hint.Contains("instructions") && text.Contains("Claude Code's own Edit/Write tools"), w.Allowed ? "was allowed" : w.Hint);
+                    !w.Allowed && w.Hint != null && w.Hint.Contains("instructions") && text.Contains("assistant's own Edit/Write tools"), w.Allowed ? "was allowed" : w.Hint);
                 Allowed(p, rel + " readable", Path.Combine(sol, rel));
             }
             Allowed(p, "README.md stays writable", Path.Combine(sol, "README.md"), PathAccess.Write);
             Allowed(p, "a name that only contains CLAUDE stays writable", Path.Combine(sol, "CLAUDE-notes.md"), PathAccess.Write);
+
+            Console.WriteLine("=== pipeline run 4 ===");
+            // 1. A built-in rule cannot be lifted by any root, so its refusal must not offer Mcp.AllowedRoots; the refusals a
+            //    setting DOES lift must still name it. Every refusal keeps the client-neutral Edit/Write + no-workaround text.
+            var tok4 = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, LocalCaDir = localCa, UserProfile = me, ExtraAllowedRoots = Path.Combine(root, "Local") });
+            var builtIns = new[]
+            {
+                p.Check(Path.Combine(sol, "CLAUDE.md"), PathAccess.Write),
+                p.Check(Path.Combine(sol, "x.sln"), PathAccess.Write),
+                p.Check(Path.Combine(sol, ".mcp.json"), PathAccess.Write),
+                p.Check(Path.Combine(sol, ".git", "config"), PathAccess.Write),
+                p.Check(Path.Combine(sol, ".ssh", "id_rsa"), PathAccess.Read),
+                p.Check(Path.Combine(bob, "Documents", "invoice.txt"), PathAccess.Read),
+                tok4.Check(Path.Combine(localCa, "ide-endpoint", "1234-5000.json"), PathAccess.Read),
+                p.Check("\\\\?\\C:\\x", PathAccess.Read)
+            };
+            foreach (var d in builtIns)
+            {
+                string text = d.Refusal("write_file", "x");
+                Ok("built-in refusal does NOT offer Mcp.AllowedRoots: " + d.Reason, !d.Allowed && !text.Contains(McpPathPolicy.AllowedRootsSetting), text);
+                Ok("...and keeps the Edit/Write + no-workaround wording", text.Contains("Use your assistant's own Edit/Write tools") && text.Contains("Do not use run_command"), text);
+                Ok("...without naming one client", !text.Contains("Claude Code"), text);
+            }
+            var liftable = new[]
+            {
+                p.Check(Path.Combine(outside, "secret.txt"), PathAccess.Read),
+                p.Check(Path.Combine(clarion, "x.tpl"), PathAccess.Write),
+                p.Check("\\\\server\\share\\x.clw", PathAccess.Read)
+            };
+            foreach (var d in liftable)
+                Ok("a refusal a setting can lift names Mcp.AllowedRoots: " + d.Reason,
+                    !d.Allowed && d.Refusal("read_file", "x").Contains(McpPathPolicy.AllowedRootsSetting), d.Refusal("read_file", "x"));
+
+            // 2. Copilot / Codex / Gemini instruction files.
+            foreach (string rel in new[] { "AGENTS.override.md", "GEMINI.md", ".github\\copilot-instructions.md",
+                                           ".github\\instructions\\clarion.instructions.md", "sub\\.github\\x.instructions.md", ".GITHUB\\Copilot-Instructions.md" })
+            {
+                var w = p.Check(Path.Combine(sol, rel), PathAccess.Write);
+                Ok(rel + " write refused as an instruction file", !w.Allowed && w.Hint != null && w.Hint.Contains("instructions"), w.Allowed ? "was allowed" : w.Hint);
+                Allowed(p, rel + " readable", Path.Combine(sol, rel));
+            }
+            Allowed(p, "copilot-instructions.md outside .github stays writable", Path.Combine(sol, "docs", "copilot-instructions.md"), PathAccess.Write);
+            Allowed(p, "*.instructions.md outside .github stays writable", Path.Combine(sol, "docs", "setup.instructions.md"), PathAccess.Write);
+            Allowed(p, "other files under .github stay writable", Path.Combine(sol, ".github", "workflows", "notes.txt"), PathAccess.Write);
 
             Console.WriteLine("=== policy cache ===");
             var cache = new PolicyCache();
