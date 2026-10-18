@@ -196,7 +196,14 @@ static class EmbedSaveOrderSourceScan
         int cjEnd = cj >= 0 ? view.IndexOf("private void HandleSavedEditsOffer(", cj, StringComparison.Ordinal) : -1;
         string cjBody = cj >= 0 && cjEnd > cj ? view.Substring(cj, cjEnd - cj) : "";
         Ok("the open decides with the pid rule (EmbedSaveJournal.Decide), not the bare verdict",
-            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid())") && !cjBody.Contains(".Assess("));
+            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), appWrite)") && !cjBody.Contains(".Assess("));
+        // ---- pipeline run 2 ----
+        Ok("the open passes the .app's last-write time (a revert since the save is not offered)",
+            cjBody.Contains("appWrite = File.GetLastWriteTime(JournalApp())"));
+        Ok("the first open of a session sweeps stale journals before reading this one",
+            cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) >= 0 &&
+            cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) < cjBody.IndexOf("EmbedSaveJournal.Read(", StringComparison.Ordinal) &&
+            view.Contains("EmbedSaveJournal.SweepStale(DateTime.Now)"));
         int ja = view.IndexOf("private string JournalApp()", StringComparison.Ordinal);
         string jaBody = ja >= 0 ? view.Substring(ja, Math.Min(300, view.Length - ja)) : "";
         Ok("the journal key is the launcher-captured app, never the 'current app' guess",

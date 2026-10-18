@@ -132,7 +132,7 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>What to do with a journal entry when its procedure opens (pipeline run 1).</summary>
-        public enum Action
+        public enum OpenDecision
         {
             /// <summary>It landed AND was read back by a later process, so it came from the saved .app: delete.</summary>
             Retire,
@@ -151,35 +151,93 @@ namespace ClarionAssistant.Services
         /// entry is kept. No IDE app-saved notification is hooked, so "a different process read it back" is the
         /// proof that it reached the saved .app. An entry that did not land in a later process means Clarion
         /// stopped before the app was saved, or the app was closed without saving: both are offered.
+        ///
+        /// SUPERSEDED (pipeline run 2, adversary): an entry that reads as Lost although the .app file was written
+        /// AFTER it was taken (<paramref name="appLastWrite"/> later than <see cref="Entry.Written"/> +
+        /// <see cref="SupersededGrace"/>) means the app was saved or replaced since: a git checkout, import_txa, a
+        /// native-embeditor edit that put the old text back. Offering it then would push stale code over a
+        /// deliberate revert, so it is archived (dated copy, toast names it) instead. The crash case leaves the
+        /// .app older than the entry and is still offered. Null = the .app's time is unknown: decided as before.
         /// </summary>
-        public static Action Decide(Entry e, IList<string> fresh, int currentPid)
+        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? appLastWrite)
         {
             switch (Assess(e, fresh))
             {
-                case Verdict.Persisted: return e.Pid != currentPid ? Action.Retire : Action.Keep;
-                case Verdict.Lost: return Action.Offer;
-                default: return Action.Archive;
+                case Verdict.Persisted: return e.Pid != currentPid ? OpenDecision.Retire : OpenDecision.Keep;
+                case Verdict.Lost: return IsSuperseded(e, appLastWrite) ? OpenDecision.Archive : OpenDecision.Offer;
+                default: return OpenDecision.Archive;
             }
+        }
+
+        /// <summary>How much later than the entry the .app must have been written to count as saved since. The
+        /// embed save itself happens within a second or two of the entry; a write inside this window is not taken
+        /// as a later, deliberate save of the app.</summary>
+        public static readonly TimeSpan SupersededGrace = TimeSpan.FromSeconds(60);
+
+        /// <summary>True when the .app was written after the entry (beyond <see cref="SupersededGrace"/>).</summary>
+        public static bool IsSuperseded(Entry e, DateTime? appLastWrite)
+        {
+            return e != null && appLastWrite.HasValue && appLastWrite.Value > e.Written + SupersededGrace;
+        }
+
+        /// <summary>Entries older than this are archived unoffered by <see cref="SweepStale"/>.</summary>
+        public static readonly TimeSpan MaxAge = TimeSpan.FromDays(30);
+
+        /// <summary>
+        /// Archive (dated recovery .txt, never offered) every pending entry older than <see cref="MaxAge"/>, so a
+        /// journal for a procedure nobody reopened does not wait months to surface as a stale "lost save"
+        /// (pipeline run 2). Damaged files are left alone (they are never offered anyway). Returns the archive
+        /// paths. Never throws.
+        /// </summary>
+        public static List<string> SweepStale(DateTime now)
+        {
+            var archived = new List<string>();
+            try
+            {
+                if (!Directory.Exists(Folder)) return archived;
+                foreach (var path in Directory.GetFiles(Folder, "*.pending"))
+                {
+                    try
+                    {
+                        var e = Parse(File.ReadAllText(path, new UTF8Encoding(false)));
+                        if (e == null || now - e.Written <= MaxAge) continue;
+                        e.Path = path;
+                        string rec = Archive(e, "it was never confirmed and is more than " + (int)MaxAge.TotalDays + " days old");
+                        if (rec != null) archived.Add(rec);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return archived;
         }
 
         /// <summary>What the freshly opened slots say about this entry. Compared per changed slot, ignoring line
         /// endings and trailing whitespace (so a normalisation by Clarion on save is not mistaken for a loss).
         /// Slots are matched by POSITION only while the slot count is unchanged. The slot list holds every embed
         /// point, so adding a control in the window designer shifts it (pipeline run 1, debugger); the slot model
-        /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots:
-        /// every one found means it landed. Otherwise the entry cannot be put back by position: Diverged.</summary>
+        /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots.
+        /// Only a UNIQUE, NON-EMPTY match counts (pipeline run 2, debugger): an emptied slot, or a one-liner several
+        /// slots share, would match some other slot and call a lost save landed. Every changed slot matched that
+        /// way means it landed; anything else cannot be told or put back by position: Diverged.</summary>
         public static Verdict Assess(Entry e, IList<string> fresh)
         {
             if (e == null || fresh == null) return Verdict.Diverged;
             if (fresh.Count != e.SlotCount)
             {
-                var present = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var f in fresh) present.Add(Loose(f));
+                var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+                foreach (var f in fresh)
+                {
+                    string lf = Loose(f);
+                    int c;
+                    counts[lf] = counts.TryGetValue(lf, out c) ? c + 1 : 1;
+                }
                 for (int k = 0; k < e.Index.Count; k++)
                 {
                     string s = Loose(e.Saved[k]);
                     if (s == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
-                    if (!present.Contains(s)) return Verdict.Diverged;
+                    int n;
+                    if (s.Length == 0 || !counts.TryGetValue(s, out n) || n != 1) return Verdict.Diverged;
                 }
                 return Verdict.Persisted;
             }

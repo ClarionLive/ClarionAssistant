@@ -2091,6 +2091,21 @@ namespace ClarionAssistant.Terminal
             return string.IsNullOrWhiteSpace(EmbedAppFile) ? null : EmbedAppFile;
         }
 
+        // Once per IDE session, at the first CA Embeditor open: archive journals nobody reopened for 30 days
+        // (pipeline run 2), so they never surface months later as a stale "lost save". UI thread only.
+        private static bool _journalSwept;
+        private static void SweepStaleJournalsOnce()
+        {
+            if (_journalSwept) return;
+            _journalSwept = true;
+            try
+            {
+                foreach (var rec in Services.EmbedSaveJournal.SweepStale(DateTime.Now))
+                    MonacoSpikeLog.Write("[save-journal] stale entry archived unoffered: " + rec);
+            }
+            catch { }
+        }
+
         private static int MyPid()
         {
             try { return System.Diagnostics.Process.GetCurrentProcess().Id; } catch { return 0; }
@@ -2100,30 +2115,41 @@ namespace ClarionAssistant.Terminal
         {
             if (_journalChecked || _panel == null || string.IsNullOrEmpty(_procedureName)) return;
             _journalChecked = true;
+            SweepStaleJournalsOnce();
             if (JournalApp() == null) { MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": app unknown, not checked"); return; }
             try
             {
                 var e = Services.EmbedSaveJournal.Read(JournalApp(), _procedureName);
                 if (e == null) return;
-                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid());
+                DateTime? appWrite = null;
+                try { if (File.Exists(JournalApp())) appWrite = File.GetLastWriteTime(JournalApp()); } catch { }
+                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), appWrite);
+                bool superseded = Services.EmbedSaveJournal.IsSuperseded(e, appWrite);
                 MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": entry of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") +
-                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)) -> " + act);
+                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)), app written " +
+                    (appWrite.HasValue ? appWrite.Value.ToString("yyyy-MM-dd HH:mm:ss") : "?") + " -> " + act);
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-                if (act == Services.EmbedSaveJournal.Action.Retire)
+                if (act == Services.EmbedSaveJournal.OpenDecision.Retire)
                 {
                     Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // a later session read it back: it landed
                     return;
                 }
-                if (act == Services.EmbedSaveJournal.Action.Keep) return;   // landed in memory only, this session: say nothing
+                if (act == Services.EmbedSaveJournal.OpenDecision.Keep) return;   // landed in memory only, this session: say nothing
                 string when = e.Written.ToString("yyyy-MM-dd HH:mm");
-                if (act == Services.EmbedSaveJournal.Action.Archive)
+                if (act == Services.EmbedSaveJournal.OpenDecision.Archive)
                 {
-                    // Changed since (e.g. edited in Clarion's own embeditor): offering it would overwrite newer work.
-                    string rec = Services.EmbedSaveJournal.Archive(e, "this embed has changed since");
-                    MonacoSpikeLog.Write("[save-journal] archived " + rec);
-                    _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(
-                        "Your CA Embeditor save of " + _procedureName + " on " + when + " could not be confirmed, and this embed " +
-                        "has changed since, so it was not offered back. A copy was kept in " + rec + ".") + "}");
+                    // Changed since (e.g. edited in Clarion's own embeditor), or the app was saved/replaced after it
+                    // (a revert): offering it would overwrite newer or deliberate work. The copy is still named.
+                    string why = superseded ? "the app was saved after it" : "this embed has changed since";
+                    string rec = Services.EmbedSaveJournal.Archive(e, why);
+                    MonacoSpikeLog.Write("[save-journal] archived (" + why + ") " + rec);
+                    string msg = superseded
+                        ? "Your CA Embeditor save of " + _procedureName + " on " + when + " is not in this procedure, but the app " +
+                          "was saved after it (" + appWrite.Value.ToString("yyyy-MM-dd HH:mm") + "), so it was not offered back. " +
+                          "If you did not undo it on purpose, a copy was kept in " + rec + "."
+                        : "Your CA Embeditor save of " + _procedureName + " on " + when + " could not be confirmed, and this embed " +
+                          "has changed since, so it was not offered back. A copy was kept in " + rec + ".";
+                    _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(msg) + "}");
                     return;
                 }
                 var slots = Services.EmbedSaveJournal.RestoredSlots(e, _originalSlotTexts);

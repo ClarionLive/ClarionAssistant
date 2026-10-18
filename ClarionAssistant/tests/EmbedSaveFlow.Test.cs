@@ -395,17 +395,40 @@ static class EmbedSaveFlowTest
             int me = System.Diagnostics.Process.GetCurrentProcess().Id;
             Ok("written with this process's pid", e.Pid == me);
             Ok("same session, reopen shows the saved text -> Keep (not retired, no offer)",
-                EmbedSaveJournal.Decide(e, saved, me) == EmbedSaveJournal.Action.Keep);
-            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.Action.Retire);
-            Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me) == EmbedSaveJournal.Action.Offer &&
-                EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.Action.Offer);
-            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1) == EmbedSaveJournal.Action.Archive);
+                EmbedSaveJournal.Decide(e, saved, me, null) == EmbedSaveJournal.OpenDecision.Keep);
+            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1, null) == EmbedSaveJournal.OpenDecision.Retire);
+            Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me, null) == EmbedSaveJournal.OpenDecision.Offer &&
+                EmbedSaveJournal.Decide(e, origT, me + 1, null) == EmbedSaveJournal.OpenDecision.Offer);
+            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1, null) == EmbedSaveJournal.OpenDecision.Archive);
+
+            // Pipeline run 2, adversary: a baseline-looking reopen after the .app was saved/replaced is a revert.
+            Ok("crash: the .app is OLDER than the save -> still Offer",
+                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddMinutes(-10)) == EmbedSaveJournal.OpenDecision.Offer);
+            Ok("the .app written within the grace window of the save -> still Offer",
+                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddSeconds(5)) == EmbedSaveJournal.OpenDecision.Offer);
+            Ok("the .app saved/replaced AFTER the save (git checkout, import_txa) -> Archive, not offered",
+                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddDays(40)) == EmbedSaveJournal.OpenDecision.Archive &&
+                EmbedSaveJournal.IsSuperseded(e, e.Written.AddDays(40)));
+            Ok("...but a landed save is still retired, whatever the .app's time",
+                EmbedSaveJournal.Decide(e, saved, me + 1, e.Written.AddDays(40)) == EmbedSaveJournal.OpenDecision.Retire);
+
+            // Pipeline run 2, debugger: the count-changed fallback needs a unique, non-empty match.
+            var emptied = EmbedSaveJournal.Parse(EmbedSaveJournal.Serialize(e));
+            emptied.Saved[0] = "";   // the edit deleted slot 0's code
+            Ok("count changed, the save emptied a slot -> Diverged (an empty slot elsewhere is no proof)",
+                EmbedSaveJournal.Assess(emptied, new List<string> { O0, "", "", O1, big }) == EmbedSaveJournal.Verdict.Diverged);
+            var common = EmbedSaveJournal.Parse(EmbedSaveJournal.Serialize(e));
+            common.Saved[0] = "  RETURN";
+            Ok("count changed, the saved one-liner appears in two slots -> Diverged",
+                EmbedSaveJournal.Assess(common, new List<string> { "  RETURN", O1, "  RETURN", "", big }) == EmbedSaveJournal.Verdict.Diverged);
+            Ok("count changed, unique non-empty matches -> Persisted",
+                EmbedSaveJournal.Assess(common, new List<string> { "  RETURN", O1, "", big }) == EmbedSaveJournal.Verdict.Persisted);
 
             // Pipeline run 1, debugger: a control added in the designer adds embed points, shifting every slot.
             var shifted = new List<string> { saved[0], "", "  ! new control's embed", O1, big };
             Ok("slot count changed after a landed save -> Persisted (no false alert)",
                 EmbedSaveJournal.Assess(e, shifted) == EmbedSaveJournal.Verdict.Persisted);
-            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1) == EmbedSaveJournal.Action.Retire);
+            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1, null) == EmbedSaveJournal.OpenDecision.Retire);
             var shiftedLost = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
             Ok("slot count changed and the save is missing -> Diverged (archived, not offered by position)",
                 EmbedSaveJournal.Assess(e, shiftedLost) == EmbedSaveJournal.Verdict.Diverged);
@@ -432,6 +455,24 @@ static class EmbedSaveFlowTest
             Ok("...and the journal now holds the newer save", e3 != null && e3.Saved[0] == "  x = 7");
             string a3 = EmbedSaveJournal.Archive(e3, "test");
             Ok("Archive keeps a readable copy and retires the journal", a3 != null && File.Exists(a3) && EmbedSaveJournal.Read(App, "P3") == null);
+
+            // Pipeline run 2: entries nobody reopened for 30 days are archived unoffered by the session sweep.
+            EmbedSaveJournal.Begin(App, "OldProc", origT, saved, out arch);
+            var old = EmbedSaveJournal.Read(App, "OldProc");
+            old.Written = DateTime.Now.AddDays(-40);
+            File.WriteAllText(EmbedSaveJournal.PathFor(App, "OldProc"), EmbedSaveJournal.Serialize(old));
+            EmbedSaveJournal.Begin(App, "NewProc", origT, saved, out arch);
+            var young = EmbedSaveJournal.Read(App, "NewProc");
+            young.Written = DateTime.Now.AddDays(-29);
+            File.WriteAllText(EmbedSaveJournal.PathFor(App, "NewProc"), EmbedSaveJournal.Serialize(young));
+            File.WriteAllText(Path.Combine(EmbedSaveJournal.Folder, "Broken-x.pending"), "CA-EMBED-PENDING-SAVE 1\napp 3:");
+            var swept = EmbedSaveJournal.SweepStale(DateTime.Now);
+            Ok("sweep: the 40-day-old entry is archived, the 29-day-old one is kept",
+                swept.Count == 1 && File.Exists(swept[0]) && File.ReadAllText(swept[0]).Contains("more than 30 days old") &&
+                EmbedSaveJournal.Read(App, "OldProc") == null && EmbedSaveJournal.Read(App, "NewProc") != null,
+                string.Join(" | ", swept));
+            Ok("sweep: a damaged file is left alone (it is never offered anyway)",
+                File.Exists(Path.Combine(EmbedSaveJournal.Folder, "Broken-x.pending")));
 
             // Torn / damaged files are never offered.
             string full = EmbedSaveJournal.Serialize(EmbedSaveJournal.Read(App, "P2") ?? new EmbedSaveJournal.Entry());
