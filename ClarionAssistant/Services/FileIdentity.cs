@@ -38,6 +38,8 @@ namespace ClarionAssistant.Services
             public bool HasId;
             public Id Id;
             public string Final;
+            /// <summary>The target is on the network (as spelled, or once resolved).</summary>
+            public bool Network;
         }
 
         public static Probe Of(string path)
@@ -45,8 +47,30 @@ namespace ClarionAssistant.Services
             var p = new Probe { Full = FullOrSelf(path) };
             if (string.IsNullOrEmpty(path)) return p;
             Query(path, out p.HasId, out p.Id, out p.Final);
+            p.Network = IsNetworkPath(path) || (p.Final != null && IsNetworkPath(p.Final));
             return p;
         }
+
+        /// <summary>UNC (\\server\share, \\?\UNC\...) or a drive letter Windows reports as remote. No network I/O:
+        /// GetDriveType reads the drive's mapping, it does not contact the server.</summary>
+        public static bool IsNetworkPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal))
+                return IsNetworkPath(path.Substring(4));
+            if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return true;
+            if (path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]))
+            {
+                try { return GetDriveTypeW(path.Substring(0, 2) + "\\") == DRIVE_REMOTE; } catch { return false; }
+            }
+            return false;
+        }
+
+        private const uint DRIVE_REMOTE = 4;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint GetDriveTypeW(string root);
 
         public static bool SameFile(string a, string b)
         {
@@ -61,6 +85,15 @@ namespace ClarionAssistant.Services
             string full = FullOrSelf(candidate);
             foreach (var p in probes)
                 if (p != null && Lexical(p.Full, full)) return true;
+            // Pipeline run 2: a tab on a network path (UNC, a mapped drive) is not opened to learn its identity unless the
+            // target itself is on the network: a disconnected share would stall for the SMB timeout, and a local target
+            // cannot be the same file as a remote tab anyway.
+            if (IsNetworkPath(candidate))
+            {
+                bool anyNetwork = false;
+                foreach (var p in probes) if (p != null && p.Network) anyNetwork = true;
+                if (!anyNetwork) return false;
+            }
             bool hasId; Id id; string final;
             Query(candidate, out hasId, out id, out final);
             foreach (var p in probes)

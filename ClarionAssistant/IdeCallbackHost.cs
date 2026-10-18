@@ -30,7 +30,7 @@ namespace ClarionAssistant
     internal static class IdeCallbackHost
     {
         internal const int PreferredPort = 19390;
-        internal static readonly string[] CallbackTools = { "get_live_text", "editor_tab_sync" };
+        internal static readonly string[] CallbackTools = McpToolRegistry.IdeCallbackTools;
 
         private static McpServer _server;
         private static Timer _solutionTimer;
@@ -43,9 +43,13 @@ namespace ClarionAssistant
             if (_server != null) return;
             try
             {
-                var registry = new McpToolRegistry(new EditorService(), new ClarionClassParser(), true);
-                registry.RetainOnly(CallbackTools);
+                // Pipeline run 2 (HIGH): WITH the IDE's workspace. editor_tab_sync's check is read-gated by the #266 path
+                // policy, built from the workspace; with none every solution file was refused, the check came back as an
+                // error, and the write went ahead under a dirty native tab.
                 Control ui = WorkbenchSingleton.MainForm;
+                try { ModernEmbeditorLauncher.EnsureRedirectionLoaded(); } catch { }   // the .red the policy's roots come from
+                var registry = McpToolRegistry.BuildIdeCallbackRegistry(new EditorService(), new ClarionClassParser(),
+                    new IdeWorkspace(), new McpServer.ControlUiDispatcher(ui));
                 var server = new McpServer(ui, null) { ReclaimPreferredPort = false };
                 server.SetToolRegistry(registry);
                 if (!server.Start(PreferredPort))
@@ -78,6 +82,9 @@ namespace ClarionAssistant
         {
             try { IdeSolutionRecord.Publish(EditorService.GetOpenSolutionPath()); }
             catch (Exception ex) { Debug.WriteLine("[IdeCallbackHost] solution publish failed: " + ex.Message); }
+            // Keep the .red in force for the open solution and version (IdeWorkspace.RedFile reads it). Keyed inside:
+            // a no-op unless the version, its .red or the solution folder moved.
+            try { ModernEmbeditorLauncher.EnsureRedirectionLoaded(); } catch { }
         }
     }
 }

@@ -1098,7 +1098,7 @@ namespace ClarionAssistant.Services
         /// from the wrong thread. Liveness belongs in BeginInvokeOnUi, below, where the fallback
         /// is inline execution of work that would otherwise simply be dropped.
         /// </summary>
-        private sealed class ControlUiDispatcher : IUiDispatcher
+        internal sealed class ControlUiDispatcher : IUiDispatcher
         {
             private readonly Control _control;
 

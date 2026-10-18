@@ -97,6 +97,7 @@ namespace ClarionAssistant.Services
                     }
                     if (r.TimedOut) _quietUntil[pid] = later.AddMilliseconds(QuietMs);
                     else if (r.Reachable) _quietUntil.Remove(pid);
+                    r.Ide = "IDE " + pid;   // the one place every answer is labelled
                     answers.Add(r);
                 }
             }

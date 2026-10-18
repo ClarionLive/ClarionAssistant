@@ -83,6 +83,19 @@ static class FileIdentityTest
             Ok("empty / null never match", !FileIdentity.SameFile(real, null) && !FileIdentity.SameFile("", real)
                && !FileIdentity.MatchesAny(null, new List<FileIdentity.Probe> { FileIdentity.Of(real) }));
 
+            Console.WriteLine("-- network tabs are not opened for a local target (pipeline run 2: no SMB stall)");
+            Ok("UNC is network", FileIdentity.IsNetworkPath(@"\\server\share\Main.clw") && FileIdentity.IsNetworkPath(@"\\?\UNC\server\share\Main.clw"));
+            Ok(@"a local drive and a \\?\ local path are not", !FileIdentity.IsNetworkPath(real) && !FileIdentity.IsNetworkPath(@"\\?\" + real));
+            var localProbe = new List<FileIdentity.Probe> { FileIdentity.Of(real) };
+            Ok("the local probe is not network", !localProbe[0].Network);
+            var swNet = Stopwatch.StartNew();
+            bool netMatch = false;
+            for (int k = 0; k < 3; k++)
+                netMatch |= FileIdentity.MatchesAny(@"\\ca-no-such-host-205-" + k + @"\share\LongModuleName001.clw", localProbe);
+            long netMs = swNet.ElapsedMilliseconds;
+            Ok("a tab on an unreachable share does not match a local target", !netMatch);
+            Ok("...and is not even opened (3 unreachable-share tabs in under 100 ms)", netMs < 100, netMs + " ms");
+
             Console.WriteLine("-- junction (mklink /J)");
             if (Cmd("mklink /J \"" + junction + "\" \"" + Path.Combine(root, "src") + "\"") == 0 && Directory.Exists(junction))
             {

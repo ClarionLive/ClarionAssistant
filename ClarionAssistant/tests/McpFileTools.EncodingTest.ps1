@@ -97,6 +97,10 @@ function Invoke-Tool([string]$name, [hashtable]$arguments) {
     # GH #266: the file tools only accept paths inside the path policy's roots, and %TEMP% is not one.
     # The env var is the server-side extra root, so this needs no change to the developer's settings.txt.
     $psi.EnvironmentVariables['CLARION_MCP_ALLOWED_ROOTS'] = $script:work
+    # GH #205: write_file / append_to_file first ask every running Clarion IDE whether the file is open in a tab. This
+    # harness is about BYTES, so it must not depend on whatever IDEs happen to run on this machine: point the server at
+    # an empty IDE-record folder (no IDE), the same override the IDE-record harnesses use.
+    $psi.EnvironmentVariables['CA_IDE_RECORD_DIR'] = Join-Path $script:work 'no-ide-records'
     $p = [System.Diagnostics.Process]::Start($psi)
     $out = $p.StandardOutput.ReadToEndAsync()
     $err = $p.StandardError.ReadToEndAsync()

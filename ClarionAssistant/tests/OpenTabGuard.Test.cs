@@ -177,6 +177,38 @@ static class OpenTabGuardTest
             Ok("nothing reloaded after a failed write", Calls() == "check,write", Calls());
             Ok("the write's error comes back unchanged", r == "Error: character not in cp1252", r);
 
+            Console.WriteLine("-- an IDE ANSWERED but its check failed (pipeline run 2: fail closed)");
+            Reset();
+            Script(() => new List<TabProbe> { new TabProbe { Ide = "IDE 100", Reachable = false, Answered = true,
+                       Reason = "the IDE: Error: editor_tab_sync refused by the Clarion Assistant path policy" } },
+                   t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("REFUSED: the file on disk is unchanged", Unchanged() && Calls() == "check", Calls());
+            Ok("the refusal says the check could not be made and names the error",
+               r.StartsWith("Error: could not check whether Main001.clw is open in the Clarion editor (IDE 100: the IDE: Error: editor_tab_sync refused")
+               && r.Contains("Nothing was written") && r.Contains("overwrite_open_buffer: true"), r);
+            Reset();
+            r = OpenTabGuard.Run(file, true, Write);
+            Ok("with overwrite_open_buffer: written, with a WARNING naming the failed check",
+               !Unchanged() && r.Contains("WARNING: the open-tab check failed (IDE 100") && !r.Contains("could not be checked ("), r);
+            Reset();
+            Script(() => new List<TabProbe> { new TabProbe { Ide = "IDE 100", Reachable = false, Answered = false, TimedOut = true,
+                       Reason = "the IDE: the IDE's UI thread did not answer within 2 s" } }, null);
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("a TIMEOUT is still only a note (written)", !Unchanged() && r.Contains("could not be checked (IDE 100: the IDE: the IDE's UI thread"), r);
+            var wire = OpenTabGuard.CheckFromWire(OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, Reason = "path policy" }), "IDE 5");
+            Ok("on the wire, an IDE's error is Answered (a failed check)", !wire.Reachable && wire.Answered && !wire.TimedOut);
+            wire = OpenTabGuard.CheckFromWire(OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, TimedOut = true, Reason = "UI busy" }), "IDE 5");
+            Ok("on the wire, an IDE's UI-thread timeout is a timeout, not a failed check", !wire.Reachable && !wire.Answered && wire.TimedOut);
+            wire = OpenTabGuard.CheckFromWire(new Dictionary<string, object> { { "kind", "weird" } }, "IDE 5");
+            Ok("a garbled answer is a failed check", !wire.Reachable && wire.Answered);
+            wire = OpenTabGuard.CheckFromWire(OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, OutOfScope = true, Reason = "outside every allowed root" }), "IDE 6");
+            Ok("on the wire, 'outside that IDE's roots' is out of scope, not a failed check", !wire.Reachable && !wire.Answered && wire.OutOfScope);
+            Reset();
+            Script(() => new List<TabProbe> { wire }, null);
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("an IDE that would not say (out of scope) leaves the write going ahead, with a note", !Unchanged() && r.Contains("could not be checked (IDE 6: the file is outside that IDE's allowed roots"), r);
+
             Console.WriteLine("-- both spellings reach the IDE (pipeline run 1: aliases)");
             Reset();
             Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false) }, t => new TabReload { Reloaded = true });

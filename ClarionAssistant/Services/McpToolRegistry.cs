@@ -259,6 +259,26 @@ namespace ClarionAssistant.Services
             foreach (var name in _tools.Keys.ToList())
                 if (!keep.Contains(name)) _tools.Remove(name);
         }
+
+        /// <summary>The standalone server's call-backs into the IDE, all IdeCallbackHost serves.</summary>
+        public static readonly string[] IdeCallbackTools = { "get_live_text", "editor_tab_sync" };
+
+        /// <summary>
+        /// GH #205 pipeline run 2: the IDE call-back endpoint's registry, WITH a workspace. editor_tab_sync's check is
+        /// read-gated by the #266 path policy, which is built from the workspace (solution, project folders, Clarion
+        /// root, .red folders); with none, every solution file is "outside every allowed root" and every check fails.
+        /// The workspace and dispatcher are set on THIS registry only: unlike <see cref="SetWorkspace"/>, the shared
+        /// SharedLspBridge providers are left alone, so a call-back host started after the chat pane cannot rebind them.
+        /// </summary>
+        public static McpToolRegistry BuildIdeCallbackRegistry(IEditorService editorService, ClarionClassParser parser,
+                                                               IWorkspaceContext workspace, IUiDispatcher ui)
+        {
+            var registry = new McpToolRegistry(editorService, parser, true);
+            registry.RetainOnly(IdeCallbackTools);
+            registry._workspace = workspace;
+            registry._ui = ui;
+            return registry;
+        }
         public IAppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)
@@ -3189,8 +3209,11 @@ COMMON QUERIES:
                         // "this IDE could not be asked" - never as permission to write.
                         string checkedPath;
                         string refused = McpPathGate.GatePath("editor_tab_sync", filePath, PathAccess.Read, _workspace, out checkedPath);
+                        // GH #205 pipeline run 2: with a workspace, a refusal means "outside this IDE's roots" (a second IDE
+                        // on another solution): the writer notes it. With NO workspace it is a mis-wired host whose policy
+                        // refuses everything: a failed check, which refuses the write rather than passing silently.
                         if (refused != null)
-                            return OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, Reason = refused });
+                            return OpenTabGuard.CheckToWire(new TabProbe { Reachable = false, OutOfScope = _workspace != null, Reason = refused });
                         var check = OpenTabGuard.LocalCheck;
                         TabProbe p;
                         try { p = check != null ? check(spellings) : null; }

@@ -48,8 +48,7 @@ namespace ClarionAssistant.Services
             var answers = _fanOut.Ask(eps, ep => ep.Pid, ep => CheckOne(ep, paths), CheckBudgetMs);
             for (int i = 0; i < answers.Count; i++)
             {
-                var p = answers[i];
-                p.Ide = "IDE " + eps[i].Pid;
+                var p = answers[i];   // IdeFanOut has stamped p.Ide
                 p.Handle = eps[i];
                 Write("[tab-sync] check path=" + path + " ide=" + eps[i].Label + " -> "
                       + (p.Reachable ? p.Kind + (p.Dirty ? " dirty" : " clean") : "unreachable: " + p.Reason));
@@ -64,8 +63,9 @@ namespace ClarionAssistant.Services
             try
             {
                 string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "check"), one, CheckBudgetMs);
+                // The IDE answered: a refusal is a FAILED check (Answered), which refuses the write (pipeline run 2).
                 return text.StartsWith("Error", StringComparison.Ordinal)
-                    ? new TabProbe { Reachable = false, Reason = "the IDE refused: " + text }
+                    ? new TabProbe { Reachable = false, Answered = true, Reason = "the IDE refused: " + text }
                     : OpenTabGuard.CheckFromWire(Parse(text), null);
             }
             catch (Exception ex)

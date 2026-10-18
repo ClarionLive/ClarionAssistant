@@ -76,22 +76,35 @@ function Method([string]$text, [string]$sig) {
     if ($j -lt 0) { $j = $text.Length }
     return $text.Substring($i, $j - $i)
 }
-$check = Method $nts 'private static TabProbe CheckOnUi('
+$snap = Method $nts 'private static List<TabSnap> SnapshotOnUi('
+$classify = Method $nts 'private static TabProbe Classify('
+$match = Method $nts 'private static List<TabSnap> Match('
 $reload = Method $nts 'private static TabReload ReloadOnUi('
 $keep = Method $nts 'private static int ReloadKeepingCaret('
-$views = Method $nts 'private static List<TextEditorDisplayBindingWrapper> ViewsOf('
-Check ((Before $check 'me.OverlayUp' 'w.IsDirty') -and $check.Contains('me.OverlayDirty')) `
-    'the check classifies a tab whose CA Editor is up as ca-editor first (its native shell stays clean, so IsDirty would lie)'
-Check ($check.Contains('w.IsDirty')) 'the check reads the native tab''s IsDirty'
-Check ((Before $reload 'w.IsDirty' 'ReloadKeepingCaret(') -and $reload.Contains('unsaved changes now')) 'a reload re-checks IsDirty first and refuses a dirty tab'
-Check ((Before $reload 'me.OverlayUp' 'ReloadKeepingCaret(')) 'a reload never touches a tab the CA Editor covers'
-Check ($reload.Contains('string own = FileNameOf(w);') -and $reload.Contains('ReloadKeepingCaret(w, own)')) 'a reload loads the TAB''S OWN file name (an alias tab keeps its title)'
+$views = Method $nts 'private static System.Collections.IEnumerable OpenViews('
+$checkM = Method $nts 'internal static TabProbe Check('
+Check ($snap.Contains('me.OverlayUp') -and $snap.Contains('me.OverlayDirty') -and $snap.Contains('w.IsDirty') -and
+       (Before $classify 'if (s.OverlayUp)' 'else { nativeOpen = true; if (s.Dirty)')) `
+    'a tab whose CA Editor is up is classified ca-editor (its native shell stays clean, so IsDirty would lie); others by IsDirty'
+Check ((Before $reload 's.View.IsDirty' 'ReloadKeepingCaret(') -and $reload.Contains('unsaved changes now')) 'a reload re-checks IsDirty first and refuses a dirty tab'
+Check ((Before $reload 'me.OverlayUp' 'ReloadKeepingCaret(') -and (Before $reload 'open.Contains(s.View)' 'ReloadKeepingCaret(')) `
+    'a reload re-checks there that the tab is still open and not covered by the CA Editor'
+Check ($reload.Contains('string own = s.File;') -and $reload.Contains('ReloadKeepingCaret(s.View, own)')) 'a reload loads the TAB''S OWN file name (an alias tab keeps its title)'
 Check ($keep.Contains('w.Load(path)') -and (Before $keep 'caret.Line' 'w.Load(path)') -and (Before $keep 'w.Load(path)' 'area.Caret.Line =')) `
     'the reload is SharpDevelop''s own Load, with the caret line captured before and put back after'
 # Pipeline run 1, fix 1: matched by FILE IDENTITY, and every view swept (FileService only matches path text).
-Check ($views.Contains('FileIdentity.MatchesAny(FileNameOf(w), probes)') -and $views.Contains('ViewContentCollection')) `
+Check ($match.Contains('FileIdentity.MatchesAny(s.File, probes)') -and $views.Contains('ViewContentCollection')) `
     'tabs are matched by file identity, over every open view'
-Check (-not ($nts -match 'string\.Equals\([^)]*FileName')) 'no tab is matched by comparing path text'
+# Pipeline run 2, fix 2: no file I/O on the UI thread - the UI call only snapshots; identity is matched outside it.
+Check (-not $snap.Contains('FileIdentity') -and -not $reload.Contains('FileIdentity') -and -not $snap.Contains('File.Exists') -and -not $reload.Contains('File.Exists')) `
+    'the UI-thread parts (snapshot, reload) do no file-identity or disk I/O'
+Check ((Before $checkM 'snaps = SnapshotOnUi()' 'Match(snaps, Probes(paths))') -and -not $checkM.Contains('UiThreadCall.Run(_ui, () => { answer = Classify')) `
+    'the check matches identities AFTER the UI call returns, not inside it'
+Check ($checkM.Contains('TimedOut = outcome == UiThreadCall.Outcome.TimedOut') -and -not $nts.Contains('Contains("did not answer")')) `
+    'a timeout is taken from UiThreadCall''s outcome, not from message text'
+$fid = Text 'Services\FileIdentity.cs'
+Check ($fid.Contains('if (IsNetworkPath(candidate))') -and $fid.Contains('if (!anyNetwork) return false;')) 'a network tab is not opened for a local target'
+Check ($match.Length -gt 0 -and -not ($match -match 'string\.Equals|SamePath|PathsEqual')) 'no tab is matched by comparing path text'
 Check ($nts.Contains('UiThreadCall.Run(_ui') -and -not $nts.Contains('.Post(') -and -not $nts.Contains('Invoke(')) 'NativeTabSync goes through the shared UiThreadCall'
 $uitc = Text 'UiThreadCall.cs'
 Check ($uitc.Contains('ui.Post(') -and $uitc.Contains('done.Wait(waitMs)') -and -not $uitc.Contains('.Send(') -and -not $uitc.Contains('Invoke(')) `
@@ -106,8 +119,27 @@ Check ($auto.Contains('NativeTabSync.Register()')) 'the addin registers it at st
 # Pipeline run 1, fix 2: the endpoint exists with NO chat pane.
 Check ($auto.Contains('IdeCallbackHost.Start()')) 'the IDE call-back endpoint starts at addin start, not in the chat pane'
 $cbHost = Text 'IdeCallbackHost.cs'
-Check ($cbHost -match 'CallbackTools\s*=\s*\{\s*"get_live_text",\s*"editor_tab_sync"\s*\}' -and $cbHost.Contains('registry.RetainOnly(CallbackTools)')) `
+Check ($src -match 'IdeCallbackTools\s*=\s*\{\s*"get_live_text",\s*"editor_tab_sync"\s*\}' -and $src.Contains('registry.RetainOnly(IdeCallbackTools)') -and
+       $cbHost.Contains('McpToolRegistry.BuildIdeCallbackRegistry(')) `
     'the call-back endpoint serves exactly get_live_text and editor_tab_sync'
+# Pipeline run 2 (HIGH): WITH a workspace, so the #266 read gate on editor_tab_sync check has the solution's roots.
+Check ($cbHost -match 'BuildIdeCallbackRegistry\([^;]*new IdeWorkspace\(\)[^;]*new McpServer\.ControlUiDispatcher\(ui\)\)') `
+    'the call-back registry gets the IDE''s workspace and a UI dispatcher'
+Check ($src -match 'registry\._workspace = workspace;' -and -not ($src -match 'BuildIdeCallbackRegistry[\s\S]{0,900}?SetWorkspace\(')) `
+    'the workspace is set on that registry only (the shared SharedLspBridge providers are not rebound)'
+$ws = Text 'IdeWorkspace.cs'
+Check ($ws.Contains('EditorService.GetOpenSolutionPath()') -and $ws.Contains('EffectiveClarionVersion.CurrentConfig()') -and $ws.Contains('RedFileService.Active')) `
+    'IdeWorkspace reports the IDE''s open solution, effective version and .red'
+Check ($cbHost.Contains('ModernEmbeditorLauncher.EnsureRedirectionLoaded()')) 'the call-back host keeps the .red loaded with no chat pane'
+Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OutOfScope = _workspace != null')) `
+    'the #266 gate stays; its refusal is out-of-scope only when the host HAS a workspace (none = a failed check)'
+$guard = Text 'Services\OpenTabGuard.cs'
+Check ($guard.Contains('if (p.Answered) failedChecks.Add(who); else unreachable.Add(who);') -and $guard.Contains('"Error: could not check whether "')) `
+    'an IDE that answered with a failed check refuses the write (fail closed)'
+$rec = Text 'Services\IdeEndpointRecord.cs'
+$pubAt = $rec.IndexOf('public static void Publish(')
+Check ($pubAt -ge 0 -and $rec.IndexOf('SweepStale();', $pubAt) -gt $pubAt -and $rec.IndexOf('SweepStale();', $pubAt) -lt $rec.IndexOf('File.WriteAllText', $pubAt)) `
+    'every publish first sweeps records of IDEs that died without Stop'
 Check ($cbHost.Contains('ReclaimPreferredPort = false') -and $cbHost -match 'PreferredPort\s*=\s*19390;') `
     'it never takes or retries the chat pane''s 19372'
 Check ($cbHost.Contains('new McpServer(ui, null)')) 'it accepts only its own session token (no external token)'
