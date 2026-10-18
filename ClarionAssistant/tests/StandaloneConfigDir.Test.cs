@@ -275,19 +275,42 @@ static class StandaloneConfigDirTest
                 Candidates = new List<ServerCandidate> { boot, c11 }
             };
 
-            pi = guardIn(older11); pi.PinnedVersion = "Clarion 11.0.13244";
+            // INFERRED choices are refused for being older.
+            pi = guardIn(older11); pi.ProjectMajors.Add(new KeyValuePair<string, int>("A", 11));
             pk = ServerPicker.Pick(pi);
-            Check(pk.DowngradeRefused && pk.Server.ExePath == boot.ExePath,
-                "the project's Clarion holds an OLDER server: refused, the bootstrap serves", pk.Note);
+            Check(pk.DowngradeRefused && pk.Server.ExePath == boot.ExePath && pk.Warning == null,
+                "an INFERRED choice (.Version) of an OLDER server is refused: the bootstrap serves", pk.Note);
             Check(Has(pk.Note, "REFUSED") && Has(pk.Note, "6.0.0.1300") && Has(pk.Note, "6.0.0.1400") && Has(pk.Note, r11),
                 "...and the note names both versions and the refused root", pk.Note);
 
-            pi = guardIn(older11); pi.ProjectMajors.Add(new KeyValuePair<string, int>("A", 11));
-            Check(ServerPicker.Pick(pi).DowngradeRefused, "the guard applies to every tier (here the projects' .Version)");
+            pi = guardIn(older11); pi.LiveIdes.Add(new LiveIde { Pid = 9, ExePath = r11 + @"\bin\Clarion.exe" });
+            Check(ServerPicker.Pick(pi).DowngradeRefused, "an inferred choice from a live IDE is refused too");
 
-            pi = guardIn(CandV(r11, "11.0.0.13244", null)); pi.PinnedVersion = "Clarion 11.0.13244";
+            pi = guardIn(CandV(r11, "11.0.0.13244", null)); pi.ProjectMajors.Add(new KeyValuePair<string, int>("A", 11));
             pk = ServerPicker.Pick(pi);
             Check(pk.DowngradeRefused && Has(pk.Note, "version unreadable"), "a server whose version cannot be read is refused too", pk.Note);
+
+            // A version PINNED in clarion-assistant.json is deliberate (pipeline run 2): it runs, with the warning.
+            pi = guardIn(older11); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(!pk.DowngradeRefused && pk.Server.Root == r11 && pk.Source == ServerPicker.SourceSolutionFile,
+                "clarion-assistant.json PINS that Clarion: its older server runs", pk.Note);
+            Check(Has(pk.Warning, "WARNING") && Has(pk.Warning, "6.0.0.1300") && Has(pk.Warning, "6.0.0.1400")
+                  && Has(pk.Warning, SolutionClarionVersion.FileName) && Has(pk.Note, "WARNING"),
+                "...with a WARNING naming both versions and the json, in the note too", pk.Warning);
+
+            pi = guardIn(older11); pi.PinnedVersion = "Clarion 11.0.13244"; pi.AllowOlderPinnedServer = false;
+            pk = ServerPicker.Pick(pi);
+            Check(pk.DowngradeRefused && pk.Server.ExePath == boot.ExePath, "\"allowOlderServer\": false makes the json pin refuse it", pk.Note);
+
+            File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\", \"allowOlderServer\": false }");
+            var pinAllow = SolutionClarionVersion.ReadPin(sln);
+            Check(pinAllow.AllowOlderServer == false && pinAllow.Note == null, "allowOlderServer is read from the json", pinAllow.Note);
+            File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\", \"allowOlderServer\": \"no\" }");
+            pinAllow = SolutionClarionVersion.ReadPin(sln);
+            Check(pinAllow.AllowOlderServer == null && Has(pinAllow.Note, "allowOlderServer"), "a non-boolean allowOlderServer is reported and ignored", pinAllow.Note);
+            File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\" }");
+            Check(SolutionClarionVersion.ReadPin(sln).AllowOlderServer == null, "absent allowOlderServer stays null (= allowed)");
 
             pi = guardIn(CandV(r11, "11.0.0.13244", "6.0.0.1400")); pi.PinnedVersion = "Clarion 11.0.13244";
             pk = ServerPicker.Pick(pi);

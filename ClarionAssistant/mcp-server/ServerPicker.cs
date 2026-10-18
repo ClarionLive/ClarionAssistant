@@ -45,9 +45,14 @@ namespace ClarionAssistant.McpServer
         public List<LiveIde> LiveIdes = new List<LiveIde>();
         /// <summary>
         /// The server answering --pick-server (the launcher's "bootstrap", the first one it found), or null. A pick is
-        /// never OLDER than it unless the user pinned that Clarion with --clarion-version (see <see cref="ServerPicker.Pick"/>).
+        /// never OLDER than it unless the user named that Clarion (--clarion-version or clarion-assistant.json; see <see cref="ServerPicker.Pick"/>).
         /// </summary>
         public ServerCandidate Bootstrap;
+        /// <summary>
+        /// clarion-assistant.json's "allowOlderServer" (default true): whether its clarionVersion pin may start an OLDER
+        /// server than the bootstrap (with a warning). False refuses it like an inferred choice. Ignored for other tiers.
+        /// </summary>
+        public bool AllowOlderPinnedServer = true;
     }
 
     internal sealed class ServerPick
@@ -102,8 +107,9 @@ namespace ClarionAssistant.McpServer
         /// The pick, then the DOWNGRADE GUARD (pipeline run 1, e1df6c2e): deploys go per Clarion version, so the server
         /// under the project's Clarion can be an older Clarion Assistant than the one answering. Running it would silently
         /// drop every fix since (path policy #266, #205, ...). So a pick older than the bootstrap - or whose version cannot
-        /// be read - is REFUSED and the bootstrap serves instead, said so; except when the user pinned that Clarion with
-        /// --clarion-version, where it runs with a WARNING naming both versions.
+        /// be read - is REFUSED and the bootstrap serves instead, said so; except when the user NAMED that Clarion
+        /// (--clarion-version, or clarionVersion in clarion-assistant.json unless "allowOlderServer": false), where it
+        /// runs with a WARNING naming both versions.
         /// </summary>
         public static ServerPick Pick(ServerPickInputs input)
         {
@@ -117,9 +123,17 @@ namespace ClarionAssistant.McpServer
             string what = "the server under " + pick.Server.Root + " is Clarion Assistant "
                 + (v != null ? v.ToString() : "(version unreadable)") + ", OLDER than " + boot.ExePath
                 + " (Clarion Assistant " + boot.ServerVersion + ") - it lacks every fix made since";
-            if (pick.Source == SourceCommandLine)
+            // A NAMED version is the developer's deliberate choice - on the command line, or committed in the solution's
+            // clarion-assistant.json (pipeline run 2): refusing it would bring back the install-keyed mismatch #244 is
+            // about. Only an INFERRED choice (.Version resources, a live IDE, the newest) is refused for being older.
+            // clarion-assistant.json's "allowOlderServer": false opts its pin out.
+            bool pinned = pick.Source == SourceCommandLine
+                || (pick.Source == SourceSolutionFile && input.AllowOlderPinnedServer);
+            if (pinned)
             {
-                pick.Warning = "WARNING: " + what + ". Running it anyway because --clarion-version names that Clarion; "
+                string who = pick.Source == SourceCommandLine ? "--clarion-version names"
+                    : SolutionClarionVersion.FileName + " (clarionVersion) pins";
+                pick.Warning = "WARNING: " + what + ". Running it anyway because " + who + " that Clarion; "
                     + "update Clarion Assistant in " + pick.Server.Root + " to get those fixes";
                 pick.Note = pick.Note + "; " + pick.Warning;
                 return pick;
@@ -132,7 +146,10 @@ namespace ClarionAssistant.McpServer
                 DowngradeRefused = true,
                 Note = pick.Note + "; REFUSED: " + what + ", so " + boot.ExePath + " serves instead (it still uses the"
                     + " Clarion version chosen for the project). Install or deploy Clarion Assistant for that Clarion to use"
-                    + " its own server, or pass --clarion-version to insist"
+                    + (pick.Source == SourceSolutionFile
+                        ? " its own server (" + SolutionClarionVersion.FileName + " pins that Clarion, but its \"allowOlderServer\": false refuses an older server)"
+                        : " its own server, or name the version (--clarion-version, or clarionVersion in "
+                          + SolutionClarionVersion.FileName + ") to insist")
             };
         }
 
@@ -378,6 +395,7 @@ namespace ClarionAssistant.McpServer
                 SolutionPath = solutionPath,
                 CommandLineVersion = commandLineVersion,
                 PinnedVersion = pin.Version,
+                AllowOlderPinnedServer = pin.AllowOlderServer != false,
                 Candidates = FindInstalled(ClarionVersionService.InstalledClarionRoot()),
                 FindNamed = name => cfgDir != null
                     ? ClarionVersionService.FindNamedInConfigDir(cfgDir, name)

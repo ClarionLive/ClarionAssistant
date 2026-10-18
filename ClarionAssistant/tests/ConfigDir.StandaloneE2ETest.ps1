@@ -193,8 +193,10 @@ try {
     Assert-That ($outLines.Count -eq 1 -and $outLines[0] -eq $fakeServer) "7: stdout should be exactly the version's own server '$fakeServer', got: $out7"
     Assert-That (([string]$err7.Result) -match 'clarion-assistant\.json') "7: stderr should say the json chose it, got: $($err7.Result)"
 
-    # ---- 7b: the version's own server is NOT a Clarion Assistant this new (no version at all): refused ----
+    # ---- 7b: the version's own server is NOT a Clarion Assistant this new (no version at all), and the json opts its
+    #      pin out with "allowOlderServer": false - so it is refused like an inferred choice ----
     [System.IO.File]::WriteAllText($fakeServer, 'placeholder, no version resource')
+    Set-Pin @{ clarionVersion = $name; configDir = $cfgA; allowOlderServer = $false }
     $p7b = Start-Server ('--pick-server --pick-out "' + (Join-Path $work 'pick.txt') + '"') @{ CLARION_ROOTS = $fakeRoot }
     $p7b.StandardInput.Close()
     $err7b = $p7b.StandardError.ReadToEndAsync()
@@ -206,14 +208,31 @@ try {
     Assert-That ([string]::IsNullOrEmpty($out7b)) "7b: with --pick-out nothing may go to stdout, got: $out7b"
     Assert-That (([string]$err7b.Result) -match 'REFUSED' -and ([string]$err7b.Result) -match 'version unreadable') "7b: stderr should say it REFUSED the downgrade and why, got: $($err7b.Result)"
 
-    # ---- 7c: --clarion-version PINS that Clarion: the unversioned server is picked, with a WARNING ----
-    $p7c = Start-Server ('--pick-server --clarion-version "' + $name + '"') @{ CLARION_ROOTS = $fakeRoot }
+    # ---- 7c: the json PINS that Clarion (default): the unversioned server is picked, with a WARNING ----
+    Set-Pin @{ clarionVersion = $name; configDir = $cfgA }
+    $p7c = Start-Server '--pick-server' @{ CLARION_ROOTS = $fakeRoot }
     $p7c.StandardInput.Close()
     $err7c = $p7c.StandardError.ReadToEndAsync()
     $out7c = $p7c.StandardOutput.ReadToEnd()
     [void]$p7c.WaitForExit(30000)
-    Assert-That ($out7c.Trim() -eq $fakeServer -and ([string]$err7c.Result) -match 'WARNING') "7c: a pinned downgrade should be picked with a WARNING, got '$($out7c.Trim())': $($err7c.Result)"
+    Assert-That ($out7c.Trim() -eq $fakeServer -and ([string]$err7c.Result) -match 'WARNING' -and ([string]$err7c.Result) -match 'clarion-assistant\.json \(clarionVersion\) pins') "7c: a json-pinned downgrade should be picked with a WARNING, got '$($out7c.Trim())': $($err7c.Result)"
+
+    # ---- 7d: --clarion-version pins it too, even over "allowOlderServer": false ----
+    Set-Pin @{ clarionVersion = $name; configDir = $cfgA; allowOlderServer = $false }
+    $p7d = Start-Server ('--pick-server --clarion-version "' + $name + '"') @{ CLARION_ROOTS = $fakeRoot }
+    $p7d.StandardInput.Close()
+    $err7d = $p7d.StandardError.ReadToEndAsync()
+    $out7d = $p7d.StandardOutput.ReadToEnd()
+    [void]$p7d.WaitForExit(30000)
+    Assert-That ($out7d.Trim() -eq $fakeServer -and ([string]$err7d.Result) -match 'WARNING' -and ([string]$err7d.Result) -match '--clarion-version names') "7d: a --clarion-version downgrade should be picked with a WARNING, got '$($out7d.Trim())': $($err7d.Result)"
     Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
+    Set-Pin @{ clarionVersion = $name; configDir = $cfgA }
+
+    # ---- 7e: launched by the launcher with the json-pinned downgrade: serverChosenBy carries the WARNING ----
+    [System.IO.File]::WriteAllText($fakeServer, 'placeholder, no version resource')
+    $r7e = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }
+    Copy-Item -LiteralPath $exe -Destination $fakeServer -Force
+    Assert-That (([string]$r7e.Info.serverChosenBy) -match 'WARNING' -and ([string]$r7e.Info.serverChosenBy) -match 'version unreadable') "7e: serverChosenBy should carry the downgrade WARNING, got: $($r7e.Info.serverChosenBy)"
 
     # ---- 8: launched by the launcher: serverChosenBy ----
     $r8 = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }; Show '8' $r8
