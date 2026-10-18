@@ -59,6 +59,17 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 <!-- Entries for the next release go here, in the same shape as the release blocks below. -->
 
+### Upgrade notes
+
+Do these once after installing this release:
+
+- **Update Clarion Assistant in every Clarion you use, not just the newest.** The add-in and the standalone `clarion-mcp-server` must be from the same release. A Clarion IDE still running an older add-in can't check its editor tabs before a write: writes go ahead with a note telling you to update it. The plugin also won't start an older server for a project that pins that Clarion in `clarion-assistant.json`; it uses the newest one and says why.
+- **Re-index CodeGraph** for each solution, to pick up class libraries reached through `MODULE()`/`LINK()` and globals from INCLUDEd files. `list_codegraph_databases` marks an index made by an older indexer as STALE.
+- **Re-run `ingest_schema`** on your dictionary. Existing SchemaGraph databases get the new columns automatically, but they stay empty until you re-ingest.
+- **Check what the file and search tools may reach** (see the #266 entry below). They now stay inside your solution, its projects, the Clarion install and the `.red` folders. Add other folders, or a solution on a network drive, with `Mcp.AllowedRoots` in `%APPDATA%\ClarionAssistant\settings.txt`. `search_content` is off unless you set `Mcp.EverythingContentSearch=true`. Some files are never written by these tools, whatever the setting: edit those with your assistant's own Edit/Write tools, which ask you first.
+- **Settings and switches added in this release:** `Mcp.AllowedRoots`, `Mcp.DeniedPaths`, `Mcp.EverythingContentSearch` (and the `CLARION_MCP_ALLOWED_ROOTS` / `CLARION_MCP_DENIED_PATHS` environment variables); `configDir` and `allowOlderServer` in `clarion-assistant.json`; `--clarion-config-dir`, `CLARION_CONFIG_DIR`, `CLARION_ROOTS` and `--capabilities` for the standalone server.
+- **CA Embeditor recovery copies** in `%APPDATA%\ClarionAssistant\embed-recovery` older than 30 days are now deleted automatically.
+
 ### Closing a tab no longer leaves the tab strip stuck
 
 With several tabs open, closing one that wasn't the tab you were looking at left it drawn on the tab strip, and the other tabs' close buttons seemed to stop working until something refreshed the pane, such as opening Settings. The tab had in fact closed; only the strip hadn't been redrawn. It now redraws whenever a tab is closed or added.
