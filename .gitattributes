@@ -5,3 +5,8 @@
 third-party/** -text
 # Same for a bundled skill's own licence (session-viewer, MIT, by Dinko Bacun).
 marketplace/plugins/clarion-assistant/skills/session-viewer/LICENSE -text
+# Batch files must be CRLF in every checkout, whatever core.autocrlf says: cmd.exe
+# can mis-resolve goto/call labels in an LF-only file, and the plugin launcher
+# (clarion-tools.cmd) is label-driven.
+*.cmd text eol=crlf
+*.bat text eol=crlf
