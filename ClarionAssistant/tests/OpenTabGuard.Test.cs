@@ -316,6 +316,11 @@ static class OpenTabGuardTest
             r = OpenTabGuard.Run(file, false, Write);
             Ok("...and refuses the write", Unchanged() && r.StartsWith("Error: could not check whether"), r);
             Ok("'Unknown tool' for ANOTHER tool is not taken as an older addin", !OpenTabGuard.IsUnknownToolReply("Error executing tool 'get_live_text': Unknown tool: get_live_text"));
+            // Pipeline run 5: exact text only.
+            Ok("the exact reply, with surrounding whitespace, is an older addin", OpenTabGuard.IsUnknownToolReply("  " + unknown + "\r\n"));
+            var echo = OpenTabGuard.FromCheckReply("Error executing tool 'editor_tab_sync': could not read 'C:\\Unknown tool\\x.clw'", null, null);
+            Ok("an error that merely contains 'Unknown tool' (an echoed path) is a FAILED check, not an older addin", !echo.Reachable && echo.Answered);
+            Ok("...nor is the reply with anything appended", !OpenTabGuard.IsUnknownToolReply(unknown + " (and more)"));
 
             Console.WriteLine("-- both spellings reach the IDE (pipeline run 1: aliases)");
             Reset();

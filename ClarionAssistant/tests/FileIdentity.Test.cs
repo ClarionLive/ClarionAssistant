@@ -104,7 +104,9 @@ static class FileIdentityTest
             {
                 string[] network = { @"\\attacker\s\x.clw", @"\\attacker@80\DavWWWRoot\x.clw", @"\\attacker@SSL@443\x.clw",
                                      @"\\?\UNC\attacker\s\x.clw", "//attacker/s/x.clw", @"\\?\GLOBALROOT\Device\Mup\attacker\s\x.clw",
-                                     @"\\.\UNC\attacker\s\x.clw" };
+                                     @"\\.\UNC\attacker\s\x.clw",
+                                     // pipeline run 5: the NT namespace, and a \\.\ path whose '..' climbs past the drive
+                                     @"\??\UNC\attacker\s\x.clw", @"\\.\C:\..\UNC\attacker\s\x.clw", @"\\.\C:\a\..\..\UNC\attacker\s\x.clw" };
                 foreach (var net in network)
                 {
                     Ok("network by text: " + net, FileIdentity.IsNetworkPath(net));

@@ -405,9 +405,13 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static bool IsUnknownToolReply(string reply)
         {
-            return reply != null && reply.StartsWith("Error executing tool 'editor_tab_sync'", StringComparison.Ordinal)
-                && reply.IndexOf("Unknown tool", StringComparison.Ordinal) >= 0;
+            // Pipeline run 5: EXACT text only (the reply of every addin from 1f4d918 through d3116a7^). A newer addin's
+            // error that merely contains the words - say, echoing a path like C:\Unknown tool\x - is a failed check.
+            return reply != null && string.Equals(reply.Trim(), UnknownToolReply, StringComparison.Ordinal);
         }
+
+        /// <summary>McpDispatcher's reply for a pane without editor_tab_sync, verbatim.</summary>
+        public const string UnknownToolReply = "Error executing tool 'editor_tab_sync': Unknown tool: editor_tab_sync";
 
         /// <summary>
         /// One IDE's raw editor_tab_sync check reply as a TabProbe: an older addin's "Unknown tool" is an IDE that cannot be
