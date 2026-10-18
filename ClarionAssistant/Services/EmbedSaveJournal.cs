@@ -152,32 +152,40 @@ namespace ClarionAssistant.Services
         /// proof that it reached the saved .app. An entry that did not land in a later process means Clarion
         /// stopped before the app was saved, or the app was closed without saving: both are offered.
         ///
-        /// SUPERSEDED (pipeline run 2, adversary): an entry that reads as Lost although the .app file was written
-        /// AFTER it was taken (<paramref name="appLastWrite"/> later than <see cref="Entry.Written"/> +
-        /// <see cref="SupersededGrace"/>) means the app was saved or replaced since: a git checkout, import_txa, a
-        /// native-embeditor edit that put the old text back. Offering it then would push stale code over a
-        /// deliberate revert, so it is archived (dated copy, toast names it) instead. The crash case leaves the
-        /// .app older than the entry and is still offered. Null = the .app's time is unknown: decided as before.
+        /// A Lost entry is OFFERED even when the .app was written after it (PM ruling, pipeline run 2). That is
+        /// exactly the #179 reporter's sequence: the crashed process lingered and consolidated the .app, without
+        /// the embed, minutes after the save. A deliberate revert (git checkout, import_txa, a native edit) leaves
+        /// the same trace, and no timestamp tells the two apart, so the offer is made in both cases and its
+        /// wording says so (<see cref="AppWrittenSince"/>). Restore is never automatic, and the developer decides.
         /// </summary>
-        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? appLastWrite)
+        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid)
         {
             switch (Assess(e, fresh))
             {
                 case Verdict.Persisted: return e.Pid != currentPid ? OpenDecision.Retire : OpenDecision.Keep;
-                case Verdict.Lost: return IsSuperseded(e, appLastWrite) ? OpenDecision.Archive : OpenDecision.Offer;
+                case Verdict.Lost: return OpenDecision.Offer;
                 default: return OpenDecision.Archive;
             }
         }
 
-        /// <summary>How much later than the entry the .app must have been written to count as saved since. The
-        /// embed save itself happens within a second or two of the entry; a write inside this window is not taken
-        /// as a later, deliberate save of the app.</summary>
-        public static readonly TimeSpan SupersededGrace = TimeSpan.FromSeconds(60);
-
-        /// <summary>True when the .app was written after the entry (beyond <see cref="SupersededGrace"/>).</summary>
-        public static bool IsSuperseded(Entry e, DateTime? appLastWrite)
+        /// <summary>True when the .app file was last written after the entry was taken. It changes only the
+        /// offer's wording ("the app was last written on ... without it"), never whether it is offered.</summary>
+        public static bool AppWrittenSince(Entry e, DateTime? appLastWrite)
         {
-            return e != null && appLastWrite.HasValue && appLastWrite.Value > e.Written + SupersededGrace;
+            return e != null && appLastWrite.HasValue && appLastWrite.Value > e.Written;
+        }
+
+        /// <summary>The offer's text. When the .app was written after the save it names that time and both
+        /// possible causes; otherwise the crash/closed-unsaved wording.</summary>
+        public static string OfferMessage(Entry e, DateTime? appLastWrite)
+        {
+            string when = e.Written.ToString("yyyy-MM-dd HH:mm");
+            if (AppWrittenSince(e, appLastWrite))
+                return "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
+                       "written on " + appLastWrite.Value.ToString("yyyy-MM-dd HH:mm") + " without it: Clarion may have stopped " +
+                       "before saving it, or it was changed or reverted since. Restore it as unsaved edits?";
+            return "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
+                   "was saved, or the app was closed without saving. Restore it as unsaved edits?";
         }
 
         /// <summary>Entries older than this are archived unoffered by <see cref="SweepStale"/>.</summary>

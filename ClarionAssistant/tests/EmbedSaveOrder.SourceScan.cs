@@ -177,8 +177,13 @@ static class EmbedSaveOrderSourceScan
         }
         Ok("the round-trip retires the journal ONLY on a failure that left the text in the editor (never on ok=True)",
             retiresGuarded && nRetire == 2, "retires=" + nRetire);
-        Ok("the journal file is deleted in exactly three places: failure-intact, persisted-at-open, developer's Discard",
-            Count(view, "EmbedSaveJournal.Retire(") == 3);
+        Ok("the journal file is deleted (no copy) in exactly two places: failure-intact and persisted-at-open",
+            Count(view, "EmbedSaveJournal.Retire(") == 2);
+        int hso = view.IndexOf("private void HandleSavedEditsOffer(", StringComparison.Ordinal);
+        int hsoEnd = hso >= 0 ? view.IndexOf("private void BeginSaveJournal(", hso, StringComparison.Ordinal) : -1;
+        string hsoBody = hso >= 0 && hsoEnd > hso ? view.Substring(hso, hsoEnd - hso) : "";
+        Ok("both offer buttons keep a dated copy (Restore and Discard archive, neither just deletes)",
+            Count(hsoBody, "EmbedSaveJournal.Archive(") == 2 && !hsoBody.Contains("EmbedSaveJournal.Retire("));
         Ok("the next open checks the journal", view.Contains("CheckSaveJournal();   // a save that did not survive the Generator"));
         int ose = page.IndexOf("msg.type === 'offerSavedEdits'", StringComparison.Ordinal);
         int oseEnd = ose >= 0 ? page.IndexOf("} else if (msg.type", ose + 10, StringComparison.Ordinal) : -1;
@@ -196,10 +201,23 @@ static class EmbedSaveOrderSourceScan
         int cjEnd = cj >= 0 ? view.IndexOf("private void HandleSavedEditsOffer(", cj, StringComparison.Ordinal) : -1;
         string cjBody = cj >= 0 && cjEnd > cj ? view.Substring(cj, cjEnd - cj) : "";
         Ok("the open decides with the pid rule (EmbedSaveJournal.Decide), not the bare verdict",
-            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), appWrite)") && !cjBody.Contains(".Assess("));
-        // ---- pipeline run 2 ----
-        Ok("the open passes the .app's last-write time (a revert since the save is not offered)",
-            cjBody.Contains("appWrite = File.GetLastWriteTime(JournalApp())"));
+            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid())") && !cjBody.Contains(".Assess("));
+        // ---- pipeline run 2 (PM ruling) ----
+        Ok("the offer's wording uses the .app's last-write time (it never decides whether to offer)",
+            cjBody.Contains("appWrite = File.GetLastWriteTime(JournalApp())") &&
+            cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite)") && !cjBody.Contains("IsSuperseded") &&
+            !cjBody.Contains("AppWrittenSince"));
+        // Every use of the .app time in the open check is its read, the log line, or the offer's wording: none may
+        // branch on it (a later write is the #179 reporter's crash, and it must still be offered).
+        string badUse = null;
+        foreach (var line in cjBody.Split('\n'))
+        {
+            if (!line.Contains("appWrite")) continue;
+            if (line.Contains("DateTime? appWrite = null;") || line.Contains("appWrite = File.GetLastWriteTime(JournalApp())") ||
+                line.Contains("(appWrite.HasValue ? appWrite.Value.ToString(") || line.Contains("OfferMessage(e, appWrite)")) continue;
+            badUse = line.Trim();
+        }
+        Ok("the .app time never decides whether a lost save is offered", badUse == null, badUse);
         Ok("the first open of a session sweeps stale journals before reading this one",
             cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) >= 0 &&
             cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) < cjBody.IndexOf("EmbedSaveJournal.Read(", StringComparison.Ordinal) &&
@@ -212,8 +230,6 @@ static class EmbedSaveOrderSourceScan
         Ok("both launcher paths capture the embed's own app and hand it to the view",
             Count(launcher, "appTree.GetOpenEmbedAppFileName()") == 2 &&
             launcher.Contains("view.EmbedAppFile = capApp;") && launcher.Contains("overlay.EmbedAppFile = capApp;"));
-        Ok("the offer names both causes honestly",
-            cjBody.Contains("Clarion stopped before it \" +") && cjBody.Contains("\"was saved, or the app was closed without saving. Restore it as unsaved edits?\""));
 
         // ---- GH #179: every monaco-spike.log line names its process ----
         string spike = File.ReadAllText(Path.Combine(root, "MonacoClarionSourceEditor.cs"));

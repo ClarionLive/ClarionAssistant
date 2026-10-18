@@ -395,22 +395,26 @@ static class EmbedSaveFlowTest
             int me = System.Diagnostics.Process.GetCurrentProcess().Id;
             Ok("written with this process's pid", e.Pid == me);
             Ok("same session, reopen shows the saved text -> Keep (not retired, no offer)",
-                EmbedSaveJournal.Decide(e, saved, me, null) == EmbedSaveJournal.OpenDecision.Keep);
-            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1, null) == EmbedSaveJournal.OpenDecision.Retire);
-            Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me, null) == EmbedSaveJournal.OpenDecision.Offer &&
-                EmbedSaveJournal.Decide(e, origT, me + 1, null) == EmbedSaveJournal.OpenDecision.Offer);
-            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1, null) == EmbedSaveJournal.OpenDecision.Archive);
+                EmbedSaveJournal.Decide(e, saved, me) == EmbedSaveJournal.OpenDecision.Keep);
+            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.OpenDecision.Retire);
+            Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me) == EmbedSaveJournal.OpenDecision.Offer &&
+                EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.OpenDecision.Offer);
+            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1) == EmbedSaveJournal.OpenDecision.Archive);
 
-            // Pipeline run 2, adversary: a baseline-looking reopen after the .app was saved/replaced is a revert.
-            Ok("crash: the .app is OLDER than the save -> still Offer",
-                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddMinutes(-10)) == EmbedSaveJournal.OpenDecision.Offer);
-            Ok("the .app written within the grace window of the save -> still Offer",
-                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddSeconds(5)) == EmbedSaveJournal.OpenDecision.Offer);
-            Ok("the .app saved/replaced AFTER the save (git checkout, import_txa) -> Archive, not offered",
-                EmbedSaveJournal.Decide(e, origT, me + 1, e.Written.AddDays(40)) == EmbedSaveJournal.OpenDecision.Archive &&
-                EmbedSaveJournal.IsSuperseded(e, e.Written.AddDays(40)));
-            Ok("...but a landed save is still retired, whatever the .app's time",
-                EmbedSaveJournal.Decide(e, saved, me + 1, e.Written.AddDays(40)) == EmbedSaveJournal.OpenDecision.Retire);
+            // PM ruling (pipeline run 2): the #179 reporter's sequence. Journal at T, the crashed process lingers and
+            // writes the .app at T+12 min WITHOUT the embed, the developer reopens in a new session: OFFERED, and the
+            // wording names the later write. A deliberate revert looks identical and is offered too (accepted).
+            DateTime appT12 = e.Written.AddMinutes(12);
+            Ok("reporter's sequence: .app written 12 min after the save, new session -> Offer",
+                EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.OpenDecision.Offer && EmbedSaveJournal.AppWrittenSince(e, appT12));
+            string m12 = EmbedSaveJournal.OfferMessage(e, appT12);
+            Ok("...worded with the .app's last write and both causes", m12.Contains("The app was last written on " +
+                appT12.ToString("yyyy-MM-dd HH:mm") + " without it") && m12.Contains("Clarion may have stopped before saving it") &&
+                m12.Contains("changed or reverted since") && m12.EndsWith("Restore it as unsaved edits?"), m12);
+            string mOld = EmbedSaveJournal.OfferMessage(e, e.Written.AddMinutes(-10));
+            Ok(".app older than the save -> the crash/closed-unsaved wording", !EmbedSaveJournal.AppWrittenSince(e, e.Written.AddMinutes(-10)) &&
+                mOld.Contains("Clarion stopped before it was saved, or the app was closed without saving") && !mOld.Contains("last written"), mOld);
+            Ok("unknown .app time -> the crash/closed-unsaved wording", !EmbedSaveJournal.OfferMessage(e, null).Contains("last written"));
 
             // Pipeline run 2, debugger: the count-changed fallback needs a unique, non-empty match.
             var emptied = EmbedSaveJournal.Parse(EmbedSaveJournal.Serialize(e));
@@ -428,7 +432,7 @@ static class EmbedSaveFlowTest
             var shifted = new List<string> { saved[0], "", "  ! new control's embed", O1, big };
             Ok("slot count changed after a landed save -> Persisted (no false alert)",
                 EmbedSaveJournal.Assess(e, shifted) == EmbedSaveJournal.Verdict.Persisted);
-            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1, null) == EmbedSaveJournal.OpenDecision.Retire);
+            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1) == EmbedSaveJournal.OpenDecision.Retire);
             var shiftedLost = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
             Ok("slot count changed and the save is missing -> Diverged (archived, not offered by position)",
                 EmbedSaveJournal.Assess(e, shiftedLost) == EmbedSaveJournal.Verdict.Diverged);
