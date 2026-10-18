@@ -1,0 +1,10 @@
+# Mirrored to the root of ClarionLive/clarionassistant-marketplace by
+# installer/publish-marketplace-to-github.ps1, so it governs what every plugin
+# install checks out.
+# Batch files must be CRLF whatever the user's core.autocrlf says: cmd.exe can
+# mis-resolve goto/call labels in an LF-only file, and the plugin launcher
+# (clarion-assistant/launcher/clarion-tools.cmd) is label-driven.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+# The bundled session-viewer skill's licence is reproduced verbatim from upstream.
+plugins/clarion-assistant/skills/session-viewer/LICENSE -text
