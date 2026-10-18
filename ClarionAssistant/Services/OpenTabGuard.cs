@@ -20,6 +20,19 @@ namespace ClarionAssistant.Services
         public object Handle;
         /// <summary>Unreachable because it ran out of time (not refused, not down): IdeFanOut stops asking it for a while.</summary>
         public bool TimedOut;
+        /// <summary>
+        /// Pipeline run 2: with <see cref="Reachable"/> false, the IDE DID answer, but its check failed (a path-policy
+        /// refusal, an exception, a garbled answer). That is not "no IDE": the file may well be open there, so the guard
+        /// refuses the write instead of noting it. False for silence (no IDE, connection refused, timeout).
+        /// </summary>
+        public bool Answered;
+        /// <summary>
+        /// The IDE answered that the path is outside ITS allowed roots (the #266 read gate on editor_tab_sync), with a
+        /// workspace in place: that IDE will not say whether the file is open there. Normal for a second IDE on another
+        /// solution, so it is a note, not a refusal. The same refusal from an IDE with NO workspace (a mis-wired host, the
+        /// pipeline run 2 HIGH) is not out of scope: it is a failed check.
+        /// </summary>
+        public bool OutOfScope;
     }
 
     /// <summary>The outcome of reloading one native tab from disk.</summary>
@@ -54,7 +67,10 @@ namespace ClarionAssistant.Services
     ///                                          and says plainly that the tab still has its edits and a save there will
     ///                                          overwrite this write (the tab is NOT reloaded: that would drop them).
     ///   - open in the CA Editor .............. write; say it will offer to reload.
-    ///   - no IDE could be asked .............. write as before, plus one line saying the tabs could not be checked.
+    ///   - no IDE could be asked .............. write as before, plus one line saying the tabs could not be checked
+    ///                                          (no IDE, connection refused, or it did not answer in time).
+    ///   - an IDE answered but its check FAILED (path-policy refusal, exception, garbled answer): refuse, naming the
+    ///                                          error, unless overwrite_open_buffer: true (pipeline run 2: fail closed).
     ///
     /// Host wiring (both sets of delegates are set at start-up; this file has no IDE references and is compiled into
     /// the addin and the standalone clarion-mcp-server):
@@ -89,7 +105,7 @@ namespace ClarionAssistant.Services
             {
                 if (string.IsNullOrEmpty(p)) continue;
                 bool dup = false;
-                foreach (var q in list) if (string.Equals(q.TrimEnd('\\'), p.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) dup = true;
+                foreach (var q in list) if (FileIdentity.Lexical(q, p)) dup = true;
                 if (!dup) list.Add(p);
             }
             return list;
@@ -104,6 +120,7 @@ namespace ClarionAssistant.Services
             var d = new TabGuardDecision();
             string name = SafeName(path);
             var unreachable = new List<string>();
+            var failedChecks = new List<string>();
             bool anyReached = false;
             var dirtyNative = new List<TabProbe>();
 
@@ -114,7 +131,8 @@ namespace ClarionAssistant.Services
                     if (p == null) continue;
                     if (!p.Reachable)
                     {
-                        unreachable.Add((string.IsNullOrEmpty(p.Ide) ? "" : p.Ide + ": ") + (p.Reason ?? "no answer"));
+                        string who = (string.IsNullOrEmpty(p.Ide) ? "" : p.Ide + ": ") + (p.Reason ?? "no answer");
+                        if (p.Answered) failedChecks.Add(who); else unreachable.Add(who);
                         continue;
                     }
                     anyReached = true;
@@ -147,6 +165,24 @@ namespace ClarionAssistant.Services
                 d.Notes.Add("WARNING: " + name + " is open in the Clarion editor with unsaved changes, and " + OverrideArg
                     + " was set, so it was written anyway. That tab was NOT reloaded (it would lose its edits): saving it there "
                     + "WILL OVERWRITE THIS WRITE. To keep this write, close that tab without saving.");
+            }
+
+            // Pipeline run 2: an IDE that ANSWERED but whose check failed may hold the file in a dirty tab: fail closed.
+            if (failedChecks.Count > 0)
+            {
+                string why = string.Join("; ", failedChecks.ToArray());
+                if (!overwriteOpenBuffer)
+                {
+                    d.Refusal = "Error: could not check whether " + name + " is open in the Clarion editor (" + why + "). "
+                        + "Nothing was written. Fix that, or close the file's tab in that IDE; to write anyway, pass "
+                        + OverrideArg + ": true (an open tab there would then keep its old text, and saving it would overwrite this write).";
+                    d.ReloadAfter.Clear();
+                    d.Notes.Clear();
+                    return d;
+                }
+                d.Notes.Add("WARNING: the open-tab check failed (" + why + "), and " + OverrideArg + " was set, so " + name
+                    + " was written anyway. If it is open in that IDE's Clarion editor, saving the tab there will overwrite this write.");
+                anyReached = true;   // that IDE did answer: do not also call it "could not be checked"
             }
 
             if (!anyReached)
@@ -238,6 +274,8 @@ namespace ClarionAssistant.Services
             if (p == null || !p.Reachable)
             {
                 a["error"] = p != null && p.Reason != null ? p.Reason : "the IDE's editor check is not registered";
+                if (p != null && p.TimedOut) a["timedOut"] = true;   // its UI thread was busy: silence, not a failed check
+                if (p != null && p.OutOfScope) a["outOfScope"] = true;   // outside that IDE's allowed roots: it will not say
                 return a;
             }
             a["kind"] = p.Kind ?? KindNone;
@@ -245,15 +283,27 @@ namespace ClarionAssistant.Services
             return a;
         }
 
+        /// <summary>An IDE's answer. Anything but a well-formed kind is a FAILED CHECK (<see cref="TabProbe.Answered"/>),
+        /// which refuses the write, except an error the IDE flags timedOut (its UI thread did not answer in time).</summary>
         public static TabProbe CheckFromWire(Dictionary<string, object> a, string ide)
         {
             object o;
-            if (a == null) return new TabProbe { Ide = ide, Reachable = false, Reason = "the IDE's answer was not JSON" };
+            if (a == null) return new TabProbe { Ide = ide, Reachable = false, Answered = true, Reason = "the IDE's answer was not JSON" };
             if (a.TryGetValue("error", out o) && o != null)
-                return new TabProbe { Ide = ide, Reachable = false, Reason = "the IDE: " + o };
+            {
+                object t;
+                bool timedOut = a.TryGetValue("timedOut", out t) && t is bool && (bool)t;
+                bool outOfScope = a.TryGetValue("outOfScope", out t) && t is bool && (bool)t;
+                return new TabProbe
+                {
+                    Ide = ide, Reachable = false, Answered = !timedOut && !outOfScope, TimedOut = timedOut, OutOfScope = outOfScope,
+                    Reason = outOfScope ? "the file is outside that IDE's allowed roots, so it would not say whether it has it open"
+                                        : "the IDE: " + o
+                };
+            }
             string kind = a.TryGetValue("kind", out o) ? o as string : null;
             if (kind != KindNone && kind != KindNative && kind != KindCaEditor)
-                return new TabProbe { Ide = ide, Reachable = false, Reason = "the IDE gave an unknown tab kind '" + (kind ?? "") + "'" };
+                return new TabProbe { Ide = ide, Reachable = false, Answered = true, Reason = "the IDE gave an unknown tab kind '" + (kind ?? "") + "'" };
             bool dirty = a.TryGetValue("dirty", out o) && o is bool && (bool)o;
             return new TabProbe { Ide = ide, Reachable = true, Kind = kind, Dirty = dirty };
         }

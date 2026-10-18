@@ -58,6 +58,9 @@ namespace ClarionAssistant.Services
         /// <summary>Addin side (McpServer.Start): publish this process's pane endpoint.</summary>
         public static void Publish(int port, string token)
         {
+            // GH #205 pipeline run 2: records (with their tokens) of IDEs that died without Stop - a deploy kill, a crash -
+            // used to linger until some standalone server happened to scan. Every publish sweeps them first.
+            SweepStale();
             try
             {
                 var me = Process.GetCurrentProcess();
@@ -147,6 +150,31 @@ namespace ClarionAssistant.Services
             if (matches.TrueForAll(m => m.Pid == firstPid)) return matches[0];
             reason = matches.Count + " IDEs have this solution open and none launched this server; not guessing";
             return null;
+        }
+
+        /// <summary>
+        /// Delete every record whose IDE is provably gone: the pid is not running, is not the IDE, or was started at
+        /// another time than recorded (the same "stale" test <see cref="Discover"/> applies). A record that is only
+        /// unreadable (mid-replace) or unverifiable (access denied) is left alone. Returns how many were deleted. Never throws.
+        /// </summary>
+        public static int SweepStale(Action<string> log = null)
+        {
+            int deleted = 0;
+            try
+            {
+                string dir = DirectoryPath;
+                if (!Directory.Exists(dir)) return 0;
+                foreach (var file in Directory.GetFiles(dir, "*.json"))
+                {
+                    string why;
+                    if (ReadTrusted(file, out why) != null) continue;
+                    if (why == null || !why.StartsWith("stale", StringComparison.Ordinal)) continue;
+                    try { File.Delete(file); deleted++; Log(log, "[endpoint] deleted " + why + " (" + Path.GetFileName(file) + ")"); }
+                    catch { }
+                }
+            }
+            catch (Exception ex) { Debug.WriteLine("[IdeEndpointRecord] SweepStale: " + ex.Message); }
+            return deleted;
         }
 
         /// <summary>

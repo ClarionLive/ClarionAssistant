@@ -889,6 +889,71 @@ namespace ClarionAssistant.McpServer
                 failures.Add("split check: " + ex.GetType().Name + " - " + ex.Message);
             }
 
+            // GH #205 pipeline run 2 (HIGH): THE IDE CALL-BACK ENDPOINT MUST ANSWER A TAB CHECK FOR A SOLUTION FILE.
+            // IdeCallbackHost serves editor_tab_sync with no chat pane; its check is read-gated by the #266 path policy,
+            // which is built from the registry's workspace. Built without one, every solution file was refused, the
+            // standalone read the refusal as "no IDE" and wrote under a dirty native tab. Built here exactly as the host
+            // builds it (McpToolRegistry.BuildIdeCallbackRegistry), once WITH a workspace naming the solution (must answer)
+            // and once with none (must refuse: the control that shows this check can fail).
+            int tabFailuresBefore = failures.Count;
+            string tabRoot = null;
+            var savedCheck = ClarionAssistant.Services.OpenTabGuard.LocalCheck;
+            try
+            {
+                tabRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "selftest-tab-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+                Directory.CreateDirectory(tabRoot);
+                string sln = Path.Combine(tabRoot, "Demo.sln");
+                File.WriteAllText(sln, "");
+                string module = Path.Combine(tabRoot, "Main001.clw");
+                File.WriteAllText(module, "  MEMBER()\r\n");
+                ClarionAssistant.Services.OpenTabGuard.LocalCheck = paths => new ClarionAssistant.Services.TabProbe
+                    { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNative, Dirty = true };
+                var args = new Dictionary<string, object> { { "file_path", module }, { "action", "check" } };
+
+                var withWs = ClarionAssistant.Services.McpToolRegistry.BuildIdeCallbackRegistry(new GateProbeEditorService(),
+                    new ClarionAssistant.Services.ClarionClassParser(), new SelfTestWorkspace(sln), null);
+                var names = new List<string>();
+                foreach (var t in withWs.GetToolDefinitions()) names.Add((string)t["name"]);
+                if (names.Count != 2 || !names.Contains("editor_tab_sync") || !names.Contains("get_live_text"))
+                    failures.Add("the call-back registry serves [" + string.Join(", ", names.ToArray()) + "], not exactly get_live_text + editor_tab_sync");
+                var answered = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
+                    withWs.ExecuteTool("editor_tab_sync", args) as Dictionary<string, object>, "selftest");
+                if (!answered.Reachable || answered.Kind != ClarionAssistant.Services.OpenTabGuard.KindNative || !answered.Dirty)
+                    failures.Add("the call-back endpoint did not answer a tab check for a solution file (Reachable=" + answered.Reachable
+                                 + ", " + (answered.Reason ?? answered.Kind) + ") - every write would go ahead unchecked");
+
+                // A file OUTSIDE that IDE's solution: the gate refuses it, and with a workspace in place that is "out of
+                // scope" (a second IDE on another solution), which the writer only notes - not a failed check.
+                var outside = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
+                    withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object>
+                        { { "file_path", Path.Combine(Path.GetTempPath(), "ca-selftest-outside-205.clw") }, { "action", "check" } })
+                        as Dictionary<string, object>, "selftest");
+                if (outside.Reachable || !outside.OutOfScope || outside.Answered)
+                    failures.Add("a file outside the IDE's solution is not reported as out of scope (Reachable=" + outside.Reachable
+                                 + ", OutOfScope=" + outside.OutOfScope + ") - writes outside a running IDE's solution would be refused");
+
+                var noWs = ClarionAssistant.Services.McpToolRegistry.BuildIdeCallbackRegistry(new GateProbeEditorService(),
+                    new ClarionAssistant.Services.ClarionClassParser(), null, null);
+                var refused = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
+                    noWs.ExecuteTool("editor_tab_sync", args) as Dictionary<string, object>, "selftest");
+                if (refused.Reachable)
+                    failures.Add("negative control: with NO workspace the check still answered - this check cannot tell a broken host from a working one");
+                else if (!refused.Answered || refused.OutOfScope)
+                    failures.Add("a refused check with no workspace reads as 'no IDE' or 'out of scope': the write tools would only note it and write");
+
+                if (failures.Count == tabFailuresBefore)
+                    Console.WriteLine("  ok  IDE call-back endpoint answers a solution file's tab check (and refuses, loudly, with no workspace)");
+            }
+            catch (Exception ex)
+            {
+                failures.Add("call-back tab check: " + ex.GetType().Name + " - " + ex.Message);
+            }
+            finally
+            {
+                ClarionAssistant.Services.OpenTabGuard.LocalCheck = savedCheck;
+                try { if (tabRoot != null) Directory.Delete(tabRoot, true); } catch { }
+            }
+
             // THE SIDECAR MUST NOT BE ABLE TO OVERRIDE AN ADDIN SERVER, and clarion-tools is the
             // case that matters: a user's mcp-extra.json entry of that name would silently point
             // the IDE pane at a different executable and a different solution, while the pane went
@@ -966,6 +1031,24 @@ namespace ClarionAssistant.McpServer
 
             Console.WriteLine("SELFTEST PASSED - agnostic service layer loads with no IDE assemblies.");
             return 0;
+        }
+
+        /// <summary>TEST FIXTURE ONLY (GH #205 pipeline run 2): a workspace that names one solution and nothing else, as
+        /// the IDE's IdeWorkspace would for an IDE with that solution open.</summary>
+        private sealed class SelfTestWorkspace : ClarionAssistant.Services.IWorkspaceContext
+        {
+            private readonly string _sln;
+            public SelfTestWorkspace(string sln) { _sln = sln; }
+            public string CurrentSolutionPath { get { return _sln; } }
+            public ClarionAssistant.Services.ClarionVersionConfig CurrentVersionConfig { get { return null; } }
+            public ClarionAssistant.Services.RedFileService RedFile { get { return null; } }
+            public ClarionAssistant.Services.RedFileService ActiveRedFileService { get { return null; } }
+            public string CurrentDbPath { get { return null; } }
+            public List<string> BuildIndexLibraryPaths() { return new List<string>(); }
+            public void RunIndex(bool incremental) { }
+            public void RunIndex(bool incremental, Action<ClarionCodeGraph.Graph.IndexProgressEvent> onProgress, Action<string> onCompleted) { }
+            public string GetHostOpenSolutionPath() { return _sln; }
+            public string GetClarionInstallPath() { return null; }
         }
 
         /// <summary>

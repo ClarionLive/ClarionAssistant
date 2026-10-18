@@ -202,6 +202,7 @@
     <Compile Include="EditorLiveTextProvider.cs" />
     <Compile Include="NativeTabSync.cs" />
     <Compile Include="IdeCallbackHost.cs" />
+    <Compile Include="IdeWorkspace.cs" />
     <Compile Include="UiThreadCall.cs" />
     <Compile Include="SaveSourceEditorsBeforeBuildCommand.cs" />
     <Compile Include="ActiveDocumentRestoreCommand.cs" />
