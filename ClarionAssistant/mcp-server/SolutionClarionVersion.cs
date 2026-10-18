@@ -64,6 +64,11 @@ namespace ClarionAssistant.McpServer
             public string ConfigDir;
             /// <summary>The json file, when it exists.</summary>
             public string FilePath;
+            /// <summary>
+            /// "allowOlderServer" (e1df6c2e pipeline run 2), or null when absent (= true): whether the plugin launcher
+            /// may start an OLDER Clarion Assistant server installed under the clarionVersion's Clarion (it warns).
+            /// </summary>
+            public bool? AllowOlderServer;
             public string Note;
         }
 
@@ -132,6 +137,13 @@ namespace ClarionAssistant.McpServer
                 string name = (raw.ToString() ?? "").Trim();
                 if (name.Length == 0) notes.Add(path + " has an empty \"clarionVersion\".");
                 else pin.Version = name;
+            }
+
+            object rawAllow;
+            if (map.TryGetValue("allowOlderServer", out rawAllow) && rawAllow != null)
+            {
+                if (rawAllow is bool) pin.AllowOlderServer = (bool)rawAllow;
+                else notes.Add(path + " has an \"allowOlderServer\" that is not true or false; it is ignored.");
             }
 
             object rawDir;
