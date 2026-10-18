@@ -18,28 +18,34 @@ namespace ClarionAssistant
     internal static class GeneratedSourceWatch
     {
         private const int DebounceMs = 750;
-        private static bool _wired;
+        private static readonly string[] ViewEvents = { "ViewOpened", "ViewClosed" };
+        // Idempotent wiring (GH #263 run-2 review): each subscription is marked attempted BEFORE it runs, and
+        // is never retried, so no event can get the handler twice. Only a missing workbench is retried (the
+        // next setSource calls again).
+        private static bool _activeAttempted;
+        private static readonly Services.EventWiringOnce _viewWiring = new Services.EventWiringOnce();
         private static Timer _debounce;
 
         internal static void EnsureWired()
         {
-            if (_wired) return;
-            try
+            if (_activeAttempted && _viewWiring.AllAttempted(ViewEvents)) return;
+            object wbObj;
+            try { wbObj = WorkbenchSingleton.Workbench; } catch { return; }
+            var wb = wbObj as IWorkbench;
+            if (wb == null) return;   // retried on the next setSource
+
+            if (!_activeAttempted)
             {
-                var wb = WorkbenchSingleton.Workbench;
-                if (wb == null) return;   // retried on the next setSource
-                wb.ActiveWorkbenchWindowChanged += OnWorkbenchChanged;
-                var handler = typeof(GeneratedSourceWatch).GetMethod("OnWorkbenchChanged", BindingFlags.NonPublic | BindingFlags.Static);
-                foreach (var name in new[] { "ViewOpened", "ViewClosed" })
+                _activeAttempted = true;
+                try
                 {
-                    var evt = wb.GetType().GetEvent(name, BindingFlags.Public | BindingFlags.Instance);
-                    if (evt == null) { MonacoSpikeLog.Write("[generated-source] Workbench." + name + " not found"); continue; }
-                    evt.AddEventHandler(wb, Delegate.CreateDelegate(evt.EventHandlerType, handler));
+                    wb.ActiveWorkbenchWindowChanged += OnWorkbenchChanged;
+                    MonacoSpikeLog.Write("[generated-source] WIRED: ActiveWorkbenchWindowChanged");
                 }
-                _wired = true;
-                MonacoSpikeLog.Write("[generated-source] WIRED: ActiveWorkbenchWindowChanged, ViewOpened, ViewClosed");
+                catch (Exception ex) { MonacoSpikeLog.Write("[generated-source] ActiveWorkbenchWindowChanged wiring failed (not retried): " + ex.Message); }
             }
-            catch (Exception ex) { MonacoSpikeLog.Write("[generated-source] wiring failed: " + ex.Message); }
+            var handler = typeof(GeneratedSourceWatch).GetMethod("OnWorkbenchChanged", BindingFlags.NonPublic | BindingFlags.Static);
+            _viewWiring.WireAll(wb, ViewEvents, handler, s => MonacoSpikeLog.Write("[generated-source] Workbench." + s));
         }
 
         private static void OnWorkbenchChanged(object sender, EventArgs e)

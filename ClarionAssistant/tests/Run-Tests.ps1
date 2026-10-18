@@ -144,6 +144,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "GeneratedModuleMatch.Test"
                Sources = @("tests\GeneratedModuleMatch.Test.cs", "Services\GeneratedModuleMatch.cs")
                Refs = @("System.dll") }
+            # GH #263 run 2: GeneratedSourceWatch's wiring never subscribes a handler twice.
+            @{ Name = "EventWiringOnce.Test"
+               Sources = @("tests\EventWiringOnce.Test.cs", "Services\EventWiringOnce.cs")
+               Refs = @("System.dll", "System.Core.dll")
+               Args = @($RepoDir) }
             @{ Name = "NpgsqlLoader.SmokeTest"
                Sources = @("tests\NpgsqlLoader.SmokeTest.cs", "Services\NpgsqlLoader.cs")
                Refs = @("System.dll") }
