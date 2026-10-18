@@ -871,10 +871,7 @@ namespace ClarionAssistant.Services
             // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
             // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
             // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
-            using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
-            {
-                body = reader.ReadToEnd();
-            }
+            if (!TryReadBody(request, response, out body)) return;
 
             // Respond to the POST with 202 Accepted immediately
             response.StatusCode = 202;
@@ -900,6 +897,47 @@ namespace ClarionAssistant.Services
 
         #endregion
 
+        /// <summary>The largest JSON-RPC request body accepted (GH #266 security gate LOW: the body was read with no limit).</summary>
+        internal const int MaxRequestBodyBytes = 16 * 1024 * 1024;
+
+        /// <summary>
+        /// Read the request body as UTF-8 (BOM stripped, as StreamReader did), at most <see cref="MaxRequestBodyBytes"/>.
+        /// A larger Content-Length, or a body that turns out larger, is answered 413 and the request is dropped.
+        /// </summary>
+        private static bool TryReadBody(HttpListenerRequest request, HttpListenerResponse response, out string body)
+        {
+            body = null;
+            if (request.ContentLength64 > MaxRequestBodyBytes) { Reject413(response); return false; }
+            var ms = new MemoryStream();
+            var buf = new byte[81920];
+            int n;
+            while ((n = request.InputStream.Read(buf, 0, buf.Length)) > 0)
+            {
+                if (ms.Length + n > MaxRequestBodyBytes) { Reject413(response); return false; }
+                ms.Write(buf, 0, n);
+            }
+            // JSON-RPC bodies are UTF-8 by spec. HttpListenerRequest.ContentEncoding falls back to Encoding.Default
+            // (system ANSI) when the request omits a charset, which most MCP clients do - that mojibaked non-ASCII
+            // source (#44). Decode UTF-8 explicitly.
+            body = new UTF8Encoding(false).GetString(ms.GetBuffer(), 0, (int)ms.Length);
+            if (body.Length > 0 && body[0] == '\uFEFF') body = body.Substring(1);
+            return true;
+        }
+
+        private static void Reject413(HttpListenerResponse response)
+        {
+            try
+            {
+                byte[] err = Encoding.UTF8.GetBytes("{\"error\":\"request body too large\",\"limitBytes\":" + MaxRequestBodyBytes + "}");
+                response.StatusCode = 413;
+                response.ContentType = "application/json";
+                response.ContentLength64 = err.Length;
+                response.OutputStream.Write(err, 0, err.Length);
+                response.Close();
+            }
+            catch { }
+        }
+
         #region Streamable HTTP Transport
 
         private void HandleStreamableHttpPost(HttpListenerContext context)
@@ -915,10 +953,7 @@ namespace ClarionAssistant.Services
                 // Encoding.Default (system ANSI / Windows-1252) when the request omits a charset, which most
                 // MCP clients do — that decodes UTF-8 bytes as 1252 and mojibakes non-ASCII source (#44:
                 // "på" -> "pÃ¥"). Force UTF-8 to match the response writer.
-                using (var reader = new StreamReader(request.InputStream, new UTF8Encoding(false)))
-                {
-                    body = reader.ReadToEnd();
-                }
+                if (!TryReadBody(request, response, out body)) return;
 
                 // Determine or create session
                 string sessionId = request.Headers["Mcp-Session-Id"];
