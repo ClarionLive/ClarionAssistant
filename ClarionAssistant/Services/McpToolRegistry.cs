@@ -3227,7 +3227,7 @@ COMMON QUERIES:
                             hasSolution = !string.IsNullOrEmpty(sln) && File.Exists(sln);
                         }
                         catch { }
-                        var p = OpenTabGuard.CheckGated(refused, spellings, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
+                        var p = OpenTabGuard.CheckGated(refused, spellings, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
                             note => McpPathAudit.Write("editor_tab_sync", "LOOKUP", filePath, note));
                         return OpenTabGuard.CheckToWire(p);
                     }

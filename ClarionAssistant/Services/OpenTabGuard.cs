@@ -117,12 +117,14 @@ namespace ClarionAssistant.Services
         ///   - refused: the lookup still runs, by path TEXT only (<paramref name="lexicalCheck"/>: no handle is opened on
         ///     the refused path). A matching tab is answered normally - kind and dirty, one bit about a path the caller
         ///     already named - and <paramref name="audit"/> records that it was.
-        ///   - refused, no tab matched: out of scope ONLY for an "outside every allowed root" refusal from an IDE that has
-        ///     a solution open (a second IDE on another solution). Anything else - a deny rule, a policy exception, an IDE
-        ///     with no solution open (it cannot vouch for any file) - is a FAILED check, which refuses the write.
+        ///   - refused, no tab matched: OUT OF SCOPE (a note) for an "outside every allowed root" refusal from an IDE that
+        ///     HAS a workspace, with or without a solution open: the lookup by name ran, so a miss is a real answer; the
+        ///     note says it was by path name only (an alias tab outside the roots is the residual). Anything else - a deny
+        ///     rule, a policy exception, a host with NO workspace at all (pipeline run 2's mis-wired host) - is a FAILED
+        ///     check, which refuses the write.
         /// Pure: the lookups and the audit are delegates.
         /// </summary>
-        public static TabProbe CheckGated(string gateRefusal, IList<string> spellings, bool workspaceHasSolution,
+        public static TabProbe CheckGated(string gateRefusal, IList<string> spellings, bool hasWorkspace, bool workspaceHasSolution,
                                           Func<IList<string>, TabProbe> fullCheck, Func<IList<string>, TabProbe> lexicalCheck,
                                           Action<string> audit)
         {
@@ -146,13 +148,16 @@ namespace ClarionAssistant.Services
             }
 
             bool outside = gateRefusal.IndexOf(OutsideRootsMarker, StringComparison.Ordinal) >= 0;
-            if (outside && workspaceHasSolution)
-                return new TabProbe { Reachable = false, OutOfScope = true, Reason = gateRefusal };
+            if (outside && hasWorkspace)
+                return new TabProbe
+                {
+                    Reachable = false, OutOfScope = true,
+                    Reason = gateRefusal + (workspaceHasSolution ? "" : " (this IDE has no solution open)")
+                };
             return new TabProbe
             {
                 Reachable = false, Answered = true,
-                Reason = gateRefusal + (outside && !workspaceHasSolution
-                    ? " (this IDE has no solution open, so it cannot vouch that no tab holds the file)" : "")
+                Reason = gateRefusal + (outside && !hasWorkspace ? " (this IDE's tab check has no workspace)" : "")
             };
         }
 
@@ -356,8 +361,10 @@ namespace ClarionAssistant.Services
                 return new TabProbe
                 {
                     Ide = ide, Reachable = false, Answered = !timedOut && !outOfScope, TimedOut = timedOut, OutOfScope = outOfScope,
-                    Reason = outOfScope ? "the file is outside that IDE's allowed roots, so it would not say whether it has it open"
-                                        : "the IDE: " + o
+                    Reason = outOfScope
+                        ? "the file is outside that IDE's allowed roots and no tab there holds it (checked by path name only"
+                          + ((o as string ?? "").Contains("no solution open") ? "; that IDE has no solution open)" : ")")
+                        : "the IDE: " + o
                 };
             }
             string kind = a.TryGetValue("kind", out o) ? o as string : null;

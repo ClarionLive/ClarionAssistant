@@ -948,9 +948,14 @@ namespace ClarionAssistant.McpServer
 
                 var noSln = ClarionAssistant.Services.McpToolRegistry.BuildIdeCallbackRegistry(new GateProbeEditorService(),
                     new ClarionAssistant.Services.ClarionClassParser(), new SelfTestWorkspace(null), null);
+                // Softened after run 3: the lookup by name always runs, so an IDE with no solution open and no tab of the
+                // file answers "out of scope" (a note, by name only); a dirty tab matching by name is still answered.
                 var noSlnAnswer = ask(noSln, cleanOutside);
-                if (noSlnAnswer.Reachable || !noSlnAnswer.Answered || noSlnAnswer.OutOfScope)
-                    failures.Add("an IDE with NO solution open answered 'out of scope' or 'not open' for a refused file - it cannot vouch for it");
+                if (noSlnAnswer.Reachable || noSlnAnswer.Answered || !noSlnAnswer.OutOfScope || !noSlnAnswer.Reason.Contains("checked by path name only"))
+                    failures.Add("an IDE with NO solution open and no tab of the file did not answer 'out of scope (checked by path name only)': " + noSlnAnswer.Reason);
+                var noSlnDirty = ask(noSln, dirtyOutside);
+                if (!noSlnDirty.Reachable || noSlnDirty.Kind != ClarionAssistant.Services.OpenTabGuard.KindNative || !noSlnDirty.Dirty)
+                    failures.Add("an IDE with NO solution open did not report a DIRTY tab matching the file by name - the write would go under it");
 
                 // Pipeline run 3 (security LOW): get_live_text returns buffer TEXT, so it is read-gated like read_file.
                 var liveOut = withWs.ExecuteTool("get_live_text", new Dictionary<string, object> { { "file_path", cleanOutside } }) as string;
@@ -969,7 +974,7 @@ namespace ClarionAssistant.McpServer
                     failures.Add("a refused check with no workspace reads as 'no IDE' or 'out of scope': the write tools would only note it and write");
 
                 if (failures.Count == tabFailuresBefore)
-                    Console.WriteLine("  ok  IDE call-back endpoint: solution file answered; dirty tab outside its roots answered; out of scope only with no tab; no solution or no workspace = failed check");
+                    Console.WriteLine("  ok  IDE call-back endpoint: solution file answered; dirty tab outside its roots answered (solution open or not); no tab = out of scope by name; no workspace = failed check");
             }
             catch (Exception ex)
             {

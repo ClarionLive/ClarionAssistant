@@ -131,7 +131,7 @@ $ws = Text 'IdeWorkspace.cs'
 Check ($ws.Contains('EditorService.GetOpenSolutionPath()') -and $ws.Contains('EffectiveClarionVersion.CurrentConfig()') -and $ws.Contains('RedFileService.Active')) `
     'IdeWorkspace reports the IDE''s open solution, effective version and .red'
 Check ($cbHost.Contains('ModernEmbeditorLauncher.EnsureRedirectionLoaded()')) 'the call-back host keeps the .red loaded with no chat pane'
-Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OpenTabGuard.CheckGated(refused, spellings, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical') -and
+Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OpenTabGuard.CheckGated(refused, spellings, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical') -and
        -not $sync.Contains('OutOfScope = _workspace != null')) `
     'the #266 gate stays, but its verdict goes to CheckGated: it never short-circuits the tab lookup'
 Check ($sync.Contains('McpPathAudit.Write("editor_tab_sync", "LOOKUP"')) 'answering a refused path is written to the #266 audit log'
