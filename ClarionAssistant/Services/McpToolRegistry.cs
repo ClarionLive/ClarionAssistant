@@ -6470,14 +6470,15 @@ IdeOnly = true,
             "ClarionProperties.xml are never written by these tools (they define the scope; the developer edits them), nor are files " +
             "that make tools run commands (.git\\*, a bare repo's HEAD/config/hooks, .gitattributes, .gitmodules, .mcp.json, " +
             ".vscode\\tasks|settings|launch.json, *.code-workspace), nor instruction files later sessions follow (CLAUDE.md, " +
-            "CLAUDE.local.md, AGENTS.md). UNC/network paths (unless Mcp.AllowedRoots names " +
+            "CLAUDE.local.md, AGENTS.md, AGENTS.override.md, GEMINI.md, .github\\copilot-instructions.md, .github\\**\\*.instructions.md). " +
+            "UNC/network paths (unless Mcp.AllowedRoots names " +
             "them), .ssh/.aws folders, credential files, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
             "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable, except a " +
             "checkout under .claude\\worktrees. A refused path " +
-            "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy' that names the setting which would " +
-            "allow it - report that to the developer; do not retry with another spelling of the same path. " +
-            "Use Claude Code's own Edit/Write tools for such a file (they ask the developer), or ask the developer to add the folder " +
-            "to Mcp.AllowedRoots; never run_command or another tool to work around a refusal.";
+            "returns an error starting 'Error: <tool> refused by the Clarion Assistant path policy'; when a setting can lift it the " +
+            "error names Mcp.AllowedRoots, and built-in rules cannot be lifted at all. Report it to the developer; do not retry with " +
+            "another spelling of the same path. Use your assistant's own Edit/Write tools for such a file (they ask the developer for " +
+            "permission), or ask the developer; never use run_command or another tool to work around a refusal.";
 
         /// <summary>Appended to the Everything tools' descriptions.</summary>
         private const string SearchScopeNote =

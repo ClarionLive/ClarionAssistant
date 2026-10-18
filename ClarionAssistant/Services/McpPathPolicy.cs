@@ -30,11 +30,14 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// On EVERY refusal (adversary run 2): Mcp.AllowedRoots lives in settings.txt, which the model cannot touch, so a
         /// hint that only names it leaves the model looking for another way in. Name the sanctioned ways, and the
-        /// unsanctioned one.
+        /// unsanctioned one. Client-neutral (CA also hosts Copilot and Codex), and it does NOT offer Mcp.AllowedRoots: a
+        /// built-in rule (instruction, boundary, exec-config, .git, token store, protected folder) is one no root can
+        /// override (pipeline run 4). The refusals a setting DOES lift - outside every root, a network location, a
+        /// read-only root - name Mcp.AllowedRoots in their own Hint.
         /// </summary>
         public const string WorkaroundNote =
-            "Use Claude Code's own Edit/Write tools for this file (they ask the developer), or ask the developer to add the folder to " +
-            "Mcp.AllowedRoots. Do not use run_command or other tools to work around this refusal.";
+            "Use your assistant's own Edit/Write tools for this file (they ask the developer for permission), or ask the developer. " +
+            "Do not use run_command or other tools to work around this refusal.";
     }
 
     /// <summary>
@@ -155,7 +158,20 @@ namespace ClarionAssistant.Services
 
         /// <summary>Instructions later assistant sessions load and follow: a prompt-injected model must not plant them
         /// (security gate run 3 LOW). Readable; never written by the MCP tools.</summary>
-        public static readonly string[] InstructionFileNames = { "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md" };
+        public static readonly string[] InstructionFileNames = { "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "AGENTS.override.md", "GEMINI.md" };
+
+        /// <summary>Copilot's: .github\copilot-instructions.md, and *.instructions.md anywhere under a .github folder
+        /// (its path-specific instructions). CA hosts Copilot and Codex too (pipeline run 4).</summary>
+        private static readonly Regex CopilotPathInstructions = WildcardRegex("*.instructions.md");
+
+        private static bool IsInstructionFile(string full, string leaf)
+        {
+            foreach (string name in InstructionFileNames)
+                if (Same(leaf, name)) return true;
+            if (Same(leaf, "copilot-instructions.md") && Same(System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(full) ?? ""), ".github"))
+                return true;
+            return CopilotPathInstructions.IsMatch(leaf) && HasSegment(full, ".github");
+        }
 
         private const string InstructionHint =
             "This file holds instructions that later assistant sessions load and follow, so the Clarion Assistant MCP tools never write it.";
@@ -168,7 +184,7 @@ namespace ClarionAssistant.Services
 
         private const string BoundaryHint =
             "These files define which folders the Clarion Assistant file tools may reach, so the MCP tools never write them. " +
-            "The developer edits them, or Claude Code's own Edit tool does, which the developer's permission rules govern.";
+            "The developer edits them, or your assistant's own Edit tool does, which the developer's permission rules govern.";
 
         public sealed class Root
         {
@@ -566,9 +582,8 @@ namespace ClarionAssistant.Services
                 string bare = PlantedGitDirHit(full, leaf);
                 if (bare != null)
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = bare, Hint = ExecConfigHint };
-                foreach (string name in InstructionFileNames)
-                    if (Same(leaf, name))
-                        return new DenyRule { BuiltIn = true, WriteOnly = true, Text = name + " (writes)", Hint = InstructionHint };
+                if (IsInstructionFile(full, leaf))
+                    return new DenyRule { BuiltIn = true, WriteOnly = true, Text = leaf + " (an assistant instruction file; writes)", Hint = InstructionHint };
                 for (int i = 0; i < ExecLeafRegexes.Count; i++)
                     if (ExecLeafRegexes[i].IsMatch(leaf))
                         return new DenyRule { BuiltIn = true, WriteOnly = true, Text = ExecConfigFilePatterns[i] + " (writes)", Hint = ExecConfigHint };
