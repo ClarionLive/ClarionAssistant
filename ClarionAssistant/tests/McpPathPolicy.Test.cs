@@ -495,6 +495,42 @@ static class McpPathPolicyTest
             Allowed(withInc, "...still readable", inc);
             Allowed(withInc, "...another .inc in the solution is writable", Path.Combine(sol, "other.inc"), PathAccess.Write);
 
+            Console.WriteLine("=== security gate run 3 ===");
+            // 1. A planted BARE repo has no .git segment, and git honours its config (core.fsmonitor) inside it.
+            string bareRepo = Mk(sol, "vendor", "lib");
+            Touch(Path.Combine(bareRepo, "HEAD"));
+            Mk(bareRepo, "objects"); Mk(bareRepo, "refs");
+            foreach (string rel in new[] { "config", "HEAD", "packed-refs", "FETCH_HEAD", "ORIG_HEAD", "hooks\\pre-commit", "hooks\\fsmonitor-watchman" })
+            {
+                var w = p.Check(Path.Combine(bareRepo, rel), PathAccess.Write);
+                Ok("bare repo: " + rel + " write refused", !w.Allowed && w.Hint != null && w.Hint.Contains("run commands"), w.Allowed ? "was allowed" : w.Hint);
+            }
+            Allowed(p, "bare repo: config still readable", Path.Combine(bareRepo, "config"));
+            string halfRepo = Mk(sol, "half");
+            Mk(halfRepo, "objects"); Mk(halfRepo, "refs");
+            Denied(p, "objects\\ + refs\\ but no HEAD yet: creating HEAD refused", Path.Combine(halfRepo, "HEAD"), PathAccess.Write);
+            string headOnly = Mk(sol, "headonly");
+            Touch(Path.Combine(headOnly, "HEAD"));
+            Denied(p, "HEAD file only: creating objects\\ beside it refused", Path.Combine(headOnly, "objects", "ab", "cdef"), PathAccess.Write);
+            Denied(p, "HEAD file only: creating refs\\ beside it refused", Path.Combine(headOnly, "refs", "heads", "main"), PathAccess.Write);
+            Denied(p, "HEAD file only: config beside it refused", Path.Combine(headOnly, "config"), PathAccess.Write);
+            Allowed(p, "a 'config' in an ordinary folder stays writable", Path.Combine(sol, "settings", "config"), PathAccess.Write);
+            Allowed(p, "a 'hooks' folder outside a git dir stays writable", Path.Combine(sol, "docs", "hooks", "notes.txt"), PathAccess.Write);
+            Allowed(p, "a 'refs' folder with no HEAD beside it stays writable", Path.Combine(sol, "manual", "refs", "a.txt"), PathAccess.Write);
+            Allowed(p, "a file named HEAD in an ordinary folder stays writable", Path.Combine(sol, "notes", "HEAD"), PathAccess.Write);
+
+            // 2. Instructions later sessions follow: readable, never written by the MCP tools.
+            foreach (string rel in new[] { "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "sub\\CLAUDE.md", "claude.md" })
+            {
+                var w = p.Check(Path.Combine(sol, rel), PathAccess.Write);
+                string text = w.Refusal("write_file", "x");
+                Ok(rel + " write refused, with the standard Edit/Write wording",
+                    !w.Allowed && w.Hint != null && w.Hint.Contains("instructions") && text.Contains("Claude Code's own Edit/Write tools"), w.Allowed ? "was allowed" : w.Hint);
+                Allowed(p, rel + " readable", Path.Combine(sol, rel));
+            }
+            Allowed(p, "README.md stays writable", Path.Combine(sol, "README.md"), PathAccess.Write);
+            Allowed(p, "a name that only contains CLAUDE stays writable", Path.Combine(sol, "CLAUDE-notes.md"), PathAccess.Write);
+
             Console.WriteLine("=== policy cache ===");
             var cache = new PolicyCache();
             var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
