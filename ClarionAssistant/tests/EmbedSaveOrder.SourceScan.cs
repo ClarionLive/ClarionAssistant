@@ -192,7 +192,9 @@ static class EmbedSaveOrderSourceScan
         int applyAt = oseBody.IndexOf("applyOrParkSlots(", StringComparison.Ordinal);
         Ok("the page OFFERS the lost save (restored only from the Restore button, never on arrival)",
             oseBody.Contains("showActionToast(") && restoreBtn > 0 && applyAt > restoreBtn &&
-            !oseBody.Contains("restoreSlotContents(") && oseBody.Contains("label: 'Discard'"), "restore@" + restoreBtn + " apply@" + applyAt);
+            !oseBody.Contains("restoreSlotContents(") && oseBody.Contains("label: 'Discard (a copy is kept)'"), "restore@" + restoreBtn + " apply@" + applyAt);
+        Ok("the offer's buttons are exactly 'Restore' and 'Discard (a copy is kept)'",
+            Count(oseBody, "label: '") == 2 && oseBody.Contains("label: 'Restore'") && oseBody.Contains("label: 'Discard (a copy is kept)'"));
         Ok("restoreSlots and the offer share applyOrParkSlots", page.Contains("function applyOrParkSlots(slots)") &&
             Count(page, "applyOrParkSlots(") == 3);
 
@@ -218,6 +220,17 @@ static class EmbedSaveOrderSourceScan
             badUse = line.Trim();
         }
         Ok("the .app time never decides whether a lost save is offered", badUse == null, badUse);
+        // ---- pipeline run 3 ----
+        int arcB = cjBody.IndexOf("OpenDecision.Archive)", StringComparison.Ordinal);
+        int arcEnd = arcB >= 0 ? cjBody.IndexOf("return;", arcB, StringComparison.Ordinal) : -1;
+        string arcBody = arcB >= 0 && arcEnd > arcB ? cjBody.Substring(arcB, arcEnd - arcB) : "";
+        Ok("a changed-since entry is archived silently (log line, no toast)",
+            arcBody.Contains("EmbedSaveJournal.Archive(") && arcBody.Contains("MonacoSpikeLog.Write(") && !arcBody.Contains("PostJson("),
+            arcBody.Length == 0 ? "archive branch not found" : null);
+        int sw = view.IndexOf("private static void SweepStaleJournalsOnce()", StringComparison.Ordinal);
+        string swBody = sw >= 0 ? view.Substring(sw, Math.Min(1400, view.Length - sw)) : "";
+        Ok("the once-per-session sweep also prunes old recovery copies",
+            swBody.Contains("EmbedRecovery.PruneOlderThan(Services.EmbedSaveJournal.MaxAge, DateTime.Now)"));
         Ok("the first open of a session sweeps stale journals before reading this one",
             cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) >= 0 &&
             cjBody.IndexOf("SweepStaleJournalsOnce();", StringComparison.Ordinal) < cjBody.IndexOf("EmbedSaveJournal.Read(", StringComparison.Ordinal) &&

@@ -9825,7 +9825,7 @@
                         applyOrParkSlots(offered);
                         postToHost({ action: 'savedEditsOffer', choice: 'restore' });
                     } },
-                    { label: 'Discard', onClick: function () { postToHost({ action: 'savedEditsOffer', choice: 'discard' }); } }
+                    { label: 'Discard (a copy is kept)', onClick: function () { postToHost({ action: 'savedEditsOffer', choice: 'discard' }); } }
                 ]);
             } else if (msg.type === 'restoreSlotsFailed') {
                 showToast('Your unsaved edits from the interrupted embeditor session could not be restored (the generated source changed underneath them).', false);

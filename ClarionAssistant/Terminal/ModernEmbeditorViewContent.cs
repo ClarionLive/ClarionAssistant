@@ -2102,6 +2102,11 @@ namespace ClarionAssistant.Terminal
             {
                 foreach (var rec in Services.EmbedSaveJournal.SweepStale(DateTime.Now))
                     MonacoSpikeLog.Write("[save-journal] stale entry archived unoffered: " + rec);
+                // ...and the dated recovery copies themselves, which Restore/Discard and failures keep adding
+                // (pipeline run 3). The pending journal folder is never touched.
+                int pruned = Services.EmbedRecovery.PruneOlderThan(Services.EmbedSaveJournal.MaxAge, DateTime.Now);
+                if (pruned > 0) MonacoSpikeLog.Write("[save-journal] deleted " + pruned + " recovery cop(ies) older than " +
+                    (int)Services.EmbedSaveJournal.MaxAge.TotalDays + " days");
             }
             catch { }
         }
@@ -2138,11 +2143,10 @@ namespace ClarionAssistant.Terminal
                 if (act == Services.EmbedSaveJournal.OpenDecision.Archive)
                 {
                     // Changed since (e.g. edited in Clarion's own embeditor): offering it would overwrite newer work.
+                    // SILENT (pipeline run 3): this is the ordinary result of a native edit after a CA save, and a
+                    // toast on every such open was noise. The dated copy and the log line remain.
                     string rec = Services.EmbedSaveJournal.Archive(e, "this embed has changed since");
-                    MonacoSpikeLog.Write("[save-journal] archived " + rec);
-                    _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" + ser.Serialize(
-                        "Your CA Embeditor save of " + _procedureName + " on " + when + " could not be confirmed, and this embed " +
-                        "has changed since, so it was not offered back. A copy was kept in " + rec + ".") + "}");
+                    MonacoSpikeLog.Write("[save-journal] archived silently (changed since " + when + ") " + rec);
                     return;
                 }
                 // Offered even if the .app was written after the save (PM ruling): the #179 crash leaves exactly that
