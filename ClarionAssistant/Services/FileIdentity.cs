@@ -42,30 +42,102 @@ namespace ClarionAssistant.Services
             public bool Network;
         }
 
+        /// <summary>
+        /// Pipeline run 4 (security MEDIUM): a NETWORK path is never opened, and so never resolved either. Opening
+        /// \\attacker\share\x (or a WebDAV \\host@80\x, or a mapped network drive) makes Windows authenticate to that host
+        /// with the developer's NTLM credentials. Such a path gets a lexical-only identity (its normalised text).
+        /// </summary>
         public static Probe Of(string path)
         {
             var p = new Probe { Full = FullOrSelf(path) };
             if (string.IsNullOrEmpty(path)) return p;
+            if (IsNetworkPath(path)) { p.Network = true; return p; }
             Query(path, out p.HasId, out p.Id, out p.Final);
-            p.Network = IsNetworkPath(path) || (p.Final != null && IsNetworkPath(p.Final));
+            p.Network = p.Final != null && IsNetworkPath(p.Final);
             return p;
         }
 
-        /// <summary>UNC (\\server\share, \\?\UNC\...) or a drive letter Windows reports as remote. No network I/O:
-        /// GetDriveType reads the drive's mapping, it does not contact the server.</summary>
+        /// <summary>
+        /// Decided from the path TEXT, plus the drive's type for a drive letter (GetDriveType reads the local mount table,
+        /// cached per letter for 30 s; it does not contact any server). Network: anything starting \\ or // (UNC, WebDAV
+        /// \\host@port\, \\?\UNC\, and every other device namespace such as \\?\GLOBALROOT) EXCEPT \\?\X: and \\.\X: on a
+        /// local drive; and a drive letter Windows reports as remote.
+        /// </summary>
         public static bool IsNetworkPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
-            if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return true;
-            if (path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\\.\", StringComparison.Ordinal))
-                return IsNetworkPath(path.Substring(4));
-            if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return true;
-            if (path.Length >= 2 && path[1] == ':' && char.IsLetter(path[0]))
+            string p = path.Replace('/', '\\');
+            if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal))
             {
-                try { return GetDriveTypeW(path.Substring(0, 2) + "\\") == DRIVE_REMOTE; } catch { return false; }
+                string rest = p.Substring(4);
+                return !(IsDriveRooted(rest) && !IsRemoteDrive(rest[0]));
             }
-            return false;
+            if (p.StartsWith(@"\\", StringComparison.Ordinal)) return true;
+            if (IsDriveRooted(p)) return IsRemoteDrive(p[0]);
+            return false;   // relative: resolved against the (local) current directory
         }
+
+        private static bool IsDriveRooted(string p) { return p.Length >= 2 && p[1] == ':' && char.IsLetter(p[0]); }
+
+        private static readonly object _driveLock = new object();
+        private static readonly Dictionary<char, KeyValuePair<bool, int>> _driveCache = new Dictionary<char, KeyValuePair<bool, int>>();
+
+        private static bool IsRemoteDrive(char letter)
+        {
+            char d = char.ToUpperInvariant(letter);
+            lock (_driveLock)
+            {
+                KeyValuePair<bool, int> e;
+                if (_driveCache.TryGetValue(d, out e) && unchecked(Environment.TickCount - e.Value) < 30000) return e.Key;
+            }
+            bool remote;
+            try { remote = GetDriveTypeW(d + @":\") == DRIVE_REMOTE; } catch { remote = false; }
+            lock (_driveLock) _driveCache[d] = new KeyValuePair<bool, int>(remote, Environment.TickCount);
+            return remote;
+        }
+
+        /// <summary>
+        /// Pipeline run 4: pure-string normalisation for comparing paths that must not be touched (a refused or a network
+        /// path): / to \, doubled separators collapsed, '.' dropped, '..' pops a segment but never climbs above the root.
+        /// The root (X:\, \\?\X:\, \\server\share\, \\?\UNC\server\share\) is kept as written. No I/O.
+        /// </summary>
+        public static string NormalizeText(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            string p = path.Replace('/', '\\');
+            string root;
+            int rootLen;
+            if (p.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) rootLen = RootAfterServerShare(p, 8);
+            else if (p.StartsWith(@"\\?\", StringComparison.Ordinal) || p.StartsWith(@"\\.\", StringComparison.Ordinal))
+                rootLen = IsDriveRooted(p.Substring(4)) ? Math.Min(p.Length, 7) : Math.Min(p.Length, 4);
+            else if (p.StartsWith(@"\\", StringComparison.Ordinal)) rootLen = RootAfterServerShare(p, 2);
+            else if (IsDriveRooted(p)) rootLen = p.Length >= 3 && p[2] == '\\' ? 3 : 2;
+            else rootLen = 0;
+            root = p.Substring(0, rootLen);
+            if (root.Length > 0 && !root.EndsWith("\\") && rootLen < p.Length) root += "\\";
+            var parts = new List<string>();
+            foreach (var seg in p.Substring(rootLen).Split('\\'))
+            {
+                if (seg.Length == 0 || seg == ".") continue;
+                if (seg == "..") { if (parts.Count > 0) parts.RemoveAt(parts.Count - 1); continue; }
+                parts.Add(seg);
+            }
+            return root + string.Join("\\", parts.ToArray());
+        }
+
+        // \\server\share\ : the root ends after the share's separator (or at the end).
+        private static int RootAfterServerShare(string p, int start)
+        {
+            int i = p.IndexOf('\\', start);          // end of server
+            if (i < 0) return p.Length;
+            int j = p.IndexOf('\\', i + 1);          // end of share
+            return j < 0 ? p.Length : j + 1;
+        }
+
+        /// <summary>Test seam (pipeline run 4): the one place a file handle is opened. A harness records every path it is
+        /// asked to open, to prove a network path never reaches it. Production: CreateFileW for attributes only.</summary>
+        public static Func<string, IntPtr> Opener = path =>
+            CreateFileW(path, 0, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
 
         private const uint DRIVE_REMOTE = 4;
 
@@ -85,15 +157,10 @@ namespace ClarionAssistant.Services
             string full = FullOrSelf(candidate);
             foreach (var p in probes)
                 if (p != null && Lexical(p.Full, full)) return true;
-            // Pipeline run 2: a tab on a network path (UNC, a mapped drive) is not opened to learn its identity unless the
-            // target itself is on the network: a disconnected share would stall for the SMB timeout, and a local target
-            // cannot be the same file as a remote tab anyway.
-            if (IsNetworkPath(candidate))
-            {
-                bool anyNetwork = false;
-                foreach (var p in probes) if (p != null && p.Network) anyNetwork = true;
-                if (!anyNetwork) return false;
-            }
+            // Pipeline runs 2 and 4: a tab on a network path (UNC, WebDAV, a mapped drive) is NEVER opened: a disconnected
+            // share would stall for the SMB timeout, and opening an attacker's share leaks the developer's NTLM
+            // credentials. It matches by its text only (above).
+            if (IsNetworkPath(candidate)) return false;
             bool hasId; Id id; string final;
             Query(candidate, out hasId, out id, out final);
             foreach (var p in probes)
@@ -110,6 +177,17 @@ namespace ClarionAssistant.Services
             return MatchesAny(b, new[] { a });
         }
 
+        /// <summary>Does the tab path name any of <paramref name="wanted"/> as TEXT (both normalised with
+        /// <see cref="NormalizeText"/>)? No I/O at all: for paths that must not be touched.</summary>
+        public static bool LexicalMatch(string tabPath, IList<string> wanted)
+        {
+            if (string.IsNullOrEmpty(tabPath) || wanted == null) return false;
+            string t = NormalizeText(tabPath);
+            foreach (var w in wanted)
+                if (!string.IsNullOrEmpty(w) && Lexical(t, NormalizeText(w))) return true;
+            return false;
+        }
+
         public static bool Lexical(string a, string b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
@@ -119,7 +197,9 @@ namespace ClarionAssistant.Services
         private static string FullOrSelf(string path)
         {
             if (string.IsNullOrEmpty(path)) return path;
-            try { return Path.GetFullPath(path); } catch { return path; }
+            // Not GetFullPath for a network path: it can call GetLongPathName on it (8.3 expansion), which is network I/O.
+            if (IsNetworkPath(path)) return NormalizeText(path);
+            try { return Path.GetFullPath(path); } catch { return NormalizeText(path); }
         }
 
         private const uint FILE_SHARE_ALL = 0x7;
@@ -156,8 +236,9 @@ namespace ClarionAssistant.Services
         private static void Query(string path, out bool hasId, out Id id, out string final)
         {
             hasId = false; id = new Id(); final = null;
+            if (IsNetworkPath(path)) return;   // pipeline run 4: never opened (NTLM leak); the callers already check, this is the floor
             IntPtr h;
-            try { h = CreateFileW(path, 0, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero); }
+            try { var open = Opener; h = open != null ? open(path) : IntPtr.Zero; }
             catch { return; }
             if (h == IntPtr.Zero || h == new IntPtr(-1)) return;
             try

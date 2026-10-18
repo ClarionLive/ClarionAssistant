@@ -72,7 +72,7 @@ namespace ClarionAssistant
             OpenTabGuard.LocalReload = Reload;
             // The addin serving write_file itself (no standalone exe): ask this IDE directly.
             OpenTabGuard.Probe = paths => new List<TabProbe> { Check(paths) };
-            OpenTabGuard.Reload = (paths, tab) => Reload(paths);
+            OpenTabGuard.Reload = (paths, tab) => Reload(paths, null);
         }
 
         internal static TabProbe Check(IList<string> paths)
@@ -116,7 +116,9 @@ namespace ClarionAssistant
             return answer;
         }
 
-        internal static TabReload Reload(IList<string> paths)
+        /// <summary>Reload the native tabs of the file. <paramref name="paths"/> are matched by file identity (the gate
+        /// allowed them); <paramref name="byNameOnly"/> by path text only (refused spellings: no handle is opened on them).</summary>
+        internal static TabReload Reload(IList<string> paths, IList<string> byNameOnly)
         {
             TabReload answer = null;
             List<TabSnap> snaps = null;
@@ -129,7 +131,9 @@ namespace ClarionAssistant
                 List<TabSnap> natives = null;
                 try
                 {
-                    natives = Match(snaps, Probes(paths)).FindAll(s => !s.OverlayUp);   // the CA Editor offers its own reload
+                    var matched = Match(snaps, Probes(paths));
+                    foreach (var s in MatchLexical(snaps, byNameOnly)) if (!matched.Contains(s)) matched.Add(s);
+                    natives = matched.FindAll(s => !s.OverlayUp);   // the CA Editor offers its own reload
                 }
                 catch (Exception ex) { answer = new TabReload { Reason = "the editor lookup failed: " + ex.Message }; }
                 if (answer == null)
@@ -142,7 +146,7 @@ namespace ClarionAssistant
                     }
                 }
             }
-            MonacoSpikeLog.Write("[tab-sync] reload " + Join(paths) + " -> " + (answer.Reloaded
+            MonacoSpikeLog.Write("[tab-sync] reload " + Join(paths) + (byNameOnly != null && byNameOnly.Count > 0 ? " | by name: " + Join(byNameOnly) : "") + " -> " + (answer.Reloaded
                 ? "reloaded, caret line " + answer.Line : "not reloaded: " + answer.Reason));
             return answer;
         }
@@ -177,27 +181,15 @@ namespace ClarionAssistant
             return matched;
         }
 
-        // Path text only, for a path the policy refused. Not even Path.GetFullPath: on .NET Framework it expands 8.3
-        // segments with GetLongPathName, which touches the disk. Both sides are absolute already (a tab's FileName; the
-        // standalone sends gated or caller-given absolute paths), so separators and case are all that need evening out.
+        // Path text only, for a path the policy refused (FileIdentity.LexicalMatch: pure-string normalisation, no
+        // GetFullPath - on .NET Framework it expands 8.3 segments with GetLongPathName, which touches the disk).
         private static List<TabSnap> MatchLexical(List<TabSnap> snaps, IList<string> paths)
         {
-            var wanted = new List<string>();
-            if (paths != null) foreach (var p in paths) if (!string.IsNullOrEmpty(p)) wanted.Add(FullText(p));
             var matched = new List<TabSnap>();
             if (snaps != null)
                 foreach (var s in snaps)
-                {
-                    if (string.IsNullOrEmpty(s.File)) continue;
-                    string f = FullText(s.File);
-                    foreach (var w in wanted) if (FileIdentity.Lexical(f, w)) { matched.Add(s); break; }
-                }
+                    if (FileIdentity.LexicalMatch(s.File, paths)) matched.Add(s);
             return matched;
-        }
-
-        private static string FullText(string p)
-        {
-            return p.Replace('/', '\\');
         }
 
         private static TabProbe Classify(List<TabSnap> matched)

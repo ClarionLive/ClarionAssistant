@@ -64,10 +64,9 @@ namespace ClarionAssistant.Services
             try
             {
                 string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "check"), one, CheckBudgetMs);
-                // The IDE answered: a refusal is a FAILED check (Answered), which refuses the write (pipeline run 2).
-                return text.StartsWith("Error", StringComparison.Ordinal)
-                    ? new TabProbe { Reachable = false, Answered = true, Reason = "the IDE refused: " + text }
-                    : OpenTabGuard.CheckFromWire(Parse(text), null);
+                // Pipeline run 4: an IDE on a pre-#205 Clarion Assistant answers "Unknown tool": a note naming it (the write
+                // proceeds); any OTHER error is a failed check (pipeline run 2). OpenTabGuard.FromCheckReply decides.
+                return OpenTabGuard.FromCheckReply(text, Parse(text), () => OlderAddinReason(ep));
             }
             catch (Exception ex)
             {
@@ -103,6 +102,24 @@ namespace ClarionAssistant.Services
             var a = new Dictionary<string, object> { { "file_path", paths != null && paths.Count > 0 ? paths[0] : "" }, { "action", action } };
             if (paths != null && paths.Count > 1) a[OpenTabGuard.AlsoPathArg] = paths[1];
             return a;
+        }
+
+        /// <summary>"it runs an older Clarion Assistant (in C:\Clarion11) ..." - the Clarion folder from the IDE's own exe.</summary>
+        public static string OlderAddinReason(IdeEndpointRecord.Endpoint ep)
+        {
+            string root = null;
+            try
+            {
+                using (var p = Process.GetProcessById(ep.Pid))
+                {
+                    string exe = p.MainModule.FileName;                                   // <Clarion>\bin\Clarion.exe
+                    root = System.IO.Path.GetDirectoryName(System.IO.Path.GetDirectoryName(exe));
+                }
+            }
+            catch { }
+            // The guard prefixes "IDE <pid>: ".
+            return "it runs an older Clarion Assistant" + (string.IsNullOrEmpty(root) ? "" : " (in " + root + ")")
+                + " that cannot check its editor tabs; update Clarion Assistant in that Clarion";
         }
 
         private static bool IsTimeout(Exception ex)

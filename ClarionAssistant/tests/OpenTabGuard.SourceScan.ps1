@@ -103,7 +103,7 @@ Check ((Before $checkM 'snaps = SnapshotOnUi()' 'Classify(match(snaps))') -and $
 Check ($checkM.Contains('TimedOut = outcome == UiThreadCall.Outcome.TimedOut') -and -not $nts.Contains('Contains("did not answer")')) `
     'a timeout is taken from UiThreadCall''s outcome, not from message text'
 $fid = Text 'Services\FileIdentity.cs'
-Check ($fid.Contains('if (IsNetworkPath(candidate))') -and $fid.Contains('if (!anyNetwork) return false;')) 'a network tab is not opened for a local target'
+Check ($fid.Contains('if (IsNetworkPath(candidate)) return false;')) 'a network tab is never opened (matched by its text only)'
 Check ($match.Length -gt 0 -and -not ($match -match 'string\.Equals|SamePath|PathsEqual')) 'no tab is matched by comparing path text'
 Check ($nts.Contains('UiThreadCall.Run(_ui') -and -not $nts.Contains('.Post(') -and -not $nts.Contains('Invoke(')) 'NativeTabSync goes through the shared UiThreadCall'
 $uitc = Text 'UiThreadCall.cs'
@@ -131,7 +131,7 @@ $ws = Text 'IdeWorkspace.cs'
 Check ($ws.Contains('EditorService.GetOpenSolutionPath()') -and $ws.Contains('EffectiveClarionVersion.CurrentConfig()') -and $ws.Contains('RedFileService.Active')) `
     'IdeWorkspace reports the IDE''s open solution, effective version and .red'
 Check ($cbHost.Contains('ModernEmbeditorLauncher.EnsureRedirectionLoaded()')) 'the call-back host keeps the .red loaded with no chat pane'
-Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OpenTabGuard.CheckGated(refused, spellings, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical') -and
+Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OpenTabGuard.CheckGated(gated, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical') -and
        -not $sync.Contains('OutOfScope = _workspace != null')) `
     'the #266 gate stays, but its verdict goes to CheckGated: it never short-circuits the tab lookup'
 Check ($sync.Contains('McpPathAudit.Write("editor_tab_sync", "LOOKUP"')) 'answering a refused path is written to the #266 audit log'
@@ -140,9 +140,15 @@ Check ((Before $live 'McpPathGate.GatePath("get_live_text"' 'SharedLspBridge.Liv
     'get_live_text (it returns buffer TEXT) is read-gated before any editor is read'
 $policySrc = Text 'Services\McpPathPolicy.cs'
 $guardSrc = Text 'Services\OpenTabGuard.cs'
-Check ($policySrc.Contains('"it is outside every allowed root (') -and $guardSrc.Contains('OutsideRootsMarker = "is outside every allowed root";')) `
-    'the out-of-scope marker still matches McpPathPolicy''s wording'
-Check ($nts.Contains('OpenTabGuard.LocalCheckLexical = CheckLexical;') -and $nts.Contains('FileIdentity.Lexical(f, w)') -and
+$gateSrc = Text 'Services\McpPathGate.cs'
+Check ($policySrc.Contains('"it is outside every allowed root (') -and $gateSrc.Contains('OutsideRootsReason = "it is outside every allowed root";') -and
+       $gateSrc.Contains('outsideRoots = d.Reason != null && d.Reason.StartsWith(OutsideRootsReason') -and -not $guardSrc.Contains('OutsideRootsMarker')) `
+    'out of scope comes from the gate''s structured flag (the decision''s Reason, pinned to McpPathPolicy''s wording), never the refusal text'
+$disp = Text 'Services\McpDispatcher.cs'
+Check ($disp.Contains('"Error executing tool ''" + toolName + "'': " + ex.Message') -and $src.Contains('throw new ArgumentException("Unknown tool: " + name);') -and
+       $guardSrc.Contains('reply.StartsWith("Error executing tool ''editor_tab_sync''"') -and (Text 'Services\IdeTabClient.cs').Contains('OpenTabGuard.FromCheckReply(text,')) `
+    'an older addin''s "Unknown tool" reply (the dispatcher''s real wording) is recognised by the standalone'
+Check ($nts.Contains('OpenTabGuard.LocalCheckLexical = CheckLexical;') -and $nts.Contains('FileIdentity.LexicalMatch(s.File, paths)') -and
        -not (Method $nts 'private static List<TabSnap> MatchLexical(').Contains('GetFullPath')) `
     'the lexical lookup compares path text only (no FileIdentity query, no GetFullPath disk touch)'
 Check ($nts -match 'ReloadSnapshotWaitMs\s*=\s*1500;' -and $nts -match 'ReloadWaitMs\s*=\s*7500;' -and (Text 'Services\IdeTabClient.cs') -match 'ReloadBudgetMs\s*=\s*10000;') `
@@ -172,7 +178,17 @@ foreach ($t in @('write_file', 'append_to_file')) {
     $b = Block $t
     Check ((Before $b 'string asked = path;' 'McpPathGate.GatePath(') -and $b.Contains('OpenTabGuard.Run(target, asked,')) "$t sends the caller's spelling with the resolved path"
 }
-Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('CheckGated(refused, spellings,') -and $sync.Contains('reload(spellings)')) 'editor_tab_sync takes also_path'
+Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('foreach (var sp in spellings)') -and
+       $sync.Contains('McpPathGate.GatePath("editor_tab_sync", sp, PathAccess.Read, _workspace, out canonical, out unusedPolicy, out outsideRoots)')) `
+    'editor_tab_sync takes also_path, and gates EVERY spelling (pipeline run 4)'
+Check ($sync.Contains('reload(byIdentity, byName)') -and (Before $sync 'foreach (var sp in spellings)' 'if (action == "reload")')) `
+    'reload is gated the same way: refused spellings only match an open tab by name'
+$fidSrc = Text 'Services\FileIdentity.cs'
+$ofAt = $fidSrc.IndexOf('public static Probe Of(')
+$queryAt = $fidSrc.IndexOf('private static void Query(')
+Check ($ofAt -ge 0 -and $fidSrc.IndexOf('if (IsNetworkPath(path)) { p.Network = true; return p; }', $ofAt) -gt $ofAt -and
+       $fidSrc.IndexOf('if (IsNetworkPath(path)) return;', $queryAt) -gt $queryAt -and $fidSrc.Contains('if (IsNetworkPath(candidate)) return false;')) `
+    'FileIdentity never opens a network path (Of, MatchesAny, and Query itself as the floor)'
 
 $prog = [System.IO.File]::ReadAllText($programPath)
 $setWs = $prog.IndexOf('registry.SetWorkspace(workspace, ui);')

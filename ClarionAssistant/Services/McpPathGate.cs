@@ -249,8 +249,22 @@ namespace ClarionAssistant.Services
         /// <paramref name="policy"/> is null whenever the call is refused.</summary>
         public static string GatePath(string tool, string path, PathAccess access, IWorkspaceContext ws, out string canonical, out McpPathPolicy policy)
         {
+            bool unused;
+            return GatePath(tool, path, access, ws, out canonical, out policy, out unused);
+        }
+
+        /// <summary>
+        /// GH #205 pipeline run 4: the same, also saying WHETHER a refusal is "not inside any allowed root" (as opposed to
+        /// a deny rule or a policy that could not be evaluated). editor_tab_sync treats only that kind as "out of scope".
+        /// Read from the decision's Reason, which McpPathPolicy words without the caller's path, never from the refusal
+        /// text (which echoes the path the caller chose). Pinned by tests\OpenTabGuard.SourceScan.ps1 to the policy's wording.
+        /// </summary>
+        public static string GatePath(string tool, string path, PathAccess access, IWorkspaceContext ws, out string canonical,
+                                      out McpPathPolicy policy, out bool outsideRoots)
+        {
             canonical = null;
             policy = null;
+            outsideRoots = false;
             PathDecision d;
             McpPathPolicy built;
             try { built = BuildPolicy(ws); d = built.Check(path, access); }
@@ -262,6 +276,7 @@ namespace ClarionAssistant.Services
             if (!d.Allowed)
             {
                 McpPathAudit.Write(tool, "DENY", path, d.Reason);
+                outsideRoots = d.Reason != null && d.Reason.StartsWith(OutsideRootsReason, StringComparison.Ordinal);
                 return d.Refusal(tool, path);
             }
             McpPathAudit.Write(tool, "ALLOW", d.Path, access.ToString().ToLowerInvariant());
@@ -269,6 +284,9 @@ namespace ClarionAssistant.Services
             policy = built;
             return null;
         }
+
+        /// <summary>The start of McpPathPolicy's Reason for "not inside any allowed root" (it continues with the root list).</summary>
+        public const string OutsideRootsReason = "it is outside every allowed root";
 
         public static int ClampMax(int requested, int defaultValue) { return McpPathPolicy.ClampMax(requested, defaultValue, MaxResultsCeiling); }
 

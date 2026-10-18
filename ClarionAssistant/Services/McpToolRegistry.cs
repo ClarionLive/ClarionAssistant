@@ -3210,16 +3210,25 @@ COMMON QUERIES:
                     string action = (McpJsonRpc.GetString(args, "action") ?? "").Trim().ToLowerInvariant();
                     if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
                     var spellings = OpenTabGuard.Spellings(filePath, McpJsonRpc.GetString(args, OpenTabGuard.AlsoPathArg));
+                    // GH #266 + GH #205 pipeline run 4: EVERY spelling (file_path and also_path - both are the caller's
+                    // choice) goes through the read gate. Only an allowed spelling is looked up by file identity, which opens
+                    // a handle; a refused one is compared as text only, so \\attacker\share\x can never make this IDE
+                    // authenticate to that host (and FileIdentity never opens a network path anyway). This covers 'reload'
+                    // too: a refused path can only reload a tab already open under that very name.
+                    var gated = new List<OpenTabGuard.GatedSpelling>();
+                    foreach (var sp in spellings)
+                    {
+                        string canonical;
+                        McpPathPolicy unusedPolicy;
+                        bool outsideRoots;
+                        string refusal = McpPathGate.GatePath("editor_tab_sync", sp, PathAccess.Read, _workspace, out canonical, out unusedPolicy, out outsideRoots);
+                        gated.Add(new OpenTabGuard.GatedSpelling { Path = refusal == null ? (canonical ?? sp) : sp, Refusal = refusal, OutsideRoots = outsideRoots });
+                    }
                     if (action == "check")
                     {
-                        // GH #266 (security gate LOW): a read gate, so this IdeOnly tool cannot be used to probe whether a
-                        // path outside the scope is open. A refusal is the wire's "error", which the caller treats as
-                        // "this IDE could not be asked" - never as permission to write.
-                        string checkedPath;
-                        string refused = McpPathGate.GatePath("editor_tab_sync", filePath, PathAccess.Read, _workspace, out checkedPath);
-                        // GH #205 pipeline run 3: the gate's verdict does NOT stop the tab lookup (the IDE's roots and the
-                        // writer's differ). A refused path is looked up by name only; out of scope only with no matching
-                        // tab, an "outside every allowed root" refusal and a solution open; else a failed check.
+                        // Pipeline run 3: the gate's verdict does NOT stop the tab lookup (the IDE's roots and the writer's
+                        // differ). Refused spellings are looked up by name only; out of scope only with no matching tab, every
+                        // refusal "outside every allowed root" and a workspace; else a failed check (OpenTabGuard.CheckGated).
                         bool hasSolution = false;
                         try
                         {
@@ -3227,15 +3236,18 @@ COMMON QUERIES:
                             hasSolution = !string.IsNullOrEmpty(sln) && File.Exists(sln);
                         }
                         catch { }
-                        var p = OpenTabGuard.CheckGated(refused, spellings, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
+                        var p = OpenTabGuard.CheckGated(gated, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
                             note => McpPathAudit.Write("editor_tab_sync", "LOOKUP", filePath, note));
                         return OpenTabGuard.CheckToWire(p);
                     }
                     if (action == "reload")
                     {
+                        var byIdentity = new List<string>();
+                        var byName = new List<string>();
+                        foreach (var g in gated) (g.Refusal == null ? byIdentity : byName).Add(g.Path);
                         var reload = OpenTabGuard.LocalReload;
                         TabReload r;
-                        try { r = reload != null ? reload(spellings) : null; }
+                        try { r = reload != null ? reload(byIdentity, byName) : null; }
                         catch (Exception ex) { r = new TabReload { Reason = "the reload failed: " + ex.Message }; }
                         return OpenTabGuard.ReloadToWire(r);
                     }

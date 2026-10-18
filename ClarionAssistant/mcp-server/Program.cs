@@ -974,6 +974,26 @@ namespace ClarionAssistant.McpServer
                 if (!noSlnDirty.Reachable || noSlnDirty.Kind != ClarionAssistant.Services.OpenTabGuard.KindNative || !noSlnDirty.Dirty)
                     failures.Add("an IDE with NO solution open did not report a DIRTY tab matching the file by name - the write would go under it");
 
+                // Pipeline run 4 (security MEDIUM): EVERY spelling is gated. An attacker-chosen UNC also_path, or a UNC reload
+                // path, must never reach the identity lookup (which opens handles; an SMB open leaks NTLM credentials).
+                var idAsked = new List<string>();
+                var nameAsked = new List<string>();
+                var savedLex = ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical;
+                var savedReload = ClarionAssistant.Services.OpenTabGuard.LocalReload;
+                ClarionAssistant.Services.OpenTabGuard.LocalCheck = paths => { idAsked.AddRange(paths); return new ClarionAssistant.Services.TabProbe { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNone }; };
+                ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical = paths => { nameAsked.AddRange(paths); return new ClarionAssistant.Services.TabProbe { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNone }; };
+                ClarionAssistant.Services.OpenTabGuard.LocalReload = (byId, byName) => { idAsked.AddRange(byId); nameAsked.AddRange(byName); return new ClarionAssistant.Services.TabReload { Reason = "none open" }; };
+                const string unc = @"\\attacker-205\s\Main001.clw";
+                withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object> { { "file_path", module }, { "also_path", unc }, { "action", "check" } });
+                withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object> { { "file_path", unc }, { "action", "reload" } });
+                if (idAsked.Exists(p => p.StartsWith(@"\\")) || !nameAsked.Contains(unc) || !idAsked.Exists(p => p.EndsWith("Main001.clw") && !p.StartsWith(@"\\")))
+                    failures.Add("a UNC spelling reached the identity lookup, or the allowed one did not (identity: [" + string.Join(", ", idAsked.ToArray())
+                                 + "], by name: [" + string.Join(", ", nameAsked.ToArray()) + "])");
+                ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical = savedLex;
+                ClarionAssistant.Services.OpenTabGuard.LocalReload = savedReload;
+                ClarionAssistant.Services.OpenTabGuard.LocalCheck = paths => new ClarionAssistant.Services.TabProbe
+                    { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNative, Dirty = true };
+
                 // Pipeline run 3 (security LOW): get_live_text returns buffer TEXT, so it is read-gated like read_file.
                 var liveOut = withWs.ExecuteTool("get_live_text", new Dictionary<string, object> { { "file_path", cleanOutside } }) as string;
                 if (liveOut == null || !liveOut.StartsWith("Error: get_live_text refused by the Clarion Assistant path policy", StringComparison.Ordinal))

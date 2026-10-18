@@ -228,51 +228,94 @@ static class OpenTabGuardTest
                 return OpenTabGuard.Run(file, false, Write);
             };
 
-            var g = OpenTabGuard.CheckGated(null, sp, true, true, full, lexDirty, audit);
+            var g = OpenTabGuard.CheckGated(null, false, sp, true, true, full, lexDirty, audit);
             Ok("allowed: the full (identity) lookup answers, the lexical one is not used", lookups.Count == 1 && lookups[0] == "identity" && g.Reachable);
             lookups.Clear();
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, true, full, lexDirty, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, true, full, lexDirty, audit);
             Ok("refused: the identity lookup (file handles) is NOT used on the refused path", !lookups.Contains("identity") && lookups.Contains("lexical"), string.Join(",", lookups.ToArray()));
             Ok("refused, a tab holds it by name: its kind and dirty state are answered", g.Reachable && g.Kind == OpenTabGuard.KindNative && g.Dirty);
             Ok("...and the #266 audit records that a refused path was answered", audits.Count == 1 && audits[0].Contains("refused path matched an open native tab"), string.Join("|", audits.ToArray()));
             r = writeAgainst(g);
             Ok("a DIRTY tab holding a file outside the IDE's roots: the write is REFUSED", Unchanged() && r.StartsWith("Error: Main001.clw is open in the Clarion editor with unsaved changes"), r);
 
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, true, full, lexNone, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, true, full, lexNone, audit);
             Ok("refused, no tab, outside the roots of an IDE with a solution: out of scope", !g.Reachable && g.OutOfScope && !g.Answered);
             r = writeAgainst(g);
             Ok("...the write goes ahead with a note saying the check was by name only",
                !Unchanged() && r.Contains("outside that IDE's allowed roots and no tab there holds it (checked by path name only)"), r);
 
             // Softened (coordinator, after run 3): the lookup by name always runs, so with no solution open a miss is a real answer.
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, false, full, lexNone, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, false, full, lexNone, audit);
             Ok("refused, no tab, IDE with NO solution open: out of scope (a note), not a failed check", !g.Reachable && g.OutOfScope && !g.Answered, g.Reason);
             r = writeAgainst(g);
             Ok("...written, the note says by name only and that the IDE has no solution open",
                !Unchanged() && r.Contains("(checked by path name only; that IDE has no solution open)"), r);
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, false, full, lexDirty, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, false, full, lexDirty, audit);
             Ok("IDE with NO solution open, a DIRTY tab matches by name: answered", g.Reachable && g.Kind == OpenTabGuard.KindNative && g.Dirty);
             r = writeAgainst(g);
             Ok("...and the write is REFUSED", Unchanged() && r.StartsWith("Error: Main001.clw is open in the Clarion editor with unsaved changes"), r);
 
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, false, false, full, lexNone, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, false, false, full, lexNone, audit);
             Ok("refused, no tab, a host with NO workspace at all (the run-2 bug): a failed check", !g.Reachable && g.Answered && !g.OutOfScope && g.Reason.Contains("no workspace"), g.Reason);
             r = writeAgainst(g);
             Ok("...the write is REFUSED", Unchanged() && r.StartsWith("Error: could not check whether Main001.clw"), r);
 
-            g = OpenTabGuard.CheckGated(denyRefusal, sp, true, true, full, lexNone, audit);
+            g = OpenTabGuard.CheckGated(denyRefusal, false, sp, true, true, full, lexNone, audit);
             Ok("refused by a deny rule (not 'outside every allowed root'), no tab: a failed check", !g.Reachable && g.Answered && !g.OutOfScope);
             r = writeAgainst(g);
             Ok("...the write is REFUSED", Unchanged() && r.StartsWith("Error: could not check whether"), r);
 
-            g = OpenTabGuard.CheckGated("Error: editor_tab_sync refused by the Clarion Assistant path policy (GH #266): the policy could not be evaluated (boom). This fails closed.",
+            g = OpenTabGuard.CheckGated("Error: editor_tab_sync refused by the Clarion Assistant path policy (GH #266): the policy could not be evaluated (boom). This fails closed.", false,
                                         sp, true, true, full, lexNone, audit);
             Ok("a gate EXCEPTION, no tab: a failed check", !g.Reachable && g.Answered);
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, true, full,
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, true, full,
                 q => new TabProbe { Reachable = false, TimedOut = true, Reason = "UI busy" }, audit);
             Ok("refused, and the lexical lookup timed out: stays a timeout (not out of scope, not a failure)", !g.Reachable && g.TimedOut && !g.OutOfScope && !g.Answered);
-            g = OpenTabGuard.CheckGated(outsideRefusal, sp, true, true, full, null, audit);
+            g = OpenTabGuard.CheckGated(outsideRefusal, true, sp, true, true, full, null, audit);
             Ok("refused with no lexical lookup registered: a failed check, never out of scope", !g.Reachable && g.Answered && !g.OutOfScope);
+            // Pipeline run 4: the out-of-scope decision reads the gate's STRUCTURED flag, never the refusal text (which echoes
+            // the caller's path): a deny refusal whose echoed path happens to contain the words is still a failed check.
+            g = OpenTabGuard.CheckGated("Error: ... refused ...: 'C:\\it is outside every allowed root\\x.clw' - it is inside a protected folder", false,
+                                        sp, true, true, full, lexNone, audit);
+            Ok("the policy's words inside an echoed PATH do not make a deny refusal 'out of scope'", !g.Reachable && g.Answered && !g.OutOfScope);
+
+            Console.WriteLine("-- every spelling is gated on its own (pipeline run 4: an also_path is the caller's choice too)");
+            var fullAsked = new List<string>();
+            var lexAsked = new List<string>();
+            Func<IList<string>, TabProbe> fullRec = q => { fullAsked.AddRange(q); return Ide(OpenTabGuard.KindNone, false); };
+            Func<IList<string>, TabProbe> lexRec = q => { lexAsked.AddRange(q); return Ide(OpenTabGuard.KindNone, false); };
+            var mixed = new List<OpenTabGuard.GatedSpelling>
+            {
+                new OpenTabGuard.GatedSpelling { Path = file },
+                new OpenTabGuard.GatedSpelling { Path = @"\\attacker\s\x.clw", Refusal = "Error: UNC refused", OutsideRoots = false }
+            };
+            g = OpenTabGuard.CheckGated(mixed, true, true, fullRec, lexRec, audit);
+            Ok("the allowed file_path gets the identity lookup, ONLY it", fullAsked.Count == 1 && fullAsked[0] == file, string.Join(",", fullAsked.ToArray()));
+            Ok("the refused UNC also_path gets the by-name lookup only", lexAsked.Count == 1 && lexAsked[0] == @"\\attacker\s\x.clw", string.Join(",", lexAsked.ToArray()));
+            Ok("nothing matched, a spelling was allowed (fully checked): not open", g.Reachable && g.Kind == OpenTabGuard.KindNone);
+            g = OpenTabGuard.CheckGated(mixed, true, true, fullRec, lexDirty, audit);
+            Ok("a dirty tab matching the refused spelling by name still decides", g.Reachable && g.Kind == OpenTabGuard.KindNative && g.Dirty);
+            g = OpenTabGuard.CheckGated(mixed, true, true, q => Ide(OpenTabGuard.KindCaEditor, true), lexDirty, audit);
+            Ok("a native match outranks a CA Editor match", g.Kind == OpenTabGuard.KindNative && g.Dirty);
+
+            Console.WriteLine("-- an IDE on an older Clarion Assistant (pipeline run 4)");
+            string unknown = "Error executing tool 'editor_tab_sync': Unknown tool: editor_tab_sync";
+            var old = OpenTabGuard.FromCheckReply(unknown, null, () => "it runs an older Clarion Assistant (in C:\\Clarion11) that cannot check its editor tabs; update Clarion Assistant in that Clarion");
+            Ok("'Unknown tool' is an IDE that cannot be asked, not a failed check", !old.Reachable && !old.Answered && !old.TimedOut);
+            Reset();
+            old.Ide = "IDE 4242";
+            Script(() => new List<TabProbe> { old }, null);
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("...the write proceeds, with a note naming the IDE, its Clarion, and what to do",
+               !Unchanged() && r.Contains("IDE 4242: it runs an older Clarion Assistant (in C:\\Clarion11)") && r.Contains("update Clarion Assistant in that Clarion"), r);
+            var other = OpenTabGuard.FromCheckReply("Error executing tool 'editor_tab_sync': Object reference not set to an instance of an object.", null, null);
+            Ok("any OTHER error from editor_tab_sync stays a failed check", !other.Reachable && other.Answered);
+            Reset();
+            other.Ide = "IDE 4242";
+            Script(() => new List<TabProbe> { other }, null);
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("...and refuses the write", Unchanged() && r.StartsWith("Error: could not check whether"), r);
+            Ok("'Unknown tool' for ANOTHER tool is not taken as an older addin", !OpenTabGuard.IsUnknownToolReply("Error executing tool 'get_live_text': Unknown tool: get_live_text"));
 
             Console.WriteLine("-- both spellings reach the IDE (pipeline run 1: aliases)");
             Reset();
