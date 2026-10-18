@@ -62,6 +62,13 @@ namespace ClarionAssistant.Services
         /// "clarion-mcp-server") — the two advertise different tool counts, so a client that
         /// cannot tell them apart cannot explain to a user why a tool it saw yesterday is gone.
         /// </param>
+        /// <summary>
+        /// Optional: the MCP initialize result's "instructions" - text the client gives the MODEL, the one channel a
+        /// host can rely on being read (e1df6c2e pipeline run 3: the standalone server's downgrade warning). Null/empty
+        /// = no instructions, as before.
+        /// </summary>
+        public Func<string> InstructionsProvider { get; set; }
+
         public McpDispatcher(
             McpToolRegistry toolRegistry,
             IUiDispatcher ui,
@@ -106,7 +113,9 @@ namespace ClarionAssistant.Services
                 switch (request.Method)
                 {
                     case "initialize":
-                        var initResult = McpJsonRpc.BuildInitializeResult(_serverName, _serverVersion);
+                        string instructions = null;
+                        try { instructions = InstructionsProvider != null ? InstructionsProvider() : null; } catch { }
+                        var initResult = McpJsonRpc.BuildInitializeResult(_serverName, _serverVersion, instructions);
                         return McpJsonRpc.SerializeResponse(request.Id, initResult);
 
                     case "notifications/initialized":

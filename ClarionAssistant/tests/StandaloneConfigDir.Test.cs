@@ -63,7 +63,7 @@ static class StandaloneConfigDirTest
         };
     }
 
-    static int Main()
+    static int Main(string[] args)
     {
         Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-cfgdir-" + Guid.NewGuid().ToString("N").Substring(0, 8));
@@ -272,7 +272,8 @@ static class StandaloneConfigDirTest
             Func<ServerCandidate, ServerPickInputs> guardIn = c11 => new ServerPickInputs
             {
                 SolutionPath = sln, FindNamed = find, Bootstrap = boot,
-                Candidates = new List<ServerCandidate> { boot, c11 }
+                Candidates = new List<ServerCandidate> { boot, c11 },
+                CapabilityOf = c => ServerPicker.PathPolicyFloor   // at the floor: only the version decides
             };
 
             // INFERRED choices are refused for being older.
@@ -306,9 +307,10 @@ static class StandaloneConfigDirTest
             File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\", \"allowOlderServer\": false }");
             var pinAllow = SolutionClarionVersion.ReadPin(sln);
             Check(pinAllow.AllowOlderServer == false && pinAllow.Note == null, "allowOlderServer is read from the json", pinAllow.Note);
-            File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\", \"allowOlderServer\": \"no\" }");
+            File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\", \"allowOlderServer\": \"true\" }");
             pinAllow = SolutionClarionVersion.ReadPin(sln);
-            Check(pinAllow.AllowOlderServer == null && Has(pinAllow.Note, "allowOlderServer"), "a non-boolean allowOlderServer is reported and ignored", pinAllow.Note);
+            Check(pinAllow.AllowOlderServer == false && Has(pinAllow.Note, "treated as false"),
+                "a non-boolean allowOlderServer (even the string \"true\") is treated as FALSE, and said", pinAllow.Note);
             File.WriteAllText(json, "{ \"clarionVersion\": \"Clarion 11.0.13244\" }");
             Check(SolutionClarionVersion.ReadPin(sln).AllowOlderServer == null, "absent allowOlderServer stays null (= allowed)");
 
@@ -321,6 +323,71 @@ static class StandaloneConfigDirTest
             Check(!pk.DowngradeRefused && pk.Server.Root == r11, "--clarion-version PINS that Clarion: the older server runs", pk.Note);
             Check(Has(pk.Warning, "WARNING") && Has(pk.Warning, "6.0.0.1300") && Has(pk.Warning, "6.0.0.1400") && Has(pk.Note, "WARNING"),
                 "...with a WARNING naming both versions, in the note too", pk.Warning);
+
+            // ---------------------------------------------------------------- security floor (pipeline run 3)
+            Console.WriteLine("security floor");
+            Func<ServerCandidate, ServerPickInputs> floorIn = c11 =>
+            {
+                var x = guardIn(c11);
+                x.CapabilityOf = c => SolutionFollower.SamePath(c.Root, r11) ? 0 : ServerPicker.PathPolicyFloor;   // C11's server predates #266
+                return x;
+            };
+            pi = floorIn(older11); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(pk.DowngradeRefused && pk.Server.ExePath == boot.ExePath && pk.Warning == null,
+                "a json pin can NOT start a server below the security floor (allowOlderServer default true)", pk.Note);
+            Check(Has(pk.Note, "security floor") && Has(pk.Note, "path-policy=" + ServerPicker.PathPolicyFloor),
+                "...and the refusal names the floor", pk.Note);
+
+            var newerButOld = CandV(r11, "11.0.0.13244", "6.0.0.1500");   // a NEWER version string, yet no path policy
+            pi = floorIn(newerButOld); pi.PinnedVersion = "Clarion 11.0.13244";
+            Check(ServerPicker.Pick(pi).DowngradeRefused, "the floor is the CAPABILITY, not the version string (a newer version below the floor is refused)");
+
+            pi = floorIn(newerButOld); pi.ProjectMajors.Add(new KeyValuePair<string, int>("A", 11));
+            Check(ServerPicker.Pick(pi).DowngradeRefused, "an inferred choice below the floor is refused");
+
+            pi = guardIn(CandV(r11, "11.0.0.13244", null)); pi.PinnedVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(pk.DowngradeRefused && Has(pk.Note, "version unreadable"), "a json pin of a server whose version cannot be read is refused (= below the floor)", pk.Note);
+
+            pi = floorIn(older11); pi.CommandLineVersion = "Clarion 11.0.13244";
+            pk = ServerPicker.Pick(pi);
+            Check(!pk.DowngradeRefused && pk.Server.Root == r11 && Has(pk.Warning, "security floor") && Has(pk.Warning, "--clarion-version"),
+                "only --clarion-version can start a server below the floor, with the WARNING", pk.Warning);
+
+            Check(ServerPicker.ParsePathPolicy(ServerPicker.CapabilitiesText()) == ServerPicker.PathPolicyCapability
+                  && ServerPicker.PathPolicyCapability >= ServerPicker.PathPolicyFloor,
+                "this build's --capabilities parses back and meets its own floor");
+            Check(ServerPicker.ParsePathPolicy("pick-server=2\r\npath-policy=3\r\n") == 3 && ServerPicker.ParsePathPolicy("usage: ...") == 0
+                  && ServerPicker.ParsePathPolicy("path-policy=x") == 0, "path-policy parsing: found, absent, malformed");
+            Check(ServerPicker.ProbePathPolicy(Cand(@"C:\Fake\Nowhere", null)) == 0, "a server that cannot be run reports no capability");
+            string notPe = Path.Combine(root, "notpe", ServerPicker.RelativeExe);
+            Directory.CreateDirectory(Path.GetDirectoryName(notPe));
+            File.WriteAllText(notPe, "placeholder text, not a program - long enough to pass any size check, but no MZ header");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int notPeCap = ServerPicker.ProbePathPolicy(new ServerCandidate { Root = Path.Combine(root, "notpe"), ExePath = notPe });
+            sw.Stop();
+            Check(notPeCap == 0 && sw.ElapsedMilliseconds < 2000,
+                "a non-PE \"server\" is never started (starting one hung CreateProcess from a hidden session)", sw.ElapsedMilliseconds + " ms");
+
+            // The running server's own warning (initialize instructions): needs a real versioned exe - the built server.
+            string builtServer = args.Length > 0 ? Path.Combine(args[0], @"mcp-server\bin\Debug\clarion-mcp-server.exe") : null;
+            string selfExe = System.Reflection.Assembly.GetExecutingAssembly().Location;   // csc-built: no file version
+            if (builtServer != null && File.Exists(builtServer))
+            {
+                string w = ServerPicker.RunningDowngradeWarning("pick", selfExe, builtServer, null);
+                Check(Has(w, "WARNING") && Has(w, "OLDER") && Has(w, builtServer), "running older than the bootstrap gives the warning", w);
+                Check(ServerPicker.RunningDowngradeWarning("pick", builtServer, selfExe, null) == null, "running NEWER than the bootstrap gives none");
+                Check(ServerPicker.RunningDowngradeWarning("pick", builtServer, builtServer, null) == null, "running AS the bootstrap gives none");
+                string i = ServerPicker.DowngradeInstructions(w);
+                Check(Has(i, "tell the developer") && Has(i, w), "the initialize instructions carry it and ask the model to tell the developer", i);
+                Check(ServerPicker.DowngradeInstructions(null) == null, "no warning, no instructions");
+            }
+            else
+                // Not a pass: ConfigDir.StandaloneE2ETest.ps1 (case 9) builds the server and checks the same warning
+                // end to end, through initialize. Here it needs a build to have happened first.
+                Console.WriteLine("  skip running-server warning checks: no built clarion-mcp-server.exe at " + (builtServer ?? "(no project dir)")
+                    + " - covered by ConfigDir.StandaloneE2ETest.ps1 case 9");
 
             // ---------------------------------------------------------------- launch note
             Console.WriteLine("serverChosenBy");

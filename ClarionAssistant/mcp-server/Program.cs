@@ -146,6 +146,12 @@ namespace ClarionAssistant.McpServer
                         // solution on stdout, the reason on stderr, and exit. See ServerPicker.
                         pickServer = true;
                         break;
+                    case "--capabilities":
+                        // e1df6c2e pipeline run 3: what this server can promise, for the launcher's security floor
+                        // (ServerPicker.PathPolicyFloor). An older server rejects the argument, which reads as "none".
+                        Console.Out.Write(ServerPicker.CapabilitiesText());
+                        Console.Out.Flush();
+                        return 0;
                     case "--pick-out":
                         // With --pick-server: write the answer to this file INSTEAD of stdout. The launcher runs the
                         // pick directly (no for /f, no call: those re-expand % in the client's arguments), so its
@@ -214,6 +220,16 @@ namespace ClarionAssistant.McpServer
                     () => ServerPicker.FindInstalled(ClarionAssistant.Services.ClarionVersionService.InstalledClarionRoot()),
                     Environment.GetEnvironmentVariable(PickedEnvVar));
                 Console.Error.WriteLine(ServerName + ": " + workspace.ServerChosenBy);
+                // Pipeline run 3: running OLDER than the bootstrap (or, overridden, than another install) is said where
+                // the model reads it - the initialize instructions, set below - as well as here and in serverChosenBy.
+                workspace.DowngradeWarning = ServerPicker.RunningDowngradeWarning(launcherMode, own, bootstrap,
+                    () => ServerPicker.FindInstalled(ClarionAssistant.Services.ClarionVersionService.InstalledClarionRoot()));
+                if (workspace.DowngradeWarning != null)
+                {
+                    Console.Error.WriteLine(ServerName + ": " + workspace.DowngradeWarning);
+                    if (workspace.ServerChosenBy.IndexOf(workspace.DowngradeWarning, StringComparison.Ordinal) < 0)
+                        workspace.ServerChosenBy += "; " + workspace.DowngradeWarning;
+                }
             }
 
             // WHICH CLARION, AND WHO DECIDED. Resolved EAGERLY here, though everything else about
@@ -229,6 +245,7 @@ namespace ClarionAssistant.McpServer
                 Console.Error.WriteLine(ServerName + ": settings: " + workspace.SettingsNote);
 
             var bundle = BuildDispatcher(workspace);
+            bundle.Dispatcher.InstructionsProvider = () => ServerPicker.DowngradeInstructions(workspace.DowngradeWarning);
             RegisterAsVisibleInstance(bundle, workspace);
             StartLspInBackground(bundle, workspace);
 

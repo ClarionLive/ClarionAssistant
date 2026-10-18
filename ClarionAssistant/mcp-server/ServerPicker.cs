@@ -18,6 +18,8 @@ namespace ClarionAssistant.McpServer
         /// Clarion version, so one root can hold an older server than another (pipeline run 1, e1df6c2e).
         /// </summary>
         public Version ServerVersion;
+        /// <summary>The path-policy capability it reported (--capabilities), once probed; 0 = none / no answer.</summary>
+        public int PathPolicy;
         /// <summary>Where the candidate was found: CLARION_ROOTS, the installer's registry record, C:\ClarionXX, this server's own install.</summary>
         public string Origin;
     }
@@ -53,6 +55,8 @@ namespace ClarionAssistant.McpServer
         /// server than the bootstrap (with a warning). False refuses it like an inferred choice. Ignored for other tiers.
         /// </summary>
         public bool AllowOlderPinnedServer = true;
+        /// <summary>The path-policy a candidate reports; <see cref="ServerPicker.ProbePathPolicy"/> in production (test seam).</summary>
+        public Func<ServerCandidate, int> CapabilityOf;
     }
 
     internal sealed class ServerPick
@@ -110,25 +114,41 @@ namespace ClarionAssistant.McpServer
         /// be read - is REFUSED and the bootstrap serves instead, said so; except when the user NAMED that Clarion
         /// (--clarion-version, or clarionVersion in clarion-assistant.json unless "allowOlderServer": false), where it
         /// runs with a WARNING naming both versions.
+        ///
+        /// THE SECURITY FLOOR (pipeline run 3) comes first and no file can lower it: clarion-assistant.json is committed
+        /// in SOMEONE ELSE'S repo as easily as in yours, so a pin there must not be able to start a server that predates
+        /// the #266 path policy. The floor is a CAPABILITY the server reports (--capabilities: path-policy=N), not a
+        /// version number - per-version deploys can share one version string. A server that does not answer, reports less
+        /// than <see cref="PathPolicyFloor"/>, or whose version cannot be read, is below the floor: never picked from the
+        /// json or an inferred tier. Only --clarion-version (a command line the user wrote) may still run it, warned.
         /// </summary>
         public static ServerPick Pick(ServerPickInputs input)
         {
             var pick = PickByProject(input);
             var boot = input.Bootstrap;
-            if (pick.Server == null || boot == null || boot.ServerVersion == null) return pick;
+            if (pick.Server == null || boot == null) return pick;
             if (SolutionFollower.SamePath(pick.Server.ExePath, boot.ExePath)) return pick;
+
             var v = pick.Server.ServerVersion;
-            if (v != null && v >= boot.ServerVersion) return pick;
+            int cap = (input.CapabilityOf ?? ProbePathPolicy)(pick.Server);
+            pick.Server.PathPolicy = cap;
+            bool belowFloor = cap < PathPolicyFloor || v == null;
+            bool older = belowFloor || (boot.ServerVersion != null && v < boot.ServerVersion);
+            if (!older) return pick;
 
             string what = "the server under " + pick.Server.Root + " is Clarion Assistant "
-                + (v != null ? v.ToString() : "(version unreadable)") + ", OLDER than " + boot.ExePath
-                + " (Clarion Assistant " + boot.ServerVersion + ") - it lacks every fix made since";
+                + (v != null ? v.ToString() : "(version unreadable)")
+                + (belowFloor ? ", BELOW the security floor (it reports " + (cap > 0 ? "path-policy=" + cap : "no path policy")
+                    + "; path-policy=" + PathPolicyFloor + " is required, GH #266)" : "")
+                + ", OLDER than " + boot.ExePath + " (Clarion Assistant " + (boot.ServerVersion != null ? boot.ServerVersion.ToString() : "?")
+                + ") - it lacks every fix made since";
             // A NAMED version is the developer's deliberate choice - on the command line, or committed in the solution's
             // clarion-assistant.json (pipeline run 2): refusing it would bring back the install-keyed mismatch #244 is
             // about. Only an INFERRED choice (.Version resources, a live IDE, the newest) is refused for being older.
-            // clarion-assistant.json's "allowOlderServer": false opts its pin out.
+            // clarion-assistant.json's "allowOlderServer": false opts its pin out. BELOW THE FLOOR only the command
+            // line counts (run 3).
             bool pinned = pick.Source == SourceCommandLine
-                || (pick.Source == SourceSolutionFile && input.AllowOlderPinnedServer);
+                || (!belowFloor && pick.Source == SourceSolutionFile && input.AllowOlderPinnedServer);
             if (pinned)
             {
                 string who = pick.Source == SourceCommandLine ? "--clarion-version names"
@@ -138,6 +158,15 @@ namespace ClarionAssistant.McpServer
                 pick.Note = pick.Note + "; " + pick.Warning;
                 return pick;
             }
+            string howToUse;
+            if (belowFloor)
+                howToUse = " its own server. A server below the security floor is never started from "
+                    + SolutionClarionVersion.FileName + " or an inferred choice; only --clarion-version on your own command line can insist";
+            else if (pick.Source == SourceSolutionFile)
+                howToUse = " its own server (" + SolutionClarionVersion.FileName + " pins that Clarion, but its \"allowOlderServer\" refuses an older server)";
+            else
+                howToUse = " its own server, or name the version (--clarion-version, or clarionVersion in "
+                    + SolutionClarionVersion.FileName + ") to insist";
             return new ServerPick
             {
                 Server = boot,
@@ -146,11 +175,134 @@ namespace ClarionAssistant.McpServer
                 DowngradeRefused = true,
                 Note = pick.Note + "; REFUSED: " + what + ", so " + boot.ExePath + " serves instead (it still uses the"
                     + " Clarion version chosen for the project). Install or deploy Clarion Assistant for that Clarion to use"
-                    + (pick.Source == SourceSolutionFile
-                        ? " its own server (" + SolutionClarionVersion.FileName + " pins that Clarion, but its \"allowOlderServer\": false refuses an older server)"
-                        : " its own server, or name the version (--clarion-version, or clarionVersion in "
-                          + SolutionClarionVersion.FileName + ") to insist")
+                    + howToUse
             };
+        }
+
+        /// <summary>
+        /// The path-policy capability this build has (GH #266; its pipeline fix round is generation 2). Printed by
+        /// --capabilities. Raise it when a change to the path policy must not be bypassed by starting an older server.
+        /// </summary>
+        public const int PathPolicyCapability = 2;
+
+        /// <summary>The lowest path-policy a server may report and still be picked from a file or an inferred choice.</summary>
+        public const int PathPolicyFloor = 2;
+
+        /// <summary>
+        /// The path-policy capability <paramref name="c"/> reports: runs it with --capabilities (stdin closed, 10 s cap)
+        /// and reads "path-policy=N". 0 when it does not answer - an older server rejects the argument - or cannot run.
+        /// </summary>
+        public static int ProbePathPolicy(ServerCandidate c)
+        {
+            if (c == null || string.IsNullOrEmpty(c.ExePath) || !File.Exists(c.ExePath)) return 0;
+            // Only a real PE file is ever started. Measured: starting a non-PE ".exe" from a hidden console session hung
+            // this process inside CreateProcess indefinitely (no timeout reaches it), and such a file is below the floor
+            // anyway - it has no version either.
+            if (!LooksLikePe(c.ExePath)) return 0;
+            int result = 0;
+            var worker = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo(c.ExePath, "--capabilities")
+                    {
+                        UseShellExecute = false, CreateNoWindow = true, ErrorDialog = false,
+                        RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+                    };
+                    using (var p = Process.Start(psi))
+                    {
+                        p.StandardInput.Close();
+                        var outTask = p.StandardOutput.ReadToEndAsync();
+                        var errTask = p.StandardError.ReadToEndAsync();
+                        if (!p.WaitForExit(10000)) { try { p.Kill(); } catch { } return; }
+                        if (p.ExitCode != 0) return;
+                        result = ParsePathPolicy(outTask.Result);
+                    }
+                }
+                catch { }
+            });
+            worker.IsBackground = true;
+            worker.Start();
+            // The whole probe, start included, is bounded: an answer that does not come is "no capability".
+            return worker.Join(15000) ? result : 0;
+        }
+
+        private static bool LooksLikePe(string path)
+        {
+            try
+            {
+                using (var f = File.OpenRead(path))
+                    return f.Length > 64 && f.ReadByte() == 'M' && f.ReadByte() == 'Z';
+            }
+            catch { return false; }
+        }
+
+        /// <summary>"path-policy=N" from --capabilities output; 0 when absent or malformed.</summary>
+        public static int ParsePathPolicy(string capabilities)
+        {
+            if (string.IsNullOrEmpty(capabilities)) return 0;
+            foreach (string line in capabilities.Split('\n'))
+            {
+                string l = line.Trim();
+                if (!l.StartsWith("path-policy=", StringComparison.OrdinalIgnoreCase)) continue;
+                int n;
+                return int.TryParse(l.Substring("path-policy=".Length), out n) && n > 0 ? n : 0;
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// The MCP initialize instructions for a downgraded server (pipeline run 3), or null: the warning, and an explicit
+        /// ask that the model pass it on - a developer reads neither stderr nor a field of get_solution_info.
+        /// </summary>
+        public static string DowngradeInstructions(string warning)
+        {
+            if (string.IsNullOrEmpty(warning)) return null;
+            return "IMPORTANT - tell the developer this at the start of your next reply, in plain words: " + warning
+                + " Until they update it, treat this server's tools as missing recent fixes.";
+        }
+
+        /// <summary>What --capabilities prints for this build.</summary>
+        public static string CapabilitiesText()
+        {
+            return "path-policy=" + PathPolicyCapability + "\npick-server=2\n";
+        }
+
+        /// <summary>
+        /// Pipeline run 3: the warning for the RUNNING server when it is an older Clarion Assistant than the one the
+        /// launcher asked (<paramref name="bootstrapExe"/>, "pick"), or - started by CLARION_MCP_SERVER ("override") -
+        /// than another installed server; null otherwise. It goes into the MCP initialize instructions as well as stderr
+        /// and serverChosenBy, because only the model reliably reads what reaches it.
+        /// </summary>
+        public static string RunningDowngradeWarning(string launcherMode, string ownExe, string bootstrapExe,
+                                                     Func<List<ServerCandidate>> installed)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(launcherMode)) return null;
+                Version own = FileVersionOf(ownExe);
+                ServerCandidate newer = null;
+                if (string.Equals(launcherMode, "pick", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (string.IsNullOrEmpty(bootstrapExe) || SolutionFollower.SamePath(bootstrapExe, ownExe)) return null;
+                    var b = CandidateFor(bootstrapExe, "bootstrap");
+                    if (b.ServerVersion != null && (own == null || b.ServerVersion > own)) newer = b;
+                }
+                else if (string.Equals(launcherMode, "override", StringComparison.OrdinalIgnoreCase))
+                {
+                    foreach (var c in (installed != null ? installed() : null) ?? new List<ServerCandidate>())
+                        if (c.ServerVersion != null && (own == null || c.ServerVersion > own)
+                            && (newer == null || c.ServerVersion > newer.ServerVersion)) newer = c;
+                }
+                if (newer == null) return null;
+                return "WARNING: this Clarion Assistant server (" + ownExe + ", version " + (own != null ? own.ToString() : "unreadable")
+                    + ") is OLDER than " + newer.ExePath + " (version " + newer.ServerVersion + ") and lacks every fix made"
+                    + " since, which can include security fixes. It runs because "
+                    + (string.Equals(launcherMode, "override", StringComparison.OrdinalIgnoreCase)
+                        ? "CLARION_MCP_SERVER names it" : "the project's Clarion version was named explicitly")
+                    + ". Update Clarion Assistant for that Clarion.";
+            }
+            catch { return null; }
         }
 
         private static ServerPick PickByProject(ServerPickInputs input)
