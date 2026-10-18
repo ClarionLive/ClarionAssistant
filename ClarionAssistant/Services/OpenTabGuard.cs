@@ -97,6 +97,70 @@ namespace ClarionAssistant.Services
         /// <summary>editor_tab_sync's optional second spelling of file_path.</summary>
         public const string AlsoPathArg = "also_path";
 
+        /// <summary>The IDE's tab lookup by path TEXT only (no file handles), for a path its #266 gate refused.</summary>
+        public static Func<IList<string>, TabProbe> LocalCheckLexical;
+
+        /// <summary>
+        /// The words McpPathPolicy uses for "not inside any allowed root" (the only refusal that may read as out of
+        /// scope). Pinned by tests\OpenTabGuard.SourceScan.ps1 against McpPathPolicy.cs, so a rewording fails the scan
+        /// instead of silently turning every out-of-scope answer into a refused write (or the reverse).
+        /// </summary>
+        public const string OutsideRootsMarker = "is outside every allowed root";
+
+        /// <summary>
+        /// GH #205 pipeline run 3: editor_tab_sync's check, given the IDE's #266 read gate verdict on the path.
+        ///
+        /// The gate must NOT stop the tab lookup. The IDE's allowed roots and the writer's differ for the same file (the
+        /// standalone's CLARION_MCP_ALLOWED_ROOTS, a clarion-assistant.json version pin, an IDE with no solution open, the
+        /// seconds after a switch), so "outside my roots" says nothing about whether a dirty tab holds it. So:
+        ///   - allowed: the full lookup (file identity).
+        ///   - refused: the lookup still runs, by path TEXT only (<paramref name="lexicalCheck"/>: no handle is opened on
+        ///     the refused path). A matching tab is answered normally - kind and dirty, one bit about a path the caller
+        ///     already named - and <paramref name="audit"/> records that it was.
+        ///   - refused, no tab matched: OUT OF SCOPE (a note) for an "outside every allowed root" refusal from an IDE that
+        ///     HAS a workspace, with or without a solution open: the lookup by name ran, so a miss is a real answer; the
+        ///     note says it was by path name only (an alias tab outside the roots is the residual). Anything else - a deny
+        ///     rule, a policy exception, a host with NO workspace at all (pipeline run 2's mis-wired host) - is a FAILED
+        ///     check, which refuses the write.
+        /// Pure: the lookups and the audit are delegates.
+        /// </summary>
+        public static TabProbe CheckGated(string gateRefusal, IList<string> spellings, bool hasWorkspace, bool workspaceHasSolution,
+                                          Func<IList<string>, TabProbe> fullCheck, Func<IList<string>, TabProbe> lexicalCheck,
+                                          Action<string> audit)
+        {
+            if (gateRefusal == null)
+            {
+                if (fullCheck == null) return new TabProbe { Reachable = false, Answered = true, Reason = "the IDE's editor check is not registered" };
+                try { return fullCheck(spellings) ?? new TabProbe { Reachable = false, Answered = true, Reason = "the IDE's editor check gave no answer" }; }
+                catch (Exception ex) { return new TabProbe { Reachable = false, Answered = true, Reason = "the editor lookup failed: " + ex.Message }; }
+            }
+
+            TabProbe lex;
+            if (lexicalCheck == null) return new TabProbe { Reachable = false, Answered = true, Reason = "the IDE's editor check is not registered" };
+            try { lex = lexicalCheck(spellings); }
+            catch (Exception ex) { return new TabProbe { Reachable = false, Answered = true, Reason = "the editor lookup failed: " + ex.Message }; }
+            if (lex == null) return new TabProbe { Reachable = false, Answered = true, Reason = "the IDE's editor check gave no answer" };
+            if (!lex.Reachable) return lex;   // a timeout stays a timeout; a failure stays a failure
+            if (lex.Kind != KindNone)
+            {
+                if (audit != null) try { audit("refused path matched an open " + lex.Kind + " tab by name; answered its kind and dirty state only"); } catch { }
+                return lex;
+            }
+
+            bool outside = gateRefusal.IndexOf(OutsideRootsMarker, StringComparison.Ordinal) >= 0;
+            if (outside && hasWorkspace)
+                return new TabProbe
+                {
+                    Reachable = false, OutOfScope = true,
+                    Reason = gateRefusal + (workspaceHasSolution ? "" : " (this IDE has no solution open)")
+                };
+            return new TabProbe
+            {
+                Reachable = false, Answered = true,
+                Reason = gateRefusal + (outside && !hasWorkspace ? " (this IDE's tab check has no workspace)" : "")
+            };
+        }
+
         /// <summary>The distinct, non-empty spellings, <paramref name="primary"/> first.</summary>
         public static List<string> Spellings(string primary, string alsoPath)
         {
@@ -297,8 +361,10 @@ namespace ClarionAssistant.Services
                 return new TabProbe
                 {
                     Ide = ide, Reachable = false, Answered = !timedOut && !outOfScope, TimedOut = timedOut, OutOfScope = outOfScope,
-                    Reason = outOfScope ? "the file is outside that IDE's allowed roots, so it would not say whether it has it open"
-                                        : "the IDE: " + o
+                    Reason = outOfScope
+                        ? "the file is outside that IDE's allowed roots and no tab there holds it (checked by path name only"
+                          + ((o as string ?? "").Contains("no solution open") ? "; that IDE has no solution open)" : ")")
+                        : "the IDE: " + o
                 };
             }
             string kind = a.TryGetValue("kind", out o) ? o as string : null;

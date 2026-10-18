@@ -228,8 +228,22 @@ namespace ClarionAssistant.Services
             if (rec == null) { why = "empty"; return null; }
 
             object v;
-            int pid = rec.TryGetValue("pid", out v) && v != null ? Convert.ToInt32(v) : 0;
-            int port = rec.TryGetValue("port", out v) && v != null ? Convert.ToInt32(v) : 0;
+            // GH #205 pipeline run 3: parsed, never converted. Convert.ToInt32 threw on "abc" or 1e12 here, outside any try,
+            // and one bad record aborted discovery for EVERY IDE. An unparseable record is skipped, and deleted only when
+            // provably stale (its file name's pid is no longer running).
+            int pid, port;
+            bool pidOk = TryInt(rec, "pid", out pid), portOk = TryInt(rec, "port", out port);
+            if (!pidOk || !portOk)
+            {
+                string stem = Path.GetFileNameWithoutExtension(file);
+                int namePid;
+                int dash = stem.IndexOf('-');
+                if (dash > 0 && int.TryParse(stem.Substring(0, dash), out namePid) && namePid > 0 && !IsRunning(namePid))
+                    why = "stale: malformed record " + stem + " of a pid that is no longer running";
+                else
+                    why = "malformed record " + stem + " (pid/port not a number), skipped";
+                return null;
+            }
             string token = rec.TryGetValue("token", out v) ? v as string : null;
             DateTime start = DateTime.MinValue, written = DateTime.MinValue;
             bool hasStart = rec.TryGetValue("startTime", out v) && DateTime.TryParse(v as string, null,
@@ -262,6 +276,23 @@ namespace ClarionAssistant.Services
             catch (Exception ex) { why = "unverifiable (" + ex.GetType().Name + ")"; return null; }   // e.g. access denied: skip, keep
 
             return new Endpoint { Pid = pid, Port = port, Token = token };
+        }
+
+        private static bool TryInt(Dictionary<string, object> rec, string key, out int value)
+        {
+            value = 0;
+            object v;
+            if (!rec.TryGetValue(key, out v) || v == null) return true;   // absent = 0: the "malformed" checks below judge it
+            if (v is int) { value = (int)v; return true; }
+            return int.TryParse(Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture),
+                                System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out value);
+        }
+
+        private static bool IsRunning(int pid)
+        {
+            try { using (var p = Process.GetProcessById(pid)) return !p.HasExited; }
+            catch (ArgumentException) { return false; }
+            catch { return true; }   // cannot tell (access denied): not provably gone
         }
 
         private static string Full(string path)

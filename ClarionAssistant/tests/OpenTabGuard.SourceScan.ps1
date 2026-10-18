@@ -82,7 +82,7 @@ $match = Method $nts 'private static List<TabSnap> Match('
 $reload = Method $nts 'private static TabReload ReloadOnUi('
 $keep = Method $nts 'private static int ReloadKeepingCaret('
 $views = Method $nts 'private static System.Collections.IEnumerable OpenViews('
-$checkM = Method $nts 'internal static TabProbe Check('
+$checkM = Method $nts 'private static TabProbe CheckWith('
 Check ($snap.Contains('me.OverlayUp') -and $snap.Contains('me.OverlayDirty') -and $snap.Contains('w.IsDirty') -and
        (Before $classify 'if (s.OverlayUp)' 'else { nativeOpen = true; if (s.Dirty)')) `
     'a tab whose CA Editor is up is classified ca-editor (its native shell stays clean, so IsDirty would lie); others by IsDirty'
@@ -98,7 +98,7 @@ Check ($match.Contains('FileIdentity.MatchesAny(s.File, probes)') -and $views.Co
 # Pipeline run 2, fix 2: no file I/O on the UI thread - the UI call only snapshots; identity is matched outside it.
 Check (-not $snap.Contains('FileIdentity') -and -not $reload.Contains('FileIdentity') -and -not $snap.Contains('File.Exists') -and -not $reload.Contains('File.Exists')) `
     'the UI-thread parts (snapshot, reload) do no file-identity or disk I/O'
-Check ((Before $checkM 'snaps = SnapshotOnUi()' 'Match(snaps, Probes(paths))') -and -not $checkM.Contains('UiThreadCall.Run(_ui, () => { answer = Classify')) `
+Check ((Before $checkM 'snaps = SnapshotOnUi()' 'Classify(match(snaps))') -and $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check")') -and -not $checkM.Contains('UiThreadCall.Run(_ui, () => { answer = Classify')) `
     'the check matches identities AFTER the UI call returns, not inside it'
 Check ($checkM.Contains('TimedOut = outcome == UiThreadCall.Outcome.TimedOut') -and -not $nts.Contains('Contains("did not answer")')) `
     'a timeout is taken from UiThreadCall''s outcome, not from message text'
@@ -131,8 +131,24 @@ $ws = Text 'IdeWorkspace.cs'
 Check ($ws.Contains('EditorService.GetOpenSolutionPath()') -and $ws.Contains('EffectiveClarionVersion.CurrentConfig()') -and $ws.Contains('RedFileService.Active')) `
     'IdeWorkspace reports the IDE''s open solution, effective version and .red'
 Check ($cbHost.Contains('ModernEmbeditorLauncher.EnsureRedirectionLoaded()')) 'the call-back host keeps the .red loaded with no chat pane'
-Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OutOfScope = _workspace != null')) `
-    'the #266 gate stays; its refusal is out-of-scope only when the host HAS a workspace (none = a failed check)'
+Check ($sync.Contains('McpPathGate.GatePath("editor_tab_sync"') -and $sync.Contains('OpenTabGuard.CheckGated(refused, spellings, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical') -and
+       -not $sync.Contains('OutOfScope = _workspace != null')) `
+    'the #266 gate stays, but its verdict goes to CheckGated: it never short-circuits the tab lookup'
+Check ($sync.Contains('McpPathAudit.Write("editor_tab_sync", "LOOKUP"')) 'answering a refused path is written to the #266 audit log'
+$live = Block 'get_live_text'
+Check ((Before $live 'McpPathGate.GatePath("get_live_text"' 'SharedLspBridge.LiveTextProvider') -and $live.Contains('if (liveRefused != null) return liveRefused;')) `
+    'get_live_text (it returns buffer TEXT) is read-gated before any editor is read'
+$policySrc = Text 'Services\McpPathPolicy.cs'
+$guardSrc = Text 'Services\OpenTabGuard.cs'
+Check ($policySrc.Contains('"it is outside every allowed root (') -and $guardSrc.Contains('OutsideRootsMarker = "is outside every allowed root";')) `
+    'the out-of-scope marker still matches McpPathPolicy''s wording'
+Check ($nts.Contains('OpenTabGuard.LocalCheckLexical = CheckLexical;') -and $nts.Contains('FileIdentity.Lexical(f, w)') -and
+       -not (Method $nts 'private static List<TabSnap> MatchLexical(').Contains('GetFullPath')) `
+    'the lexical lookup compares path text only (no FileIdentity query, no GetFullPath disk touch)'
+Check ($nts -match 'ReloadSnapshotWaitMs\s*=\s*1500;' -and $nts -match 'ReloadWaitMs\s*=\s*7500;' -and (Text 'Services\IdeTabClient.cs') -match 'ReloadBudgetMs\s*=\s*10000;') `
+    'the IDE-side reload waits (1.5 + 7.5 s) fit inside the client''s 10 s budget'
+$recSrc = Text 'Services\IdeEndpointRecord.cs'
+Check ($recSrc.Contains('TryInt(rec, "pid", out pid)') -and -not ($recSrc -match 'Convert\.ToInt32\(v\)')) 'an endpoint record''s pid/port is parsed, never Convert.ToInt32''d'
 $guard = Text 'Services\OpenTabGuard.cs'
 Check ($guard.Contains('if (p.Answered) failedChecks.Add(who); else unreachable.Add(who);') -and $guard.Contains('"Error: could not check whether "')) `
     'an IDE that answered with a failed check refuses the write (fail closed)'
@@ -156,7 +172,7 @@ foreach ($t in @('write_file', 'append_to_file')) {
     $b = Block $t
     Check ((Before $b 'string asked = path;' 'McpPathGate.GatePath(') -and $b.Contains('OpenTabGuard.Run(target, asked,')) "$t sends the caller's spelling with the resolved path"
 }
-Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('check(spellings)') -and $sync.Contains('reload(spellings)')) 'editor_tab_sync takes also_path'
+Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('CheckGated(refused, spellings,') -and $sync.Contains('reload(spellings)')) 'editor_tab_sync takes also_path'
 
 $prog = [System.IO.File]::ReadAllText($programPath)
 $setWs = $prog.IndexOf('registry.SetWorkspace(workspace, ui);')
