@@ -132,7 +132,7 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>What to do with a journal entry when its procedure opens (pipeline run 1).</summary>
-        public enum Action
+        public enum OpenDecision
         {
             /// <summary>It landed AND was read back by a later process, so it came from the saved .app: delete.</summary>
             Retire,
@@ -151,35 +151,101 @@ namespace ClarionAssistant.Services
         /// entry is kept. No IDE app-saved notification is hooked, so "a different process read it back" is the
         /// proof that it reached the saved .app. An entry that did not land in a later process means Clarion
         /// stopped before the app was saved, or the app was closed without saving: both are offered.
+        ///
+        /// A Lost entry is OFFERED even when the .app was written after it (PM ruling, pipeline run 2). That is
+        /// exactly the #179 reporter's sequence: the crashed process lingered and consolidated the .app, without
+        /// the embed, minutes after the save. A deliberate revert (git checkout, import_txa, a native edit) leaves
+        /// the same trace, and no timestamp tells the two apart, so the offer is made in both cases and its
+        /// wording says so (<see cref="AppWrittenSince"/>). Restore is never automatic, and the developer decides.
         /// </summary>
-        public static Action Decide(Entry e, IList<string> fresh, int currentPid)
+        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid)
         {
             switch (Assess(e, fresh))
             {
-                case Verdict.Persisted: return e.Pid != currentPid ? Action.Retire : Action.Keep;
-                case Verdict.Lost: return Action.Offer;
-                default: return Action.Archive;
+                case Verdict.Persisted: return e.Pid != currentPid ? OpenDecision.Retire : OpenDecision.Keep;
+                case Verdict.Lost: return OpenDecision.Offer;
+                default: return OpenDecision.Archive;
             }
+        }
+
+        /// <summary>True when the .app file was last written after the entry was taken. It changes only the
+        /// offer's wording ("the app was last written on ... without it"), never whether it is offered.</summary>
+        public static bool AppWrittenSince(Entry e, DateTime? appLastWrite)
+        {
+            return e != null && appLastWrite.HasValue && appLastWrite.Value > e.Written;
+        }
+
+        /// <summary>The offer's text. When the .app was written after the save it names that time and both
+        /// possible causes; otherwise the crash/closed-unsaved wording.</summary>
+        public static string OfferMessage(Entry e, DateTime? appLastWrite)
+        {
+            string when = e.Written.ToString("yyyy-MM-dd HH:mm");
+            if (AppWrittenSince(e, appLastWrite))
+                return "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
+                       "written on " + appLastWrite.Value.ToString("yyyy-MM-dd HH:mm") + " without it: Clarion may have stopped " +
+                       "before saving it, or it was changed or reverted since. Restore it as unsaved edits?";
+            return "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
+                   "was saved, or the app was closed without saving. Restore it as unsaved edits?";
+        }
+
+        /// <summary>Entries older than this are archived unoffered by <see cref="SweepStale"/>.</summary>
+        public static readonly TimeSpan MaxAge = TimeSpan.FromDays(30);
+
+        /// <summary>
+        /// Archive (dated recovery .txt, never offered) every pending entry older than <see cref="MaxAge"/>, so a
+        /// journal for a procedure nobody reopened does not wait months to surface as a stale "lost save"
+        /// (pipeline run 2). Damaged files are left alone (they are never offered anyway). Returns the archive
+        /// paths. Never throws.
+        /// </summary>
+        public static List<string> SweepStale(DateTime now)
+        {
+            var archived = new List<string>();
+            try
+            {
+                if (!Directory.Exists(Folder)) return archived;
+                foreach (var path in Directory.GetFiles(Folder, "*.pending"))
+                {
+                    try
+                    {
+                        var e = Parse(File.ReadAllText(path, new UTF8Encoding(false)));
+                        if (e == null || now - e.Written <= MaxAge) continue;
+                        e.Path = path;
+                        string rec = Archive(e, "it was never confirmed and is more than " + (int)MaxAge.TotalDays + " days old");
+                        if (rec != null) archived.Add(rec);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return archived;
         }
 
         /// <summary>What the freshly opened slots say about this entry. Compared per changed slot, ignoring line
         /// endings and trailing whitespace (so a normalisation by Clarion on save is not mistaken for a loss).
         /// Slots are matched by POSITION only while the slot count is unchanged. The slot list holds every embed
         /// point, so adding a control in the window designer shifts it (pipeline run 1, debugger); the slot model
-        /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots:
-        /// every one found means it landed. Otherwise the entry cannot be put back by position: Diverged.</summary>
+        /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots.
+        /// Only a UNIQUE, NON-EMPTY match counts (pipeline run 2, debugger): an emptied slot, or a one-liner several
+        /// slots share, would match some other slot and call a lost save landed. Every changed slot matched that
+        /// way means it landed; anything else cannot be told or put back by position: Diverged.</summary>
         public static Verdict Assess(Entry e, IList<string> fresh)
         {
             if (e == null || fresh == null) return Verdict.Diverged;
             if (fresh.Count != e.SlotCount)
             {
-                var present = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var f in fresh) present.Add(Loose(f));
+                var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+                foreach (var f in fresh)
+                {
+                    string lf = Loose(f);
+                    int c;
+                    counts[lf] = counts.TryGetValue(lf, out c) ? c + 1 : 1;
+                }
                 for (int k = 0; k < e.Index.Count; k++)
                 {
                     string s = Loose(e.Saved[k]);
                     if (s == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
-                    if (!present.Contains(s)) return Verdict.Diverged;
+                    int n;
+                    if (s.Length == 0 || !counts.TryGetValue(s, out n) || n != 1) return Verdict.Diverged;
                 }
                 return Verdict.Persisted;
             }
