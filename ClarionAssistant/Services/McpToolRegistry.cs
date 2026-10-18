@@ -6482,7 +6482,9 @@ IdeOnly = true,
             "ClarionProperties.xml are never written by these tools (they define the scope; the developer edits them), nor are files " +
             "that make tools run commands (.git\\*, a bare repo's HEAD/config/hooks, .gitattributes, .gitmodules, .mcp.json, " +
             ".vscode\\tasks|settings|launch.json, *.code-workspace), nor instruction files later sessions follow (CLAUDE.md, " +
-            "CLAUDE.local.md, AGENTS.md, AGENTS.override.md, GEMINI.md, .github\\copilot-instructions.md, .github\\**\\*.instructions.md). " +
+            "CLAUDE.local.md, AGENTS.md, AGENTS.override.md, GEMINI.md, .github\\copilot-instructions.md, .github\\**\\*.instructions.md), " +
+            "nor assistant / MCP config (.vscode\\mcp.json, .cursor\\*, .cursorrules, .windsurfrules, .github\\prompts\\*.prompt.md, " +
+            ".github\\agents\\*.agent.md, .github\\chatmodes\\*, .codex\\*, .gemini\\*). " +
             "UNC/network paths (unless Mcp.AllowedRoots names " +
             "them), .ssh/.aws folders, credential files, the user's Claude config (%USERPROFILE%\\.claude) and other users' profiles " +
             "are always refused; any other .claude folder (a project's CLAUDE.md, skills) is readable but never writable, except a " +
