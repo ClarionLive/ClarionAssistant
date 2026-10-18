@@ -164,11 +164,45 @@ namespace ClarionAssistant.Services
         /// (its path-specific instructions). CA hosts Copilot and Codex too (pipeline run 4).</summary>
         private static readonly Regex CopilotPathInstructions = WildcardRegex("*.instructions.md");
 
+        /// <summary>Folders whose every file configures an assistant or the MCP servers it starts (pipeline run 5 LOW).</summary>
+        public static readonly string[] AssistantConfigFolders = { ".cursor", ".codex", ".gemini" };
+        /// <summary>Rule files read by Cursor / Windsurf, anywhere.</summary>
+        public static readonly string[] AssistantRuleFiles = { ".cursorrules", ".windsurfrules" };
+
+        private const string AssistantConfigHint =
+            "This file configures an AI assistant (its rules, prompts, agents or the MCP servers it starts), so the Clarion " +
+            "Assistant MCP tools never write it.";
+
+        private static readonly Regex PromptFile = WildcardRegex("*.prompt.md");
+        private static readonly Regex AgentFile = WildcardRegex("*.agent.md");
+
+        /// <summary>The assistant / MCP config a write would change, as rule text, or null. Pure text.</summary>
+        private static string AssistantConfigHit(string full, string leaf)
+        {
+            foreach (string f in AssistantConfigFolders)
+                if (HasSegment(full, f)) return f + "\\*";
+            foreach (string r in AssistantRuleFiles)
+                if (Same(leaf, r)) return r;
+            string parent = LeafText(ParentText(full) ?? "");
+            if (Same(parent, ".vscode") && Same(leaf, "mcp.json")) return ".vscode\\mcp.json";
+            string[] segs = full.Split('\\');
+            for (int i = 0; i + 2 < segs.Length; i++)
+            {
+                if (!Same(segs[i], ".github")) continue;
+                string sub = segs[i + 1];
+                if (Same(sub, "chatmodes")) return ".github\\chatmodes\\*";
+                // at any depth below .github\prompts / .github\agents (the safer reading of "*.prompt.md in prompts")
+                if (Same(sub, "prompts") && PromptFile.IsMatch(leaf)) return ".github\\prompts\\*.prompt.md";
+                if (Same(sub, "agents") && AgentFile.IsMatch(leaf)) return ".github\\agents\\*.agent.md";
+            }
+            return null;
+        }
+
         private static bool IsInstructionFile(string full, string leaf)
         {
             foreach (string name in InstructionFileNames)
                 if (Same(leaf, name)) return true;
-            if (Same(leaf, "copilot-instructions.md") && Same(System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(full) ?? ""), ".github"))
+            if (Same(leaf, "copilot-instructions.md") && Same(LeafText(ParentText(full) ?? ""), ".github"))
                 return true;
             return CopilotPathInstructions.IsMatch(leaf) && HasSegment(full, ".github");
         }
@@ -213,7 +247,6 @@ namespace ClarionAssistant.Services
         private readonly List<string> _skipped = new List<string>();
         private readonly List<string> _protected = new List<string>();
         private readonly List<string> _confined = new List<string>();
-        private readonly Dictionary<char, bool> _networkDrive = new Dictionary<char, bool>();
         private string _usersDir, _userProfile, _publicProfile;
 
         private static readonly List<Regex> DeniedLeafRegexes = LeafRegexes(DeniedFileNamePatterns);
@@ -265,7 +298,7 @@ namespace ClarionAssistant.Services
             if (profile != null)
             {
                 p._userProfile = profile;
-                p._usersDir = Lexical(System.IO.Path.GetDirectoryName(profile));
+                p._usersDir = ParentText(profile);
                 if (p._usersDir != null) p._publicProfile = p._usersDir + "\\Public";
                 // The user's Claude Code config: credentials and every session transcript. Read AND write.
                 p.AddBuiltInPrefix(profile + "\\.claude", profile + "\\.claude\\", false);
@@ -484,7 +517,8 @@ namespace ClarionAssistant.Services
             string real = lex;
             if (resolve)
             {
-                real = ResolveNearest(lex);
+                // A share is judged by its text: never opened to resolve it (pipeline run 5).
+                real = IsNetworkPathStatic(lex) ? lex : ResolveNearest(lex);
                 if (real == null)
                     return Refuse(lex, "its real location could not be determined (link or short name did not resolve)", "This fails closed and cannot be overridden.");
                 if (!IsLocalDrivePath(real) && !(IsUncPath(real) && UnderNetworkRoot(real)))
@@ -565,7 +599,7 @@ namespace ClarionAssistant.Services
             foreach (string seg in DeniedSegments)
                 if (HasSegment(full, seg))
                     return new DenyRule { BuiltIn = true, Text = "*\\" + seg + "\\*" };
-            string leaf = System.IO.Path.GetFileName(full) ?? "";
+            string leaf = LeafText(full);
             foreach (string name in DeniedFileNames)
                 if (Same(leaf, name))
                     return new DenyRule { BuiltIn = true, Text = "*\\" + name };
@@ -584,10 +618,13 @@ namespace ClarionAssistant.Services
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = bare, Hint = ExecConfigHint };
                 if (IsInstructionFile(full, leaf))
                     return new DenyRule { BuiltIn = true, WriteOnly = true, Text = leaf + " (an assistant instruction file; writes)", Hint = InstructionHint };
+                string assistant = AssistantConfigHit(full, leaf);
+                if (assistant != null)
+                    return new DenyRule { BuiltIn = true, WriteOnly = true, Text = assistant + " (writes)", Hint = AssistantConfigHint };
                 for (int i = 0; i < ExecLeafRegexes.Count; i++)
                     if (ExecLeafRegexes[i].IsMatch(leaf))
                         return new DenyRule { BuiltIn = true, WriteOnly = true, Text = ExecConfigFilePatterns[i] + " (writes)", Hint = ExecConfigHint };
-                string parent = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(full) ?? "") ?? "";
+                string parent = LeafText(ParentText(full) ?? "");
                 if (Same(parent, ".vscode"))
                     foreach (string v in VsCodeExecFiles)
                         if (Same(leaf, v))
@@ -612,7 +649,7 @@ namespace ClarionAssistant.Services
                 foreach (string n in GitDirFileNames)
                     if (Same(leaf, n))
                     {
-                        string dir = System.IO.Path.GetDirectoryName(full);
+                        string dir = ParentText(full);
                         if (dir != null && LooksLikeGitDir(dir)) return leaf + " in a git directory (writes)";
                         break;
                     }
@@ -624,7 +661,7 @@ namespace ClarionAssistant.Services
                     // prefix is the folder that holds segs[i]
                     if (i < segs.Length - 1 && Same(seg, "hooks") && LooksLikeGitDir(prefix))
                         return "hooks\\* in a git directory (writes)";
-                    if ((Same(seg, "objects") || Same(seg, "refs")) && File.Exists(prefix + "\\HEAD"))
+                    if ((Same(seg, "objects") || Same(seg, "refs")) && FsFileExists(prefix + "\\HEAD"))
                         return seg + "\\ beside a git HEAD (writes)";
                     prefix = prefix + "\\" + seg;
                 }
@@ -636,7 +673,7 @@ namespace ClarionAssistant.Services
         private static bool LooksLikeGitDir(string dir)
         {
             if (string.IsNullOrEmpty(dir)) return false;
-            return File.Exists(dir + "\\HEAD") || (Directory.Exists(dir + "\\objects") && Directory.Exists(dir + "\\refs"));
+            return FsFileExists(dir + "\\HEAD") || (FsDirExists(dir + "\\objects") && FsDirExists(dir + "\\refs"));
         }
 
         /// <summary>
@@ -719,40 +756,55 @@ namespace ClarionAssistant.Services
         private static readonly Regex DeviceName = new Regex(@"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]|CONIN\$|CONOUT\$|CLOCK\$)$", RegexOptions.IgnoreCase);
 
         /// <summary>
-        /// The lexical canonical form - "X:\..." or a UNC "\\server\share\..." - or null with the reason. Never
-        /// touches the file system. A UNC form is only syntax here: <see cref="Decide"/> refuses it unless an explicit
-        /// Mcp.AllowedRoots entry names the share. Device and NT forms (\\?\, \\.\, \??\) are always refused.
+        /// The lexical canonical form - "X:\..." or a UNC "\\server\share\..." - or null with the reason. NEVER touches
+        /// the file system or the network: pure text (pipeline run 5, security MEDIUM). It used to end in
+        /// Path.GetFullPath, which on .NET Framework expands any segment containing '~' through GetLongPathNameW - network
+        /// I/O, and an NTLM handshake, for "\\attacker\s\A~1\x" or "Z:\A~1" on a mapped drive, BEFORE any rule had looked
+        /// at the path. Short names are expanded later, by <see cref="Check"/>'s link resolution, and only for a path the
+        /// lexical rules let through. A UNC form is only syntax here (\\?\UNC\server\share\ is rewritten to
+        /// \\server\share\): <see cref="Decide"/> refuses it unless an explicit Mcp.AllowedRoots entry names the share.
+        /// Other device and NT forms (\\?\, \\.\, \??\) are always refused.
         /// </summary>
         public static string Canonical(string input, out string why)
         {
             why = null;
             if (string.IsNullOrWhiteSpace(input)) { why = "the path is empty"; return null; }
             string s = input.Trim().Replace('/', '\\');
+            if (s.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase)) s = "\\\\" + s.Substring(8);
+            if (s.StartsWith("\\\\.\\") || s.StartsWith("\\??\\") || s.StartsWith("\\\\?\\") || s == "\\\\?" || s == "\\\\.")
+            { why = "device and NT paths (\\\\?\\, \\\\.\\, \\??\\) are always refused"; return null; }
             foreach (char c in s)
             {
                 if (c < 0x20) { why = "it contains a control character"; return null; }
                 if (c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') { why = "it contains a wildcard or reserved character"; return null; }
             }
-            if (s.StartsWith("\\\\.\\") || s.StartsWith("\\??\\") || s.StartsWith("\\\\?\\") || s == "\\\\?" || s == "\\\\.")
-            { why = "device and NT paths (\\\\?\\, \\\\.\\, \\??\\) are always refused"; return null; }
             bool unc = s.StartsWith("\\\\");
-            string body;
+            string root, body;
             if (unc)
             {
                 string[] parts = s.Substring(2).Split('\\');
                 if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) { why = "it is not a complete UNC path (\\\\server\\share)"; return null; }
                 if (s.IndexOf(':') >= 0) { why = "it names an alternate data stream"; return null; }
-                body = s.Substring(2);
+                root = "\\\\" + parts[0] + "\\" + parts[1];
+                body = s.Substring(root.Length);
             }
             else
             {
                 if (!(s.Length >= 3 && char.IsLetter(s[0]) && s[1] == ':' && s[2] == '\\')) { why = "it is not a fully qualified local path (X:\\...); relative paths are refused"; return null; }
                 if (s.IndexOf(':', 2) >= 0) { why = "it names an alternate data stream"; return null; }
+                root = s.Substring(0, 2);
                 body = s.Substring(3);
             }
+            var kept = new List<string>();
             foreach (string seg in body.Split('\\'))
             {
-                if (seg.Length == 0 || seg == "." || seg == "..") continue;
+                if (seg.Length == 0 || seg == ".") continue;
+                if (seg == "..")
+                {
+                    // ".." pops a segment and never climbs above X:\ or \\server\share.
+                    if (kept.Count > 0) kept.RemoveAt(kept.Count - 1);
+                    continue;
+                }
                 // Windows silently strips a trailing dot or space ("x." is "x"), so a name that ends in one is not
                 // the name the rules would judge. Security gate LOW: refuse it rather than reason about it.
                 char last = seg[seg.Length - 1];
@@ -761,18 +813,11 @@ namespace ClarionAssistant.Services
                 int dot = stem.IndexOf('.');
                 if (dot >= 0) stem = stem.Substring(0, dot);
                 if (DeviceName.IsMatch(stem.Trim())) { why = "it names a reserved device (" + seg + ")"; return null; }
+                kept.Add(seg);
             }
-            string full;
-            try { full = System.IO.Path.GetFullPath(s); }
-            catch (Exception ex) { why = "it is not a valid path (" + ex.GetType().Name + ")"; return null; }
-            if (unc ? !IsUncPath(full) : !IsLocalDrivePath(full)) { why = "it does not keep its form once normalised"; return null; }
-            if (unc)
-            {
-                // ".." must not climb above \\server\share.
-                string root = System.IO.Path.GetPathRoot(full) ?? "";
-                if (root.TrimEnd('\\').Split('\\').Length < 4) { why = "it is not a complete UNC path (\\\\server\\share)"; return null; }
-            }
-            return TrimEnd(full);
+            string full = kept.Count == 0 ? (unc ? root : root + "\\") : root + "\\" + string.Join("\\", kept.ToArray());
+            if (full.Length > 32000) { why = "it is too long"; return null; }
+            return full;
         }
 
         public static bool IsUncPath(string full)
@@ -780,18 +825,63 @@ namespace ClarionAssistant.Services
             return full != null && full.StartsWith("\\\\") && !full.StartsWith("\\\\?\\") && !full.StartsWith("\\\\.\\");
         }
 
-        /// <summary>A share, or a drive letter Windows reports as a network drive (cached per letter).</summary>
+        /// <summary>A share, or a drive letter Windows reports as remote. Text plus GetDriveType only: no server is contacted.</summary>
         private bool IsNetworkPath(string full)
         {
-            return IsUncPath(full) || IsNetworkDrive(full);
+            return IsNetworkPathStatic(full);
         }
 
-        /// <summary>The uncached form, for Build-time inputs that are not checked per path.</summary>
         private static bool IsNetworkPathStatic(string full)
         {
-            if (IsUncPath(full)) return true;
-            try { return new DriveInfo(full.Substring(0, 1)).DriveType == DriveType.Network; }
-            catch { return true; }
+            if (string.IsNullOrEmpty(full)) return false;
+            if (full.StartsWith("\\\\") || full.StartsWith("\\??\\")) return true;
+            return full.Length >= 2 && full[1] == ':' && char.IsLetter(full[0]) && IsRemoteDrive(full[0]);
+        }
+
+        // ---- the only places this class asks the operating system about a path ----
+
+        /// <summary>Test seam (pipeline run 5): sees every file-system call the policy makes, as (operation, path). A
+        /// harness records them to prove a network path never reaches one before it is refused. Never set outside tests.</summary>
+#pragma warning disable 0649   // assigned by the harness only
+        internal static Action<string, string> FsCallForTest;
+
+        /// <summary>Test seam: answers "is this drive letter remote?" in place of GetDriveType (null = ask Windows).</summary>
+        internal static Func<char, bool?> RemoteDriveForTest;
+#pragma warning restore 0649
+
+        private static void Fs(string op, string path)
+        {
+            var rec = FsCallForTest;
+            if (rec != null) rec(op, path);
+        }
+
+        private static bool FsFileExists(string p) { Fs("File.Exists", p); return File.Exists(p); }
+        private static bool FsDirExists(string p) { Fs("Directory.Exists", p); return Directory.Exists(p); }
+
+        private const uint DRIVE_REMOTE = 4;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint GetDriveTypeW(string root);
+
+        private static readonly object _driveLock = new object();
+        private static readonly Dictionary<char, KeyValuePair<bool, int>> _driveCache = new Dictionary<char, KeyValuePair<bool, int>>();
+
+        /// <summary>GetDriveType reads the local mount table (no server is contacted); cached per letter for 30 s.</summary>
+        private static bool IsRemoteDrive(char letter)
+        {
+            char d = char.ToUpperInvariant(letter);
+            var seam = RemoteDriveForTest;
+            if (seam != null) { bool? forced = seam(d); if (forced.HasValue) return forced.Value; }
+            lock (_driveLock)
+            {
+                KeyValuePair<bool, int> e;
+                if (_driveCache.TryGetValue(d, out e) && unchecked(Environment.TickCount - e.Value) < 30000) return e.Key;
+            }
+            bool remote;
+            try { remote = GetDriveTypeW(d + ":\\") == DRIVE_REMOTE; }
+            catch { remote = true; }                                    // cannot tell: fail closed
+            lock (_driveLock) _driveCache[d] = new KeyValuePair<bool, int>(remote, Environment.TickCount);
+            return remote;
         }
 
         private static List<Regex> LeafRegexes(string[] patterns)
@@ -805,6 +895,24 @@ namespace ClarionAssistant.Services
         {
             string why;
             return string.IsNullOrWhiteSpace(input) ? null : Canonical(input, out why);
+        }
+
+        /// <summary>The parent folder by text (null at X:\ or \\server\share). No I/O.</summary>
+        private static string ParentText(string full)
+        {
+            if (string.IsNullOrEmpty(full) || IsDriveRoot(full)) return null;
+            int cut = full.LastIndexOf('\\');
+            if (cut < 0) return null;
+            if (IsUncPath(full) && full.Substring(0, cut).Split('\\').Length < 4) return null;   // \\server\share is the top
+            return cut == 2 && full[1] == ':' ? full.Substring(0, 3) : full.Substring(0, cut);
+        }
+
+        /// <summary>The last segment by text. No I/O.</summary>
+        private static string LeafText(string full)
+        {
+            if (string.IsNullOrEmpty(full)) return "";
+            int cut = full.LastIndexOf('\\');
+            return cut < 0 ? full : full.Substring(cut + 1);
         }
 
         private static bool LooksAbsolute(string s)
@@ -866,21 +974,11 @@ namespace ClarionAssistant.Services
             }
         }
 
-        private bool IsNetworkDrive(string full)
-        {
-            char letter = char.ToUpperInvariant(full[0]);
-            bool net;
-            lock (_networkDrive)
-                if (_networkDrive.TryGetValue(letter, out net)) return net;
-            try { net = new DriveInfo(letter.ToString()).DriveType == DriveType.Network; }
-            catch { net = true; }                                       // cannot tell: fail closed
-            lock (_networkDrive) _networkDrive[letter] = net;
-            return net;
-        }
 
         /// <summary>A root's real location; null when it cannot be determined (the lexical form is used then).</summary>
         private static string ResolveForRoot(string lex)
         {
+            if (IsNetworkPathStatic(lex)) return lex;   // a share is judged by its text; never opened to resolve it
             try { return ResolveNearest(lex); } catch { return null; }
         }
 
@@ -896,16 +994,16 @@ namespace ClarionAssistant.Services
                 string tail = "";
                 for (int guard = 0; guard < 256 && current != null; guard++)
                 {
-                    if (File.Exists(current) || Directory.Exists(current))
+                    if (FsFileExists(current) || FsDirExists(current))
                     {
                         string final = FinalPath(current);
                         if (final == null) return null;
                         final = TrimEnd(final);
                         return tail.Length == 0 ? final : (final.EndsWith("\\") ? final : final + "\\") + tail;
                     }
-                    string parent = System.IO.Path.GetDirectoryName(current);
+                    string parent = ParentText(current);
                     if (parent == null) return lex;                       // nothing on the path exists (missing drive): judge it lexically
-                    string name = System.IO.Path.GetFileName(current);
+                    string name = LeafText(current);
                     tail = tail.Length == 0 ? name : name + "\\" + tail;
                     current = parent;
                 }
@@ -930,6 +1028,7 @@ namespace ClarionAssistant.Services
         private static string FinalPath(string existing)
         {
             // Access 0 = query attributes only: works on files the user cannot read, never opens content.
+            Fs("CreateFile", existing);
             IntPtr h = CreateFileW(existing, 0, FILE_SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
             if (h == IntPtr.Zero || h == new IntPtr(-1)) return null;
             try

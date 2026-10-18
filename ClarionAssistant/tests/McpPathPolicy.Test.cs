@@ -575,6 +575,63 @@ static class McpPathPolicyTest
             Allowed(p, "*.instructions.md outside .github stays writable", Path.Combine(sol, "docs", "setup.instructions.md"), PathAccess.Write);
             Allowed(p, "other files under .github stay writable", Path.Combine(sol, ".github", "workflows", "notes.txt"), PathAccess.Write);
 
+            Console.WriteLine("=== pipeline run 5: a network path is refused before ANY file-system call ===");
+            // GetFullPath used to expand '~' segments through GetLongPathNameW: network I/O and an NTLM handshake with the
+            // host BEFORE the refusal. The recorder sees every file-system call the policy makes; Z: is a mapped drive.
+            var fsCalls = new List<string>();
+            McpPathPolicy.FsCallForTest = (op, path) => { lock (fsCalls) fsCalls.Add(op + " " + path); };
+            McpPathPolicy.RemoteDriveForTest = c => c == 'Z' ? (bool?)true : null;
+            try
+            {
+                var netP = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = me });
+                foreach (string np in new[] { "\\\\host\\s\\A~1\\x", "Z:\\A~1\\x", "\\\\?\\UNC\\host\\s\\x~1", "//host/s/A~1/x",
+                                              "\\\\host@SSL\\DavWWWRoot\\A~1\\x", "\\\\host\\s\\a\\..\\..\\..\\B~1", "z:\\PROGRA~1\\x" })
+                {
+                    fsCalls.Clear();
+                    string why;
+                    McpPathPolicy.Canonical(np, out why);
+                    var r = netP.Check(np, PathAccess.Read);
+                    var w = netP.Check(np, PathAccess.Write);
+                    var l = netP.CheckLexical(np, PathAccess.Read);
+                    Ok("network path refused: " + np, !r.Allowed && !w.Allowed && !l.Allowed);
+                    Ok("...with no file-system call on it (no SMB / NTLM): " + np, fsCalls.Count == 0, string.Join("; ", fsCalls.ToArray()));
+                }
+                // Even an EXPLICIT network root is judged by text: allowed, and still no call on the share to read it.
+                fsCalls.Clear();   // BEFORE the build: building with a share root must not open the share either
+                var shareOk = McpPathPolicy.Build(new PathPolicyInputs { ExtraAllowedRoots = "\\\\host\\s;Z:\\Team", UserProfile = me });
+                Allowed(shareOk, "explicit share root: a ~ path under it is allowed", "\\\\host\\s\\A~1\\x");
+                Allowed(shareOk, "explicit mapped-drive root: allowed", "Z:\\Team\\A~1\\x");
+                Denied(shareOk, "...a sibling on the mapped drive is not", "Z:\\Other\\x");
+                Ok("...building that policy and judging those made no file-system call on the share or drive",
+                    !fsCalls.Exists(c => c.Contains("\\\\host") || c.IndexOf("Z:", StringComparison.OrdinalIgnoreCase) >= 0), string.Join("; ", fsCalls.ToArray()));
+                // A LOCAL path still gets its links resolved (the recorder must see that, or this test proves nothing).
+                fsCalls.Clear();
+                netP.Check(solFile, PathAccess.Read);
+                Ok("control: a local path IS resolved through the file system", fsCalls.Count > 0);
+                string canonicalUnc;
+                Ok("\\\\?\\UNC\\ is rewritten to \\\\server\\share by text", McpPathPolicy.Canonical("\\\\?\\UNC\\host\\s\\x\\..\\y", out canonicalUnc) == "\\\\host\\s\\y", canonicalUnc);
+                Ok("'..' never climbs above \\\\server\\share", McpPathPolicy.Canonical("\\\\host\\s\\..\\..\\other\\x", out canonicalUnc) == "\\\\host\\s\\other\\x", canonicalUnc);
+                Ok("'..' never climbs above X:\\", McpPathPolicy.Canonical("C:\\..\\..\\Windows", out canonicalUnc) == "C:\\Windows", canonicalUnc);
+            }
+            finally
+            {
+                McpPathPolicy.FsCallForTest = null;
+                McpPathPolicy.RemoteDriveForTest = null;
+            }
+
+            Console.WriteLine("=== pipeline run 5: more assistant config files are never written ===");
+            foreach (string rel in new[] { ".vscode\\mcp.json", ".cursor\\mcp.json", ".cursor\\rules\\clarion.mdc", ".cursorrules", ".windsurfrules",
+                                           ".github\\prompts\\build.prompt.md", ".github\\prompts\\team\\nested.prompt.md", ".github\\agents\\reviewer.agent.md", ".github\\chatmodes\\plan.chatmode.md",
+                                           ".codex\\config.toml", ".codex\\prompts\\x.md", ".gemini\\settings.json", "sub\\.CURSOR\\x.json" })
+            {
+                var w = p.Check(Path.Combine(sol, rel), PathAccess.Write);
+                Ok(rel + " write refused as assistant config", !w.Allowed && w.Hint != null && w.Hint.Contains("configures an AI assistant"), w.Allowed ? "was allowed" : w.Hint);
+                Allowed(p, rel + " readable", Path.Combine(sol, rel));
+            }
+            Allowed(p, "mcp.json outside .vscode stays writable", Path.Combine(sol, "docs", "mcp.json"), PathAccess.Write);
+            Allowed(p, "a .prompt.md outside .github\\prompts stays writable", Path.Combine(sol, "docs", "x.prompt.md"), PathAccess.Write);
+            Allowed(p, "a non-prompt file in .github\\prompts stays writable", Path.Combine(sol, ".github", "prompts", "README.txt"), PathAccess.Write);
+
             Console.WriteLine("=== policy cache ===");
             var cache = new PolicyCache();
             var t0 = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
