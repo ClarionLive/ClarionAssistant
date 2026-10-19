@@ -95,8 +95,11 @@ namespace ClarionCodeGraph.Parsing
         internal sealed class ItemizeScope
         {
             // "[label] ITEMIZE[(seed)][,PRE[(prefix)]]" — the label is optional (blank-label blocks are indented).
+            // ITEMIZE is only followed by "(", "," or the end of the line. ITEMIZE may itself label
+            // data ("Itemize LONG", "Itemize EQUATE(3)"), and there the next word is the declaration's
+            // own keyword: that line is not an opener.
             private static readonly Regex OpenRegex = new Regex(
-                @"^\s*(?:([A-Za-z_][\w:]*)\s+)?ITEMIZE\b(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+                @"^\s*(?:([A-Za-z_][\w:]*)\s+)?ITEMIZE\s*([(,].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             private static readonly Regex PreRegex = new Regex(
                 @",\s*PRE\b(?:\s*\(\s*([A-Za-z_][\w:]*)?\s*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             private static readonly Regex CloseRegex = new Regex(
