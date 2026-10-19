@@ -162,9 +162,9 @@ static class SymbolIndexTest
 
     // ------------------------------------------------------------------------------ file-level equates
 
-    static void Sym(SQLiteConnection cn, string name, string type, string file, string scope, string prms, int project)
+    static void Sym(SQLiteConnection cn, string name, string type, string file, string scope, string prms, int project, string parent = null)
     {
-        using (var cmd = new SQLiteCommand("INSERT INTO symbols (name, type, file_path, line_number, project_id, params, scope) VALUES (@n, @t, @f, 1, @pr, @p, @s)", cn))
+        using (var cmd = new SQLiteCommand("INSERT INTO symbols (name, type, file_path, line_number, project_id, params, scope, parent_name) VALUES (@n, @t, @f, 1, @pr, @p, @s, @par)", cn))
         {
             cmd.Parameters.AddWithValue("@n", name);
             cmd.Parameters.AddWithValue("@t", type);
@@ -172,6 +172,7 @@ static class SymbolIndexTest
             cmd.Parameters.AddWithValue("@pr", project);
             cmd.Parameters.AddWithValue("@p", (object)prms ?? DBNull.Value);
             cmd.Parameters.AddWithValue("@s", scope);
+            cmd.Parameters.AddWithValue("@par", (object)parent ?? DBNull.Value);
             cmd.ExecuteNonQuery();
         }
     }
@@ -252,39 +253,70 @@ static class SymbolIndexTest
         Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }, fastOnly: true) == null, "E.12", "fastOnly on a DB without the NOCASE indexes -> null");
         Check(SymbolIndex.IncludeClosure(dir + "Mem.clw", new[] { oldDb }) != null, "E.13", "the same DB is still usable off the keystroke lane");
 
-        // ScopeEquateToIncludes: an unfiltered exact-name hit (a provider's FindByName-style first row), scoped to
-        // what the context file can see. Own name prefixes so the E.3-E.5 counts above stay as they are.
+        // FirstVisibleByName: the hover / definition fallbacks' exact-name lookup over every same-named row of a
+        // provider, scoped to what the context file can see. Own name prefixes so the E.3-E.5 counts above stay
+        // as they are. The rows come back ordered by scope, then file path, so an invisible row is placed where
+        // it sorts BEFORE the visible one (C.inc < Common.inc) - the filter, not the order, must pick the hit.
+        // Rows are also inserted invisible-first, the order that won the old unordered LIMIT 1.
         using (var cn = new SQLiteConnection("Data Source=" + db + ";Version=3;"))
         {
             cn.Open();
-            Sym(cn, "DUP_X", "variable", dir + "C.inc", "global", "EQUATE", 1);       // not included, declared first
-            Sym(cn, "DUP_X", "variable", dir + "A.inc", "global", "EQUATE", 1);       // included by Mem.clw
+            Sym(cn, "DUP_X", "variable", dir + "C.inc", "global", "EQUATE", 1);       // not included; sorts first
+            Sym(cn, "DUP_X", "variable", dir + "Common.inc", "global", "EQUATE", 1);  // included via Mem.clw's PROGRAM
             Sym(cn, "ONLYC_Y", "variable", dir + "C.inc", "global", "EQUATE", 1);     // only in a not-included .inc
             Sym(cn, "ONLYEQU_Z", "variable", dir + "Std.equ", "global", "EQUATE", 1); // only in a not-included .equ
             Sym(cn, "SEEN_W", "variable", dir + "B.inc", "global", "EQUATE", 1);      // included (transitively)
+            // A local of another procedure first, then a visible equate of the same name.
+            Sym(cn, "OtherProc", "procedure", dir + "Other.clw", "module", null, 1);
+            Sym(cn, "LOC_EQ", "variable", dir + "Other.clw", "local", "LONG", 1, "OtherProc");
+            Sym(cn, "LOC_EQ", "variable", dir + "A.inc", "global", "EQUATE", 1);
+            // An equate the file cannot see first, then a local of another procedure.
+            Sym(cn, "OUT_LOC", "variable", dir + "C.inc", "global", "EQUATE", 1);
+            Sym(cn, "OUT_LOC", "variable", dir + "Other.clw", "local", "LONG", 1, "OtherProc");
+            // Only a local and a parameter of another procedure.
+            Sym(cn, "ONLY_LOC", "variable", dir + "Other.clw", "local", "LONG", 1, "OtherProc");
+            Sym(cn, "ONLY_LOC", "variable", dir + "Other.clw", "parameter", "LONG", 1, "OtherProc");
+            // A local first, then a module variable of another file (visible to the fallback, as before).
+            Sym(cn, "LOC_MOD", "variable", dir + "Other.clw", "local", "LONG", 1, "OtherProc");
+            Sym(cn, "LOC_MOD", "variable", dir + "Util.clw", "module", "LONG", 1);
         }
         SymbolIndex.Release(db);
         var idx2 = SymbolIndex.For(db);
         var memClosureDbs = new[] { db };
-        Func<string, CodeGraphSymbol> scoped = n =>
-            SymbolIndex.ScopeEquateToIncludes(idx2.FindByName(n), n, db, dir + "Mem.clw", memClosureDbs);
+        using (var p = new CodeGraphProvider())
+        {
+            Check(p.Open(db), "E.27", "the fixture DB opens in a CodeGraphProvider");
+            Func<string, CodeGraphSymbol> visible = n => SymbolIndex.FirstVisibleByName(p, n, dir + "Mem.clw", memClosureDbs);
 
-        var dup = scoped("DUP_X");
-        Check(dup != null && string.Equals(Path.GetFileName(dup.FilePath), "A.inc", StringComparison.OrdinalIgnoreCase), "E.14",
-              "two same-named equates, whichever the unfiltered lookup returns first -> the one from the INCLUDED file: " + (dup == null ? "null" : dup.FilePath));
-        Check(scoped("ONLYC_Y") == null, "E.15", "an equate only in a .inc this file never includes -> null (no hover)");
-        Check(scoped("ONLYEQU_Z") == null, "E.16", "an equate only in a .equ this file never includes -> null: .equ files are filtered like .inc");
-        var seenW = scoped("SEEN_W");
-        Check(seenW != null && seenW.Name == "SEEN_W", "E.17", "an equate in a transitively included .inc is kept");
+            var dup = visible("DUP_X");
+            Check(dup != null && string.Equals(Path.GetFileName(dup.FilePath), "Common.inc", StringComparison.OrdinalIgnoreCase), "E.14",
+                  "two same-named equates, the not-included one declared first -> the one from the INCLUDED file: " + (dup == null ? "null" : dup.FilePath));
+            Check(visible("ONLYC_Y") == null, "E.15", "an equate only in a .inc this file never includes -> null (no hover)");
+            Check(visible("ONLYEQU_Z") == null, "E.16", "an equate only in a .equ this file never includes -> null: .equ files are filtered like .inc");
+            var seenW = visible("SEEN_W");
+            Check(seenW != null && seenW.Name == "SEEN_W", "E.17", "an equate in a transitively included .inc is kept");
 
-        var proc = idx2.FindByName("EQ_PROC");
-        Check(ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(proc, "EQ_PROC", db, dir + "Mem.clw", memClosureDbs), proc), "E.18",
-              "a non-equate row is returned unchanged");
-        var onlyC = idx2.FindByName("ONLYC_Y");
-        Check(ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(onlyC, "ONLYC_Y", db, null, memClosureDbs), onlyC) &&
-              ReferenceEquals(SymbolIndex.ScopeEquateToIncludes(onlyC, "ONLYC_Y", db, dir + "Mem.clw", new string[] { null, db }), onlyC),
-              "E.19", "no context file, or no project DB to build a closure from -> unchanged (do not filter)");
-        Check(SymbolIndex.ScopeEquateToIncludes(null, "X", db, dir + "Mem.clw", memClosureDbs) == null, "E.20", "no symbol -> null");
+            var proc = visible("EQ_PROC");
+            Check(proc != null && proc.Type == "procedure", "E.18", "a non-equate row is not filtered by the include closure");
+            Check(SymbolIndex.FirstVisibleByName(p, "ONLYC_Y", null, memClosureDbs) != null &&
+                  SymbolIndex.FirstVisibleByName(p, "ONLYC_Y", dir + "Mem.clw", new string[] { null, db }) != null,
+                  "E.19", "no context file, or no project DB to build a closure from -> equates are not filtered");
+            Check(visible("NO_SUCH_NAME") == null && SymbolIndex.FirstVisibleByName(null, "X", dir + "Mem.clw", memClosureDbs) == null,
+                  "E.20", "no symbol, or no provider -> null");
+
+            var locEq = visible("LOC_EQ");
+            Check(locEq != null && locEq.Params == "EQUATE" && string.Equals(Path.GetFileName(locEq.FilePath), "A.inc", StringComparison.OrdinalIgnoreCase),
+                  "E.22", "another procedure's local declared first does not hide a visible equate of the same name - got " + (locEq == null ? "null" : locEq.FilePath));
+            Check(visible("OUT_LOC") == null, "E.23", "skipping an equate the file cannot see never lands on another procedure's local");
+            Check(visible("ONLY_LOC") == null, "E.24", "only a local and a parameter of another procedure -> null");
+            var locMod = visible("LOC_MOD");
+            Check(locMod != null && locMod.Scope == "module", "E.25", "a local declared first does not hide another file's module variable");
+            // No context file, so only the caller's test can skip the C.inc row that sorts first.
+            var rejected = SymbolIndex.FirstVisibleByName(p, "DUP_X", null, memClosureDbs,
+                s => string.Equals(Path.GetFileName(s.FilePath), "C.inc", StringComparison.OrdinalIgnoreCase));
+            Check(rejected != null && string.Equals(Path.GetFileName(rejected.FilePath), "Common.inc", StringComparison.OrdinalIgnoreCase),
+                  "E.26", "a row the caller's unreachable test rejects is skipped and the next row is tried");
+        }
 
         Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.21", "a malformed include row is skipped, the rest of the closure is intact");
     }

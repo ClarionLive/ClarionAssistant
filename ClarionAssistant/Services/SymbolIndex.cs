@@ -437,31 +437,49 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Scopes an exact-name hit from an UNFILTERED lookup (a provider's own FindSymbolByName, whose first
-        /// same-named row can be any equate in the library) to what <paramref name="contextFile"/> can see. A
-        /// file-level EQUATE from an include file the context file does not include (see
-        /// <see cref="IncludeClosure"/>; <paramref name="dbPaths"/> = project DB first, then library) is not
-        /// visible there, so the next visible same-named row of <paramref name="db"/> is returned, or null when
-        /// there is none. Anything else - not an equate, no context file, no closure to filter by - is returned
-        /// unchanged. The closure is built only for an equate hit. Never throws.
+        /// The first same-named row of <paramref name="p"/> that <paramref name="contextFile"/> can see, for the
+        /// bridge's hover and definition fallbacks. Every exact-name row is considered, broader scopes first
+        /// (<see cref="CodeGraphProvider.FindAllSymbolsByName"/>), not just the provider's arbitrary first one,
+        /// so one invisible row no longer hides a visible one of the same name. Skipped:
+        ///   - a variable declared in a procedure or routine: scope 'local' / 'parameter' (the rows
+        ///     <see cref="ReachableScope"/> leaves out), or a row <paramref name="unreachable"/> rejects. The
+        ///     callers only get here after this file's own local scope came up empty, and Clarion cannot reach
+        ///     another procedure's locals. Those rows sort last, so a name with many locals is cheap. Only
+        ///     variables: a ROUTINE row (also scope 'local') was returned before and still is, as a last resort.
+        ///   - a file-level EQUATE from an include file the context file does not include (see
+        ///     <see cref="IncludeClosure"/>; <paramref name="dbPaths"/> = project DB first, then library). With
+        ///     no context file, or no closure to filter by, equates are not filtered.
+        /// Null when no row is visible. The closure is built only when an equate row is reached. Never throws.
         /// </summary>
-        public static CodeGraphSymbol ScopeEquateToIncludes(CodeGraphSymbol sym, string word, string db,
-                                                            string contextFile, string[] dbPaths, bool fastOnly = false)
+        public static CodeGraphSymbol FirstVisibleByName(CodeGraphProvider p, string word, string contextFile, string[] dbPaths,
+                                                         Func<CodeGraphSymbol, bool> unreachable = null)
         {
             try
             {
-                if (sym == null || string.IsNullOrEmpty(contextFile)) return sym;
-                if (!string.Equals(sym.Params, "EQUATE", StringComparison.OrdinalIgnoreCase)) return sym;
-                var included = IncludeClosure(contextFile, dbPaths, fastOnly);
-                if (included == null || !IsEquateOutside(sym, included)) return sym;
-                var idx = For(db);
-                return idx == null ? null : idx.FindByName(word, fastOnly, included);
+                if (p == null || string.IsNullOrEmpty(word)) return null;
+                HashSet<string> included = null;
+                bool closureBuilt = false;
+                // Bounded as ExactSqlAll is: a common equate name is declared in many library include files.
+                foreach (var s in p.FindAllSymbolsByName(word, 500))
+                {
+                    if (string.Equals(s.Type, "variable", StringComparison.OrdinalIgnoreCase) &&
+                        (string.Equals(s.Scope, "local", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(s.Scope, "parameter", StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    if (unreachable != null && unreachable(s)) continue;
+                    if (!string.IsNullOrEmpty(contextFile) && string.Equals(s.Params, "EQUATE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!closureBuilt) { included = IncludeClosure(contextFile, dbPaths); closureBuilt = true; }
+                        if (included != null && IsEquateOutside(s, included)) continue;
+                    }
+                    return s;
+                }
             }
             catch (Exception ex)
             {
-                LspTrace.Write("[SymbolIndex] equate scoping failed: " + ex.Message);
-                return sym;
+                LspTrace.Write("[SymbolIndex] visible-row lookup failed: " + ex.Message);
             }
+            return null;
         }
 
         /// <summary>The base class named on <paramref name="className"/>'s own class row, or null.</summary>
