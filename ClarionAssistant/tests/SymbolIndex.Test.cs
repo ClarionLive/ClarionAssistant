@@ -588,7 +588,7 @@ static class SymbolIndexTest
         Console.WriteLine("release wiring (source scans)");
         string chat = File.ReadAllText(Path.Combine(repo, "AssistantChatControl.cs"));
         string work = Slice(chat, "worker.DoWork += (s, e) =>", "worker.ProgressChanged");
-        string cancelled = Slice(work, "if (wasCancelled && !incremental)", "}");
+        string cancelled = Slice(work, "if (wasCancelled && !ranIncremental)", "}");   // ef2fd2a9: what RAN (an upgraded incremental runs full)
         Check(Before(work, "SymbolIndex.Release(dbPath)", "db.Open(dbPath)") && Before(cancelled, "SymbolIndex.Release(dbPath)", "File.Delete(dbPath)"),
               "2.18a", "RunIndex releases before the write open and before the cancelled-run delete");
         string reg = File.ReadAllText(Path.Combine(repo, "Services", "McpToolRegistry.cs"));

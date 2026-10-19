@@ -2222,7 +2222,7 @@ IdeOnly = true,
                 InputSchema = McpJsonRpc.BuildSchema(new Dictionary<string, string>
                 {
                     { "sln_path?", "Path to .sln file (auto-detected from current solution if omitted)" },
-                    { "incremental?", "Only re-index changed projects (default: true)" }
+                    { "incremental?", "Only re-index changed projects (default: true). A database built by an older indexer (below the current feature level) or a new one gets a full index instead, and the result's Mode line says so" }
                 }),
                 RequiresUiThread = false,
                 Handler = args => ExecuteIndexCodeGraph(args, null),
@@ -2674,7 +2674,7 @@ COMMON QUERIES:
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
-                        { "incremental", "Set to 'true' for incremental update (only changed files), 'false' for full re-index (default: false)" }
+                        { "incremental", "Set to 'true' for incremental update (only changed files), 'false' for full re-index (default: false). An incremental request on a database built by an older indexer runs full automatically" }
                     }),
                 RequiresUiThread = true,
                 Handler = args =>
@@ -6010,7 +6010,7 @@ IdeOnly = true,
                         "  Log: {8}",
                         Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
                         result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
-                        incremental ? "incremental" : "full",
+                        result.ModeText,
                         // LogPath is null when the log could not be opened (e.g. another index
                         // run holds the per-solution file) — say so instead of a bare "Log: ".
                         runLog.LogPath ?? "(no log written — another index run may hold the log file)",

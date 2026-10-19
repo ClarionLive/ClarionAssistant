@@ -787,6 +787,8 @@ namespace ClarionAssistant.McpServer
                         result.Status == ClarionCodeGraph.Graph.IndexResult.StatusOk ? "" :
                             (result.IsPartial ? "PARTIAL INDEX." : "Indexed with warnings."))
                         .TrimStart()
+                        // ef2fd2a9: an incremental request on an older database ran full - say so.
+                        + "\n  Mode: " + result.ModeText
                         + "\n" + result.CoverageText());
                 }
                 finally

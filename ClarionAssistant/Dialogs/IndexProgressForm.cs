@@ -329,6 +329,10 @@ namespace ClarionAssistant.Dialogs
                     // Projects that produced parse events this run — on incremental, the
                     // changed subset; "27 projects" alone implied all 27 were re-parsed.
                     _pendingProjectSymbols.Count);
+            // ef2fd2a9: an incremental request on a database an older indexer built ran FULL - say why it took longer.
+            if (result.RequestedIncremental && !result.Incremental && result.UpgradedFromFeatureLevel > 0)
+                summary = string.Format("Database upgraded from feature level {0} to {1} (a full index ran; incremental would have missed the new passes). ",
+                    result.UpgradedFromFeatureLevel, ClarionCodeGraph.Graph.CodeGraphIndexer.FeatureLevel) + summary;
             // #244 item 3: a run that resolved little of the solution is not shown as a plain green success.
             result.Decide();
             if (result.Status == IndexResult.StatusOk)

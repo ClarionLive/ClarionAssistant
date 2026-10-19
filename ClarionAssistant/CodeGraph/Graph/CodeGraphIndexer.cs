@@ -94,6 +94,27 @@ namespace ClarionCodeGraph.Graph
             return s;
         }
 
+        /// <summary>
+        /// The feature level recorded in an open database: its indexer_feature_level row; 1 when that row is missing
+        /// (or unreadable) in a database that was indexed before - the indexer from before feature levels wrote none;
+        /// 0 for a database nothing was ever indexed into. Same reading as <see cref="DescribeDatabase"/>.
+        /// </summary>
+        public static int StoredFeatureLevel(CodeGraphDatabase db)
+        {
+            string level = db.GetMetadata(MetaFeatureLevel);
+            int lvl;
+            if (level != null) return int.TryParse(level.Trim(), out lvl) && lvl >= 1 ? lvl : 1;
+            bool everIndexed = !string.IsNullOrEmpty(db.GetMetadata("last_indexed")) || !string.IsNullOrEmpty(db.GetMetadata("sln_path"));
+            return everIndexed ? 1 : 0;
+        }
+
+        /// <summary>
+        /// Whether the CURRENT (or last) <see cref="IndexSolution(string,bool,List{string})"/> run is incremental after the
+        /// feature-level check - an incremental request on an older database runs full. Set before anything in the run
+        /// can throw, so a host's cancel path (a cancelled FULL run leaves a partial database) can read it.
+        /// </summary>
+        public bool EffectiveIncremental { get; private set; }
+
         public event Action<string> OnProgress;
 
         /// <summary>
@@ -159,7 +180,28 @@ namespace ClarionCodeGraph.Graph
         public IndexResult IndexSolution(string slnPath, bool incremental, List<string> libraryPaths = null)
         {
             var sw = Stopwatch.StartNew();
-            var result = new IndexResult { SlnPath = slnPath };
+            var result = new IndexResult { SlnPath = slnPath, RequestedIncremental = incremental };
+
+            // ef2fd2a9 / cea47717: an incremental run only re-parses projects whose files changed, so on a database an
+            // older indexer built it re-parses nothing and the passes added since never run - the live failure was
+            // "indexed successfully ... Mode: incremental" over a database that stayed at feature level 1. Below the
+            // current feature level (or with none recorded) the request becomes a FULL index, and the result says so.
+            if (incremental)
+            {
+                int stored = StoredFeatureLevel(_db);
+                if (stored < FeatureLevel)
+                {
+                    incremental = false;
+                    result.UpgradedFromFeatureLevel = stored;
+                }
+            }
+            result.Incremental = incremental;
+            EffectiveIncremental = incremental;
+            if (result.UpgradedFromFeatureLevel > 0)
+                ReportProgress(string.Format("Incremental index requested, but this database was built at feature level {0} " +
+                    "(current: {1}, adds {2}) - running a full index so the new passes run.", result.UpgradedFromFeatureLevel, FeatureLevel, Features));
+            else if (result.UpgradedFromFeatureLevel == 0)
+                ReportProgress("Incremental index requested on a new database - running a full index.");
 
             // Step 1: Parse .sln for projects
             ReportProgress("Parsing solution file...");
@@ -368,6 +410,11 @@ namespace ClarionCodeGraph.Graph
                     sw.Stop();
                     result.DurationMs = sw.ElapsedMilliseconds;
                     ReportProgress("No changes detected — index is up to date.");
+                    // Nothing was written, so report the indexer and level the database already records (the
+                    // feature-level check above made sure that level is current).
+                    result.UpToDate = true;
+                    result.IndexerVersion = _db.GetMetadata(MetaIndexerVersion) ?? IndexerVersion;
+                    result.FeatureLevel = StoredFeatureLevel(_db);
                     FinishCoverage(result);
                     return result;
                 }
@@ -3577,6 +3624,37 @@ namespace ClarionCodeGraph.Graph
         /// <summary>The indexer build and feature level that wrote this run (also stored in index_metadata).</summary>
         public string IndexerVersion { get; set; }
         public int FeatureLevel { get; set; }
+
+        /// <summary>What the caller asked for, and what ran: an incremental request on a database below the current
+        /// feature level (or a new one) runs full (ef2fd2a9 / cea47717).</summary>
+        public bool RequestedIncremental { get; set; }
+        public bool Incremental { get; set; }
+
+        /// <summary>-1: no upgrade. Otherwise the feature level the database recorded when an incremental request ran
+        /// full because of it (0 = a new database, nothing indexed before).</summary>
+        public int UpgradedFromFeatureLevel { get; set; } = -1;
+
+        /// <summary>An incremental run found no changed project: nothing was re-parsed or written, so the symbol and
+        /// relationship counts (this run's) are 0 over a database that keeps everything it had.</summary>
+        public bool UpToDate { get; set; }
+
+        /// <summary>The "Mode:" every host reports - says when an incremental request ran full, and why.</summary>
+        public string ModeText
+        {
+            get
+            {
+                if (Incremental)
+                    return UpToDate
+                        ? "incremental (up to date: no source changes since the last index, nothing re-parsed - the database keeps its existing symbols; the symbol and relationship counts are this run's)"
+                        : "incremental";
+                if (UpgradedFromFeatureLevel == 0)
+                    return "full (new database: no earlier index to update incrementally)";
+                if (UpgradedFromFeatureLevel > 0)
+                    return string.Format("full (upgraded from feature level {0} to {1}; incremental would have missed the new passes)",
+                        UpgradedFromFeatureLevel, CodeGraphIndexer.FeatureLevel);
+                return "full";
+            }
+        }
 
         public const string StatusOk = "ok";
         public const string StatusWarning = "warning";

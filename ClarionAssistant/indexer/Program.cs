@@ -52,7 +52,7 @@ namespace ClarionIndexer
             Console.Error.WriteLine("Index Commands:");
             Console.Error.WriteLine("  index          Parse a Clarion solution and build the code graph database");
             Console.Error.WriteLine("    --db <path>      Custom database output path (default: <sln-dir>/<sln-name>.codegraph.db)");
-            Console.Error.WriteLine("    --incremental    Only re-index changed projects");
+            Console.Error.WriteLine("    --incremental    Only re-index changed projects (a database built below the current feature level, or a new one, gets a full index instead; JSON \"mode\" says which ran)");
             Console.Error.WriteLine("    --lib-paths      Semicolon-delimited library .inc search directories");
             Console.Error.WriteLine("    --red <file>     Clarion redirection file for source resolution (e.g.");
             Console.Error.WriteLine("                     C:\\Clarion11\\bin\\Clarion110.red). %THISDIR% anchors to the");
@@ -176,7 +176,7 @@ namespace ClarionIndexer
 
             Console.Error.WriteLine("Indexing: " + slnPath);
             Console.Error.WriteLine("Database: " + dbPath);
-            Console.Error.WriteLine("Mode: " + (incremental ? "incremental" : "full"));
+            Console.Error.WriteLine("Mode requested: " + (incremental ? "incremental" : "full"));
             if (libraryPaths != null && libraryPaths.Count > 0)
                 Console.Error.WriteLine("Library paths: " + string.Join("; ", libraryPaths));
             if (redPath != null)
@@ -209,6 +209,13 @@ namespace ClarionIndexer
                 Console.WriteLine("  \"status\": " + JsonEscape(result.Status) + ",");
                 Console.WriteLine("  \"indexerVersion\": " + JsonEscape(result.IndexerVersion) + ",");
                 Console.WriteLine("  \"featureLevel\": " + result.FeatureLevel + ",");
+                // ef2fd2a9: what ran. --incremental on a database below the current feature level runs full; "mode" says so
+                // ("incremental" / "full"), "requestedMode" is what was asked, "upgradedFromFeatureLevel" is -1 unless upgraded.
+                Console.WriteLine("  \"mode\": " + JsonEscape(result.Incremental ? "incremental" : "full") + ",");
+                Console.WriteLine("  \"requestedMode\": " + JsonEscape(result.RequestedIncremental ? "incremental" : "full") + ",");
+                Console.WriteLine("  \"upgradedFromFeatureLevel\": " + result.UpgradedFromFeatureLevel + ",");
+                Console.WriteLine("  \"upToDate\": " + (result.UpToDate ? "true" : "false") + ",");
+                Console.WriteLine("  \"modeText\": " + JsonEscape(result.ModeText) + ",");
                 Console.WriteLine("  \"projectsResolved\": " + result.ProjectsResolved + ",");
                 Console.WriteLine("  \"projectsUnresolved\": " + result.ProjectsUnresolved + ",");
                 Console.WriteLine("  \"cwprojFilesListed\": " + result.CwprojFilesListed + ",");
@@ -225,6 +232,7 @@ namespace ClarionIndexer
                 Console.Error.WriteLine("Done: " + result.SymbolCount + " symbols, " +
                     result.FileCount + " files, " + result.ProjectCount + " projects in " +
                     sw.ElapsedMilliseconds + "ms");
+                Console.Error.WriteLine("Mode: " + result.ModeText);
                 Console.Error.WriteLine(result.CoverageText());
 
                 db.Close();
