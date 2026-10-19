@@ -28,14 +28,24 @@ static class OpenTabGuardTest
         else { fail++; Console.WriteLine("  [FAIL] " + name + (detail != null ? "  (" + detail + ")" : "")); }
     }
 
+    // An IDE the writer asked (so it has a hold_id); like the real IDE it HOLDS only a clean native tab.
     static TabProbe Ide(string kind, bool dirty, string ide = "IDE 100")
     {
-        return new TabProbe { Ide = ide, Reachable = true, Kind = kind, Dirty = dirty, Handle = ide };
+        var p = new TabProbe { Ide = ide, Reachable = true, Kind = kind, Dirty = dirty, Handle = ide, HoldId = "hold-" + ide.Replace(" ", "") };
+        if (kind == OpenTabGuard.KindNative && !dirty) p.HeldTabs.Add("Main001.clw");
+        return p;
     }
 
+    // An IDE that was NOT asked (none running, or skipped after a recent timeout): no hold_id, nothing to release.
     static TabProbe Unreachable(string why, string ide = "IDE 200")
     {
         return new TabProbe { Ide = ide, Reachable = false, Reason = why };
+    }
+
+    // GH #205 re-review D1: an IDE that WAS asked to hold but whose answer did not arrive in time (it may have held).
+    static TabProbe TimedOutAsked(string ide)
+    {
+        return new TabProbe { Ide = ide, Reachable = false, TimedOut = true, Reason = "did not answer: timed out after 3000 ms", Handle = ide, HoldId = "hold-" + ide.Replace(" ", "") };
     }
 
     // Scripts the IDE: what the check returns, and what a reload returns. Every call is recorded.
@@ -44,12 +54,15 @@ static class OpenTabGuardTest
         OpenTabGuard.Probe = probe == null ? (Func<IList<string>, List<TabProbe>>)null
             : p => { calls.Add("check"); lastChecked = new List<string>(p); return probe(); };
         OpenTabGuard.Reload = reload == null ? (Func<IList<string>, TabProbe, TabReload>)null
-            : (p, tab) => { calls.Add("reload:" + tab.Handle); lastReloaded = new List<string>(p); return reload(tab); };
+            : (p, tab) => { calls.Add("reload:" + tab.Handle); lastReloaded = new List<string>(p); reloadTokens.Add(tab.HoldId); return reload(tab); };
         // GH #205 review F1-1: a refused or failed write gives a held watcher back at once (recorded like the rest).
-        OpenTabGuard.Release = (p, tab) => { calls.Add("release:" + tab.Handle); lastReleased = new List<string>(p); };
+        OpenTabGuard.Release = (p, tab) => { calls.Add("release:" + tab.Handle); lastReleased = new List<string>(p); releaseTokens.Add(tab.HoldId); };
+        reloadTokens.Clear();
+        releaseTokens.Clear();
     }
 
     static List<string> lastReleased;
+    static readonly List<string> reloadTokens = new List<string>(), releaseTokens = new List<string>();
 
     static List<string> lastChecked, lastReloaded;
 
@@ -217,6 +230,85 @@ static class OpenTabGuardTest
                && OpenTabGuard.IsOlderAddinReleaseReply("Error: action must be 'check' or 'reload'.")
                && !OpenTabGuard.IsOlderAddinReleaseReply("Error: action must be 'check', 'reload' or 'release'.")
                && !OpenTabGuard.IsOlderAddinReleaseReply("Error: something else") && !OpenTabGuard.IsOlderAddinReleaseReply(null));
+
+            Console.WriteLine("-- GH #205 re-review: holder tokens");
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), Ide(OpenTabGuard.KindNative, true, "IDE 2"), TimedOutAsked("IDE 5") },
+                   t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("D1: a refusal also releases an IDE whose check TIMED OUT here (it may still have held), by its hold_id",
+               Unchanged() && Calls() == "check,release:IDE 1,release:IDE 5" && releaseTokens.Contains("hold-IDE5"), Calls());
+            Reset();
+            Script(() => new List<TabProbe> { TimedOutAsked("IDE 5") }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: disk full"; });
+            Ok("D1: a failed write releases a timed-out check too", Calls() == "check,write,release:IDE 5", Calls());
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), TimedOutAsked("IDE 5") }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("D1: a SUCCESSFUL write reloads the answered tab and releases the timed-out check (no reload will end its hold)",
+               !Unchanged() && Calls() == "check,write,reload:IDE 1,release:IDE 5", Calls());
+            Ok("...the reload names its own check's hold_id", reloadTokens.Count == 1 && reloadTokens[0] == "hold-IDE1", string.Join(",", reloadTokens.ToArray()));
+            Reset();
+            var heldDirty = Ide(OpenTabGuard.KindNative, true, "IDE 3");
+            heldDirty.HeldTabs.Add("Main001.clw");   // the IDE held a clean full-check tab; a dirty lexical match made the answer dirty
+            Script(() => new List<TabProbe> { heldDirty }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("D3: an answer that is native DIRTY but says it HELD a tab: the refusal releases it (tokens, not the Dirty flag)",
+               Unchanged() && Calls() == "check,release:IDE 3" && releaseTokens.Contains("hold-IDE3"), Calls());
+            Reset();
+            r = OpenTabGuard.Run(file, true, Write);
+            Ok("D3: ...and with overwrite_open_buffer it is written, not reloaded, and the hold released at once",
+               !Unchanged() && Calls() == "check,write,release:IDE 3", Calls());
+            Reset();
+            var cooling = Ide(OpenTabGuard.KindNative, false, "IDE 4");
+            cooling.HeldTabs.Clear();   // a clean tab that did NOT get a hold (cooling down, releasing, the IDE gave up in time)
+            Script(() => new List<TabProbe> { cooling, Ide(OpenTabGuard.KindNone, false, "IDE 6") }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: nope"; });
+            Ok("an IDE that ANSWERED and held nothing is not sent a release (no extra round trip)", Calls() == "check,write", Calls());
+            Reset();
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("...a clean tab that was not held is still reloaded, naming its hold_id (the IDE drops nobody else's holder)",
+               Calls() == "check,write,reload:IDE 4" && reloadTokens.Count == 1 && reloadTokens[0] == "hold-IDE4", Calls());
+            var heldBy = OpenTabGuard.HeldBy(new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), Unreachable("no IDE", "IDE 7"), TimedOutAsked("IDE 8"), cooling, null });
+            Ok("HeldBy: held tabs, and asked-but-unanswered checks; never an un-asked IDE or one that held nothing",
+               heldBy.Count == 2 && heldBy[0].Ide == "IDE 1" && heldBy[1].Ide == "IDE 8");
+
+            // The wire: held: [{view, token}] travels on every answer, an error included, and an older addin sends none.
+            var heldAnswer = new TabProbe { Reachable = true, Kind = OpenTabGuard.KindNative, HoldId = "abcdef0123456789" };
+            heldAnswer.HeldTabs.Add("Main001.clw");
+            var wired = OpenTabGuard.CheckToWire(heldAnswer);
+            var json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(wired);
+            var parsed = OpenTabGuard.CheckFromWire(new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>, "IDE 9");
+            Ok("wire: a holding check's held: [{view, token}] round-trips through JSON",
+               json.Contains("\"held\":[{\"view\":\"Main001.clw\",\"token\":\"abcdef0123456789\"}]") && parsed.HeldTabs.Count == 1 && parsed.HeldTabs[0] == "Main001.clw" && parsed.HoldId == "abcdef0123456789", json);
+            var heldErr = new TabProbe { Reachable = false, Reason = "lookup failed", HoldId = "abcdef0123456789" };
+            heldErr.HeldTabs.Add("Main001.clw");
+            parsed = OpenTabGuard.CheckFromWire(OpenTabGuard.CheckToWire(heldErr), "IDE 9");
+            Ok("wire: an ERROR answer still carries what was held", !parsed.Reachable && parsed.HeldTabs.Count == 1);
+            parsed = OpenTabGuard.CheckFromWire(OpenTabGuard.CheckToWire(Ide(OpenTabGuard.KindNone, false)), "IDE 9");
+            Ok("wire: a check that held nothing sends no held list", parsed.HeldTabs.Count == 0 && !OpenTabGuard.CheckToWire(Ide(OpenTabGuard.KindNone, false)).ContainsKey(OpenTabGuard.HeldKey));
+
+            // IDE side: CheckGated must not lose the full check's holds when another lookup decides the answer (D3).
+            Func<IList<string>, TabProbe> fullHeld = q => { var p = new TabProbe { Reachable = true, Kind = OpenTabGuard.KindNative, HoldId = "tok-12345678" }; p.HeldTabs.Add("Main001.clw"); return p; };
+            var mixedHold = new List<OpenTabGuard.GatedSpelling>
+            {
+                new OpenTabGuard.GatedSpelling { Path = file },
+                new OpenTabGuard.GatedSpelling { Path = @"C:\Outside\Main001.clw", Refusal = "Error: outside", OutsideRoots = true }
+            };
+            var gd = OpenTabGuard.CheckGated(mixedHold, true, true, fullHeld, q => new TabProbe { Reachable = true, Kind = OpenTabGuard.KindNative, Dirty = true }, null);
+            Ok("D3: clean full-check tab (held) + dirty lexical tab: the merged answer is native DIRTY and still names the hold",
+               gd.Reachable && gd.Dirty && gd.HeldTabs.Count == 1 && gd.HoldId == "tok-12345678");
+            gd = OpenTabGuard.CheckGated(mixedHold, true, true, fullHeld, q => new TabProbe { Reachable = false, TimedOut = true, Reason = "UI busy" }, null);
+            Ok("D3: ...and when the lexical lookup times out, the timeout answer names the hold too", !gd.Reachable && gd.TimedOut && gd.HeldTabs.Count == 1 && gd.HoldId == "tok-12345678");
+            gd = OpenTabGuard.CheckGated(mixedHold, true, true, fullHeld, q => new TabProbe { Reachable = true, Kind = OpenTabGuard.KindCaEditor, Dirty = true }, null);
+            Ok("D3: a native (held) answer outranking a CA Editor one keeps its hold", gd.Kind == OpenTabGuard.KindNative && gd.HeldTabs.Count == 1);
+
+            Func<object, string> hid = v => OpenTabGuard.ParseHoldId(v == null ? new Dictionary<string, object>() : new Dictionary<string, object> { { OpenTabGuard.HoldIdArg, v } });
+            Ok("hold_id: absent = null (an older standalone)", hid(null) == null);
+            Ok("hold_id: a well-formed token is taken as is", hid("0123456789abcdef0123456789ABCDEF") == "0123456789abcdef0123456789ABCDEF" && hid("anon-0123456789") == "anon-0123456789");
+            Ok("hold_id: malformed (too short, too long, odd characters, not a string) = \"\" (no hold, matches no holder)",
+               hid("short") == "" && hid(new string('a', 65)) == "" && hid("abc def 12345") == "" && hid("..\\..\\x12345") == "" && hid(42) == "" && hid(true) == "");
+            Ok("a hold id is fresh per check and well-formed", OpenTabGuard.NewHoldId() != OpenTabGuard.NewHoldId() && hid(OpenTabGuard.NewHoldId()).Length == 32);
 
             Console.WriteLine("-- an IDE ANSWERED but its check failed (pipeline run 2: fail closed)");
             Reset();

@@ -53,9 +53,16 @@ namespace ClarionAssistant
     ///     WRITE gate (review SEC MED). The bookkeeping is WatcherHoldBook: holders are COUNTED (concurrent writes share one
     ///     hold), the hold is CAPPED at HoldExpiryMs from its FIRST holder and never renewed (a capped tab then cools down
     ///     as long), and each hold has a GENERATION a release must still match.
-    ///   - RELOAD: after Load, 'wasChangedExternally' is cleared (the GotFocusEvent order: clear, then Load) and one holder
-    ///     dropped; while others remain the watcher is disabled again. A refused reload, or a write that was refused or
-    ///     failed (editor_tab_sync action 'release', from OpenTabGuard.Run), drops its holder at once.
+    ///   - HOLDER TOKENS (re-review, PM ruling): each holder is the writer's request id (hold_id, one per check); the
+    ///     check's reply names what it held (held: [{view, token}]). A reload or release drops ONLY its own holder, within
+    ///     the current hold; an unknown token is a silent no-op, so a writer that never held cannot drop another's (D4).
+    ///     A release names the hold_id even for a check that timed out on the writer's side (D1), and a hold that lands
+    ///     after its release is refused. An older standalone sends no hold_id: its holder is ANONYMOUS, its reload drops one
+    ///     anonymous holder (as before), and a release without a hold_id is a no-op.
+    ///   - RELOAD: after Load, 'wasChangedExternally' is cleared (the GotFocusEvent order: clear, then Load) and this
+    ///     writer's holder dropped; while others remain the watcher is disabled again and the hold re-stamped (D5). A
+    ///     reload that does not happen for ANY reason - refused, the snapshot timed out, Load threw, a late run - drops this
+    ///     writer's holders (D2), as does a write that was refused or failed (editor_tab_sync action 'release').
     ///   - RELEASE (last holder gone, or the cap): the watcher is re-armed (SetWatcher) and, WHENEVER the file changed
     ///     since the hold began - even if the IDE re-armed it meanwhile, by a save - the IDE's own change notification
     ///     (OnFileChangedEvent) is replayed, so a change made during the hold is never swallowed.
@@ -72,6 +79,8 @@ namespace ClarionAssistant
     /// </summary>
     internal static class NativeTabSync
     {
+        /// <summary>The check's snapshot wait. With the hold's deadline (HoldDeadlineMs = 2400 ms from the check's start) the
+        /// IDE side stays inside the standalone's 3 s CheckBudgetMs (re-review D1).</summary>
         internal const int CheckWaitMs = 2000;
         // Pipeline run 3: a reload's two UI calls (snapshot, then reload) total 1.5 + 7.5 = 9 s, inside the standalone's
         // 10 s ReloadBudgetMs (IdeTabClient) with 1 s left for the HTTP round trip, so a slow reload is reported by the
@@ -103,25 +112,34 @@ namespace ClarionAssistant
             OpenTabGuard.LocalRelease = Release;
             // The addin serving write_file itself (no standalone exe): ask this IDE directly. That check IS the write path
             // (write_file has write-gated the path already), so it holds; a refused or failed write releases at once.
-            OpenTabGuard.Probe = paths => new List<TabProbe> { CheckAndHold(paths, paths) };
-            OpenTabGuard.Reload = (paths, tab) => Reload(paths, null);
-            OpenTabGuard.Release = (paths, tab) => Release(paths, null);
+            // Holder tokens (re-review): this write's own request id, so its reload and release drop only its own holder.
+            OpenTabGuard.Probe = paths =>
+            {
+                string id = OpenTabGuard.NewHoldId();
+                var p = CheckAndHold(paths, paths, id);
+                p.HoldId = id;
+                return new List<TabProbe> { p };
+            };
+            OpenTabGuard.Reload = (paths, tab) => Reload(paths, null, tab != null ? tab.HoldId : null);
+            OpenTabGuard.Release = (paths, tab) => { if (tab != null && !string.IsNullOrEmpty(tab.HoldId)) Release(tab.HoldId); };
         }
 
         /// <summary>The tab lookup alone: no watcher is held.</summary>
         internal static TabProbe CheckOnly(IList<string> paths)
         {
-            return CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", null);
+            return CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", null, null);
         }
 
         /// <summary>
         /// The write path's check: the lookup over <paramref name="paths"/>, then a hold on the clean native tabs that
         /// match <paramref name="holdPaths"/> - only the spellings the WRITE gate allowed (SEC MED: a read-only spelling
-        /// riding along as also_path can never get its tab's watcher switched off).
+        /// riding along as also_path can never get its tab's watcher switched off). <paramref name="holdId"/>: the writer's
+        /// holder token (null: an older standalone sent none, so this IDE makes up an ANONYMOUS one; "": malformed, no
+        /// hold). The answer's HeldTabs name the tabs held under it.
         /// </summary>
-        internal static TabProbe CheckAndHold(IList<string> paths, IList<string> holdPaths)
+        internal static TabProbe CheckAndHold(IList<string> paths, IList<string> holdPaths, string holdId)
         {
-            return CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", holdPaths);
+            return CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", holdPaths, holdId);
         }
 
         /// <summary>
@@ -133,12 +151,15 @@ namespace ClarionAssistant
         internal static TabProbe CheckLexical(IList<string> paths)
         {
             // No watcher hold here: holding needs a file stamp, and no I/O may touch a refused path.
-            return CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical", null);
+            return CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical", null, null);
         }
 
-        private static TabProbe CheckWith(IList<string> paths, Func<List<TabSnap>, List<TabSnap>> match, string label, IList<string> holdPaths)
+        private static TabProbe CheckWith(IList<string> paths, Func<List<TabSnap>, List<TabSnap>> match, string label, IList<string> holdPaths, string holdId)
         {
-            bool holdWatchers = holdPaths != null && holdPaths.Count > 0;
+            // D1 fix 2: the whole check, hold included, runs on ONE clock that gives up holding (HoldDeadlineMs) before the
+            // writer gives up waiting (IdeTabClient.CheckBudgetMs).
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            bool holdWatchers = holdPaths != null && holdPaths.Count > 0 && holdId != "";
             List<TabSnap> matched = null;
             TabProbe answer;
             List<TabSnap> snaps = null;
@@ -164,26 +185,47 @@ namespace ClarionAssistant
             // comment). Best effort - a failed hold only means the IDE may ask to reload; the answer stands.
             if (holdWatchers && answer.Reachable && answer.Kind == OpenTabGuard.KindNative && !answer.Dirty && matched != null)
             {
-                // Only the tabs of the write-allowed spellings (matched again, worker thread, by identity).
-                try { HoldWatchers(Match(snaps, Probes(holdPaths)), holdPaths); }
+                // Only the tabs of the write-allowed spellings (matched again, worker thread, by identity), under the
+                // writer's token - or, for an older standalone that sent none, an ANONYMOUS one made up here.
+                try
+                {
+                    bool anonymous = holdId == null;
+                    string token = anonymous ? "anon-" + OpenTabGuard.NewHoldId() : holdId;
+                    var held = HoldWatchers(Match(snaps, Probes(holdPaths)), holdPaths, token, anonymous, clock);
+                    if (held.Count > 0) { answer.HeldTabs = held; answer.HoldId = token; }
+                }
                 catch (Exception ex) { MonacoSpikeLog.Write("[tab-sync] watcher hold failed: " + ex.Message); }
             }
             return answer;
         }
 
+        /// <summary>A reload's context for the UI thread: whose reload it is, and the file as stamped just BEFORE the Load
+        /// (worker thread; D5).</summary>
+        private sealed class ReloadCtx
+        {
+            public string Token;
+            public bool StampOk;
+            public long Ticks, Length;
+        }
+
         /// <summary>Reload the native tabs of the file. <paramref name="paths"/> are matched by file identity (the gate
-        /// allowed them); <paramref name="byNameOnly"/> by path text only (refused spellings: no handle is opened on them).</summary>
-        internal static TabReload Reload(IList<string> paths, IList<string> byNameOnly)
+        /// allowed them); <paramref name="byNameOnly"/> by path text only (refused spellings: no handle is opened on them).
+        /// <paramref name="holdId"/>: the writer's holder token (null: an older standalone; one anonymous holder is
+        /// dropped, as before tokens).</summary>
+        internal static TabReload Reload(IList<string> paths, IList<string> byNameOnly, string holdId)
         {
             TabReload answer = null;
-            List<TabSnap> snaps = null;
+            List<TabSnap> snaps = null, matched = null;
             Exception error;
+            // D2: whatever goes wrong, this writer's holders are dropped - here, at once, unless the reload's own UI call
+            // was posted (it then drops them itself, in time or late, when it does not reload).
+            bool dropHere = true;
             var outcome = UiThreadCall.Run(_ui, () => { snaps = SnapshotOnUi(); }, ReloadSnapshotWaitMs, out error);
             if (outcome != UiThreadCall.Outcome.Ran)
                 answer = new TabReload { Reason = Why(outcome, error, ReloadSnapshotWaitMs) };
             else
             {
-                List<TabSnap> natives = null, matched = null;
+                List<TabSnap> natives = null;
                 try
                 {
                     matched = Match(snaps, Probes(paths));
@@ -196,47 +238,90 @@ namespace ClarionAssistant
                     if (natives.Count == 0) answer = new TabReload { Reason = "the tab is no longer open in the native editor" };
                     else
                     {
-                        outcome = UiThreadCall.Run(_ui, () => { answer = ReloadOnUi(natives); }, ReloadWaitMs, out error);
-                        if (outcome != UiThreadCall.Outcome.Ran) answer = new TabReload { Reason = Why(outcome, error, ReloadWaitMs) };
+                        // D5: stamp the file BEFORE the Load (off the UI thread), so a reload that leaves other holders
+                        // re-stamps the hold with a file never newer than what the tab now shows.
+                        var ctx = new ReloadCtx { Token = holdId };
+                        ctx.StampOk = StampHeld(natives, out ctx.Ticks, out ctx.Length);
+                        TabReload onUi = null;
+                        try
+                        {
+                            outcome = UiThreadCall.Run(_ui, () =>
+                            {
+                                bool reloaded = false;
+                                try { onUi = ReloadOnUi(natives, ctx); reloaded = onUi != null && onUi.Reloaded; }
+                                finally
+                                {
+                                    // Refused (dirty, closed, CA Editor), w.Load threw, or this runs after the wait gave up:
+                                    // this writer is done - drop its holders (D2). The last one gives the watcher back now.
+                                    if (!reloaded) DropAfterNoReload(holdId, natives, "the reload did not happen" + (onUi != null && onUi.Reason != null ? " (" + onUi.Reason + ")" : ""));
+                                }
+                            }, ReloadWaitMs, out error);
+                            dropHere = outcome == UiThreadCall.Outcome.NoUiThread;   // only then did the callback never run
+                        }
+                        catch (Exception ex) { error = ex; outcome = UiThreadCall.Outcome.Failed; }   // the Post itself threw
+                        answer = outcome == UiThreadCall.Outcome.Ran && onUi != null ? onUi : new TabReload { Reason = Why(outcome, error, ReloadWaitMs) };
                     }
                 }
-                // Not reloaded (refused, closed, now in the CA Editor): this holder is done - one fewer; the last one gives
-                // the IDE its watcher back now (re-armed, its own change notice replayed when the file changed) instead of
-                // at the cap. A reload that timed out but still runs late drops its holder itself (WatcherReset).
-                if (!answer.Reloaded && matched != null && outcome == UiThreadCall.Outcome.Ran)
-                    foreach (var s in matched) DropHolder(s.View, "the reload did not happen (" + answer.Reason + ")");
             }
-            MonacoSpikeLog.Write("[tab-sync] reload " + Join(paths) + (byNameOnly != null && byNameOnly.Count > 0 ? " | by name: " + Join(byNameOnly) : "") + " -> " + (answer.Reloaded
-                ? "reloaded, caret line " + answer.Line : "not reloaded: " + answer.Reason));
+            if (dropHere && !answer.Reloaded) DropAfterNoReload(holdId, matched, "the reload did not happen (" + answer.Reason + ")");
+            MonacoSpikeLog.Write("[tab-sync] reload " + Join(paths) + (byNameOnly != null && byNameOnly.Count > 0 ? " | by name: " + Join(byNameOnly) : "")
+                + TokenLabel(holdId) + " -> " + (answer.Reloaded ? "reloaded, caret line " + answer.Line : "not reloaded: " + answer.Reason));
             return answer;
         }
 
         /// <summary>
-        /// GH #205 review F1-1: the writer's check held this file's watcher, but its write was refused or failed, so no
-        /// reload follows. Drop that holder now (the last one re-arms the watcher, replaying the IDE's change notice when
-        /// the file changed) instead of leaving the watcher off until the cap. Matched like <see cref="Reload"/>.
+        /// GH #205 review F1-1 / re-review D1, D2: the writer's check may have held a watcher under <paramref name="holdId"/>,
+        /// but no reload follows (its write was refused or failed, its check timed out on its side, or it wrote under a
+        /// dirty tab). Drop that holder from every tab it holds - by TOKEN, so no tab lookup is needed and a busy UI thread
+        /// cannot stop it - and withdraw the token, so a hold under it that lands later is refused. The last holder gives
+        /// the watcher back (replaying the IDE's change notice when the file changed). An unknown token is a no-op.
         /// </summary>
-        internal static TabReload Release(IList<string> paths, IList<string> byNameOnly)
+        internal static TabReload Release(string holdId)
         {
-            List<TabSnap> snaps = null;
-            Exception error;
             string result;
-            var outcome = UiThreadCall.Run(_ui, () => { snaps = SnapshotOnUi(); }, ReloadSnapshotWaitMs, out error);
-            if (outcome != UiThreadCall.Outcome.Ran) result = "not released: " + Why(outcome, error, ReloadSnapshotWaitMs) + " (the cap gives it back)";
+            if (string.IsNullOrEmpty(holdId)) result = "nothing to release (no hold_id: an older standalone never held under a token)";
             else
             {
-                try
-                {
-                    var matched = Match(snaps, Probes(paths));
-                    foreach (var s in MatchLexical(snaps, byNameOnly)) if (!matched.Contains(s)) matched.Add(s);
-                    int dropped = 0;
-                    foreach (var s in matched) if (DropHolder(s.View, "the writer released it (its write did not happen)")) dropped++;
-                    result = dropped + " holder(s) dropped";
-                }
-                catch (Exception ex) { result = "not released: " + ex.Message; }
+                var ended = _book.DropToken(holdId, "the writer released it (its write did not happen, or no reload follows)");
+                foreach (var e in ended) StartRelease(e);
+                result = "holder dropped; " + ended.Count + " hold(s) ended";
             }
-            MonacoSpikeLog.Write("[tab-sync] release " + Join(paths) + (byNameOnly != null && byNameOnly.Count > 0 ? " | by name: " + Join(byNameOnly) : "") + " -> " + result);
+            MonacoSpikeLog.Write("[tab-sync] release" + TokenLabel(holdId) + " -> " + result);
             return new TabReload { Reloaded = false, Reason = result };
+        }
+
+        // For logs: a token's first 8 characters (enough to follow one write; not the whole holder token).
+        private static string TokenLabel(string holdId)
+        {
+            return holdId == null ? " (no hold_id)" : " (hold " + (holdId.Length > 8 ? holdId.Substring(0, 8) : holdId) + ")";
+        }
+
+        /// <summary>D2: a reload that did not happen drops ITS writer's holders: by token (every tab it holds), or, for an
+        /// older standalone with no token, one anonymous holder of each matched tab (as before tokens).</summary>
+        private static void DropAfterNoReload(string holdId, List<TabSnap> matched, string why)
+        {
+            try
+            {
+                if (holdId != null) { foreach (var e in _book.DropToken(holdId, why)) StartRelease(e); return; }
+                if (matched != null)
+                    foreach (var s in matched)
+                    {
+                        var e = s != null ? _book.DropAnonymous(s.View, why) : null;
+                        if (e != null) StartRelease(e);
+                    }
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[tab-sync] watcher release FAILED: " + ex.Message); }
+        }
+
+        // Worker thread (D5): the held file as it is now, before the Load. False when none of these tabs is held, or its
+        // file is on the network (never touched) or cannot be read: the hold then keeps its stamp.
+        private static bool StampHeld(List<TabSnap> natives, out long ticks, out long length)
+        {
+            ticks = 0; length = -1;
+            string statPath = null;
+            foreach (var s in natives) { statPath = _book.StatPathOf(s.View); if (statPath != null) break; }
+            if (statPath == null || FileIdentity.IsNetworkPath(statPath)) return false;
+            return Stamp(statPath, out ticks, out length);
         }
 
         private static string Why(UiThreadCall.Outcome o, Exception error, int waitMs)
@@ -331,7 +416,7 @@ namespace ClarionAssistant
         }
 
         // UI thread: reload the matched views, each re-checked here first.
-        private static TabReload ReloadOnUi(List<TabSnap> natives)
+        private static TabReload ReloadOnUi(List<TabSnap> natives, ReloadCtx ctx)
         {
             var open = new HashSet<object>();
             foreach (var vc in OpenViews()) open.Add(vc);
@@ -350,13 +435,13 @@ namespace ClarionAssistant
             {
                 string own = s.File;
                 if (string.IsNullOrEmpty(own)) return new TabReload { Reason = "the tab has no file name" };
-                caretLine = ReloadKeepingCaret(s.View, own);
+                caretLine = ReloadKeepingCaret(s.View, own, ctx);
             }
             return new TabReload { Reloaded = true, Line = caretLine };
         }
 
         // SharpDevelop's own reload, with the caret put back. Returns the 1-based caret line it left (0 if unknown).
-        private static int ReloadKeepingCaret(TextEditorDisplayBindingWrapper w, string path)
+        private static int ReloadKeepingCaret(TextEditorDisplayBindingWrapper w, string path, ReloadCtx ctx)
         {
             int line = -1, col = 0;
             ICSharpCode.TextEditor.TextEditorControl tec = null;
@@ -372,7 +457,7 @@ namespace ClarionAssistant
             w.Load(path);
             // The IDE's own "Yes, reload" clears its pending-change flag before this same Load; do it after ours, or the
             // IDE reloads again (caret to line 1) or asks "changed externally, reload?" on its next activation.
-            WatcherReset(w);
+            WatcherReset(w, ctx);
 
             if (tec == null || line < 0) return 0;
             try
@@ -392,8 +477,16 @@ namespace ClarionAssistant
 
         // ---- the IDE's own file watcher: TextEditorDisplayBindingWrapper.FileChangeWatcher (see the class comment) ----
 
-        /// <summary>How long a check's hold may wait for the UI thread; a hold that gets there later does nothing.</summary>
-        internal const int HoldWaitMs = 500;
+        /// <summary>
+        /// GH #205 re-review D1 (fix 2): the hold is given up unless it reaches the UI thread within this long from the
+        /// START OF THE CHECK (snapshot, identity match, D6 wait and the hold's own UI call together), so the IDE stops
+        /// trying to hold well before the writer stops waiting (IdeTabClient.CheckBudgetMs = 3000; 600 ms are left for
+        /// HTTP). A hold that gets there later does nothing. Fix 1 covers what is left: the writer releases a timed-out
+        /// check by its hold_id, and a hold for a released hold_id is refused.
+        /// </summary>
+        internal const int HoldDeadlineMs = 2400;
+        /// <summary>D6: how long a check waits for a RELEASING hold of its tab to finish before taking a fresh one.</summary>
+        internal const int ReleasingWaitMs = 300;
         /// <summary>The CAP: a hold ends this long after its FIRST holder took it, whoever joined since (never renewed), and
         /// a capped tab is not held again for as long (WatcherHoldBook).</summary>
         internal const int HoldExpiryMs = 30000;
@@ -474,16 +567,18 @@ namespace ClarionAssistant
 
         /// <summary>
         /// Worker thread, from the WRITE PATH's check that found a CLEAN native tab: hold that tab's IDE watcher (Disable)
-        /// before the write, so the write raises no "changed externally" event. <paramref name="paths"/> are the spellings
-        /// the write gate allowed. The file is stamped here (I/O off the UI thread; a network path is never touched, so such
-        /// a tab is not held). The UI call only flips the watcher.
+        /// before the write, so the write raises no "changed externally" event, as holder <paramref name="token"/>.
+        /// <paramref name="paths"/> are the spellings the write gate allowed. The file is stamped here (I/O off the UI
+        /// thread; a network path is never touched, so such a tab is not held). The UI call only flips the watcher.
+        /// Returns the names of the tabs held (the reply's held: [{view, token}]).
         /// </summary>
-        private static void HoldWatchers(List<TabSnap> matched, IList<string> paths)
+        private static List<string> HoldWatchers(List<TabSnap> matched, IList<string> paths, string token, bool anonymous, System.Diagnostics.Stopwatch clock)
         {
+            var heldNames = new List<string>();
             var natives = matched.FindAll(s => !s.OverlayUp && !s.Dirty);
-            if (natives.Count == 0) return;
+            if (natives.Count == 0) return heldNames;
             ResolveWatcherMembers();
-            if (!CanHold) { MonacoSpikeLog.Write("[tab-sync] watcher NOT held (WATCHER MEMBER MISSING, see above)"); return; }
+            if (!CanHold) { MonacoSpikeLog.Write("[tab-sync] watcher NOT held (WATCHER MEMBER MISSING, see above)"); return heldNames; }
             string statPath = null;
             if (paths != null)
                 foreach (var p in paths)
@@ -492,30 +587,48 @@ namespace ClarionAssistant
             if (statPath == null || !Stamp(statPath, out ticks, out length))
             {
                 MonacoSpikeLog.Write("[tab-sync] watcher not held: no local path to stamp (" + Join(paths) + ")");
-                return;
+                return heldNames;
             }
-            var sw = System.Diagnostics.Stopwatch.StartNew();
-            int held = 0;
+            // D6: a hold of this tab that is RELEASING (its last writer is done; the watcher is coming back) takes no new
+            // holder. Wait briefly - here, off the UI thread, where its release runs - for it to finish, then hold afresh.
+            // Still releasing after the wait: not held (the write may then raise the IDE's own prompt - a known edge case of
+            // concurrent writes).
+            foreach (var s in natives)
+                if (_book.IsReleasing(s.View))
+                {
+                    int left = HoldDeadlineMs - (int)clock.ElapsedMilliseconds;
+                    bool done = left > 0 && _book.WaitNotReleasing(s.View, Math.Min(ReleasingWaitMs, left));
+                    MonacoSpikeLog.Write("[tab-sync] watcher hold waited for a releasing hold: " + (done ? "it finished" : "still releasing"));
+                }
+            int wait = HoldDeadlineMs - (int)clock.ElapsedMilliseconds;
+            if (wait <= 0)
+            {
+                MonacoSpikeLog.Write("[tab-sync] watcher not held: the check used up its " + HoldDeadlineMs + " ms (the writer would stop waiting)");
+                return heldNames;
+            }
+            List<string> got = null;
             string notHeld = "";
             Exception error;
-            // A hold that reaches the UI thread after the wait gave up does nothing: it could land after the write and the
-            // reload, and disable a watcher nobody re-arms until the cap.
-            var outcome = UiThreadCall.Run(_ui, () => { if (sw.ElapsedMilliseconds <= HoldWaitMs) held = HoldOnUi(natives, statPath, ticks, length, out notHeld); },
-                HoldWaitMs, out error);
-            MonacoSpikeLog.Write("[tab-sync] watcher hold " + statPath + " -> " + (outcome == UiThreadCall.Outcome.Ran
-                ? held + " tab(s) held" + notHeld : "not held: " + Why(outcome, error, HoldWaitMs)));
+            // A hold that reaches the UI thread after the CHECK's deadline does nothing (D1 fix 2): the writer may have
+            // stopped waiting, and it could land after the write and the reload, disabling a watcher nobody re-arms.
+            var outcome = UiThreadCall.Run(_ui, () => { if (clock.ElapsedMilliseconds < HoldDeadlineMs) got = HoldOnUi(natives, token, anonymous, statPath, ticks, length, out notHeld); },
+                wait, out error);
+            if (outcome == UiThreadCall.Outcome.Ran && got != null) heldNames.AddRange(got);
+            MonacoSpikeLog.Write("[tab-sync] watcher hold " + statPath + TokenLabel(token) + " -> " + (outcome == UiThreadCall.Outcome.Ran
+                ? (got == null ? "not held: past the check's deadline" : got.Count + " tab(s) held" + notHeld) : "not held: " + Why(outcome, error, wait)));
+            return heldNames;
         }
 
-        // UI thread: hold each re-checked tab. The book decides under its lock and the watcher flip runs inside it (F1-3):
-        // a hold being released takes no new holder, and a capped tab cools down. A joined hold is COUNTED (F1-2) and keeps
-        // its first stamp and its deadline: the cap timer is set once, by the first holder, and never renewed (SEC MED).
-        // Property reads and the watcher flip only.
-        private static int HoldOnUi(List<TabSnap> natives, string statPath, long ticks, long length, out string notHeld)
+        // UI thread: hold each re-checked tab as holder <token>. The book decides under its lock and the watcher flip runs
+        // inside it (F1-3): a hold being released takes no new holder, a capped tab cools down, and a WITHDRAWN token (its
+        // writer already released - D1) holds nothing. A joined hold keeps its stamp and its deadline: the cap timer is set
+        // once, by the first holder, and never renewed (SEC MED). Property reads and the watcher flip only.
+        private static List<string> HoldOnUi(List<TabSnap> natives, string token, bool anonymous, string statPath, long ticks, long length, out string notHeld)
         {
             notHeld = "";
             var open = new HashSet<object>();
             foreach (var vc in OpenViews()) open.Add(vc);
-            int held = 0;
+            var held = new List<string>();
             foreach (var s in natives)
             {
                 var me = s.View as MonacoClarionEditor;
@@ -524,7 +637,7 @@ namespace ClarionAssistant
                 var fsw = watcher != null ? _watcherFsw.GetValue(watcher) as FileSystemWatcher : null;
                 bool watching = fsw != null && fsw.EnableRaisingEvents;
                 WatcherHoldBook.Entry e;
-                var take = _book.Hold(s.View, watching, statPath, ticks, length, () => _watcherDisable.Invoke(watcher, null), out e);
+                var take = _book.Hold(s.View, token, anonymous, watching, statPath, ticks, length, () => _watcherDisable.Invoke(watcher, null), out e);
                 if (take == WatcherHoldBook.Take.NewHold)
                 {
                     object view = s.View;
@@ -533,20 +646,30 @@ namespace ClarionAssistant
                     e.Tag = cap;
                     cap.Change(_book.DueMs(e), Timeout.Infinite);   // once, from the FIRST holder: never renewed
                 }
-                if (take == WatcherHoldBook.Take.NewHold || take == WatcherHoldBook.Take.Joined) held++;
+                if (take == WatcherHoldBook.Take.NewHold || take == WatcherHoldBook.Take.Joined)
+                {
+                    string name = null;
+                    try { name = Path.GetFileName(s.File); } catch { }
+                    held.Add(name ?? "");
+                }
                 else notHeld += "; one not held (" + take + ")";
             }
             return held;
         }
 
         /// <summary>UI thread, right after OUR Load: clear the IDE's pending-change flag (its "Yes, reload" order is clear,
-        /// then Load) and drop one holder. Load has re-armed the watcher (SetWatcher): the last holder leaves it so; while
-        /// other writes still hold the tab (F1-2) it is disabled again until their reloads.</summary>
-        private static void WatcherReset(TextEditorDisplayBindingWrapper w)
+        /// then Load) and drop THIS writer's holder (by its token; an older standalone's tokenless reload drops one
+        /// anonymous holder; a writer that never held drops none - D4). Load has re-armed the watcher (SetWatcher): with no
+        /// holder left it stays so; while other writes still hold the tab (F1-2) it is disabled again until their reloads,
+        /// and the hold is re-stamped with the file as stamped just before this Load (D5), so a later release or the cap
+        /// does not replay a change the tab already shows.</summary>
+        private static void WatcherReset(TextEditorDisplayBindingWrapper w, ReloadCtx ctx)
         {
             bool stillHeld;
             WatcherHoldBook.Entry ended;
-            bool wasHeld = _book.AfterReload(w, out stillHeld, out ended);
+            bool wasHeld = ctx != null
+                ? _book.AfterReload(w, ctx.Token, ctx.StampOk, ctx.Ticks, ctx.Length, out stillHeld, out ended)
+                : _book.AfterReload(w, null, false, 0, -1, out stillHeld, out ended);
             if (ended != null) DisposeCap(ended);
             ResolveWatcherMembers();
             if (!CanReset) { MonacoSpikeLog.Write("[tab-sync] watcher NOT reset after reload (WATCHER MEMBER MISSING, see above): the IDE may ask to reload"); return; }
@@ -564,24 +687,17 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("[tab-sync] watcher reset FAILED: " + ex.Message); }
         }
 
-        /// <summary>One holder of <paramref name="view"/> is done without a reload (refused or failed write, a reload that
-        /// did not happen, an explicit release). The LAST one gives the watcher back now instead of at the cap.
-        /// True when the view was held.</summary>
-        private static bool DropHolder(TextEditorDisplayBindingWrapper view, string why)
+        /// <summary>A hold whose LAST holder is gone (a refused or failed write, a reload that did not happen, an explicit
+        /// release): give the watcher back now instead of at the cap, off the calling thread.</summary>
+        private static void StartRelease(WatcherHoldBook.Entry e)
         {
-            if (view == null) return false;
-            bool held = _book.IsHeld(view);
-            var e = _book.Drop(view, why);
-            if (e != null)
+            if (e == null) return;
+            DisposeCap(e);
+            ThreadPool.QueueUserWorkItem(_ =>
             {
-                DisposeCap(e);
-                ThreadPool.QueueUserWorkItem(_ =>
-                {
-                    try { FinishRelease(e); }
-                    catch (Exception ex) { MonacoSpikeLog.Write("[tab-sync] watcher release FAILED: " + ex.Message); }
-                });
-            }
-            return held;
+                try { FinishRelease(e); }
+                catch (Exception ex) { MonacoSpikeLog.Write("[tab-sync] watcher release FAILED: " + ex.Message); }
+            });
         }
 
         // Cap timer of one generation: release it whatever the count (the cap is absolute).

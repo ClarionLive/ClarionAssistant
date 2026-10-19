@@ -89,7 +89,7 @@ Check ($snap.Contains('me.OverlayUp') -and $snap.Contains('me.OverlayDirty') -an
 Check ((Before $reload 's.View.IsDirty' 'ReloadKeepingCaret(') -and $reload.Contains('unsaved changes now')) 'a reload re-checks IsDirty first and refuses a dirty tab'
 Check ((Before $reload 'me.OverlayUp' 'ReloadKeepingCaret(') -and (Before $reload 'open.Contains(s.View)' 'ReloadKeepingCaret(')) `
     'a reload re-checks there that the tab is still open and not covered by the CA Editor'
-Check ($reload.Contains('string own = s.File;') -and $reload.Contains('ReloadKeepingCaret(s.View, own)')) 'a reload loads the TAB''S OWN file name (an alias tab keeps its title)'
+Check ($reload.Contains('string own = s.File;') -and $reload.Contains('ReloadKeepingCaret(s.View, own, ctx)')) 'a reload loads the TAB''S OWN file name (an alias tab keeps its title)'
 Check ($keep.Contains('w.Load(path)') -and (Before $keep 'caret.Line' 'w.Load(path)') -and (Before $keep 'w.Load(path)' 'area.Caret.Line =')) `
     'the reload is SharpDevelop''s own Load, with the caret line captured before and put back after'
 # Pipeline run 1, fix 1: matched by FILE IDENTITY, and every view swept (FileService only matches path text).
@@ -121,15 +121,15 @@ Check ($elp.Contains('UiThreadCall.Run(ui') -and $elp.Contains('FileIdentity.Sam
 # MUST GO RED against 4761c93 (integ-1017 before this fix).
 $resolveM = Method $nts 'private static void ResolveWatcherMembers('
 $resetM = Method $nts 'private static void WatcherReset('
-$holdM = Method $nts 'private static void HoldWatchers('
-$holdUiM = Method $nts 'private static int HoldOnUi('
+$holdM = Method $nts 'private static List<string> HoldWatchers('
+$holdUiM = Method $nts 'private static List<string> HoldOnUi('
 $releaseUiM = Method $nts 'private static string ReleaseOnUi('
 $releaseM = Method $nts 'private static void FinishRelease('
 $reloadW = Method $nts 'internal static TabReload Reload('
-Check ((Before $keep 'w.Load(path)' 'WatcherReset(w)') -and (Before $keep 'WatcherReset(w)' 'area.Caret.Line =')) `
+Check ((Before $keep 'w.Load(path)' 'WatcherReset(w, ctx)') -and (Before $keep 'WatcherReset(w, ctx)' 'area.Caret.Line =')) `
     'after a successful Load the IDE watcher is reset (before the caret is put back)'
-Check ($resetM.Contains('_watcherChanged.SetValue(watcher, false)') -and $resetM.Contains('_book.AfterReload(w, out stillHeld, out ended)') -and $resetM.Contains('DisposeCap(ended)')) `
-    'the reset clears the IDE''s wasChangedExternally and drops one holder (Load already re-armed the watcher)'
+Check ($resetM.Contains('_watcherChanged.SetValue(watcher, false)') -and $resetM.Contains('_book.AfterReload(w, ctx.Token, ctx.StampOk, ctx.Ticks, ctx.Length, out stillHeld, out ended)') -and $resetM.Contains('DisposeCap(ended)')) `
+    'the reset clears the IDE''s wasChangedExternally and drops THIS writer''s holder (Load already re-armed the watcher)'
 Check ($resolveM.Contains('GetField("watcher", inst)') -and $resolveM.Contains('"wasChangedExternally"') -and $resolveM.Contains('"fileName"') -and
        $resolveM.Contains('"Disable"') -and $resolveM.Contains('"SetWatcher"') -and $resolveM.Contains('"OnFileChangedEvent"') -and
        $resolveM.Contains('[tab-sync] WATCHER MEMBER MISSING') -and $resolveM.Contains('missing.Add("FileChangeWatcher.wasChangedExternally (bool)")') -and
@@ -139,13 +139,13 @@ Check ($resetM.Contains('if (!CanReset) { MonacoSpikeLog.Write("[tab-sync] watch
        $holdM.Contains('if (!CanHold) { MonacoSpikeLog.Write("[tab-sync] watcher NOT held (WATCHER MEMBER MISSING')) `
     'a reset or hold that cannot run because a member is missing says so in the log, and degrades (no throw)'
 Check ($checkM.Contains('if (holdWatchers && answer.Reachable && answer.Kind == OpenTabGuard.KindNative && !answer.Dirty && matched != null)') -and
-       $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", holdPaths)') -and $nts.Contains('CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical", null)')) `
+       $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", holdPaths, holdId)') -and $nts.Contains('CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical", null, null)')) `
     'a write-path check that finds a CLEAN native tab holds its watcher before the write (never the lexical check of a refused path)'
 Check ($holdUiM.Contains('_watcherDisable.Invoke(watcher, null)') -and $holdUiM.Contains('s.View.IsDirty') -and $holdUiM.Contains('me.OverlayUp') -and
-       $holdM.Contains('if (sw.ElapsedMilliseconds <= HoldWaitMs)') -and $holdM.Contains('FileIdentity.IsNetworkPath(p)') -and $holdM.Contains('Stamp(statPath, out ticks, out length)')) `
+       $holdM.Contains('if (clock.ElapsedMilliseconds < HoldDeadlineMs)') -and $holdM.Contains('FileIdentity.IsNetworkPath(p)') -and $holdM.Contains('Stamp(statPath, out ticks, out length)')) `
     'the hold disables the watcher of a re-checked clean tab, stamps the file off the UI thread (never a network path), and a late hold does nothing'
 Check ($nts -match 'HoldExpiryMs\s*=\s*30000;' -and $nts.Contains('new WatcherHoldBook(HoldExpiryMs)') -and
-       $reloadW.Contains('DropHolder(s.View,') -and (Before $reloadW 'ReloadOnUi(natives)' 'DropHolder(s.View,')) `
+       $reloadW.Contains('DropAfterNoReload(holdId, natives,') -and (Before $reloadW 'ReloadOnUi(natives, ctx)' 'DropAfterNoReload(holdId, natives,')) `
     'a hold is never left behind: it is capped, and a reload that did not happen drops its holder at once'
 Check ($releaseUiM.Contains('_watcherSetWatcher.Invoke(watcher, new object[] { file })') -and (Before $releaseUiM '_watcherSetWatcher.Invoke(' '_watcherOnChanged.Invoke(') -and
        $releaseUiM.Contains('if (!changed) return') -and
@@ -162,16 +162,16 @@ $checkAt = $sync.IndexOf('if (action == "check")')
 $checkBlock = if ($checkAt -ge 0) { $sync.Substring($checkAt) } else { '' }
 Check ($checkBlock.Contains('OpenTabGuard.ParseFlag(args, OpenTabGuard.HoldArg)') -and
        $checkBlock.Contains('McpPathGate.GatePath("editor_tab_sync", sp, PathAccess.Write, _workspace, out writeCanonical') -and
-       $checkBlock.Contains('holdCheck(paths, holdable)') -and $checkBlock.Contains(': OpenTabGuard.LocalCheck;') -and
+       $checkBlock.Contains('holdCheck(paths, holdable, holdId)') -and $checkBlock.Contains(': OpenTabGuard.LocalCheck;') -and
        (Before $checkBlock 'PathAccess.Write' 'OpenTabGuard.CheckGated(gated')) `
     '[SEC MED] editor_tab_sync check holds only with hold:true, and only spellings that pass the #266 WRITE gate (a plain check never holds)'
 Check ($nts.Contains('OpenTabGuard.LocalCheck = CheckOnly;') -and $nts.Contains('OpenTabGuard.LocalCheckHold = CheckAndHold;') -and
-       $checkM.Contains('HoldWatchers(Match(snaps, Probes(holdPaths)), holdPaths)') -and
-       (Method $nts 'internal static TabProbe CheckOnly(').Contains('"check", null)')) `
+       $checkM.Contains('HoldWatchers(Match(snaps, Probes(holdPaths)), holdPaths, token, anonymous, clock)') -and
+       (Method $nts 'internal static TabProbe CheckOnly(').Contains('"check", null, null)')) `
     '[SEC MED] the IDE holds only tabs matched against the write-allowed spellings, never via a read-only also_path'
 Check ($tabSrc205.Contains('args[OpenTabGuard.HoldArg] = true;') -and (Before $tabSrc205 'args[OpenTabGuard.HoldArg] = true;' 'CallTool(ep, "editor_tab_sync", args, one, CheckBudgetMs)')) `
     '[SEC MED] the standalone''s write-path check is the one that asks for the hold'
-Check ($holdUiM.Contains('_book.Hold(s.View, watching, statPath, ticks, length,') -and $holdUiM.Contains('cap.Change(_book.DueMs(e), Timeout.Infinite);') -and
+Check ($holdUiM.Contains('_book.Hold(s.View, token, anonymous, watching, statPath, ticks, length,') -and $holdUiM.Contains('cap.Change(_book.DueMs(e), Timeout.Infinite);') -and
        (Before $holdUiM 'if (take == WatcherHoldBook.Take.NewHold)' 'cap.Change(') -and -not ($nts -match 'Expiry\.Change\(HoldExpiryMs') -and
        -not $holdUiM.Contains('HoldExpiryMs')) `
     '[SEC MED] the cap timer is set once, by the FIRST holder, and never renewed by a later check'
@@ -181,11 +181,11 @@ Check ((Before $runM 'if (d.Refusal != null) { ReleaseHolds(spellings, probes); 
        $runM.Contains('if (result.StartsWith("Error", StringComparison.Ordinal)) { ReleaseHolds(spellings, probes); return result; }')) `
     '[F1-1] OpenTabGuard.Run releases the hold on a refusal, a failed write and a throwing write'
 Check ($sync.Contains('if (action == "release")') -and $sync.Contains('OpenTabGuard.LocalRelease') -and $nts.Contains('OpenTabGuard.LocalRelease = Release;') -and
-       $nts.Contains('OpenTabGuard.Release = (paths, tab) => Release(paths, null);') -and
-       (Method $nts 'internal static TabReload Release(').Contains('DropHolder(s.View, "the writer released it')) `
-    '[F1-1] editor_tab_sync has action ''release'', and the IDE drops the holder of every matched tab'
+       $nts.Contains('OpenTabGuard.Release = (paths, tab) => { if (tab != null && !string.IsNullOrEmpty(tab.HoldId)) Release(tab.HoldId); };') -and
+       (Method $nts 'internal static TabReload Release(').Contains('_book.DropToken(holdId, "the writer released it')) `
+    '[F1-1] editor_tab_sync has action ''release'', and the IDE drops that writer''s holder from every tab it holds'
 Check (([System.IO.File]::ReadAllText($programPath)).Contains('OpenTabGuard.Release = ClarionAssistant.Services.IdeTabClient.Release;') -and
-       $tabSrc205.Contains('Args(paths, "release")') -and $tabSrc205.Contains('OpenTabGuard.IsOlderAddinReleaseReply(text)') -and
+       $tabSrc205.Contains('Args(paths, "release", tab.HoldId)') -and $tabSrc205.Contains('OpenTabGuard.IsOlderAddinReleaseReply(text)') -and
        $guardSrc205.Contains('OldActionReply = "Error: action must be ''check'' or ''reload''.";')) `
     '[F1-1] the standalone sends release to the IDE, and tolerates an older addin''s Unknown tool / unknown action silently'
 # [SEC LOW] replay whenever the file changed, even when the IDE re-armed the watcher meanwhile.
@@ -197,9 +197,10 @@ Check ($between.Length -gt 0 -and ([regex]::Matches($between, '\breturn\b').Coun
        (Before $releaseUiM 'if (!rearmedByIde)' 'if (!changed) return') -and (Before $releaseUiM 'if (!changed) return' '_watcherOnChanged.Invoke(')) `
     '[SEC LOW] a release replays the change notice whenever the file changed since the hold began, even if the IDE re-armed it'
 # [LOW F1-2] holders are counted; re-armed only at 0 (or the cap).
+$bookSrc = Text 'Services\WatcherHoldBook.cs'
 Check ($resetM.Contains('if (stillHeld && CanHold) _watcherDisable.Invoke(watcher, null);') -and
-       (Method $nts 'private static bool DropHolder(').Contains('var e = _book.Drop(view, why);') -and
-       (Text 'Services\WatcherHoldBook.cs').Contains('if (--h.Count > 0) return null;') -and (Text 'Services\WatcherHoldBook.cs').Contains('h.Count++;')) `
+       (Method $nts 'private static void StartRelease(').Contains('FinishRelease(e)') -and
+       $bookSrc.Contains('if (h.Releasing || !h.Holders.Remove(token) || h.Holders.Count > 0) continue;') -and $bookSrc.Contains('h.Holders[token] = anonymous;')) `
     '[F1-2] concurrent writes share one counted hold: a reload with holders left disables the watcher again; only the last releases'
 # [LOW F1-3] a generation per hold; the release acts only for its own; HoldOnUi decides under the book's lock.
 Check ($releaseUiM.Contains('if (!_book.Finish(e.Key, gen)) return') -and $releaseM.Contains('ReleaseOnUi(e, gen, changed)') -and
@@ -210,6 +211,77 @@ Check ((Text 'ClarionAssistant.csproj').Contains('Services\WatcherHoldBook.cs'))
 Check (-not $holdUiM.Contains('FileInfo') -and -not $holdUiM.Contains('Stamp(') -and -not $releaseUiM.Contains('FileInfo') -and -not $releaseUiM.Contains('Stamp(') -and
        -not $resetM.Contains('FileInfo') -and -not $resetM.Contains('File.Exists') -and $holdUiM.Length -gt 0 -and $releaseUiM.Length -gt 0) `
     'the watcher''s UI-thread parts (hold, release, reset) do no disk I/O of their own'
+
+# ---- GH #205 re-review of 9e815a4 (holder tokens). Each of these MUST GO RED against ce4ae9f. ----
+# One member of WatcherHoldBook: from its signature to the next member at class-body indentation.
+function Member([string]$text, [string]$sig) {
+    $i = $text.IndexOf($sig)
+    if ($i -lt 0) { return '' }
+    $m = [regex]::Match($text.Substring($i + $sig.Length), '\n        (public|private|internal) ')
+    if (-not $m.Success) { return $text.Substring($i) }
+    return $text.Substring($i, $sig.Length + $m.Index)
+}
+$reloadIde = Method $nts 'internal static TabReload Reload('
+$releaseIde = Method $nts 'internal static TabReload Release('
+$dropAfter = Method $nts 'private static void DropAfterNoReload('
+$heldByM = $guardSrc205.Substring([Math]::Max(0, $guardSrc205.IndexOf('public static List<TabProbe> HeldBy(')))
+$heldByM = $heldByM.Substring(0, [Math]::Max(0, $heldByM.IndexOf('private static void ReleaseHolds(')))
+$releaseAt = $sync.IndexOf('if (action == "release")')
+$releaseBlock = if ($releaseAt -ge 0) { $sync.Substring($releaseAt, [Math]::Max(0, $sync.IndexOf('if (action == "reload")') - $releaseAt)) } else { '' }
+# [D4] holders are tokens: a reload/release drops only its own; a writer that never held drops nobody's.
+Check ($sync.Contains('string holdId = OpenTabGuard.ParseHoldId(args);') -and $sync.Contains('reload(byIdentity, byName, holdId)') -and
+       $releaseBlock.Contains('string.IsNullOrEmpty(holdId) ? new TabReload { Reason = "nothing to release (no hold_id)" }') -and $releaseBlock.Contains('release(holdId)') -and
+       -not $releaseBlock.Contains('byIdentity') -and $tabSrc205.Contains('Args(paths, "reload", tab.HoldId)') -and $tabSrc205.Contains('Args(paths, "check", holdId)') -and
+       $tabSrc205.Contains('a[OpenTabGuard.HoldIdArg] = holdId;')) `
+    '[D4] check, reload and release carry the hold_id; a release without one is a no-op and never looks tabs up'
+Check ($bookSrc.Contains('if (token != null) { if (token.Length > 0) { h.Holders.Remove(token); Withdraw(token); } }') -and
+       $bookSrc.Contains('else { string anon = FirstAnonymous(h); if (anon != null) h.Holders.Remove(anon); }') -and -not $bookSrc.Contains('--h.Count')) `
+    '[D4] a reload drops only its own token (an older standalone''s tokenless one: one ANONYMOUS holder); no blind decrement'
+Check ($checkM.Contains('string token = anonymous ? "anon-" + OpenTabGuard.NewHoldId() : holdId;') -and $checkM.Contains('answer.HeldTabs = held; answer.HoldId = token;') -and
+       $guardSrc205.Contains('{ "view", t }, { "token", p.HoldId }') -and $guardSrc205.Contains('return WithHeld(CheckFromWireCore(a, ide), a);')) `
+    '[D4] a holding check answers held: [{view, token}] (an older standalone''s hold gets an anonymous token)'
+Check ($nts.Contains('var p = CheckAndHold(paths, paths, id);') -and $nts.Contains('p.HoldId = id;') -and
+       $nts.Contains('OpenTabGuard.Reload = (paths, tab) => Reload(paths, null, tab != null ? tab.HoldId : null);')) `
+    '[D4] the addin''s own write_file holds, reloads and releases under its own token too'
+# [D1] a timed-out check is released by its request id; the IDE stops holding before the writer stops waiting.
+Check ($tabSrc205.Contains('ids[i] = OpenTabGuard.NewHoldId();') -and $tabSrc205.Contains('if (!quiet[i]) p.HoldId = ids[i];') -and
+       (Before $tabSrc205 'ids[i] = OpenTabGuard.NewHoldId();' '_fanOut.Ask(eps') -and $tabSrc205.Contains('if (ep == null || string.IsNullOrEmpty(tab.HoldId)) return;')) `
+    '[D1] the standalone makes one hold_id per IDE BEFORE asking, so a check that times out still has one to release'
+Check ($heldByM.Contains('!string.IsNullOrEmpty(p.HoldId) && (!p.Reachable || (p.HeldTabs != null && p.HeldTabs.Count > 0))') -and -not $heldByM.Contains('p.Dirty') -and
+       $runM.Contains('ReleaseEach(spellings, HeldBy(probes).FindAll(p => !reloaded.Contains(p)));')) `
+    '[D1/D3] a release goes to every IDE that held or did not answer (never by the Dirty flag), and a held probe no reload will end is released after the write'
+$dropTokenM = Member $bookSrc 'public List<Entry> DropToken('
+Check ($bookSrc.Contains('if (IsWithdrawnLocked(token)) return Take.Withdrawn;') -and $dropTokenM.Contains('Withdraw(token);') -and
+       (Before $dropTokenM 'Withdraw(token);' 'foreach (var h in _holds.Values)')) `
+    '[D1] a released hold_id is withdrawn, so a hold for it that lands after the release is refused'
+$deadline = if ($nts -match 'HoldDeadlineMs\s*=\s*(\d+);') { [int]$Matches[1] } else { -1 }
+$snapWait = if ($nts -match 'CheckWaitMs\s*=\s*(\d+);') { [int]$Matches[1] } else { -1 }
+$budget = if ($tabSrc205 -match 'CheckBudgetMs\s*=\s*(\d+);') { [int]$Matches[1] } else { -1 }
+Check ($deadline -gt 0 -and $snapWait -gt 0 -and $budget -gt 0 -and $snapWait -lt $deadline -and ($deadline + 500) -le $budget -and
+       (Before $checkM 'var clock = System.Diagnostics.Stopwatch.StartNew();' 'SnapshotOnUi()') -and $holdM.Contains('int wait = HoldDeadlineMs - (int)clock.ElapsedMilliseconds;') -and
+       -not ($nts -match 'HoldWaitMs')) `
+    "[D1] the IDE gives up holding $deadline ms after the CHECK began (snapshot wait $snapWait ms), at least 500 ms inside the writer's $budget ms budget"
+# [D2] every reload that does not happen drops its writer's holders: late, on the UI thread, or at once.
+Check ($reloadIde.Contains('finally') -and (Before $reloadIde 'onUi = ReloadOnUi(natives, ctx)' 'if (!reloaded) DropAfterNoReload(holdId, natives,') -and
+       $reloadIde.Contains('dropHere = outcome == UiThreadCall.Outcome.NoUiThread;') -and $reloadIde.Contains('if (dropHere && !answer.Reloaded) DropAfterNoReload(holdId, matched,') -and
+       -not $reloadIde.Contains('DropHolder(')) `
+    '[D2] a reload whose snapshot timed out, whose Load threw, that was refused or ran late still drops its writer''s holders'
+Check ($dropAfter.Contains('if (holdId != null) { foreach (var e in _book.DropToken(holdId, why)) StartRelease(e); return; }') -and
+       -not $releaseIde.Contains('SnapshotOnUi') -and -not $releaseIde.Contains('UiThreadCall.Run') -and $releaseIde.Contains('foreach (var e in ended) StartRelease(e);')) `
+    '[D2] a release (and a failed reload) drops by token across every tab: no snapshot, so a busy UI thread cannot leave the hold behind'
+# [D3] the IDE's answer keeps the holds the full check took, whatever lookup decides it.
+Check ($guardSrc205.Contains('Func<TabProbe, TabProbe> carry = r => CarryHeld(full, r);') -and $guardSrc205.Contains('if (!lex.Reachable) return carry(lex);') -and
+       $guardSrc205.Contains('var merged = carry(Merge(full, lex));')) `
+    '[D3] CheckGated carries the full check''s held tabs onto a merged (dirty) or failed answer'
+# [D5] a reload that leaves holders re-stamps the hold with the file as stamped BEFORE that Load (off the UI thread).
+Check ((Before $reloadIde 'ctx.StampOk = StampHeld(natives, out ctx.Ticks, out ctx.Length);' 'onUi = ReloadOnUi(natives, ctx)') -and
+       $bookSrc.Contains('if (stampOk) { h.Ticks = ticks; h.Length = length; }') -and -not $resetM.Contains('Stamp(')) `
+    '[D5] a reload that leaves other holders re-stamps the hold (stamped before the Load, on the worker), so a later release does not replay what the tab shows'
+# [D6] a check that meets a RELEASING hold waits briefly (off the UI thread) for it to finish, then holds afresh.
+Check ($holdM.Contains('_book.WaitNotReleasing(s.View, Math.Min(ReleasingWaitMs, left))') -and (Before $holdM '_book.WaitNotReleasing(' 'UiThreadCall.Run(_ui') -and
+       (Member $bookSrc 'public bool Finish(').Contains('Monitor.PulseAll(_lock);') -and (Member $bookSrc 'public void Forget(').Contains('Monitor.PulseAll(_lock);') -and
+       (Member $bookSrc 'public bool WaitNotReleasing(').Contains('Monitor.Wait(_lock, left);')) `
+    '[D6] a check waits (bounded, off the UI thread) for a releasing hold to finish before taking a fresh one'
 
 $auto = [System.IO.File]::ReadAllText($autostartPath)
 Check ($auto.Contains('NativeTabSync.Register()')) 'the addin registers it at startup (LspAutostartCommand)'
@@ -280,7 +352,7 @@ foreach ($t in @('write_file', 'append_to_file')) {
 Check ($sync.Contains('OpenTabGuard.AlsoPathArg') -and $sync.Contains('foreach (var sp in spellings)') -and
        $sync.Contains('McpPathGate.GatePath("editor_tab_sync", sp, PathAccess.Read, _workspace, out canonical, out unusedPolicy, out outsideRoots)')) `
     'editor_tab_sync takes also_path, and gates EVERY spelling (pipeline run 4)'
-Check ($sync.Contains('reload(byIdentity, byName)') -and (Before $sync 'foreach (var sp in spellings)' 'if (action == "reload")')) `
+Check ($sync.Contains('reload(byIdentity, byName, holdId)') -and (Before $sync 'foreach (var sp in spellings)' 'if (action == "reload")')) `
     'reload is gated the same way: refused spellings only match an open tab by name'
 $fidSrc = Text 'Services\FileIdentity.cs'
 $ofAt = $fidSrc.IndexOf('public static Probe Of(')

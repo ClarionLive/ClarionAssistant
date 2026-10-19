@@ -984,7 +984,7 @@ namespace ClarionAssistant.McpServer
                 var savedReload = ClarionAssistant.Services.OpenTabGuard.LocalReload;
                 ClarionAssistant.Services.OpenTabGuard.LocalCheck = paths => { idAsked.AddRange(paths); return new ClarionAssistant.Services.TabProbe { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNone }; };
                 ClarionAssistant.Services.OpenTabGuard.LocalCheckLexical = paths => { nameAsked.AddRange(paths); return new ClarionAssistant.Services.TabProbe { Reachable = true, Kind = ClarionAssistant.Services.OpenTabGuard.KindNone }; };
-                ClarionAssistant.Services.OpenTabGuard.LocalReload = (byId, byName) => { idAsked.AddRange(byId); nameAsked.AddRange(byName); return new ClarionAssistant.Services.TabReload { Reason = "none open" }; };
+                ClarionAssistant.Services.OpenTabGuard.LocalReload = (byId, byName, holdId) => { idAsked.AddRange(byId); nameAsked.AddRange(byName); return new ClarionAssistant.Services.TabReload { Reason = "none open" }; };
                 const string unc = @"\\attacker-205\s\Main001.clw";
                 withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object> { { "file_path", module }, { "also_path", unc }, { "action", "check" } });
                 withWs.ExecuteTool("editor_tab_sync", new Dictionary<string, object> { { "file_path", unc }, { "action", "reload" } });

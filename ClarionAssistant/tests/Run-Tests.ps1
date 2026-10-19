@@ -530,7 +530,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # could-not-check line when no IDE answers. The IDE half is pinned by OpenTabGuard.SourceScan.ps1.
             @{ Name = "OpenTabGuard.Test"
                Sources = @("tests\OpenTabGuard.Test.cs", "Services\OpenTabGuard.cs", "Services\FileIdentity.cs")
-               Refs = @("System.dll", "System.Core.dll") }
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # GH #205 review: the IDE file-watcher hold's bookkeeping - counted holders, a cap from the FIRST hold that is
             # never renewed (plus a cool-down), and a generation per hold that a late timer or release must still match.
             @{ Name = "WatcherHoldBook.Test"
