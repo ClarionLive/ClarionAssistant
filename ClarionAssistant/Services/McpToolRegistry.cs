@@ -3202,7 +3202,8 @@ COMMON QUERIES:
                         { "file_path", "Absolute path of the file" },
                         { OpenTabGuard.AlsoPathArg, "Optional: another spelling of the same file (the caller's, before link resolution); tabs are matched against both, by file identity" },
                         { "action", "'check', 'reload' or 'release'" },
-                        { OpenTabGuard.HoldArg, "check only, set by write_file/append_to_file: hold the IDE's file watcher of a clean native tab until the reload (only for a path this IDE allows writing)" }
+                        { OpenTabGuard.HoldArg, "check only, set by write_file/append_to_file: hold the IDE's file watcher of a clean native tab until the reload (only for a path this IDE allows writing)" },
+                        { OpenTabGuard.HoldIdArg, "The write's holder token (one per check; 8-64 of A-Z a-z 0-9 -): a holding check answers held: [{view, token}]; reload and release name it and drop only that holder" }
                     },
                     new[] { "file_path", "action" }),
                 RequiresUiThread = false,
@@ -3211,6 +3212,9 @@ COMMON QUERIES:
                     string filePath = McpJsonRpc.GetString(args, "file_path");
                     string action = (McpJsonRpc.GetString(args, "action") ?? "").Trim().ToLowerInvariant();
                     if (string.IsNullOrEmpty(filePath)) return "Error: file_path is required.";
+                    // GH #205 re-review (holder tokens): null = none sent (an older standalone); "" = malformed (no hold,
+                    // matches no holder).
+                    string holdId = OpenTabGuard.ParseHoldId(args);
                     var spellings = OpenTabGuard.Spellings(filePath, McpJsonRpc.GetString(args, OpenTabGuard.AlsoPathArg));
                     // GH #266 + GH #205 pipeline run 4: EVERY spelling (file_path and also_path - both are the caller's
                     // choice) goes through the read gate. Only an allowed spelling is looked up by file identity, which opens
@@ -3243,7 +3247,7 @@ COMMON QUERIES:
                         // IDE would not let a tool write can never have its tab's watcher switched off. The read gate above
                         // still decides the lookup itself. (Why a flag and not proof: see NativeTabSync's class comment.)
                         var holdable = new List<string>();
-                        if (OpenTabGuard.ParseFlag(args, OpenTabGuard.HoldArg))
+                        if (OpenTabGuard.ParseFlag(args, OpenTabGuard.HoldArg) && holdId != "")
                             foreach (var sp in spellings)
                             {
                                 string writeCanonical;
@@ -3254,7 +3258,7 @@ COMMON QUERIES:
                             }
                         var holdCheck = OpenTabGuard.LocalCheckHold;
                         Func<IList<string>, TabProbe> fullCheck = holdable.Count > 0 && holdCheck != null
-                            ? (Func<IList<string>, TabProbe>)(paths => holdCheck(paths, holdable))
+                            ? (Func<IList<string>, TabProbe>)(paths => holdCheck(paths, holdable, holdId))
                             : OpenTabGuard.LocalCheck;
                         var p = OpenTabGuard.CheckGated(gated, _workspace != null, hasSolution, fullCheck, OpenTabGuard.LocalCheckLexical,
                             note => McpPathAudit.Write("editor_tab_sync", "LOOKUP", filePath, note));
@@ -3262,14 +3266,17 @@ COMMON QUERIES:
                     }
                     if (action == "release")
                     {
-                        // GH #205 review F1-1: the writer's write was refused or failed; drop its watcher hold now. Matched
-                        // like reload (refused spellings by name only). Releasing only gives the IDE its watcher back.
-                        var byIdentity = new List<string>();
-                        var byName = new List<string>();
-                        foreach (var g in gated) (g.Refusal == null ? byIdentity : byName).Add(g.Path);
+                        // GH #205 review F1-1 + re-review: the writer's write did not happen (or no reload follows); drop ITS
+                        // watcher holder now - by its hold_id only (no tab lookup, so a busy UI thread cannot stop it; D2).
+                        // An unknown hold_id is a silent no-op; none at all (an older standalone) releases nothing. Releasing
+                        // only gives the IDE its watcher back.
                         var release = OpenTabGuard.LocalRelease;
                         TabReload r;
-                        try { r = release != null ? release(byIdentity, byName) : new TabReload { Reason = "the IDE's release is not registered" }; }
+                        try
+                        {
+                            r = string.IsNullOrEmpty(holdId) ? new TabReload { Reason = "nothing to release (no hold_id)" }
+                                : release != null ? release(holdId) : new TabReload { Reason = "the IDE's release is not registered" };
+                        }
                         catch (Exception ex) { r = new TabReload { Reason = "the release failed: " + ex.Message }; }
                         var answer = new Dictionary<string, object>();
                         answer["released"] = true;
@@ -3283,7 +3290,7 @@ COMMON QUERIES:
                         foreach (var g in gated) (g.Refusal == null ? byIdentity : byName).Add(g.Path);
                         var reload = OpenTabGuard.LocalReload;
                         TabReload r;
-                        try { r = reload != null ? reload(byIdentity, byName) : null; }
+                        try { r = reload != null ? reload(byIdentity, byName, holdId) : null; }
                         catch (Exception ex) { r = new TabReload { Reason = "the reload failed: " + ex.Message }; }
                         return OpenTabGuard.ReloadToWire(r);
                     }

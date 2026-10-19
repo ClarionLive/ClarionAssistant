@@ -27,6 +27,8 @@ namespace ClarionAssistant.Services
     /// </summary>
     public static class IdeTabClient
     {
+        /// <summary>GH #205 re-review D1: the IDE gives up HOLDING 2.4 s into its check (NativeTabSync.HoldDeadlineMs), well
+        /// inside this; a check that still times out here is released by its hold_id anyway.</summary>
         public const int CheckBudgetMs = 3000;
         /// <summary>Longer: a reload re-reads and re-highlights the file on the IDE's UI thread. NativeTabSync's two UI
         /// waits total 1.5 + 7.5 = 9 s, so the IDE's own "did not answer" arrives inside this budget with 1 s for HTTP.</summary>
@@ -46,26 +48,41 @@ namespace ClarionAssistant.Services
                 return new List<TabProbe> { new TabProbe { Reachable = false, Reason = reason } };
             }
             var total = Stopwatch.StartNew();
-            var answers = _fanOut.Ask(eps, ep => ep.Pid, ep => CheckOne(ep, paths), CheckBudgetMs);
+            // GH #205 re-review (holder tokens, D1): one request id per IDE, made HERE so it survives a check that times
+            // out on this side - the IDE may still have held under it (even a check whose task started after the budget
+            // ran out), and the release names it. Only an IDE that IdeFanOut skips (it timed out recently) is never asked.
+            var ids = new string[eps.Count];
+            var quiet = new bool[eps.Count];
+            var idOf = new Dictionary<IdeEndpointRecord.Endpoint, string>();
+            for (int i = 0; i < eps.Count; i++)
+            {
+                ids[i] = OpenTabGuard.NewHoldId();
+                quiet[i] = _fanOut.IsQuiet(eps[i].Pid);
+                idOf[eps[i]] = ids[i];
+            }
+            var answers = _fanOut.Ask(eps, ep => ep.Pid, ep => CheckOne(ep, paths, idOf[ep]), CheckBudgetMs);
             for (int i = 0; i < answers.Count; i++)
             {
                 var p = answers[i];   // IdeFanOut has stamped p.Ide
                 p.Handle = eps[i];
+                if (!quiet[i]) p.HoldId = ids[i];
                 Write("[tab-sync] check path=" + path + " ide=" + eps[i].Label + " -> "
-                      + (p.Reachable ? p.Kind + (p.Dirty ? " dirty" : " clean") : "unreachable: " + p.Reason));
+                      + (p.Reachable ? p.Kind + (p.Dirty ? " dirty" : " clean") : "unreachable: " + p.Reason)
+                      + (p.HeldTabs.Count > 0 ? " held=" + p.HeldTabs.Count : ""));
             }
             Write("[tab-sync] check path=" + path + " ides=" + eps.Count + " ms=" + total.ElapsedMilliseconds);
             return answers;
         }
 
-        private static TabProbe CheckOne(IdeEndpointRecord.Endpoint ep, IList<string> paths)
+        private static TabProbe CheckOne(IdeEndpointRecord.Endpoint ep, IList<string> paths, string holdId)
         {
             var one = Stopwatch.StartNew();
             try
             {
                 // hold: this check is the write path's (review SEC MED): only it may hold the IDE's file watcher, and the
-                // IDE holds only spellings its #266 WRITE gate allows. An older addin ignores the extra argument.
-                var args = Args(paths, "check");
+                // IDE holds only spellings its #266 WRITE gate allows. hold_id: the holder token its reload or release
+                // names. An older addin ignores the extra arguments.
+                var args = Args(paths, "check", holdId);
                 args[OpenTabGuard.HoldArg] = true;
                 string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", args, one, CheckBudgetMs);
                 // Pipeline run 4: an IDE on a pre-#205 Clarion Assistant answers "Unknown tool": a note naming it (the write
@@ -87,7 +104,7 @@ namespace ClarionAssistant.Services
             TabReload r;
             try
             {
-                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "reload"), sw, ReloadBudgetMs);
+                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "reload", tab.HoldId), sw, ReloadBudgetMs);
                 r = text.StartsWith("Error", StringComparison.Ordinal)
                     ? new TabReload { Reason = "the IDE refused: " + text }
                     : OpenTabGuard.ReloadFromWire(Parse(text));
@@ -106,20 +123,22 @@ namespace ClarionAssistant.Services
         public const int ReleaseBudgetMs = 2000;
 
         /// <summary>
-        /// GH #205 review F1-1: the write was refused or failed after <paramref name="tab"/>'s IDE held its file watcher;
-        /// ask that IDE to give it back now (editor_tab_sync action 'release'). Silent: an older addin's "Unknown tool" or
-        /// unknown-action reply (it never held anything) is ignored, and any failure leaves the hold to the IDE's cap.
+        /// GH #205 review F1-1: the write was refused or failed (or no reload will follow) after <paramref name="tab"/>'s
+        /// IDE was asked to hold its file watcher; ask that IDE to give it back now (editor_tab_sync action 'release',
+        /// naming the check's hold_id: the IDE drops only that holder, and refuses a hold under it that lands later - D1,
+        /// a check that timed out here). Silent: an older addin's "Unknown tool" or unknown-action reply (it never held
+        /// anything) is ignored, and any failure leaves the hold to the IDE's cap.
         /// </summary>
         public static void Release(IList<string> paths, TabProbe tab)
         {
             var ep = tab != null ? tab.Handle as IdeEndpointRecord.Endpoint : null;
-            if (ep == null) return;
+            if (ep == null || string.IsNullOrEmpty(tab.HoldId)) return;
             string path = paths != null && paths.Count > 0 ? paths[0] : null;
             var sw = Stopwatch.StartNew();
             string outcome;
             try
             {
-                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "release"), sw, ReleaseBudgetMs);
+                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "release", tab.HoldId), sw, ReleaseBudgetMs);
                 outcome = OpenTabGuard.IsOlderAddinReleaseReply(text) ? "older addin, nothing to release"
                     : (text ?? "").StartsWith("Error", StringComparison.Ordinal) ? "the IDE refused: " + text : "released";
             }
@@ -127,10 +146,11 @@ namespace ClarionAssistant.Services
             Write("[tab-sync] release path=" + path + " ide=" + ep.Label + " -> " + outcome + " ms=" + sw.ElapsedMilliseconds);
         }
 
-        private static Dictionary<string, object> Args(IList<string> paths, string action)
+        private static Dictionary<string, object> Args(IList<string> paths, string action, string holdId)
         {
             var a = new Dictionary<string, object> { { "file_path", paths != null && paths.Count > 0 ? paths[0] : "" }, { "action", action } };
             if (paths != null && paths.Count > 1) a[OpenTabGuard.AlsoPathArg] = paths[1];
+            if (!string.IsNullOrEmpty(holdId)) a[OpenTabGuard.HoldIdArg] = holdId;
             return a;
         }
 

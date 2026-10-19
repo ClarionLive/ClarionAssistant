@@ -35,6 +35,14 @@ namespace ClarionAssistant.Services
         public bool OutOfScope;
         /// <summary>With <see cref="OutOfScope"/>: that IDE has no solution open (said in the note).</summary>
         public bool NoSolution;
+        /// <summary>
+        /// GH #205 re-review (holder tokens): the write path's request id for this IDE's check (editor_tab_sync hold_id),
+        /// set by the writer when it ASKED that IDE to hold - whether or not an answer came back (D1: a check that timed
+        /// out on the writer's side may still have held). Its reload and release name it; the IDE drops only that holder.
+        /// </summary>
+        public string HoldId;
+        /// <summary>The tabs the IDE says this check HELD (the reply's held: [{view, token}]); empty when it held none.</summary>
+        public List<string> HeldTabs = new List<string>();
     }
 
     /// <summary>The outcome of reloading one native tab from disk.</summary>
@@ -95,8 +103,10 @@ namespace ClarionAssistant.Services
         public static Func<IList<string>, TabProbe, TabReload> Reload;
         public static Func<IList<string>, TabProbe> LocalCheck;
         /// <summary>Pipeline run 4: (spellings the gate allowed - matched by identity, spellings it refused - matched by
-        /// path text only). A refused path can only reload a tab already open under that very name.</summary>
-        public static Func<IList<string>, IList<string>, TabReload> LocalReload;
+        /// path text only, the writer's hold_id). A refused path can only reload a tab already open under that very name.
+        /// hold_id: null when the writer sent none (an older standalone: one anonymous holder is dropped, as before
+        /// holder tokens); otherwise only that holder is dropped, and an unknown one drops nothing.</summary>
+        public static Func<IList<string>, IList<string>, string, TabReload> LocalReload;
 
         /// <summary>editor_tab_sync's optional second spelling of file_path.</summary>
         public const string AlsoPathArg = "also_path";
@@ -107,19 +117,45 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// GH #205 review (SEC MED): the write path's check - (spellings to look up, spellings the #266 WRITE gate allowed).
         /// It also holds the IDE file watcher of a clean native tab of the second set until the reload (NativeTabSync).
-        /// Asked only for editor_tab_sync check with <see cref="HoldArg"/>: true; a plain check never holds.
+        /// Asked only for editor_tab_sync check with <see cref="HoldArg"/>: true; a plain check never holds. Third
+        /// argument: the writer's hold_id (null: an older standalone sent none; the IDE then makes up an anonymous token).
+        /// The answer's <see cref="TabProbe.HeldTabs"/> names what it held.
         /// </summary>
-        public static Func<IList<string>, IList<string>, TabProbe> LocalCheckHold;
+        public static Func<IList<string>, IList<string>, string, TabProbe> LocalCheckHold;
         /// <summary>editor_tab_sync check's flag: this check is the write path's, about to write (hold the watcher).</summary>
         public const string HoldArg = "hold";
+        /// <summary>editor_tab_sync's holder token (check, reload, release): the write path's request id, one per check.</summary>
+        public const string HoldIdArg = "hold_id";
+        /// <summary>editor_tab_sync check's reply: the tabs this check held, [{view, token}].</summary>
+        public const string HeldKey = "held";
 
         /// <summary>
         /// GH #205 review F1-1: the write was refused or failed after the check held a tab's watcher; give it back now.
         /// What <see cref="Run"/> uses (the standalone: IdeTabClient.Release; the addin: its own). Best effort, silent.
         /// </summary>
         public static Action<IList<string>, TabProbe> Release;
-        /// <summary>editor_tab_sync action 'release' in the IDE: (allowed spellings by identity, refused ones by name).</summary>
-        public static Func<IList<string>, IList<string>, TabReload> LocalRelease;
+        /// <summary>editor_tab_sync action 'release' in the IDE: drop the holder named by this hold_id from every tab it
+        /// holds (no tab lookup: D2). Never called without one - a release with no hold_id is a no-op (an older standalone
+        /// never held under a token).</summary>
+        public static Func<string, TabReload> LocalRelease;
+
+        /// <summary>A fresh holder token for one write-path check of one IDE.</summary>
+        public static string NewHoldId() { return Guid.NewGuid().ToString("N"); }
+
+        /// <summary>
+        /// editor_tab_sync's hold_id: null when absent (an older standalone); "" when present but malformed (it then
+        /// matches no holder and takes no hold); else the token. A token is 8..64 of [A-Za-z0-9-].
+        /// </summary>
+        public static string ParseHoldId(Dictionary<string, object> args)
+        {
+            object v;
+            if (args == null || !args.TryGetValue(HoldIdArg, out v) || v == null) return null;
+            string s = v as string;
+            if (s == null || s.Length < 8 || s.Length > 64) return "";
+            foreach (char c in s)
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-')) return "";
+            return s;
+        }
 
         /// <summary>
         /// An IDE that cannot release (an addin from before the review fix): "Unknown tool" (before #205), or the old
@@ -187,17 +223,20 @@ namespace ClarionAssistant.Services
                 full = Ask(fullCheck, allowed);
                 if (!full.Reachable) return full;   // a timeout stays a timeout; a failure stays a failure
             }
+            // GH #205 re-review D3: whatever is answered from here on, the tabs the full check HELD go with it (held:
+            // [{view, token}]), so the writer releases by its token even when the answer it gets is dirty, or a failure.
+            Func<TabProbe, TabProbe> carry = r => CarryHeld(full, r);
             if (refused.Count > 0)
             {
                 var texts = new List<string>();
                 foreach (var s in refused) texts.Add(s.Path);
                 lex = Ask(lexicalCheck, texts);
-                if (!lex.Reachable) return lex;
+                if (!lex.Reachable) return carry(lex);
                 if (lex.Kind != KindNone && audit != null)
                     try { audit("refused path matched an open " + lex.Kind + " tab by name; answered its kind and dirty state only"); } catch { }
             }
 
-            var merged = Merge(full, lex);
+            var merged = carry(Merge(full, lex));
             if (merged.Kind != KindNone || allowed.Count > 0) return merged;
 
             bool allOutside = true;
@@ -238,6 +277,17 @@ namespace ClarionAssistant.Services
             int ra = Rank(a.Kind), rb = Rank(b.Kind);
             if (ra != rb) return ra > rb ? a : b;
             return new TabProbe { Reachable = true, Kind = a.Kind, Dirty = a.Dirty || b.Dirty, Ide = a.Ide ?? b.Ide };
+        }
+
+        /// <summary><paramref name="r"/> with the holds <paramref name="from"/> took (D3: an answer built from another
+        /// lookup must not lose them).</summary>
+        private static TabProbe CarryHeld(TabProbe from, TabProbe r)
+        {
+            if (r == null || from == null || ReferenceEquals(from, r) || from.HeldTabs == null || from.HeldTabs.Count == 0) return r;
+            if (r.HeldTabs == null) r.HeldTabs = new List<string>();
+            foreach (var t in from.HeldTabs) if (!r.HeldTabs.Contains(t)) r.HeldTabs.Add(t);
+            if (r.HoldId == null) r.HoldId = from.HoldId;
+            return r;
         }
 
         private static int Rank(string kind) { return kind == KindNative ? 2 : kind == KindCaEditor ? 1 : 0; }
@@ -382,27 +432,42 @@ namespace ClarionAssistant.Services
 
             var lines = new List<string>();
             foreach (var tab in d.ReloadAfter) lines.Add(ReloadNote(spellings, tab));
+            // GH #205 re-review D1/D3: a hold that no reload will end (its check timed out here, or answered a dirty tab
+            // written under with overwrite_open_buffer) is released now, so that IDE gets its watcher back - and, the
+            // file having changed, replays its own change notice - at once instead of at the cap.
+            var reloaded = new List<TabProbe>(d.ReloadAfter);
+            ReleaseEach(spellings, HeldBy(probes).FindAll(p => !reloaded.Contains(p)));
             lines.AddRange(d.Notes);
             if (lines.Count == 0) return result;
             return result + "\n" + string.Join("\n", lines.ToArray());
         }
 
-        /// <summary>The probes whose check may have held a watcher: a reachable, CLEAN native tab (the only kind held).</summary>
+        /// <summary>
+        /// The probes whose check may hold a watcher, by TOKEN (GH #205 re-review): every probe whose IDE was asked to hold
+        /// (it has a <see cref="TabProbe.HoldId"/>) and that either SAID it held (<see cref="TabProbe.HeldTabs"/>, whatever
+        /// its kind or dirty flag - D3), or gave no usable answer (timed out on this side, failed: it may have held - D1).
+        /// An IDE that answered and held nothing is not asked again.
+        /// </summary>
         public static List<TabProbe> HeldBy(IList<TabProbe> probes)
         {
             var held = new List<TabProbe>();
             if (probes != null)
                 foreach (var p in probes)
-                    if (p != null && p.Reachable && p.Kind == KindNative && !p.Dirty) held.Add(p);
+                    if (p != null && !string.IsNullOrEmpty(p.HoldId) && (!p.Reachable || (p.HeldTabs != null && p.HeldTabs.Count > 0))) held.Add(p);
             return held;
         }
 
         // Never throws: a release that fails leaves the hold to its cap.
         private static void ReleaseHolds(IList<string> spellings, IList<TabProbe> probes)
         {
+            ReleaseEach(spellings, HeldBy(probes));
+        }
+
+        private static void ReleaseEach(IList<string> spellings, List<TabProbe> held)
+        {
             var release = Release;
             if (release == null) return;
-            foreach (var p in HeldBy(probes))
+            foreach (var p in held)
                 try { release(spellings, p); } catch { }
         }
 
@@ -439,6 +504,13 @@ namespace ClarionAssistant.Services
         public static Dictionary<string, object> CheckToWire(TabProbe p)
         {
             var a = new Dictionary<string, object>();
+            // GH #205 re-review: the holds this check took, with the holder token - on EVERY answer, an error included.
+            if (p != null && p.HeldTabs != null && p.HeldTabs.Count > 0 && !string.IsNullOrEmpty(p.HoldId))
+            {
+                var held = new List<object>();
+                foreach (var t in p.HeldTabs) held.Add(new Dictionary<string, object> { { "view", t }, { "token", p.HoldId } });
+                a[HeldKey] = held;
+            }
             if (p == null || !p.Reachable)
             {
                 a["error"] = p != null && p.Reason != null ? p.Reason : "the IDE's editor check is not registered";
@@ -450,6 +522,27 @@ namespace ClarionAssistant.Services
             a["kind"] = p.Kind ?? KindNone;
             a["dirty"] = p.Dirty;
             return a;
+        }
+
+        /// <summary>The reply's held: [{view, token}] into <paramref name="p"/> (HeldTabs, and HoldId when it has none).</summary>
+        private static TabProbe WithHeld(TabProbe p, Dictionary<string, object> a)
+        {
+            object o;
+            if (p == null || a == null || !a.TryGetValue(HeldKey, out o) || o == null) return p;
+            var list = o as System.Collections.IEnumerable;
+            if (list == null || o is string) return p;
+            foreach (var item in list)
+            {
+                var d = item as Dictionary<string, object>;
+                if (d == null) continue;
+                object v, t;
+                string view = d.TryGetValue("view", out v) ? v as string : null;
+                string token = d.TryGetValue("token", out t) ? t as string : null;
+                if (string.IsNullOrEmpty(token)) continue;
+                p.HeldTabs.Add(view ?? "");
+                if (p.HoldId == null) p.HoldId = token;
+            }
+            return p;
         }
 
         /// <summary>
@@ -489,6 +582,11 @@ namespace ClarionAssistant.Services
         /// <summary>An IDE's answer. Anything but a well-formed kind is a FAILED CHECK (<see cref="TabProbe.Answered"/>),
         /// which refuses the write, except an error the IDE flags timedOut (its UI thread did not answer in time).</summary>
         public static TabProbe CheckFromWire(Dictionary<string, object> a, string ide)
+        {
+            return WithHeld(CheckFromWireCore(a, ide), a);
+        }
+
+        private static TabProbe CheckFromWireCore(Dictionary<string, object> a, string ide)
         {
             object o;
             if (a == null) return new TabProbe { Ide = ide, Reachable = false, Answered = true, Reason = "the IDE's answer was not JSON" };
