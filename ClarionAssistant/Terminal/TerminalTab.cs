@@ -32,6 +32,20 @@ namespace ClarionAssistant.Terminal
         public string SolutionPath { get; set; }
 
         /// <summary>
+        /// The "Terminal N" name TabManager.CreateTerminalTab numbered this tab with, whatever name it was then
+        /// given. A tab that follows the IDE's solution shows it while the IDE has no solution open, so its label
+        /// is the agent name alone ("CA1") rather than a solution none of its tools serve.
+        /// </summary>
+        public string DefaultName { get; set; }
+
+        /// <summary>
+        /// True for a tab whose label names the IDE's open solution and follows every switch and close (F4,
+        /// ticket 9e1bd280): New Chat and a tab opened on a solution - their tools answer for the IDE's solution.
+        /// False for a tab opened on a project, a class or Evaluate Code: that context is not the solution.
+        /// </summary>
+        public bool FollowsIdeSolution { get; set; }
+
+        /// <summary>
         /// The tab's short name, captured at launch: CA1/CA2/... for Claude - also the identity
         /// it is known by in MultiTerminal (its MULTITERMINAL_NAME and -n) - CP1/CP2/... for
         /// Copilot and CX1/CX2/... for Codex, which are labels only (ticket cfb63b58). Null until

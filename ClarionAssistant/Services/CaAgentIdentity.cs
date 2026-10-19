@@ -78,29 +78,27 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// The tab's new context name when the IDE switched to <paramref name="newSolutionPath"/>, or null when the
-        /// tab does not follow (ticket 9e1bd280).
+        /// The context part of the label of a tab that follows the IDE's solution (TerminalTab.FollowsIdeSolution):
+        /// the name of <paramref name="ideSolutionPath"/>, or <paramref name="plainName"/> (the tab's "Terminal N")
+        /// while the IDE has no solution open - which TabLabel shows as the agent name alone (ticket 9e1bd280).
         ///
-        /// WHY: every tool in a tab answers for the solution open in the IDE now, so a tab opened on v61POSitive
-        /// that kept saying "CA1 · v61POSitive" after the IDE opened UltimateSQLTest named a solution none of its
-        /// tools served. A tab follows when it was opened ON a solution - its context is still that solution's name
-        /// (<paramref name="tabSolutionPath"/>). A tab opened on a project or class, or a plain "Terminal N", keeps
-        /// its name: that context is not the solution. Only the context moves; the agent name (CA1) is the tab's
-        /// MultiTerminal identity and never changes here.
+        /// WHY: every tool in a tab answers for the solution open in the IDE, so a tab opened on v61POSitive that
+        /// kept saying "CA1 · v61POSitive" after the IDE opened UltimateSQLTest named a solution none of its tools
+        /// served. Live test F4 (2026-10-19): the rule used to follow only a tab opened ON a solution, so a New
+        /// Chat tab - by far the common one - showed bare "CA1" while demoleg was open and stayed "CA1" after the
+        /// switch to UltimateSQLTest, though its tools had followed. Which tabs follow is the caller's flag; a tab
+        /// opened on a project or class keeps its own context. Only the context moves; the agent name (CA1) is the
+        /// tab's MultiTerminal identity and never changes here.
         /// </summary>
-        public static string FollowedContextName(string contextName, string tabSolutionPath, string newSolutionPath)
+        public static string IdeSolutionContext(string plainName, string ideSolutionPath)
         {
-            if (string.IsNullOrEmpty(tabSolutionPath) || string.IsNullOrEmpty(newSolutionPath)) return null;
-            string oldName, newName;
-            try
+            string name = null;
+            if (!string.IsNullOrEmpty(ideSolutionPath))
             {
-                oldName = System.IO.Path.GetFileNameWithoutExtension(tabSolutionPath);
-                newName = System.IO.Path.GetFileNameWithoutExtension(newSolutionPath);
+                try { name = System.IO.Path.GetFileNameWithoutExtension(ideSolutionPath.Trim()); }
+                catch { name = null; }
             }
-            catch { return null; }
-            if (string.IsNullOrEmpty(newName)) return null;
-            if (!string.Equals((contextName ?? "").Trim(), oldName, StringComparison.OrdinalIgnoreCase)) return null;
-            return newName;
+            return string.IsNullOrWhiteSpace(name) ? plainName : name;
         }
 
         private const string ExitTitlePrefix = "ca-assistant-exited:";
