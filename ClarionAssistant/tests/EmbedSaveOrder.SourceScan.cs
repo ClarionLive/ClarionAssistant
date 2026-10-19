@@ -177,13 +177,17 @@ static class EmbedSaveOrderSourceScan
         }
         Ok("the round-trip retires the journal ONLY on a failure that left the text in the editor (never on ok=True)",
             retiresGuarded && nRetire == 2, "retires=" + nRetire);
-        Ok("the journal file is deleted (no copy) in exactly two places: failure-intact and persisted-at-open",
-            Count(view, "EmbedSaveJournal.Retire(") == 2);
+        // A journal file is deleted without writing a copy only where its text is safe elsewhere: the failure that
+        // left it in the editor, the persisted-at-open retire, and (live test 2026-10-19) after the open has
+        // already written a copy for slots it could not place: the not-placeable toast and the two offer answers.
+        Ok("the journal file is deleted (no new copy) in exactly five places",
+            Count(view, "EmbedSaveJournal.Retire(") == 5, "found " + Count(view, "EmbedSaveJournal.Retire("));
         int hso = view.IndexOf("private void HandleSavedEditsOffer(", StringComparison.Ordinal);
         int hsoEnd = hso >= 0 ? view.IndexOf("private void BeginSaveJournal(", hso, StringComparison.Ordinal) : -1;
         string hsoBody = hso >= 0 && hsoEnd > hso ? view.Substring(hso, hsoEnd - hso) : "";
-        Ok("both offer buttons keep a dated copy (Restore and Discard archive, neither just deletes)",
-            Count(hsoBody, "EmbedSaveJournal.Archive(") == 2 && !hsoBody.Contains("EmbedSaveJournal.Retire("));
+        Ok("both offer buttons keep a dated copy (Archive, or just Retire when the offer already wrote the copy)",
+            Count(hsoBody, "EmbedSaveJournal.Archive(") == 2 && Count(hsoBody, "EmbedSaveJournal.Retire(") == 2 &&
+            Count(hsoBody, "copy != null && Services.EmbedSaveJournal.Retire(") == 2);
         Ok("the next open checks the journal", view.Contains("CheckSaveJournal();   // a save that did not survive the Generator"));
         int ose = page.IndexOf("msg.type === 'offerSavedEdits'", StringComparison.Ordinal);
         int oseEnd = ose >= 0 ? page.IndexOf("} else if (msg.type", ose + 10, StringComparison.Ordinal) : -1;
@@ -202,12 +206,15 @@ static class EmbedSaveOrderSourceScan
         int cj = view.IndexOf("private void CheckSaveJournal()", StringComparison.Ordinal);
         int cjEnd = cj >= 0 ? view.IndexOf("private void HandleSavedEditsOffer(", cj, StringComparison.Ordinal) : -1;
         string cjBody = cj >= 0 && cjEnd > cj ? view.Substring(cj, cjEnd - cj) : "";
-        Ok("the open decides with the pid rule (EmbedSaveJournal.Decide), not the bare verdict",
-            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid())") && !cjBody.Contains(".Assess("));
+        // Live test 2026-10-19: the process start time joins the pid, so a recycled pid is not "this session". The
+        // bare verdict is read only for the log line; it never branches.
+        Ok("the open decides with the session rule (EmbedSaveJournal.Decide + pid + process start), not the bare verdict",
+            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart())") &&
+            Count(cjBody, "verdict") == 2 && cjBody.Contains("\" -> \" + verdict + \" -> \" + act"));
         // ---- pipeline run 2 (PM ruling) ----
         Ok("the offer's wording uses the .app's last-write time (it never decides whether to offer)",
             cjBody.Contains("appWrite = File.GetLastWriteTime(JournalApp())") &&
-            cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite)") && !cjBody.Contains("IsSuperseded") &&
+            cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite, _originalSlotTexts, plan, copy)") && !cjBody.Contains("IsSuperseded") &&
             !cjBody.Contains("AppWrittenSince"));
         // Every use of the .app time in the open check is its read, the log line, or the offer's wording: none may
         // branch on it (a later write is the #179 reporter's crash, and it must still be offered).
@@ -216,7 +223,7 @@ static class EmbedSaveOrderSourceScan
         {
             if (!line.Contains("appWrite")) continue;
             if (line.Contains("DateTime? appWrite = null;") || line.Contains("appWrite = File.GetLastWriteTime(JournalApp())") ||
-                line.Contains("(appWrite.HasValue ? appWrite.Value.ToString(") || line.Contains("OfferMessage(e, appWrite)")) continue;
+                line.Contains("(appWrite.HasValue ? appWrite.Value.ToString(") || line.Contains("OfferMessage(e, appWrite, _originalSlotTexts, plan, copy)")) continue;
             badUse = line.Trim();
         }
         Ok("the .app time never decides whether a lost save is offered", badUse == null, badUse);
@@ -227,6 +234,18 @@ static class EmbedSaveOrderSourceScan
         Ok("a changed-since entry is archived silently (log line, no toast)",
             arcBody.Contains("EmbedSaveJournal.Archive(") && arcBody.Contains("MonacoSpikeLog.Write(") && !arcBody.Contains("PostJson("),
             arcBody.Length == 0 ? "archive branch not found" : null);
+        // ---- live test 2026-10-19 ----
+        int offB = arcEnd > 0 ? cjBody.IndexOf("PlanRestore(e, _originalSlotTexts)", arcEnd, StringComparison.Ordinal) : -1;
+        string offBody = offB > 0 ? cjBody.Substring(offB) : "";
+        int wc = offBody.IndexOf("EmbedSaveJournal.WriteCopy(", StringComparison.Ordinal);
+        int np = offBody.IndexOf("NotPlaceableMessage(e, copy)", StringComparison.Ordinal);
+        int offer = offBody.IndexOf("\\\"offerSavedEdits\\\"", StringComparison.Ordinal);
+        Ok("the offer is placed by PlanRestore; slots it can't place get a copy BEFORE anything is shown, named in the toast",
+            offB > 0 && wc > 0 && np > wc && offer > wc && offBody.Contains("ser.Serialize(plan.Slots)") &&
+            !offBody.Contains("RestoredSlots("), "plan@" + offB + " copy@" + wc + " notPlaceable@" + np + " offer@" + offer);
+        Ok("nothing placeable: the journal is retired only AFTER the copy exists, and a toast names it",
+            np > 0 && offBody.LastIndexOf("EmbedSaveJournal.Retire(", np, StringComparison.Ordinal) > wc &&
+            offBody.Substring(wc, np - wc).Contains("\\\"toast\\\""));
         int sw = view.IndexOf("private static void SweepStaleJournalsOnce()", StringComparison.Ordinal);
         string swBody = sw >= 0 ? view.Substring(sw, Math.Min(1400, view.Length - sw)) : "";
         Ok("the once-per-session sweep also prunes old recovery copies",

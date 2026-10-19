@@ -2079,6 +2079,7 @@ namespace ClarionAssistant.Terminal
         // whether that save landed. See Services.EmbedSaveJournal for why the open, not a timer, is the proof.
         private bool _journalChecked;            // CheckSaveJournal runs once per view
         private Services.EmbedSaveJournal.Entry _offeredJournal;   // the entry the page is offering, if any
+        private string _offeredCopy;   // the copy the offer already wrote for slots it could not place, if any
 
         /// <summary>The .app this embed belongs to, captured by the launcher while the native embed was open
         /// (AppTreeService.GetOpenEmbedAppFileName). Null = unknown: the save journal is then off for this view,
@@ -2116,6 +2117,11 @@ namespace ClarionAssistant.Terminal
             try { return System.Diagnostics.Process.GetCurrentProcess().Id; } catch { return 0; }
         }
 
+        private static DateTime? MyStart()
+        {
+            try { return System.Diagnostics.Process.GetCurrentProcess().StartTime; } catch { return null; }
+        }
+
         private void CheckSaveJournal()
         {
             if (_journalChecked || _panel == null || string.IsNullOrEmpty(_procedureName)) return;
@@ -2128,10 +2134,12 @@ namespace ClarionAssistant.Terminal
                 if (e == null) return;
                 DateTime? appWrite = null;
                 try { if (File.Exists(JournalApp())) appWrite = File.GetLastWriteTime(JournalApp()); } catch { }
-                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid());
+                var verdict = Services.EmbedSaveJournal.Assess(e, _originalSlotTexts);
+                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart());
                 MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": entry of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") +
-                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s)), app written " +
-                    (appWrite.HasValue ? appWrite.Value.ToString("yyyy-MM-dd HH:mm:ss") : "?") + " -> " + act);
+                    " (pid " + e.Pid + ", " + e.Index.Count + " slot(s), " + e.SlotCount + " slots then, " +
+                    (_originalSlotTexts == null ? "?" : _originalSlotTexts.Count.ToString()) + " now), app written " +
+                    (appWrite.HasValue ? appWrite.Value.ToString("yyyy-MM-dd HH:mm:ss") : "?") + " -> " + verdict + " -> " + act);
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 if (act == Services.EmbedSaveJournal.OpenDecision.Retire)
                 {
@@ -2142,20 +2150,46 @@ namespace ClarionAssistant.Terminal
                 string when = e.Written.ToString("yyyy-MM-dd HH:mm");
                 if (act == Services.EmbedSaveJournal.OpenDecision.Archive)
                 {
-                    // Changed since (e.g. edited in Clarion's own embeditor): offering it would overwrite newer work.
-                    // SILENT (pipeline run 3): this is the ordinary result of a native edit after a CA save, and a
-                    // toast on every such open was noise. The dated copy and the log line remain.
+                    // Changed since IN THIS SESSION (e.g. edited in Clarion's own embeditor after the CA save):
+                    // offering it would overwrite newer work. SILENT (pipeline run 3): a toast on every such open was
+                    // noise. The dated copy and the log line remain. An entry from an EARLIER session never gets here
+                    // (Decide offers it: live test 2026-10-19, "Last Saved" reverted past the save's baseline).
                     string rec = Services.EmbedSaveJournal.Archive(e, "this embed has changed since");
-                    MonacoSpikeLog.Write("[save-journal] archived silently (changed since " + when + ") " + rec);
+                    MonacoSpikeLog.Write("[save-journal] archived silently (changed since " + when + ", same session) " + rec);
                     return;
                 }
                 // Offered even if the .app was written after the save (PM ruling): the #179 crash leaves exactly that
                 // trace, as does a deliberate revert, so the wording names both and the developer decides.
-                var slots = Services.EmbedSaveJournal.RestoredSlots(e, _originalSlotTexts);
-                if (slots == null) return;
+                var plan = Services.EmbedSaveJournal.PlanRestore(e, _originalSlotTexts);
+                if (plan == null) return;
+                string copy = null;
+                if (plan.Unplaced.Count > 0)
+                {
+                    // Never guessed: the slots that cannot be identified go to a dated copy the toast names.
+                    copy = Services.EmbedSaveJournal.WriteCopy(e, plan.Unplaced.Count + " changed embed(s) could not be " +
+                        "placed when it was offered back (the procedure's embed points changed)");
+                    MonacoSpikeLog.Write("[save-journal] " + plan.Unplaced.Count + " slot(s) not placeable (" +
+                        string.Join(",", plan.Unplaced) + "); copy in " + copy);
+                }
+                if (plan.Placed == 0)
+                {
+                    if (copy == null)
+                    {
+                        // Every changed slot already shows its saved text (count changed, ambiguous match): nothing to put back.
+                        string rec = Services.EmbedSaveJournal.Archive(e, "its text is already in the procedure");
+                        MonacoSpikeLog.Write("[save-journal] nothing to restore (text already present); copy kept in " + rec);
+                        return;
+                    }
+                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // the copy holds it now
+                    _panel.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":" +
+                        ser.Serialize(Services.EmbedSaveJournal.NotPlaceableMessage(e, copy)) + "}");
+                    return;
+                }
                 _offeredJournal = e;
+                _offeredCopy = copy;
                 _panel.PostJson("{\"type\":\"offerSavedEdits\",\"message\":" + ser.Serialize(
-                    Services.EmbedSaveJournal.OfferMessage(e, appWrite)) + ",\"slots\":" + ser.Serialize(slots) + "}");
+                    Services.EmbedSaveJournal.OfferMessage(e, appWrite, _originalSlotTexts, plan, copy)) +
+                    ",\"slots\":" + ser.Serialize(plan.Slots) + "}");
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] open check error: " + ex.Message); }
         }
@@ -2173,17 +2207,22 @@ namespace ClarionAssistant.Terminal
                 var data = new JavaScriptSerializer().DeserializeObject(rawJson) as Dictionary<string, object>;
                 object c;
                 string choice = data != null && data.TryGetValue("choice", out c) && c != null ? c.ToString() : "";
+                // When the offer already wrote a copy (some slots could not be placed), that copy is the one kept:
+                // the journal is just retired, so one offer leaves one file.
+                string copy = _offeredCopy;
                 if (choice == "restore")
                 {
-                    _offeredJournal = null;
-                    string rec = Services.EmbedSaveJournal.Archive(e, "it was restored into the CA Embeditor as unsaved edits");
+                    _offeredJournal = null; _offeredCopy = null;
+                    string rec = copy != null && Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName) ? copy
+                        : Services.EmbedSaveJournal.Archive(e, "it was restored into the CA Embeditor as unsaved edits");
                     MonacoSpikeLog.Write("[save-journal] restored into the editor; copy kept in " + rec);
                 }
                 else if (choice == "discard")
                 {
                     // Not offered again, but a dated copy is still kept: Discard may have been a misclick (PM ruling).
-                    _offeredJournal = null;
-                    string rec = Services.EmbedSaveJournal.Archive(e, "the developer chose Discard when it was offered");
+                    _offeredJournal = null; _offeredCopy = null;
+                    string rec = copy != null && Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName) ? copy
+                        : Services.EmbedSaveJournal.Archive(e, "the developer chose Discard when it was offered");
                     MonacoSpikeLog.Write("[save-journal] discarded by the developer (" + _procedureName + "); copy kept in " + rec);
                 }
             }
