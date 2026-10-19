@@ -412,7 +412,7 @@ static class EmbedSaveFlowTest
                 EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.OpenDecision.Offer && EmbedSaveJournal.AppWrittenSince(e, appT12));
             string m12 = EmbedSaveJournal.OfferMessage(e, appT12);
             Ok("...worded with the .app's last write and both causes", m12.Contains("The app was last written on " +
-                appT12.ToString("yyyy-MM-dd HH:mm") + " without it") && m12.Contains("Clarion may have stopped before saving it") &&
+                appT12.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + " without it") && m12.Contains("Clarion may have stopped before saving it") &&
                 m12.Contains("changed or reverted since") && m12.Contains("or another IDE has this app open") &&
                 m12.EndsWith("Restore it as unsaved edits?"), m12);
             string mOld = EmbedSaveJournal.OfferMessage(e, e.Written.AddMinutes(-10));
@@ -495,9 +495,14 @@ static class EmbedSaveFlowTest
                     EmbedSaveJournal.Decide(eb, withSlot(Recovered), me) == EmbedSaveJournal.OpenDecision.Offer);
                 Ok("reporter: ...and the same when it reads as Diverged -> Offer",
                     EmbedSaveJournal.Decide(eb, lastSaved, me) == EmbedSaveJournal.OpenDecision.Offer);
+                // Review F2-2: neither text is there AND the .app was written since: the procedure was changed and
+                // saved after the CA save, so the toast says so and that Restore replaces the current text.
                 string mr = EmbedSaveJournal.OfferMessage(eb, after, lastSaved, pb);
-                Ok("reporter: worded with the .app's later write", mr.Contains("The app was last written on " + after.ToString("yyyy-MM-dd HH:mm") +
-                    " without it") && mr.EndsWith("Restore it as unsaved edits?"), mr);
+                Ok("reporter, Diverged + later write: the F2-2 wording", mr.Contains("differs from this procedure, which was changed and saved on " +
+                    after.ToString("yyyy-MM-dd HH:mm") + ".") && mr.EndsWith("Restore your CA save as unsaved edits (replacing the current text)?"), mr);
+                string mrLost = EmbedSaveJournal.OfferMessage(eb, after, withSlot(Recovered), EmbedSaveJournal.PlanRestore(eb, withSlot(Recovered)));
+                Ok("reporter, Lost + later write: still the 'last written without it' wording", mrLost.Contains("The app was last written on " +
+                    after.ToString("yyyy-MM-dd HH:mm") + " without it") && mrLost.EndsWith("Restore it as unsaved edits?"), mrLost);
             }
             {
                 // Slot count changed since the save: place a slot only where it is identified unambiguously.
@@ -616,6 +621,151 @@ static class EmbedSaveFlowTest
             Ok("a torn file on disk reads as no journal", EmbedSaveJournal.Read(App, "P4") == null);
             File.WriteAllText(p4, full);   // P2's entry under P4's name
             Ok("an entry for another procedure under this name is not trusted", EmbedSaveJournal.Read(App, "P4") == null);
+
+            // ================= review F2 (PM rulings on 4be7043) =================
+            // Each block below is red on 6ddde38: compile this file with /define:OLD_JOURNAL against that commit's
+            // EmbedSaveJournal.cs + EmbedRecovery.cs (the #if block uses API it does not have).
+            Console.WriteLine("review F2 rulings");
+            {
+                // ---- F2-1 [HIGH]: count changed, "landed" needs (a) not a pre-save text, (b) unique, (c) distinct ----
+                Func<string, int, EmbedSaveJournal.Entry> mk = (proc, slots) =>
+                    new EmbedSaveJournal.Entry { App = App, Proc = proc, Written = DateTime.Now, Pid = me + 1, SlotCount = slots };
+                var swap = mk("SwapProc", 3);   // the save swapped two slots' texts
+                swap.Index.Add(0); swap.Baseline.Add("  ! TEXT-A"); swap.Saved.Add("  ! TEXT-B");
+                swap.Index.Add(1); swap.Baseline.Add("  ! TEXT-B"); swap.Saved.Add("  ! TEXT-A");
+                var swapFresh = new List<string> { "  ! TEXT-A", "", "  ! TEXT-B", "  ! other" };   // a control added: 4 slots
+                Ok("F2-1(a): count changed, saved texts that are also pre-save texts (a swap) prove nothing -> Diverged",
+                    EmbedSaveJournal.Assess(swap, swapFresh) == EmbedSaveJournal.Verdict.Diverged);
+                Ok("F2-1(a): ...so a later session OFFERS it instead of deleting it with no copy",
+                    EmbedSaveJournal.Decide(swap, swapFresh, me) == EmbedSaveJournal.OpenDecision.Offer);
+                var psw = EmbedSaveJournal.PlanRestore(swap, swapFresh);
+                Ok("F2-1(a): ...and Restore lists both as unplaced (they go to the copy), never 'already there'",
+                    psw.Placed == 0 && psw.Unplaced.SequenceEqual(new[] { 0, 1 }), "unplaced=" + string.Join(",", psw.Unplaced));
+
+                var wsn = mk("WsProc", 3);      // slot 0's saved text is slot 2's pre-save text, re-indented
+                wsn.Index.Add(0); wsn.Baseline.Add("  ! OLD-0"); wsn.Saved.Add("  ! NEW-0");
+                wsn.Index.Add(2); wsn.Baseline.Add("! NEW-0"); wsn.Saved.Add("  ! NEW-2");
+                Ok("F2-1(a): ...also when the match is only whitespace-normalised -> Diverged",
+                    EmbedSaveJournal.Assess(wsn, new List<string> { "  ! NEW-0", "", "  ! NEW-2", "  ! x" }) == EmbedSaveJournal.Verdict.Diverged);
+
+                var dup = mk("DupProc", 3);     // two slots saved with the same text: one fresh slot cannot be both
+                dup.Index.Add(0); dup.Baseline.Add("  a = 1"); dup.Saved.Add("  ! SAME");
+                dup.Index.Add(1); dup.Baseline.Add("  b = 2"); dup.Saved.Add("  ! SAME");
+                var dupFresh = new List<string> { "  ! SAME", "", "  q", "  r" };
+                Ok("F2-1(c): two changed slots claiming the same fresh slot -> Diverged",
+                    EmbedSaveJournal.Assess(dup, dupFresh) == EmbedSaveJournal.Verdict.Diverged);
+                var pdup = EmbedSaveJournal.PlanRestore(dup, dupFresh);
+                Ok("F2-1(c): ...and BOTH are unplaced (first-come does not win the slot)",
+                    pdup.Placed == 0 && pdup.Unplaced.SequenceEqual(new[] { 0, 1 }), "unplaced=" + string.Join(",", pdup.Unplaced));
+                var dupWs = mk("DupWsProc", 3); // one exact claim, one whitespace-normalised claim, same fresh slot
+                dupWs.Index.Add(0); dupWs.Baseline.Add("  a = 1"); dupWs.Saved.Add("  ! Q-1");
+                dupWs.Index.Add(1); dupWs.Baseline.Add("  b = 2"); dupWs.Saved.Add("! Q-1");
+                Ok("F2-1(c): ...also when one claim is exact and the other whitespace-normalised",
+                    EmbedSaveJournal.Assess(dupWs, new List<string> { "  ! Q-1", "", "  q", "  r" }) == EmbedSaveJournal.Verdict.Diverged);
+                var good = mk("GoodProc", 3);   // control: distinct, unique, not a pre-save text -> landed
+                good.Index.Add(0); good.Baseline.Add("  a = 1"); good.Saved.Add("  ! G-0");
+                good.Index.Add(1); good.Baseline.Add("  b = 2"); good.Saved.Add("  ! G-1");
+                var goodFresh = new List<string> { "  ! G-0", "", "  ! G-1", "  r" };
+                Ok("F2-1 control: distinct unique non-pre-save matches still -> Persisted",
+                    EmbedSaveJournal.Assess(good, goodFresh) == EmbedSaveJournal.Verdict.Persisted &&
+                    EmbedSaveJournal.PlanRestore(good, goodFresh).Unplaced.Count == 0);
+
+                // ---- F2-2 [MED]: a native edit saved after an earlier session's CA save ----
+                var nat = new EmbedSaveJournal.Entry { App = App, Proc = "NatProc", Written = new DateTime(2026, 10, 10, 9, 0, 0), Pid = me + 1, SlotCount = 3 };
+                nat.Index.Add(1); nat.Baseline.Add("  ! BEFORE"); nat.Saved.Add("  ! CA-SAVE");
+                var natFresh = new List<string> { O0, "  ! NATIVE-EDIT", O2 };
+                DateTime natApp = new DateTime(2026, 10, 11, 9, 0, 0);
+                Ok("F2-2: still offered (never silently dropped)", EmbedSaveJournal.Decide(nat, natFresh, me) == EmbedSaveJournal.OpenDecision.Offer);
+                var pn = EmbedSaveJournal.PlanRestore(nat, natFresh);
+                Ok("F2-2: Restore is unsaved edits of that slot only", pn.Placed == 1 && pn.Slots[1] == "  ! CA-SAVE" && pn.Slots[0] == O0 && pn.Slots[2] == O2);
+                string mn = EmbedSaveJournal.OfferMessage(nat, natApp, natFresh, pn);
+                Ok("F2-2: the toast says plainly the procedure was changed and saved since, and Restore replaces it",
+                    mn == "Your CA Embeditor save of NatProc on 2026-10-10 09:00 differs from this procedure, which was changed and saved on " +
+                          "2026-10-11 09:00. Restore your CA save as unsaved edits (replacing the current text)?", mn);
+                Ok("F2-2: a Lost entry with a later .app write keeps the reporter's wording",
+                    EmbedSaveJournal.OfferMessage(nat, natApp, new List<string> { O0, "  ! BEFORE", O2 }, null)
+                        .Contains("The app was last written on 2026-10-11 09:00 without it"));
+#if !OLD_JOURNAL
+                Ok("F2-2: the plan names the slot it replaces", pn.Replaced.SequenceEqual(new[] { 1 }));
+                string cc = EmbedSaveJournal.WriteCurrentCopy(nat, natFresh, pn);
+                string ccText = cc != null ? File.ReadAllText(cc) : "";
+                Ok("F2-2: a dated copy of the CURRENT text of the replaced slot is written before Restore",
+                    cc != null && ccText.Contains("NATIVE-EDIT") && !ccText.Contains("CA-SAVE") && !ccText.Contains("x = 1"), ccText);
+                Ok("F2-2: ...once per entry and text (a reopen reuses it)", EmbedSaveJournal.WriteCurrentCopy(nat, natFresh, pn) == cc &&
+                    Directory.GetFiles(jdir, "NatProc-*.txt").Length == 1);
+                var ccb = File.ReadAllBytes(cc);
+                Ok("F2-2: ...without a BOM", !(ccb.Length >= 3 && ccb[0] == 0xEF && ccb[1] == 0xBB && ccb[2] == 0xBF));
+                Ok("F2-2: ...and the toast names it", EmbedSaveJournal.OfferMessage(nat, natApp, natFresh, pn, null, cc)
+                    .Contains(" A copy of the current text is in " + cc + ". Restore your CA save"));
+                var natSaved = new List<string> { O0, "  ! CA-SAVE", O2 };
+                Ok("F2-2: nothing replaced -> no current-text copy", EmbedSaveJournal.WriteCurrentCopy(nat, natSaved, EmbedSaveJournal.PlanRestore(nat, natSaved)) == null);
+                File.Delete(cc);
+#endif
+
+                // ---- F2-3 [LOW]: times in UTC, with a marker; unmarked (older) journals read as local ----
+                string p2 = EmbedSaveJournal.PathFor(App, "P2");
+                string wline = File.ReadAllText(p2).Split('\n').FirstOrDefault(l => l.StartsWith("written ")) ?? "";
+                Ok("F2-3: Begin writes the time in UTC with a Z marker", wline.EndsWith("Z") && wline.Length >= 27 &&
+                    Math.Abs((DateTime.ParseExact(wline.Substring(8, 19), "yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture) - DateTime.UtcNow).TotalMinutes) < 10, wline);
+                var rp2 = EmbedSaveJournal.Read(App, "P2");
+                Ok("F2-3: ...and it reads back as UTC", rp2 != null && rp2.Written.Kind == DateTimeKind.Utc);
+                string legacy = EmbedSaveJournal.Serialize(rp2).Replace(
+                    EmbedSaveJournal.Serialize(rp2).Split('\n').First(l => l.StartsWith("written ")) + "\n", "written 2026-07-01T12:00:00\n");
+                var lg = EmbedSaveJournal.Parse(legacy);
+                Ok("F2-3: a journal written before the marker still parses, as LOCAL time",
+                    lg != null && lg.Written.Kind == DateTimeKind.Utc && lg.Written == new DateTime(2026, 7, 1, 12, 0, 0, DateTimeKind.Local).ToUniversalTime(),
+                    lg == null ? "null" : lg.Written.ToString("o"));
+                DateTime startUtc = DateTime.UtcNow.AddHours(-3);
+                var before = new EmbedSaveJournal.Entry { Pid = me, Written = startUtc.AddMinutes(-30) };
+                var after2 = new EmbedSaveJournal.Entry { Pid = me, Written = startUtc.AddMinutes(30) };
+                Ok("F2-3: same session is decided in UTC, whatever Kind the process start comes in",
+                    !EmbedSaveJournal.SameSession(before, me, startUtc) && !EmbedSaveJournal.SameSession(before, me, startUtc.ToLocalTime()) &&
+                    EmbedSaveJournal.SameSession(after2, me, startUtc) && EmbedSaveJournal.SameSession(after2, me, startUtc.ToLocalTime()));
+
+                // ---- ruling 4 [LOW, security]: slots outside 0..100000 -> corrupt, never allocated from ----
+                string good2 = EmbedSaveJournal.Serialize(rp2);
+                Ok("4: a valid journal parses (control)", EmbedSaveJournal.Parse(good2) != null && good2.Contains("\nslots 3\n"));
+                Ok("4: slots 100000 is accepted", EmbedSaveJournal.Parse(good2.Replace("\nslots 3\n", "\nslots 100000\n")) != null);
+                Ok("4: slots 100001 is rejected", EmbedSaveJournal.Parse(good2.Replace("\nslots 3\n", "\nslots 100001\n")) == null);
+                Ok("4: slots 2000000000 is rejected", EmbedSaveJournal.Parse(good2.Replace("\nslots 3\n", "\nslots 2000000000\n")) == null);
+                Ok("4: slots -1 is rejected", EmbedSaveJournal.Parse(good2.Replace("\nslots 3\n", "\nslots -1\n")) == null);
+                string p5 = EmbedSaveJournal.PathFor(App, "P5");
+                string bad5 = good2.Replace("\nproc 2:P2\n", "\nproc 2:P5\n");
+                File.WriteAllText(p5, bad5.Replace("\nslots 3\n", "\nslots 2000000000\n"));
+                Ok("4: such a file on disk reads as no journal (ignored, never offered)", EmbedSaveJournal.Read(App, "P5") == null);
+                File.WriteAllText(p5, bad5);
+                Ok("4: ...control: the same file with slots 3 reads", EmbedSaveJournal.Read(App, "P5") != null);
+                File.Delete(p5);
+
+                // ---- ruling 6 [LOW]: count unchanged, a re-indented saved slot is already present ----
+                var ri = new EmbedSaveJournal.Entry { App = App, Proc = "ReindentProc", Written = new DateTime(2026, 10, 12, 8, 0, 0), Pid = me + 1, SlotCount = 3 };
+                ri.Index.Add(0); ri.Baseline.Add(""); ri.Saved.Add("! R6-LANDED");
+                ri.Index.Add(2); ri.Baseline.Add("  ! R6-BASE"); ri.Saved.Add("  ! R6-NEW");
+                var riFresh = new List<string> { "    ! R6-LANDED", O1, "  ! R6-BASE" };   // slot 0 there (re-indented), slot 2 lost
+                var pri = EmbedSaveJournal.PlanRestore(ri, riFresh);
+                Ok("6: Restore does not re-place a slot whose saved text is there re-indented",
+                    pri.Placed == 1 && pri.Slots[0] == "    ! R6-LANDED" && pri.Slots[2] == "  ! R6-NEW" && pri.Unplaced.Count == 0,
+                    "placed=" + pri.Placed + " slot0=" + pri.Slots[0]);
+                string m6 = EmbedSaveJournal.OfferMessage(ri, null, riFresh, pri);
+                Ok("6: ...and the toast does not call it missing",
+                    !m6.Contains("is not in this procedure") && m6.Contains("is only partly in this procedure") &&
+                    m6.Contains("1 of its 2 changed embed(s) is already there and is left as it is."), m6);
+
+                // ---- ruling 5 [LOW]: one copy per journal entry ----
+                Directory.CreateDirectory(jdir);
+                foreach (var f in Directory.GetFiles(jdir, "P2-*.txt")) File.Delete(f);
+                string c1 = EmbedSaveJournal.WriteCopy(rp2, "test: offered, not answered");
+                string c2 = EmbedSaveJournal.WriteCopy(rp2, "test: reopened, offered again");
+                Ok("5: an offer re-made at every reopen writes ONE copy of the entry", c1 != null && c1 == c2 &&
+                    Directory.GetFiles(jdir, "P2-*.txt").Length == 1, c1 + " | " + c2);
+                var rp2b = EmbedSaveJournal.Parse(EmbedSaveJournal.Serialize(rp2));
+                rp2b.Saved[0] = "  x = 66";
+                string c3 = EmbedSaveJournal.WriteCopy(rp2b, "test: a different save");
+                Ok("5: ...a different entry still gets its own copy", c3 != null && c3 != c1 && File.ReadAllText(c3).Contains("x = 66"));
+                string c4 = EmbedSaveJournal.Archive(rp2, "test: answered");
+                Ok("5: ...and answering the offer reuses it (Archive retires the journal, no second file)",
+                    c4 == c1 && EmbedSaveJournal.Read(App, "P2") == null && Directory.GetFiles(jdir, "P2-*.txt").Length == 2);
+            }
         }
         finally
         {

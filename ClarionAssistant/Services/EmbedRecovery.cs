@@ -61,13 +61,22 @@ namespace ClarionAssistant.Services
         public static string Write(string procName, string reason, List<int[]> ranges,
             IList<string> originalSlotTexts, IList<string> editedSlotTexts)
         {
+            return Write(procName, reason, ranges, originalSlotTexts, editedSlotTexts, null);
+        }
+
+        /// <param name="nameTag">Appended to the file name after the date (letters and digits), so a caller can
+        /// find a copy it already wrote (<see cref="FindTagged"/>) instead of writing another (GH #179 ruling 5).</param>
+        public static string Write(string procName, string reason, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> editedSlotTexts, string nameTag)
+        {
             var now = DateTime.Now;
             string text = Format(procName, reason, ranges, originalSlotTexts, editedSlotTexts, now);
             if (text == null) return null;
 
             string dir = Folder;
             Directory.CreateDirectory(dir);
-            string stem = SafeName(procName) + "-" + now.ToString("yyyyMMdd-HHmmss");
+            string stem = SafeName(procName) + "-" + now.ToString("yyyyMMdd-HHmmss") +
+                          (string.IsNullOrEmpty(nameTag) ? "" : "-" + SafeName(nameTag));
             string tmp = Path.Combine(dir, "." + stem + "." + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
@@ -114,6 +123,23 @@ namespace ClarionAssistant.Services
             }
             catch { }
             return n;
+        }
+
+        /// <summary>A recovery copy of this procedure written with <paramref name="nameTag"/>, or null when there is
+        /// none (or the folder cannot be read). Top-level <c>*.txt</c> only, like <see cref="PruneOlderThan"/>.</summary>
+        public static string FindTagged(string procName, string nameTag)
+        {
+            if (string.IsNullOrEmpty(nameTag)) return null;
+            try
+            {
+                string dir = Folder;
+                if (!Directory.Exists(dir)) return null;
+                string suffix = "-" + SafeName(nameTag) + ".txt";
+                foreach (var f in Directory.GetFiles(dir, SafeName(procName) + "-*" + suffix, SearchOption.TopDirectoryOnly))
+                    if (f.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return f;   // "*.txt" patterns also match *.txtx
+            }
+            catch { }
+            return null;
         }
 
         internal static string SafeName(string s)
