@@ -101,6 +101,7 @@ namespace ClarionAssistant.Terminal
             var tab = new TerminalTab
             {
                 Name = string.IsNullOrEmpty(name) ? "Terminal " + _terminalCounter : name,
+                DefaultName = "Terminal " + _terminalCounter,
                 IsHome = false,
                 IsClosable = true,
                 Renderer = renderer,

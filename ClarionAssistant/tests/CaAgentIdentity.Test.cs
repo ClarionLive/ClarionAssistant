@@ -24,6 +24,15 @@ static class CaAgentIdentityTest
         else { fail++; Console.WriteLine("  [FAIL] " + name + (detail != null ? "  -> " + detail : "")); }
     }
 
+    // A method's text, from its signature to its closing brace (the first "\n        }" after it), or null.
+    static string Body(string src, string signature)
+    {
+        int at = src.IndexOf(signature, StringComparison.Ordinal);
+        if (at < 0) return null;
+        int end = src.IndexOf("\n        }", at, StringComparison.Ordinal);
+        return end < 0 ? src.Substring(at) : src.Substring(at, end - at);
+    }
+
     static int Main(string[] args)
     {
         Console.WriteLine("CaAgentIdentity identity prompt (c175492a) and numbered names (7792e3e0)");
@@ -247,24 +256,55 @@ static class CaAgentIdentityTest
                 int roster = resolvePrefixed < 0 ? -1 : src.IndexOf("ListTerminals()", resolvePrefixed, StringComparison.Ordinal);
                 Ok("only CA names consult the MultiTerminal roster", rosterGate >= 0 && roster > rosterGate,
                     "gate@" + rosterGate + " roster@" + roster);
+
+                // ---- F4 (9e1bd280 live test 2026-10-19): a New Chat tab opened while demoleg was open read bare
+                // "CA1", and stayed "CA1" after the IDE switched to UltimateSQLTest though its tools followed. ----
+                string newChat = Body(src, "private void OnNewChat(object sender, EventArgs e)");
+                Ok("F4: New Chat tab follows the IDE's solution",
+                    newChat != null && newChat.Contains("tab.FollowsIdeSolution = true;"));
+                Ok("F4: New Chat tab is labelled with the IDE's open solution before it launches",
+                    newChat != null && newChat.Contains("GetOpenSolutionPath()") && newChat.Contains("RetitleFollowingTab(tab, ideSln);")
+                    && newChat.IndexOf("RetitleFollowingTab(tab, ideSln);", StringComparison.Ordinal)
+                       < newChat.IndexOf("_tabManager.ActivateTab(tab.Id);", StringComparison.Ordinal));
+                string openSln = Body(src, "private void OpenSolutionInNewTab(string slnPath)");
+                Ok("F4: a tab opened on a solution follows the IDE's solution",
+                    openSln != null && openSln.Contains("tab.FollowsIdeSolution = true;"));
+                string retitleAll = Body(src, "private void RetitleSolutionTabs(string newPath)");
+                Ok("F4: RetitleSolutionTabs relabels every non-home tab through RetitleFollowingTab",
+                    retitleAll != null && retitleAll.Contains("RetitleFollowingTab(tab, newPath)"));
+                string retitleOne = Body(src, "private void RetitleFollowingTab(TerminalTab tab, string newPath)");
+                Ok("F4: only a following tab is relabelled (project/class/Evaluate tabs keep their context)",
+                    retitleOne != null && retitleOne.Contains("if (!tab.FollowsIdeSolution) return;"));
+                Ok("F4: the label's context is the IDE's solution, or the tab's plain name with none",
+                    retitleOne != null && retitleOne.Contains("CaAgentIdentity.IdeSolutionContext(tab.DefaultName, newPath)")
+                    && retitleOne.Contains("CaAgentIdentity.TabLabel(tab.AgentName, followed)"));
+                string poll = Body(src, "private void PollForSolutionChange()");
+                Ok("F4: every poll retitles (the IDE closing or reopening a solution is no switch)",
+                    poll != null && poll.Contains("RetitleSolutionTabs(slnPath);"));
+
+                string tm = Path.Combine(args[0], "Terminal", "TabManager.cs");
+                string tmSrc = File.Exists(tm) ? File.ReadAllText(tm) : "";
+                string create = Body(tmSrc, "public TerminalTab CreateTerminalTab(string name, WebViewTerminalRenderer renderer)");
+                Ok("F4: every terminal tab remembers its plain 'Terminal N' name",
+                    create != null && create.Contains("DefaultName = \"Terminal \" + _terminalCounter,"));
             }
         }
         else Console.WriteLine("  (launch-order checks skipped: no project dir argument)");
 
-        // ---- FollowedContextName (9e1bd280): the tab's solution part follows the IDE, the agent name never moves ----
-        const string v61 = @"H:\Dev\POS\v61POSitive.sln", ult = @"C:\Clarion10v8\Examples\UltimateSQLTest.sln";
-        string moved = CaAgentIdentity.FollowedContextName("v61POSitive", v61, ult);
-        Ok("a tab opened on the solution follows the IDE's switch", moved == "UltimateSQLTest", moved);
-        Ok("its label: same agent name, new solution",
+        // ---- IdeSolutionContext (9e1bd280, live test F4): a following tab's context is the IDE's solution ----
+        const string demo = @"C:\Clarion12\Examples\demoleg.sln", ult = @"C:\Clarion10v8\Examples\UltimateSQLTest.sln";
+        string atLaunch = CaAgentIdentity.IdeSolutionContext("Terminal 1", demo);
+        Ok("F4: a New Chat tab opened while demoleg is open reads 'CA1 · demoleg'",
+            CaAgentIdentity.TabLabel("CA1", atLaunch) == "CA1 · demoleg", CaAgentIdentity.TabLabel("CA1", atLaunch));
+        string moved = CaAgentIdentity.IdeSolutionContext("Terminal 1", ult);
+        Ok("F4: after the IDE switches to UltimateSQLTest it reads 'CA1 · UltimateSQLTest'",
             CaAgentIdentity.TabLabel("CA1", moved) == "CA1 · UltimateSQLTest", CaAgentIdentity.TabLabel("CA1", moved));
-        Ok("case-insensitive match on the old solution's name",
-            CaAgentIdentity.FollowedContextName("V61POSITIVE", v61, ult) == "UltimateSQLTest");
-        Ok("a tab opened on a project/class keeps its name",
-            CaAgentIdentity.FollowedContextName("InvoiceClass", v61, ult) == null);
-        Ok("a plain Terminal N tab (no solution) keeps its name",
-            CaAgentIdentity.FollowedContextName("Terminal 2", null, ult) == null);
-        Ok("no new solution (the IDE closed it): no relabel",
-            CaAgentIdentity.FollowedContextName("v61POSitive", v61, null) == null);
+        string closed = CaAgentIdentity.IdeSolutionContext("Terminal 1", null);
+        Ok("F4: with no solution open it reads the agent name alone",
+            CaAgentIdentity.TabLabel("CA1", closed) == "CA1", CaAgentIdentity.TabLabel("CA1", closed));
+        Ok("F4: an empty IDE path counts as none", CaAgentIdentity.IdeSolutionContext("Terminal 3", "") == "Terminal 3");
+        Ok("F4: Copilot / Codex tabs label the same way",
+            CaAgentIdentity.TabLabel("CP1", moved) == "CP1 · UltimateSQLTest" && CaAgentIdentity.TabLabel("CX2", closed) == "CX2");
 
         Console.WriteLine();
         Console.WriteLine(fail == 0 ? "ALL " + pass + " CHECKS PASSED" : fail + " FAILED, " + pass + " passed");

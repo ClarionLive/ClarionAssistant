@@ -1079,6 +1079,11 @@ namespace ClarionAssistant
                     SyncVersionWithIde();
                 }
 
+                // Every poll, not just on a switch (F4, 9e1bd280): the IDE closing its solution, or reopening the
+                // one CA already had, is no OnSolutionChanged, yet the tabs that follow must drop or regain the
+                // name. A no-op while the labels already match.
+                RetitleSolutionTabs(slnPath);
+
                 // Backstop: keep the LSP up whenever a solution is known. Idempotent and
                 // guarded (no-op if already running), this covers the startup-restore case
                 // where no solution "change" is ever detected, so the LSP comes up within
@@ -1154,38 +1159,47 @@ namespace ClarionAssistant
         }
 
         /// <summary>
-        /// The IDE switched to <paramref name="newPath"/>: every tab opened on a solution now shows it (ticket 9e1bd280).
-        /// Its tools already answer for the IDE's solution - the standalone server follows IdeSolutionRecord, and the
-        /// in-process tools (Copilot, Codex) read _currentSlnPath - so "CA1 · v61POSitive" after the IDE opened
-        /// UltimateSQLTest named a solution none of them served. Only the context part moves: CA1 is the tab's
-        /// MultiTerminal identity, and a tab opened on a project or class keeps its name. Claude, Copilot and Codex
-        /// tabs alike. UI thread (called from OnSolutionChanged).
+        /// The IDE has <paramref name="newPath"/> open (null: none): every tab that follows the IDE's solution
+        /// (New Chat, or opened on a solution) shows it - "CA1 · UltimateSQLTest", or "CA1" alone with none
+        /// (ticket 9e1bd280, live test F4). Its tools already answer for the IDE's solution - the standalone server
+        /// follows IdeSolutionRecord, and the in-process tools (Copilot, Codex) read _currentSlnPath - so a label
+        /// naming another solution, or none while one is open, misleads. Only the context part moves: CA1 is the
+        /// tab's MultiTerminal identity, and a tab opened on a project or class keeps its name. Claude, Copilot and
+        /// Codex tabs alike. Idempotent (RenameTab skips an unchanged name): PollForSolutionChange calls it on every
+        /// poll, OnSolutionChanged on a switch, OnNewChat for the new tab. UI thread.
         /// </summary>
         private void RetitleSolutionTabs(string newPath)
         {
             if (_tabManager == null) return;
             foreach (var tab in _tabManager.Tabs)
-            {
-                if (tab.IsHome) continue;
-                // BaseName is captured at the first launch; before it, the tab's name is still the bare context.
-                string context = tab.BaseName ?? tab.Name;
-                string followed = Services.CaAgentIdentity.FollowedContextName(context, tab.SolutionPath, newPath);
-                if (followed == null) continue;
+                if (!tab.IsHome) RetitleFollowingTab(tab, newPath);
+        }
 
+        /// <summary>One tab of <see cref="RetitleSolutionTabs"/>; a tab that does not follow is left alone.</summary>
+        private void RetitleFollowingTab(TerminalTab tab, string newPath)
+        {
+            if (!tab.FollowsIdeSolution) return;
+            if (string.IsNullOrEmpty(newPath)) newPath = null;
+            string followed = Services.CaAgentIdentity.IdeSolutionContext(tab.DefaultName, newPath);
+            if (string.IsNullOrEmpty(followed)) return;
+
+            if (!string.Equals(tab.SolutionPath, newPath, StringComparison.OrdinalIgnoreCase))
+            {
                 tab.SolutionPath = newPath;
-                tab.VersionConfig = _currentVersionConfig;
-                if (tab.BaseName == null)
-                {
-                    _tabManager.RenameTab(tab, followed);
-                    continue;
-                }
-                tab.BaseName = followed;
-                // The same labels the launch and ReleaseAgentName build: "CA1 · name" while an agent name is held,
-                // else the name with its backend suffix ("name CP").
-                _tabManager.RenameTab(tab, tab.AgentName != null
-                    ? Services.CaAgentIdentity.TabLabel(tab.AgentName, followed)
-                    : ApplyBackendSuffix(followed, tab.AssistantBackend ?? tab.RequestedBackend));
+                if (newPath != null) tab.VersionConfig = _currentVersionConfig;
             }
+            // BaseName is captured at the first launch; before it, the tab's name is still the bare context.
+            if (tab.BaseName == null)
+            {
+                _tabManager.RenameTab(tab, followed);
+                return;
+            }
+            tab.BaseName = followed;
+            // The same labels the launch and ReleaseAgentName build: "CA1 · name" while an agent name is held,
+            // else the name with its backend suffix ("name CP").
+            _tabManager.RenameTab(tab, tab.AgentName != null
+                ? Services.CaAgentIdentity.TabLabel(tab.AgentName, followed)
+                : ApplyBackendSuffix(followed, tab.AssistantBackend ?? tab.RequestedBackend));
         }
 
         /// <summary>The IDE has a solution open that is not CA's: a switch OnSolutionChanged must handle.</summary>
@@ -1639,6 +1653,7 @@ namespace ClarionAssistant
             var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
             var tab = _tabManager.CreateTerminalTab(name, renderer);
             tab.SolutionPath = slnPath;
+            tab.FollowsIdeSolution = true;   // its label follows the IDE's solution from here on (9e1bd280)
             tab.WorkingDirectory = Path.GetDirectoryName(slnPath);
             tab.VersionConfig = _currentVersionConfig;
 
@@ -4546,6 +4561,13 @@ namespace ClarionAssistant
             // Always open a new terminal tab so the user doesn't lose existing work
             var renderer = new WebViewTerminalRenderer { Dock = DockStyle.Fill };
             var tab = _tabManager.CreateTerminalTab(null, renderer);
+            // F4 (9e1bd280 live test): a New Chat tab's tools answer for the IDE's solution, so its label names it
+            // - "CA1 · demoleg" from the start, and on every switch or close after (RetitleSolutionTabs). It used to
+            // stay a plain "Terminal N", shown as bare "CA1", and was never retitled.
+            tab.FollowsIdeSolution = true;
+            string ideSln = null;
+            try { ideSln = EditorService.GetOpenSolutionPath(); } catch { }
+            RetitleFollowingTab(tab, ideSln);
             renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
             renderer.TerminalResized += (s, ev) => OnTabRendererResized(tab, ev);
             renderer.Initialized += (s, ev) => OnTabRendererInitialized(tab);
