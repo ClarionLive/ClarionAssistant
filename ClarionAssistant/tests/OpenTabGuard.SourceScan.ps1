@@ -98,20 +98,62 @@ Check ($match.Contains('FileIdentity.MatchesAny(s.File, probes)') -and $views.Co
 # Pipeline run 2, fix 2: no file I/O on the UI thread - the UI call only snapshots; identity is matched outside it.
 Check (-not $snap.Contains('FileIdentity') -and -not $reload.Contains('FileIdentity') -and -not $snap.Contains('File.Exists') -and -not $reload.Contains('File.Exists')) `
     'the UI-thread parts (snapshot, reload) do no file-identity or disk I/O'
-Check ((Before $checkM 'snaps = SnapshotOnUi()' 'Classify(match(snaps))') -and $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check")') -and -not $checkM.Contains('UiThreadCall.Run(_ui, () => { answer = Classify')) `
+Check ((Before $checkM 'snaps = SnapshotOnUi()' 'matched = match(snaps); answer = Classify(matched);') -and $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check"') -and -not $checkM.Contains('UiThreadCall.Run(_ui, () => { answer = Classify')) `
     'the check matches identities AFTER the UI call returns, not inside it'
 Check ($checkM.Contains('TimedOut = outcome == UiThreadCall.Outcome.TimedOut') -and -not $nts.Contains('Contains("did not answer")')) `
     'a timeout is taken from UiThreadCall''s outcome, not from message text'
 $fid = Text 'Services\FileIdentity.cs'
 Check ($fid.Contains('if (IsNetworkPath(candidate)) return false;')) 'a network tab is never opened (matched by its text only)'
 Check ($match.Length -gt 0 -and -not ($match -match 'string\.Equals|SamePath|PathsEqual')) 'no tab is matched by comparing path text'
-Check ($nts.Contains('UiThreadCall.Run(_ui') -and -not $nts.Contains('.Post(') -and -not $nts.Contains('Invoke(')) 'NativeTabSync goes through the shared UiThreadCall'
+# The only Invoke( allowed is a reflected watcher MethodInfo's (_watcherDisable/_watcherSetWatcher/_watcherOnChanged), run
+# inside a UiThreadCall: never Control.Invoke/BeginInvoke.
+$ntsNoReflect = [regex]::Replace($nts, '_watcher(Disable|SetWatcher|OnChanged)\.Invoke\(', '')
+Check ($nts.Contains('UiThreadCall.Run(_ui') -and -not $nts.Contains('.Post(') -and -not $ntsNoReflect.Contains('Invoke(')) 'NativeTabSync goes through the shared UiThreadCall'
 $uitc = Text 'UiThreadCall.cs'
 Check ($uitc.Contains('ui.Post(') -and $uitc.Contains('done.Wait(waitMs)') -and -not $uitc.Contains('.Send(') -and -not $uitc.Contains('Invoke(')) `
     'UI work is Posted with a bounded wait, never Send/Invoke'
 $elp = Text 'EditorLiveTextProvider.cs'
 Check ($elp.Contains('UiThreadCall.Run(ui') -and $elp.Contains('FileIdentity.SameFile(a, b)') -and -not $elp.Contains('ui.Post(')) `
     'EditorLiveTextProvider shares the UI helper and the identity compare (no copy)'
+
+# Live test 2026-10-19 (C12): our Load re-arms the IDE's FileChangeWatcher but left its private wasChangedExternally set,
+# so on the next activation the IDE auto-reloaded again (caret to line 1) or asked "changed externally, reload?".
+# MUST GO RED against 4761c93 (integ-1017 before this fix).
+$resolveM = Method $nts 'private static void ResolveWatcherMembers('
+$resetM = Method $nts 'private static void WatcherReset('
+$holdM = Method $nts 'private static void HoldWatchers('
+$holdUiM = Method $nts 'private static int HoldOnUi('
+$releaseUiM = Method $nts 'private static string ReleaseOnUi('
+$releaseM = Method $nts 'private static void ReleaseHold('
+$reloadW = Method $nts 'internal static TabReload Reload('
+Check ((Before $keep 'w.Load(path)' 'WatcherReset(w)') -and (Before $keep 'WatcherReset(w)' 'area.Caret.Line =')) `
+    'after a successful Load the IDE watcher is reset (before the caret is put back)'
+Check ($resetM.Contains('_watcherChanged.SetValue(watcher, false)') -and $resetM.Contains('_holds.Remove(w)') -and $resetM.Contains('h.Expiry.Dispose()')) `
+    'the reset clears the IDE''s wasChangedExternally and drops the hold (Load already re-armed the watcher)'
+Check ($resolveM.Contains('GetField("watcher", inst)') -and $resolveM.Contains('"wasChangedExternally"') -and $resolveM.Contains('"fileName"') -and
+       $resolveM.Contains('"Disable"') -and $resolveM.Contains('"SetWatcher"') -and $resolveM.Contains('"OnFileChangedEvent"') -and
+       $resolveM.Contains('[tab-sync] WATCHER MEMBER MISSING') -and $resolveM.Contains('missing.Add("FileChangeWatcher.wasChangedExternally (bool)")') -and
+       $resolveM.Contains('missing.Add("FileChangeWatcher.SetWatcher(string)")') -and $resolveM.Contains('missing.Add("FileChangeWatcher.Disable()")')) `
+    'every watcher member is looked up by reflection and a missing one is logged loudly (WATCHER MEMBER MISSING)'
+Check ($resetM.Contains('if (!CanReset) { MonacoSpikeLog.Write("[tab-sync] watcher NOT reset after reload (WATCHER MEMBER MISSING') -and
+       $holdM.Contains('if (!CanHold) { MonacoSpikeLog.Write("[tab-sync] watcher NOT held (WATCHER MEMBER MISSING')) `
+    'a reset or hold that cannot run because a member is missing says so in the log, and degrades (no throw)'
+Check ($checkM.Contains('if (holdWatchers && answer.Reachable && answer.Kind == OpenTabGuard.KindNative && !answer.Dirty && matched != null)') -and
+       $nts.Contains('CheckWith(paths, snaps => Match(snaps, Probes(paths)), "check", true)') -and $nts.Contains('CheckWith(paths, snaps => MatchLexical(snaps, paths), "check-lexical", false)')) `
+    'a check that finds a CLEAN native tab holds its watcher before the write (never the lexical check of a refused path)'
+Check ($holdUiM.Contains('_watcherDisable.Invoke(watcher, null)') -and $holdUiM.Contains('s.View.IsDirty') -and $holdUiM.Contains('me.OverlayUp') -and
+       $holdM.Contains('if (sw.ElapsedMilliseconds <= HoldWaitMs)') -and $holdM.Contains('FileIdentity.IsNetworkPath(p)') -and $holdM.Contains('Stamp(statPath, out ticks, out length)')) `
+    'the hold disables the watcher of a re-checked clean tab, stamps the file off the UI thread (never a network path), and a late hold does nothing'
+Check ($holdUiM.Contains('h.Expiry.Change(HoldExpiryMs, Timeout.Infinite)') -and $nts -match 'HoldExpiryMs\s*=\s*30000;' -and
+       $reloadW.Contains('ReleaseHoldSoon(s.View,') -and (Before $reloadW 'ReloadOnUi(natives)' 'ReleaseHoldSoon(s.View,')) `
+    'a hold is never left behind: it expires, and a reload that did not happen releases it at once'
+Check ($releaseUiM.Contains('_watcherSetWatcher.Invoke(watcher, new object[] { file })') -and (Before $releaseUiM '_watcherSetWatcher.Invoke(' '_watcherOnChanged.Invoke(') -and
+       $releaseUiM.Contains('if (!changed) return') -and $releaseUiM.Contains('fsw.EnableRaisingEvents) return "re-armed by the IDE meanwhile') -and
+       $releaseM.Contains('bool changed = !Stamp(h.StatPath, out t, out l) || t != h.Ticks || l != h.Length;')) `
+    'a released hold re-arms the watcher and, if the file changed meanwhile, replays the IDE''s own change notice'
+Check (-not $holdUiM.Contains('FileInfo') -and -not $holdUiM.Contains('Stamp(') -and -not $releaseUiM.Contains('FileInfo') -and -not $releaseUiM.Contains('Stamp(') -and
+       -not $resetM.Contains('FileInfo') -and -not $resetM.Contains('File.Exists') -and $holdUiM.Length -gt 0 -and $releaseUiM.Length -gt 0) `
+    'the watcher''s UI-thread parts (hold, release, reset) do no disk I/O of their own'
 
 $auto = [System.IO.File]::ReadAllText($autostartPath)
 Check ($auto.Contains('NativeTabSync.Register()')) 'the addin registers it at startup (LspAutostartCommand)'
