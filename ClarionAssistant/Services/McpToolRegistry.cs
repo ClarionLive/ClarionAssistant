@@ -3194,13 +3194,15 @@ COMMON QUERIES:
                 Description = "Internal, for write_file/append_to_file (you do not normally call it). action 'check': is the file open " +
                     "in an IDE editor tab - { kind: none | native | ca-editor, dirty }. action 'reload': reload a NATIVE Clarion " +
                     "editor tab of the file from disk, keeping the caret line - { reloaded, line, reason }; refused when that tab has " +
-                    "unsaved changes, so it never discards edits.",
+                    "unsaved changes, so it never discards edits. action 'release': the write the check was for did not happen; give " +
+                    "the IDE's file watcher of that tab back now.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
                         { "file_path", "Absolute path of the file" },
                         { OpenTabGuard.AlsoPathArg, "Optional: another spelling of the same file (the caller's, before link resolution); tabs are matched against both, by file identity" },
-                        { "action", "'check' or 'reload'" }
+                        { "action", "'check', 'reload' or 'release'" },
+                        { OpenTabGuard.HoldArg, "check only, set by write_file/append_to_file: hold the IDE's file watcher of a clean native tab until the reload (only for a path this IDE allows writing)" }
                     },
                     new[] { "file_path", "action" }),
                 RequiresUiThread = false,
@@ -3236,9 +3238,43 @@ COMMON QUERIES:
                             hasSolution = !string.IsNullOrEmpty(sln) && File.Exists(sln);
                         }
                         catch { }
-                        var p = OpenTabGuard.CheckGated(gated, _workspace != null, hasSolution, OpenTabGuard.LocalCheck, OpenTabGuard.LocalCheckLexical,
+                        // GH #205 review (SEC MED): only the write path's check (hold: true) may hold the IDE's file watcher
+                        // of a clean native tab, and only for a spelling that passes the #266 WRITE gate here: a path this
+                        // IDE would not let a tool write can never have its tab's watcher switched off. The read gate above
+                        // still decides the lookup itself. (Why a flag and not proof: see NativeTabSync's class comment.)
+                        var holdable = new List<string>();
+                        if (OpenTabGuard.ParseFlag(args, OpenTabGuard.HoldArg))
+                            foreach (var sp in spellings)
+                            {
+                                string writeCanonical;
+                                McpPathPolicy unusedWritePolicy;
+                                bool unusedOutside;
+                                if (McpPathGate.GatePath("editor_tab_sync", sp, PathAccess.Write, _workspace, out writeCanonical, out unusedWritePolicy, out unusedOutside) == null)
+                                    holdable.Add(writeCanonical ?? sp);
+                            }
+                        var holdCheck = OpenTabGuard.LocalCheckHold;
+                        Func<IList<string>, TabProbe> fullCheck = holdable.Count > 0 && holdCheck != null
+                            ? (Func<IList<string>, TabProbe>)(paths => holdCheck(paths, holdable))
+                            : OpenTabGuard.LocalCheck;
+                        var p = OpenTabGuard.CheckGated(gated, _workspace != null, hasSolution, fullCheck, OpenTabGuard.LocalCheckLexical,
                             note => McpPathAudit.Write("editor_tab_sync", "LOOKUP", filePath, note));
                         return OpenTabGuard.CheckToWire(p);
+                    }
+                    if (action == "release")
+                    {
+                        // GH #205 review F1-1: the writer's write was refused or failed; drop its watcher hold now. Matched
+                        // like reload (refused spellings by name only). Releasing only gives the IDE its watcher back.
+                        var byIdentity = new List<string>();
+                        var byName = new List<string>();
+                        foreach (var g in gated) (g.Refusal == null ? byIdentity : byName).Add(g.Path);
+                        var release = OpenTabGuard.LocalRelease;
+                        TabReload r;
+                        try { r = release != null ? release(byIdentity, byName) : new TabReload { Reason = "the IDE's release is not registered" }; }
+                        catch (Exception ex) { r = new TabReload { Reason = "the release failed: " + ex.Message }; }
+                        var answer = new Dictionary<string, object>();
+                        answer["released"] = true;
+                        answer["detail"] = r != null ? r.Reason : null;
+                        return answer;
                     }
                     if (action == "reload")
                     {
@@ -3251,7 +3287,7 @@ COMMON QUERIES:
                         catch (Exception ex) { r = new TabReload { Reason = "the reload failed: " + ex.Message }; }
                         return OpenTabGuard.ReloadToWire(r);
                     }
-                    return "Error: action must be 'check' or 'reload'.";
+                    return "Error: action must be 'check', 'reload' or 'release'.";
                 }
             });
 

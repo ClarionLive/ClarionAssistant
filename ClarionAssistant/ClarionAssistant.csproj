@@ -277,6 +277,7 @@
     <Compile Include="Services\McpPathPolicy.cs" />
     <Compile Include="Services\McpPathGate.cs" />
     <Compile Include="Services\OpenTabGuard.cs" />
+    <Compile Include="Services\WatcherHoldBook.cs" />
     <Compile Include="Services\FileIdentity.cs" />
     <Compile Include="Services\EndpointOwnership.cs" />
     <Compile Include="Services\SchemaGraphService.cs" />

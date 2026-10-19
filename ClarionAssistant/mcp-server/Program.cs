@@ -534,6 +534,8 @@ namespace ClarionAssistant.McpServer
             ClarionAssistant.Services.IdeTabClient.Log = ClarionAssistant.Services.LspTrace.Write;
             ClarionAssistant.Services.OpenTabGuard.Probe = ClarionAssistant.Services.IdeTabClient.Probe;
             ClarionAssistant.Services.OpenTabGuard.Reload = ClarionAssistant.Services.IdeTabClient.Reload;
+            // Review F1-1: a refused or failed write gives a held IDE file watcher back at once.
+            ClarionAssistant.Services.OpenTabGuard.Release = ClarionAssistant.Services.IdeTabClient.Release;
 
             if (workspace != null)
             {

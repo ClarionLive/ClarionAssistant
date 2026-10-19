@@ -531,6 +531,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "OpenTabGuard.Test"
                Sources = @("tests\OpenTabGuard.Test.cs", "Services\OpenTabGuard.cs", "Services\FileIdentity.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # GH #205 review: the IDE file-watcher hold's bookkeeping - counted holders, a cap from the FIRST hold that is
+            # never renewed (plus a cool-down), and a generation per hold that a late timer or release must still match.
+            @{ Name = "WatcherHoldBook.Test"
+               Sources = @("tests\WatcherHoldBook.Test.cs", "Services\WatcherHoldBook.cs")
+               Refs = @("System.dll") }
             # GH #205 pipeline run 1: the open-tab check matches a tab by FILE IDENTITY - a REAL junction, hard link,
             # subst drive, symlink and 8.3 name (the last three skipped, never passed, when this machine cannot make them).
             @{ Name = "FileIdentity.Test"
