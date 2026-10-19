@@ -213,8 +213,8 @@ static class EmbedSaveOrderSourceScan
             Count(cjBody, "verdict") == 2 && cjBody.Contains("\" -> \" + verdict + \" -> \" + act"));
         // ---- pipeline run 2 (PM ruling) ----
         Ok("the offer's wording uses the .app's last-write time (it never decides whether to offer)",
-            cjBody.Contains("appWrite = File.GetLastWriteTime(JournalApp())") &&
-            cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite, _originalSlotTexts, plan, copy)") && !cjBody.Contains("IsSuperseded") &&
+            cjBody.Contains("appWrite = File.GetLastWriteTimeUtc(JournalApp())") &&
+            cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite, _originalSlotTexts, plan, copy, current)") && !cjBody.Contains("IsSuperseded") &&
             !cjBody.Contains("AppWrittenSince"));
         // Every use of the .app time in the open check is its read, the log line, or the offer's wording: none may
         // branch on it (a later write is the #179 reporter's crash, and it must still be offered).
@@ -222,8 +222,8 @@ static class EmbedSaveOrderSourceScan
         foreach (var line in cjBody.Split('\n'))
         {
             if (!line.Contains("appWrite")) continue;
-            if (line.Contains("DateTime? appWrite = null;") || line.Contains("appWrite = File.GetLastWriteTime(JournalApp())") ||
-                line.Contains("(appWrite.HasValue ? appWrite.Value.ToString(") || line.Contains("OfferMessage(e, appWrite, _originalSlotTexts, plan, copy)")) continue;
+            if (line.Contains("DateTime? appWrite = null;") || line.Contains("appWrite = File.GetLastWriteTimeUtc(JournalApp())") ||
+                line.Contains("(appWrite.HasValue ? appWrite.Value.ToLocalTime().ToString(") || line.Contains("OfferMessage(e, appWrite, _originalSlotTexts, plan, copy, current)")) continue;
             badUse = line.Trim();
         }
         Ok("the .app time never decides whether a lost save is offered", badUse == null, badUse);
@@ -246,6 +246,16 @@ static class EmbedSaveOrderSourceScan
         Ok("nothing placeable: the journal is retired only AFTER the copy exists, and a toast names it",
             np > 0 && offBody.LastIndexOf("EmbedSaveJournal.Retire(", np, StringComparison.Ordinal) > wc &&
             offBody.Substring(wc, np - wc).Contains("\\\"toast\\\""));
+        // ---- review F2 (rulings F2-2, F2-3) ----
+        int wcc = offBody.IndexOf("EmbedSaveJournal.WriteCurrentCopy(e, _originalSlotTexts, plan)", StringComparison.Ordinal);
+        int wccFail = wcc > 0 ? offBody.IndexOf("return;", wcc, StringComparison.Ordinal) : -1;
+        Ok("F2-2: the current text Restore replaces is copied BEFORE the offer is posted, and a failed copy offers nothing",
+            wcc > np && offer > wcc && wccFail > wcc && wccFail < offer &&
+            offBody.Substring(wcc, wccFail - wcc).Contains("catch (Exception"), "currentCopy@" + wcc + " offer@" + offer);
+        int ms = view.IndexOf("private static DateTime? MyStart()", StringComparison.Ordinal);
+        string msBody = ms >= 0 ? view.Substring(ms, Math.Min(400, view.Length - ms)) : "";
+        Ok("F2-3: the process start is compared in UTC", msBody.Contains("StartTime.ToUniversalTime()"));
+        Ok("F2-3: the .app time is read in UTC", !cjBody.Contains("File.GetLastWriteTime(JournalApp())"));
         int sw = view.IndexOf("private static void SweepStaleJournalsOnce()", StringComparison.Ordinal);
         string swBody = sw >= 0 ? view.Substring(sw, Math.Min(1400, view.Length - sw)) : "";
         Ok("the once-per-session sweep also prunes old recovery copies",

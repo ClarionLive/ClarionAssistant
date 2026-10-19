@@ -44,6 +44,8 @@ namespace ClarionAssistant.Services
             public string Path;
             public string App;
             public string Proc;
+            /// <summary>When the save was journaled. UTC from <see cref="Begin"/> and <see cref="Parse"/> (ruling F2-3);
+            /// a value of another Kind (a hand-built entry) is read as local time, never as UTC.</summary>
             public DateTime Written;
             public int Pid;
             public int SlotCount;
@@ -53,6 +55,25 @@ namespace ClarionAssistant.Services
         }
 
         private const string Magic = "CA-EMBED-PENDING-SAVE 1";
+
+        /// <summary>The most slots an entry may claim. A file saying more (or fewer than 0) is damaged or hostile:
+        /// <see cref="Parse"/> rejects it, so nothing is ever allocated from it. The largest real embed list seen
+        /// (InventoryTable, 86k lines) has a few hundred slots.</summary>
+        public const int MaxSlots = 100000;
+
+        /// <summary>UTC, and a Kind other than Utc read as local (a legacy entry, or a value from DateTime.Now).</summary>
+        internal static DateTime ToUtc(DateTime d)
+        {
+            return d.Kind == DateTimeKind.Utc ? d : DateTime.SpecifyKind(d, DateTimeKind.Local).ToUniversalTime();
+        }
+
+        /// <summary>Local time for display; a non-UTC value is already local.</summary>
+        internal static DateTime ToLocal(DateTime d)
+        {
+            return d.Kind == DateTimeKind.Utc ? d.ToLocalTime() : d;
+        }
+
+        private static string Shown(DateTime d) { return ToLocal(d).ToString("yyyy-MM-dd HH:mm"); }
 
         /// <summary>Overridable for tests; null means EmbedRecovery's folder + "\pending".</summary>
         public static string FolderOverride;
@@ -82,7 +103,8 @@ namespace ClarionAssistant.Services
             // No app, no journal (pipeline run 1): an entry filed under a guessed app is read back by the wrong one.
             if (string.IsNullOrWhiteSpace(app)) return null;
             if (baseline == null || saved == null || baseline.Count != saved.Count) return null;
-            var e = new Entry { App = app ?? "", Proc = proc ?? "", Written = DateTime.Now, SlotCount = saved.Count };
+            if (saved.Count > MaxSlots) return null;   // Parse would refuse it: never write a journal that cannot be read back
+            var e = new Entry { App = app ?? "", Proc = proc ?? "", Written = DateTime.UtcNow, SlotCount = saved.Count };
             try { e.Pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { }
             for (int i = 0; i < saved.Count; i++)
             {
@@ -171,7 +193,8 @@ namespace ClarionAssistant.Services
             return Decide(e, fresh, currentPid, null);
         }
 
-        /// <param name="currentProcessStart">When the current process started (local time), or null when unknown.
+        /// <param name="currentProcessStart">When the current process started (UTC; a non-UTC value is read as local),
+        /// or null when unknown.
         /// With it, an entry is from this session only when its pid matches AND it was written after this process
         /// started, so a recycled pid is not mistaken for this session.</param>
         public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? currentProcessStart)
@@ -190,14 +213,15 @@ namespace ClarionAssistant.Services
         public static bool SameSession(Entry e, int currentPid, DateTime? currentProcessStart)
         {
             if (e == null || e.Pid == 0 || e.Pid != currentPid) return false;
-            return !currentProcessStart.HasValue || e.Written >= currentProcessStart.Value.AddSeconds(-5);
+            // Compared in UTC (ruling F2-3): a local-time compare is off by an hour across a DST change.
+            return !currentProcessStart.HasValue || ToUtc(e.Written) >= ToUtc(currentProcessStart.Value).AddSeconds(-5);
         }
 
-        /// <summary>True when the .app file was last written after the entry was taken. It changes only the
-        /// offer's wording ("the app was last written on ... without it"), never whether it is offered.</summary>
+        /// <summary>True when the .app file was last written after the entry was taken (compared in UTC). It changes
+        /// only the offer's wording, never whether it is offered.</summary>
         public static bool AppWrittenSince(Entry e, DateTime? appLastWrite)
         {
-            return e != null && appLastWrite.HasValue && appLastWrite.Value > e.Written;
+            return e != null && appLastWrite.HasValue && ToUtc(appLastWrite.Value) > ToUtc(e.Written);
         }
 
         /// <summary>The offer's text. When the .app was written after the save it names that time and both
@@ -210,32 +234,63 @@ namespace ClarionAssistant.Services
         /// <summary>The offer's text for what <paramref name="fresh"/> shows (null = the slots are back at their
         /// pre-save text, the Lost wording). A Diverged reopen gets the PM's "lost when Clarion stopped, or the app
         /// was reverted since" wording. When the restore plan could not place every changed slot,
-        /// <paramref name="copyPath"/> names the file that holds them.</summary>
-        public static string OfferMessage(Entry e, DateTime? appLastWrite, IList<string> fresh, RestorePlan plan, string copyPath = null)
+        /// <paramref name="copyPath"/> names the file that holds them.
+        ///
+        /// Ruling F2-2: when the embed differs from BOTH texts and the .app was written after the save, the procedure
+        /// was changed and saved since (a native edit, most likely), so the toast says so plainly and says Restore
+        /// replaces that text; <paramref name="currentCopyPath"/> (<see cref="WriteCurrentCopy"/>) names where the
+        /// current text is kept. Ruling 6: slots already showing their saved text (<see cref="RestorePlan.Present"/>)
+        /// are never called missing.</summary>
+        public static string OfferMessage(Entry e, DateTime? appLastWrite, IList<string> fresh, RestorePlan plan, string copyPath = null,
+            string currentCopyPath = null)
         {
-            string when = e.Written.ToString("yyyy-MM-dd HH:mm");
+            string when = Shown(e.Written);
             bool diverged = fresh != null && Assess(e, fresh) != Verdict.Lost;
+            bool since = AppWrittenSince(e, appLastWrite);
+            bool partial = plan != null && plan.Present > 0;
+            string notIn = partial ? "is only partly in this procedure" : "is not in this procedure";
+            bool replacesNewer = diverged && since;
             string head;
-            if (AppWrittenSince(e, appLastWrite))
-                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
-                       "written on " + appLastWrite.Value.ToString("yyyy-MM-dd HH:mm") + " without it: Clarion may have stopped " +
+            if (replacesNewer)
+                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " differs from this procedure, which was changed " +
+                       "and saved on " + Shown(appLastWrite.Value) + ".";
+            else if (since)
+                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " " + notIn + ". The app was last " +
+                       "written on " + Shown(appLastWrite.Value) + " without it: Clarion may have stopped " +
                        "before saving it, or it was changed or reverted since, or another IDE has this app open.";
             else if (diverged)
-                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure: it may have been " +
+                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " " + notIn + ": it may have been " +
                        "lost when Clarion stopped, or the app was reverted since.";
             else
-                head = "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
+                head = "Your save of " + e.Proc + " on " + when + " " + notIn + ": Clarion stopped before it " +
                        "was saved, or the app was closed without saving.";
+            if (partial)
+                head += " " + plan.Present + " of its " + ChangedCount(e) + " changed embed(s) " + (plan.Present == 1 ? "is" : "are") +
+                        " already there and " + (plan.Present == 1 ? "is left as it is." : "are left as they are.");
             if (plan != null && plan.Unplaced.Count > 0 && copyPath != null)
                 head += " " + plan.Unplaced.Count + " of its " + e.Index.Count + " changed embed(s) cannot be put back " +
                         "because the procedure's embed points changed; their text is in " + copyPath + ".";
+            if (replacesNewer)
+                return head + (currentCopyPath != null ? " A copy of the current text is in " + currentCopyPath + "." : "") +
+                       " Restore your CA save as unsaved edits (replacing the current text)?";
             return head + " Restore it as unsaved edits?";
         }
+
+        /// <summary>How many of the entry's slots changed by more than trailing whitespace / line endings (the ones
+        /// <see cref="Assess"/> and <see cref="PlanRestore"/> account for).</summary>
+        internal static int ChangedCount(Entry e)
+        {
+            int n = 0;
+            for (int k = 0; k < e.Index.Count; k++) if (!WhitespaceOnly(e, k)) n++;
+            return n;
+        }
+
+        private static bool WhitespaceOnly(Entry e, int k) { return Loose(e.Saved[k]) == Loose(e.Baseline[k]); }
 
         /// <summary>The toast when nothing of an offered entry can be placed: it names the copy instead.</summary>
         public static string NotPlaceableMessage(Entry e, string copyPath)
         {
-            return "Your CA Embeditor save of " + e.Proc + " on " + e.Written.ToString("yyyy-MM-dd HH:mm") + " is not in " +
+            return "Your CA Embeditor save of " + e.Proc + " on " + Shown(e.Written) + " is not in " +
                    "this procedure, and it cannot be put back automatically because the procedure's embed points changed. " +
                    "Its text is in " + copyPath + ".";
         }
@@ -260,7 +315,7 @@ namespace ClarionAssistant.Services
                     try
                     {
                         var e = Parse(File.ReadAllText(path, new UTF8Encoding(false)));
-                        if (e == null || now - e.Written <= MaxAge) continue;
+                        if (e == null || ToUtc(now) - ToUtc(e.Written) <= MaxAge) continue;
                         e.Path = path;
                         string rec = Archive(e, "it was never confirmed and is more than " + (int)MaxAge.TotalDays + " days old");
                         if (rec != null) archived.Add(rec);
@@ -284,16 +339,22 @@ namespace ClarionAssistant.Services
         /// Clarion re-indents embed code it stores (live test 2026-10-19: a line saved at column 1 came back
         /// indented by two spaces after Clarion's "Recover"), so a slot whose text differs from the saved text ONLY
         /// in its lines' leading whitespace counts as the saved text, provided it does not equally match the
-        /// pre-save text that way (an indentation-only edit then proves nothing: Diverged, never "landed").</summary>
+        /// pre-save text that way (an indentation-only edit then proves nothing: Diverged, never "landed").
+        ///
+        /// With the slot count changed, a changed slot counts as landed only when ALL of these hold (PM ruling
+        /// F2-1, see <see cref="LandedAt"/>): its saved text is not also one of the entry's pre-save texts (exactly
+        /// or ignoring indentation), its match is unique, and no other changed slot claims the same fresh slot.
+        /// Otherwise Diverged: a Persisted verdict deletes the journal with no copy, so it needs proof.</summary>
         public static Verdict Assess(Entry e, IList<string> fresh)
         {
             if (e == null || fresh == null) return Verdict.Diverged;
             if (fresh.Count != e.SlotCount)
             {
+                var at = LandedAt(e, fresh);
                 for (int k = 0; k < e.Index.Count; k++)
                 {
-                    if (Loose(e.Saved[k]) == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
-                    if (UniqueMatch(fresh, e.Saved[k]) < 0) return Verdict.Diverged;
+                    if (WhitespaceOnly(e, k)) continue;   // whitespace-only edit: says nothing
+                    if (at[k] < 0) return Verdict.Diverged;
                 }
                 return Verdict.Persisted;
             }
@@ -342,6 +403,45 @@ namespace ClarionAssistant.Services
             return n == 1 ? at : -1;
         }
 
+        /// <summary>
+        /// Slot count changed (ruling F2-1): for each changed slot k, the fresh slot it is PROVEN to show its saved
+        /// text at, or -1. Proof needs all three: (a) the saved text is not also among the entry's pre-save texts,
+        /// exactly or ignoring indentation (a swap, or a revert to another slot's old text, would otherwise read as
+        /// landed); (b) it matches exactly one fresh slot (<see cref="UniqueMatch"/>); (c) no other changed slot
+        /// claims that same fresh slot (two slots saved with the same text cannot both be there).
+        /// Whitespace-only slots are left at -1 (they prove nothing either way).
+        /// </summary>
+        internal static int[] LandedAt(Entry e, IList<string> fresh)
+        {
+            var at = new int[e.Index.Count];
+            for (int k = 0; k < at.Length; k++)
+            {
+                at[k] = -1;
+                if (WhitespaceOnly(e, k)) continue;
+                if (AmongTexts(e.Saved[k], e.Baseline)) continue;    // (a)
+                at[k] = UniqueMatch(fresh, e.Saved[k]);             // (b)
+            }
+            DropSharedClaims(at, null);                              // (c)
+            return at;
+        }
+
+        // True when text equals one of the list's texts, by Loose or ignoring indentation.
+        private static bool AmongTexts(string text, List<string> list)
+        {
+            string l = Loose(text), i = Indentless(text);
+            foreach (var t in list) if (Loose(t) == l || Indentless(t) == i) return true;
+            return false;
+        }
+
+        // A fresh slot claimed by two or more changed slots (or already in `taken`) proves none of them: all -1.
+        private static void DropSharedClaims(int[] at, HashSet<int> taken)
+        {
+            var count = new Dictionary<int, int>();
+            foreach (int s in at) if (s >= 0) { int c; count.TryGetValue(s, out c); count[s] = c + 1; }
+            for (int k = 0; k < at.Length; k++)
+                if (at[k] >= 0 && (count[at[k]] > 1 || (taken != null && taken.Contains(at[k])))) at[k] = -1;
+        }
+
         /// <summary>How an offered entry goes back into the freshly opened slots.</summary>
         public sealed class RestorePlan
         {
@@ -349,6 +449,11 @@ namespace ClarionAssistant.Services
             public List<string> Slots;
             /// <summary>How many slots the restore changes.</summary>
             public int Placed;
+            /// <summary>The fresh slot numbers the restore replaces (<see cref="Placed"/> of them), in entry order:
+            /// what <see cref="WriteCurrentCopy"/> keeps before Restore applies.</summary>
+            public readonly List<int> Replaced = new List<int>();
+            /// <summary>How many changed slots already show their saved text (re-indented counts) and are left alone.</summary>
+            public int Present;
             /// <summary>Entry slot numbers (0-based, as saved) that could not be identified among the fresh slots.</summary>
             public readonly List<int> Unplaced = new List<int>();
         }
@@ -360,6 +465,12 @@ namespace ClarionAssistant.Services
         /// do), or its pre-save text uniquely present (replaced by the saved text there). Anything else, including
         /// an empty pre-save text (one empty slot among many), is NOT guessed: it is listed in
         /// <see cref="RestorePlan.Unplaced"/> so the caller names the copy file. Null for a null entry/fresh list.
+        ///
+        /// "Already there" needs the same proof as <see cref="Assess"/> (ruling F2-1, <see cref="LandedAt"/>), and a
+        /// pre-save text identifies a slot only under the mirror rule (not also among the saved texts, unique, not
+        /// claimed twice). A changed slot that is neither proven present nor placeable is listed as Unplaced, so it
+        /// goes to the copy: never skipped. With the count unchanged, a slot whose saved text is there re-indented
+        /// counts as already present (ruling 6): it is not re-placed.
         /// </summary>
         public static RestorePlan PlanRestore(Entry e, IList<string> fresh)
         {
@@ -371,23 +482,39 @@ namespace ClarionAssistant.Services
                 {
                     int i = e.Index[k];
                     if (i < 0 || i >= fresh.Count) { plan.Unplaced.Add(i); continue; }
-                    if (Loose(fresh[i]) == Loose(e.Saved[k])) continue;   // already there
+                    if (Loose(fresh[i]) == Loose(e.Saved[k]) || SlotState(fresh[i], e.Saved[k], e.Baseline[k]) == 1)
+                    {
+                        if (!WhitespaceOnly(e, k)) plan.Present++;   // already there (re-indented counts: ruling 6)
+                        continue;
+                    }
                     plan.Slots[i] = e.Saved[k];
                     plan.Placed++;
+                    plan.Replaced.Add(i);
                 }
                 return plan;
             }
+            var landed = LandedAt(e, fresh);
             var taken = new HashSet<int>();
+            foreach (int s in landed) if (s >= 0) taken.Add(s);
+            var byBase = new int[e.Index.Count];
+            for (int k = 0; k < byBase.Length; k++)
+            {
+                byBase[k] = -1;
+                if (WhitespaceOnly(e, k) || landed[k] >= 0) continue;
+                if (AmongTexts(e.Baseline[k], e.Saved)) continue;   // that text may be another slot's landed save
+                byBase[k] = UniqueMatch(fresh, e.Baseline[k]);
+            }
+            DropSharedClaims(byBase, taken);
             for (int k = 0; k < e.Index.Count; k++)
             {
-                if (Loose(e.Saved[k]) == Loose(e.Baseline[k])) continue;   // whitespace-only edit
-                int s = UniqueMatch(fresh, e.Saved[k]);
-                if (s >= 0 && taken.Add(s)) continue;                       // already there
-                int b = UniqueMatch(fresh, e.Baseline[k]);
-                if (b >= 0 && taken.Add(b))
+                if (WhitespaceOnly(e, k)) continue;   // nothing beyond trailing whitespace to put back
+                if (landed[k] >= 0) { plan.Present++; continue; }
+                int b = byBase[k];
+                if (b >= 0)
                 {
                     plan.Slots[b] = e.Saved[k];
                     plan.Placed++;
+                    plan.Replaced.Add(b);
                     continue;
                 }
                 plan.Unplaced.Add(e.Index[k]);
@@ -415,24 +542,82 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Write the entry's saved text as a dated recovery file WITHOUT retiring the journal (used when an
-        /// offer must name a copy before the developer answers). Returns its path; throws on an I/O failure.</summary>
+        /// offer must name a copy before the developer answers). Returns its path; throws on an I/O failure.
+        /// ONE copy per entry (ruling 5): the file name carries a hash of the entry, and when a copy with that hash
+        /// is already there it is returned instead of writing another, so an offer nobody answers does not add a
+        /// file on every reopen (and Restore/Discard/Archive of that entry reuse it).</summary>
         public static string WriteCopy(Entry e, string reason)
         {
             if (e == null) return null;
-            var orig = new List<string>(e.SlotCount);
-            var edit = new List<string>(e.SlotCount);
-            for (int i = 0; i < e.SlotCount; i++) { orig.Add(""); edit.Add(""); }
+            string tag = "j" + Hash(Serialize(e));
+            string existing = EmbedRecovery.FindTagged(e.Proc, tag);
+            if (existing != null) return existing;
+            // Sized by the highest changed slot, never by the entry's slot count (ruling 4: a count is not a size).
+            int size = 0;
+            foreach (int i in e.Index) if (i >= 0 && i < e.SlotCount && i + 1 > size) size = i + 1;
+            var orig = new List<string>(size);
+            var edit = new List<string>(size);
+            for (int i = 0; i < size; i++) { orig.Add(""); edit.Add(""); }
             for (int k = 0; k < e.Index.Count; k++)
             {
                 int i = e.Index[k];
-                if (i < 0 || i >= e.SlotCount) continue;
+                if (i < 0 || i >= size) continue;
                 orig[i] = e.Baseline[k] ?? "";
                 edit[i] = e.Saved[k] ?? "";
             }
             string path = EmbedRecovery.Write(e.Proc,
-                "the CA Embeditor save of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid +
-                ") could not be confirmed: " + reason, null, orig, edit);
+                "the CA Embeditor save of " + ToLocal(e.Written).ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid +
+                ") could not be confirmed: " + reason, null, orig, edit, tag);
             return path;
+        }
+
+        /// <summary>
+        /// Ruling F2-2: before an offered Restore can replace anything, keep a dated copy of the CURRENT text of
+        /// every slot the plan replaces (<see cref="RestorePlan.Replaced"/>), as the procedure was opened, so work
+        /// done natively after the CA save can always be recovered. Null when the plan replaces nothing. One copy per
+        /// entry and current text (deduplicated like <see cref="WriteCopy"/>). Throws on an I/O failure: the caller
+        /// then does not offer the Restore.
+        /// </summary>
+        public static string WriteCurrentCopy(Entry e, IList<string> fresh, RestorePlan plan)
+        {
+            if (e == null || fresh == null || plan == null || plan.Replaced.Count == 0) return null;
+            var key = new StringBuilder(Serialize(e)).Append("\ncurrent\n");
+            int size = 0;
+            foreach (int i in plan.Replaced)
+            {
+                if (i < 0 || i >= fresh.Count) continue;
+                if (i + 1 > size) size = i + 1;
+                string t = fresh[i] ?? "";
+                key.Append(i).Append(' ').Append(t.Length).Append(':').Append(t).Append('\n');
+            }
+            if (size == 0) return null;
+            string tag = "c" + Hash(key.ToString());
+            string existing = EmbedRecovery.FindTagged(e.Proc, tag);
+            if (existing != null) return existing;
+            // Only the replaced slots are written: the others carry an equal "original", which Format skips.
+            var orig = new List<string>(size);
+            var edit = new List<string>(size);
+            for (int i = 0; i < size; i++) { orig.Add(""); edit.Add(""); }
+            foreach (int i in plan.Replaced)
+            {
+                if (i < 0 || i >= size) continue;
+                orig[i] = null;                // never equal: always written, even when empty
+                edit[i] = fresh[i] ?? "";
+            }
+            return EmbedRecovery.Write(e.Proc,
+                "this is the procedure's text, as it was opened, of the embed(s) that restoring the CA Embeditor save of " +
+                ToLocal(e.Written).ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid + ") replaces", null, orig, edit, tag);
+        }
+
+        private static string Hash(string s)
+        {
+            using (var sha = SHA1.Create())
+            {
+                byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(s ?? ""));
+                var sb = new StringBuilder(16);
+                for (int i = 0; i < 6; i++) sb.Append(h[i].ToString("x2"));
+                return sb.ToString();
+            }
         }
 
         // ---------------- format ----------------
@@ -443,7 +628,9 @@ namespace ClarionAssistant.Services
             sb.Append(Magic).Append('\n');
             Field(sb, "app", e.App);
             Field(sb, "proc", e.Proc);
-            sb.Append("written ").Append(e.Written.ToString("yyyy-MM-ddTHH:mm:ss")).Append('\n');
+            // UTC with a trailing Z (ruling F2-3). A file without the Z is from before it: Parse reads that as local.
+            sb.Append("written ").Append(ToUtc(e.Written).ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture))
+              .Append('Z').Append('\n');
             sb.Append("pid ").Append(e.Pid).Append('\n');
             sb.Append("slots ").Append(e.SlotCount).Append('\n');
             sb.Append("changed ").Append(e.Index.Count).Append('\n');
@@ -473,12 +660,25 @@ namespace ClarionAssistant.Services
             if ((e.App = ReadField(s, ref p, "app")) == null) return null;
             if ((e.Proc = ReadField(s, ref p, "proc")) == null) return null;
             DateTime w;
-            if (!DateTime.TryParseExact(Value(Line(s, ref p), "written"), "yyyy-MM-ddTHH:mm:ss",
-                    System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out w)) return null;
-            e.Written = w;
+            string wv = Value(Line(s, ref p), "written");
+            if (wv == null) return null;
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            if (wv.EndsWith("Z", StringComparison.Ordinal))
+            {
+                if (!DateTime.TryParseExact(wv.Substring(0, wv.Length - 1), "yyyy-MM-ddTHH:mm:ss", inv,
+                        System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out w)) return null;
+                e.Written = DateTime.SpecifyKind(w, DateTimeKind.Utc);
+            }
+            else
+            {
+                // Written before the UTC marker (ruling F2-3): the time is local. Kept as UTC from here on.
+                if (!DateTime.TryParseExact(wv, "yyyy-MM-ddTHH:mm:ss", inv, System.Globalization.DateTimeStyles.None, out w)) return null;
+                e.Written = ToUtc(DateTime.SpecifyKind(w, DateTimeKind.Local));
+            }
             int pid, slots, changed;
             if (!int.TryParse(Value(Line(s, ref p), "pid"), out pid)) return null;
-            if (!int.TryParse(Value(Line(s, ref p), "slots"), out slots) || slots < 0) return null;
+            // A slot count outside 0..MaxSlots is a damaged or hostile file (ruling 4): rejected, never allocated from.
+            if (!int.TryParse(Value(Line(s, ref p), "slots"), out slots) || slots < 0 || slots > MaxSlots) return null;
             if (!int.TryParse(Value(Line(s, ref p), "changed"), out changed) || changed < 0 || changed > slots) return null;
             e.Pid = pid; e.SlotCount = slots;
             for (int k = 0; k < changed; k++)
