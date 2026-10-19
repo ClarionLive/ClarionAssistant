@@ -63,7 +63,11 @@ namespace ClarionAssistant.Services
             var one = Stopwatch.StartNew();
             try
             {
-                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "check"), one, CheckBudgetMs);
+                // hold: this check is the write path's (review SEC MED): only it may hold the IDE's file watcher, and the
+                // IDE holds only spellings its #266 WRITE gate allows. An older addin ignores the extra argument.
+                var args = Args(paths, "check");
+                args[OpenTabGuard.HoldArg] = true;
+                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", args, one, CheckBudgetMs);
                 // Pipeline run 4: an IDE on a pre-#205 Clarion Assistant answers "Unknown tool": a note naming it (the write
                 // proceeds); any OTHER error is a failed check (pipeline run 2). OpenTabGuard.FromCheckReply decides.
                 return OpenTabGuard.FromCheckReply(text, Parse(text), () => OlderAddinReason(ep));
@@ -95,6 +99,32 @@ namespace ClarionAssistant.Services
             Write("[tab-sync] reload path=" + path + " ide=" + ep.Label + " -> "
                   + (r.Reloaded ? "reloaded line=" + r.Line : "not reloaded: " + r.Reason) + " ms=" + sw.ElapsedMilliseconds);
             return r;
+        }
+
+        /// <summary>Short: a release only drops a holder (the IDE does the rest asynchronously), and a lost one is given
+        /// back by the IDE's own 30 s cap anyway.</summary>
+        public const int ReleaseBudgetMs = 2000;
+
+        /// <summary>
+        /// GH #205 review F1-1: the write was refused or failed after <paramref name="tab"/>'s IDE held its file watcher;
+        /// ask that IDE to give it back now (editor_tab_sync action 'release'). Silent: an older addin's "Unknown tool" or
+        /// unknown-action reply (it never held anything) is ignored, and any failure leaves the hold to the IDE's cap.
+        /// </summary>
+        public static void Release(IList<string> paths, TabProbe tab)
+        {
+            var ep = tab != null ? tab.Handle as IdeEndpointRecord.Endpoint : null;
+            if (ep == null) return;
+            string path = paths != null && paths.Count > 0 ? paths[0] : null;
+            var sw = Stopwatch.StartNew();
+            string outcome;
+            try
+            {
+                string text = IdeLiveTextClient.CallTool(ep, "editor_tab_sync", Args(paths, "release"), sw, ReleaseBudgetMs);
+                outcome = OpenTabGuard.IsOlderAddinReleaseReply(text) ? "older addin, nothing to release"
+                    : (text ?? "").StartsWith("Error", StringComparison.Ordinal) ? "the IDE refused: " + text : "released";
+            }
+            catch (Exception ex) { outcome = "the IDE did not answer: " + IdeLiveTextClient.Describe(ex, sw) + " (its cap gives it back)"; }
+            Write("[tab-sync] release path=" + path + " ide=" + ep.Label + " -> " + outcome + " ms=" + sw.ElapsedMilliseconds);
         }
 
         private static Dictionary<string, object> Args(IList<string> paths, string action)

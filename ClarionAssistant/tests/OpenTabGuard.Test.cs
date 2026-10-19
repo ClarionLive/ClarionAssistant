@@ -45,7 +45,11 @@ static class OpenTabGuardTest
             : p => { calls.Add("check"); lastChecked = new List<string>(p); return probe(); };
         OpenTabGuard.Reload = reload == null ? (Func<IList<string>, TabProbe, TabReload>)null
             : (p, tab) => { calls.Add("reload:" + tab.Handle); lastReloaded = new List<string>(p); return reload(tab); };
+        // GH #205 review F1-1: a refused or failed write gives a held watcher back at once (recorded like the rest).
+        OpenTabGuard.Release = (p, tab) => { calls.Add("release:" + tab.Handle); lastReleased = new List<string>(p); };
     }
+
+    static List<string> lastReleased;
 
     static List<string> lastChecked, lastReloaded;
 
@@ -162,7 +166,8 @@ static class OpenTabGuardTest
             Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), Ide(OpenTabGuard.KindNative, true, "IDE 2") },
                    t => new TabReload { Reloaded = true });
             r = OpenTabGuard.Run(file, false, Write);
-            Ok("one clean + one dirty native tab: refused, nothing written or reloaded", Unchanged() && Calls() == "check" && r.StartsWith("Error: "), Calls() + " | " + r);
+            Ok("one clean + one dirty native tab: refused, nothing written or reloaded; the CLEAN tab's hold is released at once",
+               Unchanged() && Calls() == "check,release:IDE 1" && r.StartsWith("Error: "), Calls() + " | " + r);
             Reset();
             Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), Unreachable("timed out after 3000 ms", "IDE 2") },
                    t => new TabReload { Reloaded = true, Line = 3 });
@@ -174,8 +179,44 @@ static class OpenTabGuardTest
             Reset();
             Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false) }, t => new TabReload { Reloaded = true });
             r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: character not in cp1252"; });
-            Ok("nothing reloaded after a failed write", Calls() == "check,write", Calls());
+            Ok("nothing reloaded after a failed write; its hold is released at once (F1-1)", Calls() == "check,write,release:IDE 100", Calls());
             Ok("the write's error comes back unchanged", r == "Error: character not in cp1252", r);
+
+            Console.WriteLine("-- review F1-1: every write that does not happen releases the hold, exactly once per held IDE");
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false) }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, "C:\\Link\\Main001.clw", false, () => { calls.Add("write"); return "Error: disk full"; });
+            Ok("a failed write: released with BOTH spellings (so the IDE finds the tab it held)",
+               Calls() == "check,write,release:IDE 100" && lastReleased != null && lastReleased.Count == 2 && lastReleased[0] == file, Calls());
+            Reset();
+            bool threw = false;
+            try { OpenTabGuard.Run(file, false, () => { calls.Add("write"); throw new IOException("locked"); }); }
+            catch (IOException) { threw = true; }
+            Ok("a write that THROWS releases too, and the exception still surfaces", threw && Calls() == "check,write,release:IDE 100", Calls());
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false, "IDE 1"), Ide(OpenTabGuard.KindNative, true, "IDE 2"),
+                                              Ide(OpenTabGuard.KindCaEditor, false, "IDE 3"), Ide(OpenTabGuard.KindNone, false, "IDE 4"),
+                                              Unreachable("timed out", "IDE 5") }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("a refusal releases only the IDEs that answered a CLEAN native tab (the only ones that hold)",
+               Unchanged() && Calls() == "check,release:IDE 1", Calls());
+            Reset();
+            Script(() => new List<TabProbe> { Ide(OpenTabGuard.KindNative, false) }, t => new TabReload { Reloaded = true });
+            r = OpenTabGuard.Run(file, false, Write);
+            Ok("a successful write does not release (its reload ends the hold)", Calls() == "check,write,reload:IDE 100", Calls());
+            Reset();
+            OpenTabGuard.Release = (p, tab) => { calls.Add("release"); throw new InvalidOperationException("pipe"); };
+            r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: nope"; });
+            Ok("a release that throws is swallowed (the IDE's cap gives it back)", r == "Error: nope" && Calls() == "check,write,release", Calls());
+            OpenTabGuard.Release = null;
+            Reset();
+            r = OpenTabGuard.Run(file, false, () => { calls.Add("write"); return "Error: nope"; });
+            Ok("no release wired (a bare host): the failed write still returns its error", r == "Error: nope", r);
+            Ok("an older addin's replies to 'release' are recognised and tolerated",
+               OpenTabGuard.IsOlderAddinReleaseReply(OpenTabGuard.UnknownToolReply)
+               && OpenTabGuard.IsOlderAddinReleaseReply("Error: action must be 'check' or 'reload'.")
+               && !OpenTabGuard.IsOlderAddinReleaseReply("Error: action must be 'check', 'reload' or 'release'.")
+               && !OpenTabGuard.IsOlderAddinReleaseReply("Error: something else") && !OpenTabGuard.IsOlderAddinReleaseReply(null));
 
             Console.WriteLine("-- an IDE ANSWERED but its check failed (pipeline run 2: fail closed)");
             Reset();

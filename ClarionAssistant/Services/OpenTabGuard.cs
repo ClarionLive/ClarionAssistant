@@ -104,6 +104,38 @@ namespace ClarionAssistant.Services
         /// <summary>The IDE's tab lookup by path TEXT only (no file handles), for a path its #266 gate refused.</summary>
         public static Func<IList<string>, TabProbe> LocalCheckLexical;
 
+        /// <summary>
+        /// GH #205 review (SEC MED): the write path's check - (spellings to look up, spellings the #266 WRITE gate allowed).
+        /// It also holds the IDE file watcher of a clean native tab of the second set until the reload (NativeTabSync).
+        /// Asked only for editor_tab_sync check with <see cref="HoldArg"/>: true; a plain check never holds.
+        /// </summary>
+        public static Func<IList<string>, IList<string>, TabProbe> LocalCheckHold;
+        /// <summary>editor_tab_sync check's flag: this check is the write path's, about to write (hold the watcher).</summary>
+        public const string HoldArg = "hold";
+
+        /// <summary>
+        /// GH #205 review F1-1: the write was refused or failed after the check held a tab's watcher; give it back now.
+        /// What <see cref="Run"/> uses (the standalone: IdeTabClient.Release; the addin: its own). Best effort, silent.
+        /// </summary>
+        public static Action<IList<string>, TabProbe> Release;
+        /// <summary>editor_tab_sync action 'release' in the IDE: (allowed spellings by identity, refused ones by name).</summary>
+        public static Func<IList<string>, IList<string>, TabReload> LocalRelease;
+
+        /// <summary>
+        /// An IDE that cannot release (an addin from before the review fix): "Unknown tool" (before #205), or the old
+        /// handler's "action must be 'check' or 'reload'". Tolerated silently - such an addin never held anything.
+        /// </summary>
+        public static bool IsOlderAddinReleaseReply(string reply)
+        {
+            if (reply == null) return false;
+            string r = reply.Trim();
+            return string.Equals(r, UnknownToolReply, StringComparison.Ordinal)
+                || string.Equals(r, OldActionReply, StringComparison.Ordinal);
+        }
+
+        /// <summary>The editor_tab_sync handler's unknown-action reply before 'release' existed, verbatim.</summary>
+        public const string OldActionReply = "Error: action must be 'check' or 'reload'.";
+
         /// <summary>One spelling of the target with the IDE's #266 read-gate verdict on it.</summary>
         public sealed class GatedSpelling
         {
@@ -338,17 +370,40 @@ namespace ClarionAssistant.Services
             }
 
             var d = Decide(path, probes, overwriteOpenBuffer);
-            if (d.Refusal != null) return d.Refusal;
+            // GH #205 review F1-1: a check that found a clean native tab held that IDE's file watcher for this write. A
+            // refused or failed write reloads nothing, so it gives every such hold back AT ONCE (not at the 30 s cap).
+            if (d.Refusal != null) { ReleaseHolds(spellings, probes); return d.Refusal; }
 
-            string result = write();
+            string result;
+            try { result = write(); }
+            catch { ReleaseHolds(spellings, probes); throw; }
             if (result == null) result = "";
-            if (result.StartsWith("Error", StringComparison.Ordinal)) return result;   // nothing new on disk: nothing to reload
+            if (result.StartsWith("Error", StringComparison.Ordinal)) { ReleaseHolds(spellings, probes); return result; }   // nothing new on disk: nothing to reload
 
             var lines = new List<string>();
             foreach (var tab in d.ReloadAfter) lines.Add(ReloadNote(spellings, tab));
             lines.AddRange(d.Notes);
             if (lines.Count == 0) return result;
             return result + "\n" + string.Join("\n", lines.ToArray());
+        }
+
+        /// <summary>The probes whose check may have held a watcher: a reachable, CLEAN native tab (the only kind held).</summary>
+        public static List<TabProbe> HeldBy(IList<TabProbe> probes)
+        {
+            var held = new List<TabProbe>();
+            if (probes != null)
+                foreach (var p in probes)
+                    if (p != null && p.Reachable && p.Kind == KindNative && !p.Dirty) held.Add(p);
+            return held;
+        }
+
+        // Never throws: a release that fails leaves the hold to its cap.
+        private static void ReleaseHolds(IList<string> spellings, IList<TabProbe> probes)
+        {
+            var release = Release;
+            if (release == null) return;
+            foreach (var p in HeldBy(probes))
+                try { release(spellings, p); } catch { }
         }
 
         private static string ReloadNote(IList<string> spellings, TabProbe tab)
