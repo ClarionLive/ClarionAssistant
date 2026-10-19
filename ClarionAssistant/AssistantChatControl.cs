@@ -2537,6 +2537,7 @@ namespace ClarionAssistant
             worker.WorkerReportsProgress = true;
             bool wasCancelled = false;
             bool partialDbDeleted = false;
+            bool ranIncremental = incremental;   // what actually ran (see the feature-level check in IndexSolution)
             worker.DoWork += (s, e) =>
             {
                 // The editor's completion holds a read-only connection to this db (SymbolIndex, 1c685f2e);
@@ -2562,8 +2563,17 @@ namespace ClarionAssistant
                         // UserState type below, and a fake number invites someone to read it.
                         ((BackgroundWorker)s).ReportProgress(0, ev);
                     };
-                    var result = indexer.IndexSolution(slnPath, incremental, libPaths);
-                    e.Result = result;
+                    try
+                    {
+                        var result = indexer.IndexSolution(slnPath, incremental, libPaths);
+                        e.Result = result;
+                    }
+                    finally
+                    {
+                        // ef2fd2a9: an incremental request on a database below the current feature level runs FULL
+                        // (it clears the database first), so a cancel of it must be handled as a full cancel.
+                        ranIncremental = indexer.EffectiveIncremental;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -2580,7 +2590,7 @@ namespace ClarionAssistant
                 // data plus a partial update — and the status line says not to trust it yet.)
                 // The delete is VERIFIED — claiming deletion that a held handle prevented
                 // would be the exact silent lie this window exists to remove.
-                if (wasCancelled && !incremental)
+                if (wasCancelled && !ranIncremental)
                 {
                     SymbolIndex.Release(dbPath);   // a completion may have reopened it mid-run
                     try { File.Delete(dbPath); } catch { }
@@ -2641,7 +2651,7 @@ namespace ClarionAssistant
 
                     if (wasCancelled)
                     {
-                        string disposition = incremental
+                        string disposition = ranIncremental
                             ? "The database keeps its previous contents plus a partial update — re-run the index before trusting queries."
                             : (partialDbDeleted
                                 ? "The partial database was deleted — run the index again to rebuild it."
@@ -2669,7 +2679,7 @@ namespace ClarionAssistant
                             "  Log: {8}",
                             Path.GetFileName(slnPath), result.ProjectCount, result.FileCount,
                             result.SymbolCount, result.RelationshipCount, result.DurationMs, dbPath,
-                            incremental ? "incremental" : "full",
+                            result.ModeText,
                             runLog.LogPath ?? "(no log written — another index run may hold the log file)")
                             + "\n" + result.CoverageText()
                         : "Error: index returned no result.";
@@ -2677,7 +2687,7 @@ namespace ClarionAssistant
                     if (formAlive)
                     {
                         if (result != null)
-                            progressForm.RunCompleted(result, incremental);
+                            progressForm.RunCompleted(result, result.Incremental);
                         else
                             // A run that neither erred nor cancelled but returned nothing must not
                             // leave the window ticking forever in its running state.
