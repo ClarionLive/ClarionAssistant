@@ -34,7 +34,8 @@ namespace ClarionAssistant.Services
             Persisted,
             /// <summary>Every slot the save changed is back at its pre-save text: the save was lost. Offer it.</summary>
             Lost,
-            /// <summary>Neither: the embed changed since (or its slot count did). Keep a dated copy, don't offer.</summary>
+            /// <summary>Neither: the embed changed since (or its slot count did). From an earlier session: offered
+            /// (the app may have been reverted past the save); from this session: a dated copy, not offered.</summary>
             Diverged
         }
 
@@ -141,7 +142,7 @@ namespace ClarionAssistant.Services
             Keep,
             /// <summary>It did not land: offer it back.</summary>
             Offer,
-            /// <summary>It cannot be placed or the embed changed since: keep a dated copy, do not offer.</summary>
+            /// <summary>The embed changed since, in THIS session: keep a dated copy, do not offer.</summary>
             Archive
         }
 
@@ -157,15 +158,39 @@ namespace ClarionAssistant.Services
         /// the embed, minutes after the save. A deliberate revert (git checkout, import_txa, a native edit) leaves
         /// the same trace, and no timestamp tells the two apart, so the offer is made in both cases and its
         /// wording says so (<see cref="AppWrittenSince"/>). Restore is never automatic, and the developer decides.
+        ///
+        /// A Diverged entry (the saved text is not there, and neither is the pre-save text) from an EARLIER session
+        /// is OFFERED too (PM ruling, live test 2026-10-19). Clarion's "Last Saved" on a crash reopen reverts the
+        /// procedure further back than the save's own baseline (to the last saved .app), so the reopened embed
+        /// matches neither text; archiving that silently left the only copy of the work in a .txt nobody knew
+        /// about, which is exactly the #179 loss. Only an entry from THIS session is archived silently: there the
+        /// divergence is the developer's own later edit (in Clarion's native embeditor), not a loss.
         /// </summary>
         public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid)
         {
+            return Decide(e, fresh, currentPid, null);
+        }
+
+        /// <param name="currentProcessStart">When the current process started (local time), or null when unknown.
+        /// With it, an entry is from this session only when its pid matches AND it was written after this process
+        /// started, so a recycled pid is not mistaken for this session.</param>
+        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? currentProcessStart)
+        {
+            bool sameSession = SameSession(e, currentPid, currentProcessStart);
             switch (Assess(e, fresh))
             {
-                case Verdict.Persisted: return e.Pid != currentPid ? OpenDecision.Retire : OpenDecision.Keep;
+                case Verdict.Persisted: return sameSession ? OpenDecision.Keep : OpenDecision.Retire;
                 case Verdict.Lost: return OpenDecision.Offer;
-                default: return OpenDecision.Archive;
+                default: return sameSession ? OpenDecision.Archive : OpenDecision.Offer;
             }
+        }
+
+        /// <summary>True when the entry was written by the current process: same pid (a 0 pid is never "same") and,
+        /// when the process start is known, written no earlier than a few seconds before it.</summary>
+        public static bool SameSession(Entry e, int currentPid, DateTime? currentProcessStart)
+        {
+            if (e == null || e.Pid == 0 || e.Pid != currentPid) return false;
+            return !currentProcessStart.HasValue || e.Written >= currentProcessStart.Value.AddSeconds(-5);
         }
 
         /// <summary>True when the .app file was last written after the entry was taken. It changes only the
@@ -179,14 +204,40 @@ namespace ClarionAssistant.Services
         /// possible causes; otherwise the crash/closed-unsaved wording.</summary>
         public static string OfferMessage(Entry e, DateTime? appLastWrite)
         {
+            return OfferMessage(e, appLastWrite, null, null);
+        }
+
+        /// <summary>The offer's text for what <paramref name="fresh"/> shows (null = the slots are back at their
+        /// pre-save text, the Lost wording). A Diverged reopen gets the PM's "lost when Clarion stopped, or the app
+        /// was reverted since" wording. When the restore plan could not place every changed slot,
+        /// <paramref name="copyPath"/> names the file that holds them.</summary>
+        public static string OfferMessage(Entry e, DateTime? appLastWrite, IList<string> fresh, RestorePlan plan, string copyPath = null)
+        {
             string when = e.Written.ToString("yyyy-MM-dd HH:mm");
+            bool diverged = fresh != null && Assess(e, fresh) != Verdict.Lost;
+            string head;
             if (AppWrittenSince(e, appLastWrite))
-                return "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
+                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure. The app was last " +
                        "written on " + appLastWrite.Value.ToString("yyyy-MM-dd HH:mm") + " without it: Clarion may have stopped " +
-                       "before saving it, or it was changed or reverted since, or another IDE has this app open. " +
-                       "Restore it as unsaved edits?";
-            return "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
-                   "was saved, or the app was closed without saving. Restore it as unsaved edits?";
+                       "before saving it, or it was changed or reverted since, or another IDE has this app open.";
+            else if (diverged)
+                head = "Your CA Embeditor save of " + e.Proc + " on " + when + " is not in this procedure: it may have been " +
+                       "lost when Clarion stopped, or the app was reverted since.";
+            else
+                head = "Your save of " + e.Proc + " on " + when + " is not in this procedure: Clarion stopped before it " +
+                       "was saved, or the app was closed without saving.";
+            if (plan != null && plan.Unplaced.Count > 0 && copyPath != null)
+                head += " " + plan.Unplaced.Count + " of its " + e.Index.Count + " changed embed(s) cannot be put back " +
+                        "because the procedure's embed points changed; their text is in " + copyPath + ".";
+            return head + " Restore it as unsaved edits?";
+        }
+
+        /// <summary>The toast when nothing of an offered entry can be placed: it names the copy instead.</summary>
+        public static string NotPlaceableMessage(Entry e, string copyPath)
+        {
+            return "Your CA Embeditor save of " + e.Proc + " on " + e.Written.ToString("yyyy-MM-dd HH:mm") + " is not in " +
+                   "this procedure, and it cannot be put back automatically because the procedure's embed points changed. " +
+                   "Its text is in " + copyPath + ".";
         }
 
         /// <summary>Entries older than this are archived unoffered by <see cref="SweepStale"/>.</summary>
@@ -228,25 +279,21 @@ namespace ClarionAssistant.Services
         /// carries no embed identity, so then each changed slot's saved text is looked for among ALL fresh slots.
         /// Only a UNIQUE, NON-EMPTY match counts (pipeline run 2, debugger): an emptied slot, or a one-liner several
         /// slots share, would match some other slot and call a lost save landed. Every changed slot matched that
-        /// way means it landed; anything else cannot be told or put back by position: Diverged.</summary>
+        /// way means it landed; anything else cannot be told or put back by position: Diverged.
+        ///
+        /// Clarion re-indents embed code it stores (live test 2026-10-19: a line saved at column 1 came back
+        /// indented by two spaces after Clarion's "Recover"), so a slot whose text differs from the saved text ONLY
+        /// in its lines' leading whitespace counts as the saved text, provided it does not equally match the
+        /// pre-save text that way (an indentation-only edit then proves nothing: Diverged, never "landed").</summary>
         public static Verdict Assess(Entry e, IList<string> fresh)
         {
             if (e == null || fresh == null) return Verdict.Diverged;
             if (fresh.Count != e.SlotCount)
             {
-                var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-                foreach (var f in fresh)
-                {
-                    string lf = Loose(f);
-                    int c;
-                    counts[lf] = counts.TryGetValue(lf, out c) ? c + 1 : 1;
-                }
                 for (int k = 0; k < e.Index.Count; k++)
                 {
-                    string s = Loose(e.Saved[k]);
-                    if (s == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
-                    int n;
-                    if (s.Length == 0 || !counts.TryGetValue(s, out n) || n != 1) return Verdict.Diverged;
+                    if (Loose(e.Saved[k]) == Loose(e.Baseline[k])) continue;   // whitespace-only edit: says nothing
+                    if (UniqueMatch(fresh, e.Saved[k]) < 0) return Verdict.Diverged;
                 }
                 return Verdict.Persisted;
             }
@@ -255,16 +302,97 @@ namespace ClarionAssistant.Services
             {
                 int i = e.Index[k];
                 if (i < 0 || i >= fresh.Count) return Verdict.Diverged;
-                string f = Loose(fresh[i]);
-                string s = Loose(e.Saved[k]);
-                string b = Loose(e.Baseline[k]);
-                if (s == b) continue;   // a whitespace-only edit: says nothing either way
-                if (f != s) allSaved = false;
-                if (f != b) allBaseline = false;
+                if (Loose(e.Saved[k]) == Loose(e.Baseline[k])) continue;   // a whitespace-only edit: says nothing either way
+                int m = SlotState(fresh[i], e.Saved[k], e.Baseline[k]);
+                if (m != 1) allSaved = false;
+                if (m != 2) allBaseline = false;
             }
             if (allSaved) return Verdict.Persisted;
             if (allBaseline) return Verdict.Lost;
             return Verdict.Diverged;
+        }
+
+        // 1 = the slot holds the saved text, 2 = the pre-save text, 0 = neither (or both, by indentation alone).
+        // Exact (Loose) first; only then ignoring each line's leading whitespace, and only when that singles one out.
+        private static int SlotState(string fresh, string saved, string baseline)
+        {
+            string f = Loose(fresh);
+            if (f == Loose(saved)) return 1;
+            if (f == Loose(baseline)) return 2;
+            string fi = Indentless(fresh), si = Indentless(saved), bi = Indentless(baseline);
+            bool isS = fi == si, isB = fi == bi;
+            if (isS && !isB) return 1;
+            if (isB && !isS) return 2;
+            return 0;
+        }
+
+        /// <summary>The index of the ONE fresh slot holding <paramref name="text"/>, or -1 when none or several do,
+        /// or the text is empty. Exact (Loose) matches decide first; the indentation-blind compare is a fallback
+        /// used only when there is no exact match, and it must be unique too.</summary>
+        internal static int UniqueMatch(IList<string> fresh, string text)
+        {
+            string t = Loose(text);
+            if (t.Length == 0 || fresh == null) return -1;
+            int at = -1, n = 0;
+            for (int i = 0; i < fresh.Count; i++) if (Loose(fresh[i]) == t) { at = i; n++; }
+            if (n == 1) return at;
+            if (n > 1) return -1;
+            string ti = Indentless(text);
+            for (int i = 0; i < fresh.Count; i++) if (Indentless(fresh[i]) == ti) { at = i; n++; }
+            return n == 1 ? at : -1;
+        }
+
+        /// <summary>How an offered entry goes back into the freshly opened slots.</summary>
+        public sealed class RestorePlan
+        {
+            /// <summary>The fresh slots with each placed slot replaced by its saved text (the page's restoreSlots list).</summary>
+            public List<string> Slots;
+            /// <summary>How many slots the restore changes.</summary>
+            public int Placed;
+            /// <summary>Entry slot numbers (0-based, as saved) that could not be identified among the fresh slots.</summary>
+            public readonly List<int> Unplaced = new List<int>();
+        }
+
+        /// <summary>
+        /// Where each changed slot of an offered entry goes. While the slot count is unchanged, by position (the
+        /// slot model has no other identity, and it is the identity the save itself used). When it changed, a slot
+        /// is placed only where it is identified UNAMBIGUOUSLY: its saved text already uniquely present (nothing to
+        /// do), or its pre-save text uniquely present (replaced by the saved text there). Anything else, including
+        /// an empty pre-save text (one empty slot among many), is NOT guessed: it is listed in
+        /// <see cref="RestorePlan.Unplaced"/> so the caller names the copy file. Null for a null entry/fresh list.
+        /// </summary>
+        public static RestorePlan PlanRestore(Entry e, IList<string> fresh)
+        {
+            if (e == null || fresh == null) return null;
+            var plan = new RestorePlan { Slots = new List<string>(fresh) };
+            if (fresh.Count == e.SlotCount)
+            {
+                for (int k = 0; k < e.Index.Count; k++)
+                {
+                    int i = e.Index[k];
+                    if (i < 0 || i >= fresh.Count) { plan.Unplaced.Add(i); continue; }
+                    if (Loose(fresh[i]) == Loose(e.Saved[k])) continue;   // already there
+                    plan.Slots[i] = e.Saved[k];
+                    plan.Placed++;
+                }
+                return plan;
+            }
+            var taken = new HashSet<int>();
+            for (int k = 0; k < e.Index.Count; k++)
+            {
+                if (Loose(e.Saved[k]) == Loose(e.Baseline[k])) continue;   // whitespace-only edit
+                int s = UniqueMatch(fresh, e.Saved[k]);
+                if (s >= 0 && taken.Add(s)) continue;                       // already there
+                int b = UniqueMatch(fresh, e.Baseline[k]);
+                if (b >= 0 && taken.Add(b))
+                {
+                    plan.Slots[b] = e.Saved[k];
+                    plan.Placed++;
+                    continue;
+                }
+                plan.Unplaced.Add(e.Index[k]);
+            }
+            return plan;
         }
 
         /// <summary>The slot texts to offer for a <see cref="Verdict.Lost"/> entry: the fresh slots with each
@@ -272,20 +400,23 @@ namespace ClarionAssistant.Services
         public static List<string> RestoredSlots(Entry e, IList<string> fresh)
         {
             if (e == null || fresh == null || fresh.Count != e.SlotCount) return null;
-            var r = new List<string>(fresh);
-            for (int k = 0; k < e.Index.Count; k++)
-            {
-                int i = e.Index[k];
-                if (i < 0 || i >= r.Count) return null;
-                r[i] = e.Saved[k];
-            }
-            return r;
+            var p = PlanRestore(e, fresh);
+            return p == null || p.Unplaced.Count > 0 ? null : p.Slots;
         }
 
         /// <summary>Keep the entry's saved text as an ordinary, dated, human-readable recovery file
         /// (<see cref="EmbedRecovery"/>) and retire the journal. Returns the recovery file's path. Throws on an
         /// I/O failure, in which case the journal is left in place.</summary>
         public static string Archive(Entry e, string reason)
+        {
+            string path = WriteCopy(e, reason);
+            if (e != null && e.Path != null) try { File.Delete(e.Path); } catch { }
+            return path;
+        }
+
+        /// <summary>Write the entry's saved text as a dated recovery file WITHOUT retiring the journal (used when an
+        /// offer must name a copy before the developer answers). Returns its path; throws on an I/O failure.</summary>
+        public static string WriteCopy(Entry e, string reason)
         {
             if (e == null) return null;
             var orig = new List<string>(e.SlotCount);
@@ -301,7 +432,6 @@ namespace ClarionAssistant.Services
             string path = EmbedRecovery.Write(e.Proc,
                 "the CA Embeditor save of " + e.Written.ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid +
                 ") could not be confirmed: " + reason, null, orig, edit);
-            if (e.Path != null) try { File.Delete(e.Path); } catch { }
             return path;
         }
 
@@ -439,6 +569,19 @@ namespace ClarionAssistant.Services
             int last = lines.Length - 1;
             while (last >= 0 && lines[last].Trim().Length == 0) last--;
             for (int i = 0; i <= last; i++) { if (i > 0) sb.Append('\n'); sb.Append(lines[i].TrimEnd()); }
+            return sb.ToString();
+        }
+
+        // Loose, and each line's leading whitespace and leading blank lines do not count either (Clarion re-indents
+        // stored embed code). Used only as a fallback that must single out one candidate.
+        private static string Indentless(string s)
+        {
+            var lines = (s ?? "").Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
+            int first = 0, last = lines.Length - 1;
+            while (first <= last && lines[first].Trim().Length == 0) first++;
+            while (last >= first && lines[last].Trim().Length == 0) last--;
+            var sb = new StringBuilder(s == null ? 0 : s.Length);
+            for (int i = first; i <= last; i++) { if (i > first) sb.Append('\n'); sb.Append(lines[i].Trim()); }
             return sb.ToString();
         }
 

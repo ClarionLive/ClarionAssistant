@@ -399,7 +399,10 @@ static class EmbedSaveFlowTest
             Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.OpenDecision.Retire);
             Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me) == EmbedSaveJournal.OpenDecision.Offer &&
                 EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.OpenDecision.Offer);
-            Ok("changed since -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1) == EmbedSaveJournal.OpenDecision.Archive);
+            // Live test 2026-10-19 (PM ruling): only THIS session's changed-since entry is archived silently; an
+            // earlier session's is offered (the app may have been reverted past the save).
+            Ok("changed since, same session -> Archive", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me) == EmbedSaveJournal.OpenDecision.Archive);
+            Ok("changed since, earlier session -> Offer", EmbedSaveJournal.Decide(e, new List<string> { "  x = 99", O1, O2 }, me + 1) == EmbedSaveJournal.OpenDecision.Offer);
 
             // PM ruling (pipeline run 2): the #179 reporter's sequence. Journal at T, the crashed process lingers and
             // writes the .app at T+12 min WITHOUT the embed, the developer reopens in a new session: OFFERED, and the
@@ -437,6 +440,108 @@ static class EmbedSaveFlowTest
             var shiftedLost = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
             Ok("slot count changed and the save is missing -> Diverged (archived, not offered by position)",
                 EmbedSaveJournal.Assess(e, shiftedLost) == EmbedSaveJournal.Verdict.Diverged);
+
+            // ---- live test 2026-10-19, Clarion 12, demoleg.app tes:TestProcedure (120 slots, slot 7 edited) ----
+            {
+                const string Saved1 = "! #179 recovery test  ";                       // typed at column 1, saved
+                const string Recovered = "  ! #179 recovery test  ";                   // what Clarion's RECOVER reloaded
+                const string Saved2 = "  ! #179 recovery test  \n  ! #179 recovery test TWO  ";
+                var empty120 = Enumerable.Repeat("", 120).ToList();
+                var withSlot = (Func<string, List<string>>)(t => { var l = new List<string>(empty120); l[7] = t; return l; });
+                DateTime app0950 = new DateTime(2026, 10, 19, 9, 50, 58);
+
+                // (a) Save, Clarion killed, reopen, RECOVER: the text IS there, re-indented by two spaces.
+                var ea = new EmbedSaveJournal.Entry { App = App, Proc = "tes:TestProcedure", Written = new DateTime(2026, 10, 19, 10, 39, 18), Pid = me + 7, SlotCount = 120 };
+                ea.Index.Add(7); ea.Baseline.Add(""); ea.Saved.Add(Saved1);
+                Ok("(a) Recover: the saved line re-indented by Clarion -> Persisted",
+                    EmbedSaveJournal.Assess(ea, withSlot(Recovered)) == EmbedSaveJournal.Verdict.Persisted);
+                Ok("(a) ...a later session retires it (no silent archive, no offer)",
+                    EmbedSaveJournal.Decide(ea, withSlot(Recovered), me) == EmbedSaveJournal.OpenDecision.Retire);
+                Ok("(a) ...and CRLF + a trailing blank line on top of the indent still count as landed",
+                    EmbedSaveJournal.Assess(ea, withSlot("\t" + Saved1.TrimEnd() + "\r\n\r\n")) == EmbedSaveJournal.Verdict.Persisted);
+                Ok("(a) guard: a re-indented DIFFERENT text is not 'landed'",
+                    EmbedSaveJournal.Assess(ea, withSlot("  ! #179 recovery test X")) != EmbedSaveJournal.Verdict.Persisted);
+                var indentOnly = new EmbedSaveJournal.Entry { App = App, Proc = "P", Written = ea.Written, Pid = me + 7, SlotCount = 120 };
+                indentOnly.Index.Add(7); indentOnly.Baseline.Add("x = 1"); indentOnly.Saved.Add("  x = 1");
+                Ok("(a) guard: an indentation-only edit seen re-indented is NOT called landed (it matches both texts)",
+                    EmbedSaveJournal.Assess(indentOnly, withSlot("    x = 1")) == EmbedSaveJournal.Verdict.Diverged);
+                Ok("(a) guard: ...but seen exactly as saved it is", EmbedSaveJournal.Assess(indentOnly, withSlot("  x = 1")) == EmbedSaveJournal.Verdict.Persisted);
+
+                // (b) Same steps, LAST SAVED: the embed comes back EMPTY, older than the save's baseline (the text
+                // (a) recovered). The entry is from an earlier session -> OFFERED, never archived silently.
+                var eb = new EmbedSaveJournal.Entry { App = App, Proc = "tes:TestProcedure", Written = new DateTime(2026, 10, 19, 10, 45, 17), Pid = me + 9, SlotCount = 120 };
+                eb.Index.Add(7); eb.Baseline.Add(Recovered); eb.Saved.Add(Saved2);
+                var lastSaved = withSlot("");
+                Ok("(b) Last Saved: neither the saved nor the pre-save text -> Diverged",
+                    EmbedSaveJournal.Assess(eb, lastSaved) == EmbedSaveJournal.Verdict.Diverged);
+                Ok("(b) ...from an earlier session -> Offer (the #179 silent-loss case)",
+                    EmbedSaveJournal.Decide(eb, lastSaved, me) == EmbedSaveJournal.OpenDecision.Offer);
+                Ok("(b) ...same pid but written before this process started (recycled pid) -> still Offer",
+                    EmbedSaveJournal.Decide(eb, lastSaved, me + 9, eb.Written.AddMinutes(5)) == EmbedSaveJournal.OpenDecision.Offer);
+                Ok("(b) same session (the native-edit noise case) -> Archive silently",
+                    EmbedSaveJournal.Decide(eb, lastSaved, me + 9) == EmbedSaveJournal.OpenDecision.Archive &&
+                    EmbedSaveJournal.Decide(eb, lastSaved, me + 9, eb.Written.AddMinutes(-5)) == EmbedSaveJournal.OpenDecision.Archive);
+                var pb = EmbedSaveJournal.PlanRestore(eb, lastSaved);
+                Ok("(b) Restore puts the saved slot back as unsaved edits, nothing else",
+                    pb != null && pb.Placed == 1 && pb.Unplaced.Count == 0 && pb.Slots[7] == Saved2 &&
+                    pb.Slots.Where((t, i) => i != 7).All(t => t == ""));
+                string mb = EmbedSaveJournal.OfferMessage(eb, app0950, lastSaved, pb);
+                Ok("(b) the PM's wording", mb == "Your CA Embeditor save of tes:TestProcedure on 2026-10-19 10:45 is not in this procedure: " +
+                    "it may have been lost when Clarion stopped, or the app was reverted since. Restore it as unsaved edits?", mb);
+
+                // The reporter's sequence: the .app written AFTER the save, without the embed -> offered, later-write wording.
+                DateTime after = eb.Written.AddMinutes(12);
+                Ok("reporter: .app written after the save, embed back at its pre-save text -> Offer",
+                    EmbedSaveJournal.Decide(eb, withSlot(Recovered), me) == EmbedSaveJournal.OpenDecision.Offer);
+                Ok("reporter: ...and the same when it reads as Diverged -> Offer",
+                    EmbedSaveJournal.Decide(eb, lastSaved, me) == EmbedSaveJournal.OpenDecision.Offer);
+                string mr = EmbedSaveJournal.OfferMessage(eb, after, lastSaved, pb);
+                Ok("reporter: worded with the .app's later write", mr.Contains("The app was last written on " + after.ToString("yyyy-MM-dd HH:mm") +
+                    " without it") && mr.EndsWith("Restore it as unsaved edits?"), mr);
+            }
+            {
+                // Slot count changed since the save: place a slot only where it is identified unambiguously.
+                var e2 = EmbedSaveJournal.Parse(EmbedSaveJournal.Serialize(e));   // slots 0 and 2 of 3 changed
+                var grown = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
+                var pg = EmbedSaveJournal.PlanRestore(e2, grown);
+                Ok("count changed: each slot placed where its pre-save text uniquely is",
+                    pg.Placed == 2 && pg.Unplaced.Count == 0 && pg.Slots[0] == saved[0] && pg.Slots[4] == big &&
+                    pg.Slots[1] == "" && pg.Slots[2] == "  ! new control's embed" && pg.Slots[3] == O1);
+                Ok("count changed, earlier session, save missing -> Offer", EmbedSaveJournal.Decide(e2, grown, me + 1) == EmbedSaveJournal.OpenDecision.Offer);
+                var halfThere = new List<string> { saved[0], "", O1, "  ! new", O2 };
+                var ph = EmbedSaveJournal.PlanRestore(e2, halfThere);
+                Ok("count changed: a slot whose saved text is already there is left alone",
+                    ph.Placed == 1 && ph.Unplaced.Count == 0 && ph.Slots[0] == saved[0] && ph.Slots[4] == big);
+
+                // Ambiguous: slot 0's pre-save text is EMPTY (many empty slots), slot 2's appears twice.
+                var amb = new EmbedSaveJournal.Entry { App = App, Proc = "AmbProc", Written = DateTime.Now, Pid = me + 1, SlotCount = 3 };
+                amb.Index.Add(0); amb.Baseline.Add(""); amb.Saved.Add("  ! AMB-NEW-0");
+                amb.Index.Add(2); amb.Baseline.Add("  RETURN"); amb.Saved.Add("  ! AMB-NEW-2");
+                var ambFresh = new List<string> { "", "  RETURN", "", "  RETURN" };
+                var pa = EmbedSaveJournal.PlanRestore(amb, ambFresh);
+                Ok("ambiguous slots are NOT placed (no guess), and are listed",
+                    pa.Placed == 0 && pa.Unplaced.SequenceEqual(new[] { 0, 2 }) && pa.Slots.SequenceEqual(ambFresh));
+                var oneEmpty = EmbedSaveJournal.PlanRestore(amb, new List<string> { "", "  x", "  y", "  z" });
+                Ok("an EMPTY pre-save text is never an identity, even when only one fresh slot is empty",
+                    oneEmpty.Placed == 0 && oneEmpty.Unplaced.Contains(0) && oneEmpty.Slots[0] == "");
+                amb.Index.Add(1); amb.Baseline.Add(O1); amb.Saved.Add("  ! AMB-NEW-1");
+                var pm = EmbedSaveJournal.PlanRestore(amb, new List<string> { "", O1, "", "  RETURN", "  RETURN" });
+                Ok("mixed: the identifiable slot is placed, the ambiguous ones listed",
+                    pm.Placed == 1 && pm.Slots[1] == "  ! AMB-NEW-1" && pm.Unplaced.SequenceEqual(new[] { 0, 2 }));
+                Begin179(App, "AmbProc", amb);
+                var ambRead = EmbedSaveJournal.Read(App, "AmbProc");
+                string copy = EmbedSaveJournal.WriteCopy(ambRead, "test: not placeable");
+                Ok("the copy holds the unplaced text and the journal stays until the developer answers",
+                    copy != null && File.ReadAllText(copy).Contains("AMB-NEW-0") && File.ReadAllText(copy).Contains("AMB-NEW-2") &&
+                    EmbedSaveJournal.Read(App, "AmbProc") != null);
+                string ma = EmbedSaveJournal.OfferMessage(ambRead, null, new List<string> { "", O1, "", "  RETURN", "  RETURN" }, pm, copy);
+                Ok("the offer names the copy file for the slots it cannot place",
+                    ma.Contains("2 of its 3 changed embed(s) cannot be put back") && ma.Contains(copy) && ma.EndsWith("Restore it as unsaved edits?"), ma);
+                string mn = EmbedSaveJournal.NotPlaceableMessage(ambRead, copy);
+                Ok("nothing placeable: the toast names the copy file", mn.Contains(copy) && mn.Contains("cannot be put back automatically"), mn);
+                EmbedSaveJournal.Retire(App, "AmbProc");
+                File.Delete(copy);   // the archive checks below count *.txt in this folder
+            }
 
             // Pipeline run 1, debugger: an unknown app is never guessed.
             Ok("no app: nothing journaled", EmbedSaveJournal.Begin(null, "NoApp", origT, saved, out arch) == null &&
@@ -525,4 +630,11 @@ static class EmbedSaveFlowTest
     }
 
     static bool Same(List<string> a, List<string> b) { return a != null && b != null && a.SequenceEqual(b); }
+
+    // Put an in-memory entry on disk under its app + procedure (the tests build entries by hand).
+    static void Begin179(string app, string proc, EmbedSaveJournal.Entry e)
+    {
+        Directory.CreateDirectory(EmbedSaveJournal.Folder);
+        File.WriteAllText(EmbedSaveJournal.PathFor(app, proc), EmbedSaveJournal.Serialize(e));
+    }
 }
