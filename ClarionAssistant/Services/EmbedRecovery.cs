@@ -34,6 +34,16 @@ namespace ClarionAssistant.Services
         public static string Format(string procName, string reason, List<int[]> ranges,
             IList<string> originalSlotTexts, IList<string> editedSlotTexts, DateTime when)
         {
+            return Format(procName, reason, ranges, originalSlotTexts, editedSlotTexts, when, null);
+        }
+
+        /// <param name="header">The file's opening comment lines ("! ..." lines, each ending in CRLF), built from the
+        /// time it is written; null = the unsaved-edits header. A copy that does NOT hold the developer's unsaved
+        /// edits (the procedure's current text, kept before a Restore replaces it: GH #179 live test 2026-10-19, G2)
+        /// says what it holds instead, and <paramref name="reason"/> is then not used.</param>
+        public static string Format(string procName, string reason, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> editedSlotTexts, DateTime when, Func<DateTime, string> header)
+        {
             if (editedSlotTexts == null) return null;
             var sb = new StringBuilder();
             int n = 0;
@@ -50,6 +60,7 @@ namespace ClarionAssistant.Services
                 n++;
             }
             if (n == 0) return null;
+            if (header != null) return header(when) + "\r\n" + sb;
             return "! CA Embeditor recovery: unsaved edits to procedure '" + procName + "'\r\n" +
                    "! Written " + when.ToString("yyyy-MM-dd HH:mm:ss") + " because " + reason + "\r\n" +
                    "! Each block below is one embed slot as you last had it. Copy it back into the embed to restore it.\r\n" +
@@ -69,8 +80,16 @@ namespace ClarionAssistant.Services
         public static string Write(string procName, string reason, List<int[]> ranges,
             IList<string> originalSlotTexts, IList<string> editedSlotTexts, string nameTag)
         {
+            return Write(procName, reason, ranges, originalSlotTexts, editedSlotTexts, nameTag, null);
+        }
+
+        /// <param name="header">The file's own header (see the <c>Format</c> overload that takes one); null = the
+        /// unsaved-edits header.</param>
+        public static string Write(string procName, string reason, List<int[]> ranges,
+            IList<string> originalSlotTexts, IList<string> editedSlotTexts, string nameTag, Func<DateTime, string> header)
+        {
             var now = DateTime.Now;
-            string text = Format(procName, reason, ranges, originalSlotTexts, editedSlotTexts, now);
+            string text = Format(procName, reason, ranges, originalSlotTexts, editedSlotTexts, now, header);
             if (text == null) return null;
 
             string dir = Folder;
