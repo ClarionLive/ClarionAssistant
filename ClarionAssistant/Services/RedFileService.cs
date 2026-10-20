@@ -107,6 +107,20 @@ namespace ClarionAssistant.Services
             return Load(redFilePath, macros, makeActive: true);
         }
 
+        /// <summary>
+        /// Rebuild, in another process, an instance a host already loaded (ticket 583abdec: the IDE's index
+        /// runs in clarion-indexer.exe). The host passes the file it loaded, its FINAL macro table
+        /// (<see cref="Macros"/>, which already holds the BIN/ROOT/REDDIR it derived) and the version names,
+        /// so resolution - the project-local .red rule of <see cref="ForProjectDirectory"/> included - is
+        /// the host's own, not a re-derivation from the file's location.
+        /// </summary>
+        public bool LoadAs(string redFilePath, Dictionary<string, string> macros, string versionRedFileName, string loadedForVersion)
+        {
+            VersionRedFileName = string.IsNullOrEmpty(versionRedFileName) ? null : versionRedFileName;
+            LoadedForVersion = string.IsNullOrEmpty(loadedForVersion) ? null : loadedForVersion;
+            return Load(redFilePath, macros, makeActive: true);
+        }
+
         private bool Load(string redFilePath, Dictionary<string, string> macros, bool makeActive)
         {
             if (string.IsNullOrEmpty(redFilePath) || !File.Exists(redFilePath))

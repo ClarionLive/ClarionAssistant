@@ -108,6 +108,7 @@
     <Compile Include="Services\IdeProbeService.cs" />
     <Compile Include="Services\IndexRunGate.cs" />
     <Compile Include="Services\IndexRunLog.cs" />
+    <Compile Include="Services\OutOfProcessIndexer.cs" />
     <Compile Include="Services\DocumentOutlineBuilder.cs" />
     <Compile Include="Services\EditorFocusGuard.cs" />
     <Compile Include="Services\IdeEditorOptions.cs" />
@@ -306,6 +307,7 @@
     <Compile Include="CodeGraph\Graph\CodeGraphProvider.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphIndexer.cs" />
     <Compile Include="CodeGraph\Graph\IndexProgress.cs" />
+    <Compile Include="CodeGraph\Graph\IndexerProtocol.cs" />
     <Compile Include="CodeGraph\Graph\CodeGraphQuery.cs" />
     <Compile Include="CodeGraph\Parsing\ClarionParser.cs" />
     <Compile Include="CodeGraph\Parsing\ClarionBuiltins.cs" />

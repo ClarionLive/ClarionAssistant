@@ -525,6 +525,24 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86" }
+            # 583abdec: every host-side index runs in clarion-indexer.exe (64-bit), not in the 32-bit IDE. This 32-bit
+            # harness builds the REAL indexer into a deployed-addin-like folder (32-bit interop at its root), runs it
+            # through the REAL OutOfProcessIndexer, and requires the in-process run's result, rows and progress stream;
+            # plus the protocol round trip, cancel (graceful and killed), child failures and the missing-exe fallback.
+            @{ Name = "OutOfProcessIndexer.Test"
+               Sources = @("tests\OutOfProcessIndexer.Test.cs", "Services\OutOfProcessIndexer.cs", "CodeGraph\Graph\IndexerProtocol.cs",
+                           "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
+                           "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs", "CodeGraph\Parsing\SolutionParser.cs",
+                           "CodeGraph\Parsing\ProjectParser.cs", "CodeGraph\Parsing\SourceResolver.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86"
+               Args = @($csc, $RepoDir) }
             # GH #205: write_file / append_to_file vs an open native editor tab - refuse under unsaved changes (file
             # untouched), reload a clean tab only AFTER a successful write, the override, the CA Editor note, and the
             # could-not-check line when no IDE answers. The IDE half is pinned by OpenTabGuard.SourceScan.ps1.

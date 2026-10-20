@@ -219,14 +219,17 @@ if (-not $SkipBuild) {
 
     # Build ClarionIndexer (VENDORED into the repo — GitHub #30 — not the old external H:\DevLaptop\ClarionLSP tree)
     # NOTE: no /p:Platform override here. ClarionIndexer.csproj only defines <OutputPath> for
-    # Platform=x86 (its own default when Platform is unset) — forcing AnyCPU here matches neither
+    # Platform=x64 (its own default when Platform is unset) — forcing AnyCPU here matches neither
     # PropertyGroup condition, so MSBuild errors with "BaseOutputPath/OutputPath property is not
     # set". deploy.ps1 already builds it this way (Platform left unset); mirror that here.
+    #
+    # FATAL since ticket 583abdec: the addin and the standalone MCP server run EVERY index in this exe
+    # (64-bit, out of the 32-bit IDE), so a failed build would ship a stale indexer that every Reindex uses.
     $indexerCsproj = "$repoRoot\ClarionAssistant\indexer\ClarionIndexer.csproj"
     if (Test-Path $indexerCsproj) {
         Write-Host "Building ClarionIndexer..." -ForegroundColor Yellow
         & $msbuild $indexerCsproj /p:Configuration=Debug /t:Build /v:minimal /nologo /restore
-        if ($LASTEXITCODE -ne 0) { Write-Warning "ClarionIndexer build failed (non-fatal)" }
+        if ($LASTEXITCODE -ne 0) { Write-Error "ClarionIndexer build failed"; exit 1 }
 
     # Build the standalone MCP server (ticket d051fbd1) - the editor-agnostic tools as their own
     # stdio process, for Clarion developers who work in Sublime/VS Code rather than the IDE.
@@ -326,6 +329,30 @@ if (Test-Path $versionProps) {
 } else {
     Write-Warning "Version.props not found at $versionProps - skipping freshness gate."
 }
+
+# ── Step 1c: the indexer the addin runs every index in must be the 64-bit build, with its x64 interop
+# (ticket 583abdec). A 32-bit exe from an old build would put large solutions back under a 2-4 GB cap;
+# a missing x64\SQLite.Interop.dll makes every Reindex fail at start.
+$indexerExe = "$repoRoot\ClarionAssistant\indexer\bin\Debug\clarion-indexer.exe"
+$x64Interop = "$repoRoot\ClarionAssistant\lib\sqlite-fts5\x64\SQLite.Interop.dll"
+if (-not (Test-Path $indexerExe)) { Write-Error "clarion-indexer.exe not found at $indexerExe. Build indexer\ClarionIndexer.csproj first."; exit 1 }
+if (-not (Test-Path $x64Interop)) { Write-Error "x64 SQLite interop missing: $x64Interop"; exit 1 }
+$peBytes = [IO.File]::ReadAllBytes($indexerExe)
+$peOffset = [BitConverter]::ToInt32($peBytes, 0x3C)
+$machine = [BitConverter]::ToUInt16($peBytes, $peOffset + 4)
+if ($machine -ne 0x8664) {
+    Write-Error ("clarion-indexer.exe is not 64-bit (PE machine 0x{0:X4}, expected 0x8664). Rebuild indexer\ClarionIndexer.csproj." -f $machine)
+    exit 1
+}
+$idxVer = (Get-Item $indexerExe).VersionInfo.FileVersion
+if ($expected -and $idxVer -ne $expected) {
+    if ($AllowStaleBins) { Write-Warning "Shipping stale clarion-indexer.exe ($idxVer, expected $expected) because -AllowStaleBins was passed." }
+    else {
+        Write-Error "Stale clarion-indexer.exe: $idxVer (expected $expected). Rebuild it: msbuild ClarionAssistant\indexer\ClarionIndexer.csproj /p:Configuration=Debug (after the addin, which generates Properties\AssemblyVersion.cs). Use -AllowStaleBins to override."
+        exit 1
+    }
+}
+Write-Host "  OK   clarion-indexer.exe is 64-bit ($idxVer); x64 SQLite interop present" -ForegroundColor Green
 
 # ── Step 2: Sign DLLs before packaging (if requested) ──
 if ($Sign -and $signtool) {

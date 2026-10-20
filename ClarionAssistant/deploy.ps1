@@ -771,11 +771,15 @@ foreach ($ver in $TargetVersions) {
         }
 
         # --- Deploy indexer ---
+        # The indexer is 64-bit (ticket 583abdec): the addin and the standalone MCP server run every index in
+        # it as a child process, so it needs x64\SQLite.Interop.dll beside it (it loads the interop for its own
+        # bitness from x86\ or x64\ before System.Data.SQLite looks). Without x64\ every IDE reindex fails.
         $IndexerItems = @(
             "clarion-indexer.exe"
             "clarion-indexer.pdb"
             "System.Data.SQLite.dll"
             "x86"
+            "x64"
         )
 
         if (Test-Path $IndexerOutput) {

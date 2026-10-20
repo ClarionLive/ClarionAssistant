@@ -3,14 +3,49 @@ using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using ClarionCodeGraph.Graph;
 
 namespace ClarionIndexer
 {
     class Program
     {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr LoadLibraryW(string lpLibFileName);
+
+        /// <summary>
+        /// Load the SQLite.Interop.dll that matches THIS process's bitness before System.Data.SQLite looks for one
+        /// (ticket 583abdec: the indexer is 64-bit now). The exe shares the addin folder, whose root holds the
+        /// 32-bit interop the IDE loads - and System.Data.SQLite's pre-loader stops searching when it finds an
+        /// interop in the base directory itself, so left alone a 64-bit indexer would bind the 32-bit file and
+        /// die with BadImageFormatException. Once a module named SQLite.Interop.dll is loaded, the runtime's
+        /// DllImport("SQLite.Interop.dll") binds to it. Returns null when loaded, else the error - a missing file is a
+        /// clear error at start, not a late crash.
+        /// </summary>
+        private static string PreloadSqliteInterop()
+        {
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            string arch = Environment.Is64BitProcess ? "x64" : "x86";
+            string path = Path.Combine(Path.Combine(dir, arch), "SQLite.Interop.dll");
+            if (!File.Exists(path))
+                return "the " + arch + " SQLite interop is missing: " + path + " - redeploy or reinstall ClarionAssistant";
+            if (LoadLibraryW(path) == IntPtr.Zero)
+                return "could not load " + path + " (Win32 error " + Marshal.GetLastWin32Error() + ")";
+            return null;
+        }
+
         static int Main(string[] args)
         {
+            string preloadError = args.Length > 0 && args[0] != "--help" && args[0] != "-h" ? PreloadSqliteInterop() : null;
+            if (preloadError != null)
+            {
+                Console.Error.WriteLine("Error: " + preloadError);
+                if (Array.IndexOf(args, "--protocol") >= 0)
+                    Console.WriteLine(IndexerProtocol.FailureToJson(new DllNotFoundException(preloadError), false, null));
+                return 1;
+            }
+
             if (args.Length == 0 || args[0] == "--help" || args[0] == "-h")
             {
                 PrintUsage();
@@ -44,7 +79,7 @@ namespace ClarionIndexer
             Console.Error.WriteLine("ClarionIndexer - Build and query Clarion code graph databases");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  clarion-indexer index <solution.sln> [--db <path>] [--incremental] [--lib-paths \"path1;path2\"] [--red <file.red>]");
+            Console.Error.WriteLine("  clarion-indexer index <solution.sln> [--db <path>] [--incremental] [--lib-paths \"path1;path2\"] [--red <file.red>] [--configuration <name>]");
             Console.Error.WriteLine("  clarion-indexer query <db-path> <command> [args...]");
             Console.Error.WriteLine("  clarion-indexer stats <db-path>");
             Console.Error.WriteLine("  clarion-indexer <solution.sln>              (shorthand for index)");
@@ -61,6 +96,15 @@ namespace ClarionIndexer
             Console.Error.WriteLine("    --configuration <name>  Build configuration (Debug, Release): resolve through");
             Console.Error.WriteLine("                     its .red sections ([Release32], [Release], [Common]) as the");
             Console.Error.WriteLine("                     compiler does. Default: Common, Debug, Release.");
+            Console.Error.WriteLine("    --no-lib-paths   Do not derive library paths from the .red");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("  Host options (ClarionAssistant runs the index in this process):");
+            Console.Error.WriteLine("    --protocol       Structured progress on stderr, result JSON on stdout, \"cancel\" on stdin;");
+            Console.Error.WriteLine("                     paths are taken verbatim. Exit 0 indexed, 1 failed, 2 cancelled.");
+            Console.Error.WriteLine("    --red-exact      Load --red with exactly the --red-macro NAME=VALUE pairs given");
+            Console.Error.WriteLine("    --red-macro N=V  A redirection macro (repeatable)");
+            Console.Error.WriteLine("    --red-version-name <file>  The version's .red file name (project-local .red rule)");
+            Console.Error.WriteLine("    --red-version <name>       The Clarion version the .red was loaded for");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Query Commands:");
             Console.Error.WriteLine("  query <db> find-symbol <name>          Search symbols by name");
@@ -85,12 +129,31 @@ namespace ClarionIndexer
                 return 1;
             }
 
-            string slnPath = Path.GetFullPath(args[1]);
+            // --protocol (ticket 583abdec): run as a host's child - the addin in Clarion.exe, or the standalone
+            // MCP server. Progress goes to stderr as IndexerProtocol lines, the pipes are UTF-8 without a BOM,
+            // "cancel" on stdin (or stdin closing: the host died) cancels, and paths are taken VERBATIM - the
+            // host resolved them, and a re-normalised library path would change the stored library hash.
+            bool protocol = Array.IndexOf(args, "--protocol") >= 0;
+            if (protocol)
+            {
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+                Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
+            }
+            Func<string, string> fullPath = p => protocol ? p : Path.GetFullPath(p);
+
+            string slnPath = fullPath(args[1]);
             string dbPath = null;
             bool incremental = false;
             List<string> libraryPaths = null;
+            bool noLibraryPaths = false;
             string redPath = null;
             string configuration = null;
+            bool redExact = false;
+            string redVersionName = null;
+            string redVersion = null;
+            var redMacros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            int testSlowMs = 0;
+            bool testIgnoreCancel = false;
 
             for (int i = 2; i < args.Length; i++)
             {
@@ -100,7 +163,7 @@ namespace ClarionIndexer
                 }
                 else if (args[i] == "--db" && i + 1 < args.Length)
                 {
-                    dbPath = Path.GetFullPath(args[++i]);
+                    dbPath = fullPath(args[++i]);
                 }
                 else if (args[i] == "--incremental")
                 {
@@ -112,20 +175,53 @@ namespace ClarionIndexer
                     libraryPaths = new List<string>();
                     foreach (string p in raw.Split(';'))
                     {
-                        string trimmed = p.Trim();
-                        if (trimmed.Length > 0)
-                            libraryPaths.Add(Path.GetFullPath(trimmed));
+                        string trimmed = protocol ? p : p.Trim();
+                        if (trimmed.Trim().Length > 0)
+                            libraryPaths.Add(fullPath(trimmed));
                     }
+                }
+                else if (args[i] == "--no-lib-paths")
+                {
+                    noLibraryPaths = true;
                 }
                 else if (args[i] == "--red" && i + 1 < args.Length)
                 {
-                    redPath = Path.GetFullPath(args[++i]);
+                    redPath = fullPath(args[++i]);
+                }
+                else if (args[i] == "--red-exact")
+                {
+                    redExact = true;
+                }
+                else if (args[i] == "--red-version-name" && i + 1 < args.Length)
+                {
+                    redVersionName = args[++i];
+                }
+                else if (args[i] == "--red-version" && i + 1 < args.Length)
+                {
+                    redVersion = args[++i];
+                }
+                else if (args[i] == "--red-macro" && i + 1 < args.Length)
+                {
+                    string kv = args[++i];
+                    int eq = kv.IndexOf('=');
+                    if (eq > 0) redMacros[kv.Substring(0, eq)] = kv.Substring(eq + 1);
+                }
+                else if (args[i] == "--test-slow-ms" && i + 1 < args.Length)
+                {
+                    // Harness only: sleep this long after each structured progress event, so a cancel can land mid-run.
+                    int.TryParse(args[++i], out testSlowMs);
+                }
+                else if (args[i] == "--test-ignore-cancel")
+                {
+                    // Harness only: never honour a cancel, so the host's kill-after-grace path is exercised.
+                    testIgnoreCancel = true;
                 }
             }
 
             if (!File.Exists(slnPath))
             {
                 Console.Error.WriteLine("Error: Solution file not found: " + slnPath);
+                if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new FileNotFoundException("Solution file not found: " + slnPath), false, null));
                 return 1;
             }
 
@@ -147,26 +243,40 @@ namespace ClarionIndexer
                 if (!File.Exists(redPath))
                 {
                     Console.Error.WriteLine("Error: redirection file not found: " + redPath);
+                    if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new FileNotFoundException("redirection file not found: " + redPath), false, null));
                     return 1;
                 }
-                string redDir = Path.GetDirectoryName(redPath);
-                var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["THISDIR"] = redDir,
-                    ["REDDIR"] = redDir
-                };
-                if (string.Equals(Path.GetFileName(redDir), "bin", StringComparison.OrdinalIgnoreCase))
-                    macros["ROOT"] = Path.GetDirectoryName(redDir);
                 red = new ClarionAssistant.Services.RedFileService();
-                if (!red.Load(redPath, macros))
+                bool loaded;
+                if (redExact)
+                {
+                    // The host's own loaded instance, rebuilt as-is: its final macros and version names (583abdec).
+                    loaded = red.LoadAs(redPath, redMacros, redVersionName, redVersion);
+                }
+                else
+                {
+                    string redDir = Path.GetDirectoryName(redPath);
+                    var macros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["THISDIR"] = redDir,
+                        ["REDDIR"] = redDir
+                    };
+                    if (string.Equals(Path.GetFileName(redDir), "bin", StringComparison.OrdinalIgnoreCase))
+                        macros["ROOT"] = Path.GetDirectoryName(redDir);
+                    foreach (var kv in redMacros) macros[kv.Key] = kv.Value;
+                    loaded = red.Load(redPath, macros);
+                }
+                if (!loaded)
                 {
                     Console.Error.WriteLine("Error: failed to parse redirection file: " + redPath);
+                    if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new InvalidDataException("failed to parse redirection file: " + redPath), false, null));
                     return 1;
                 }
 
                 // Parity with the addin's RunIndex: when no explicit --lib-paths, derive the
-                // library sweep dirs from the .red's .inc search paths.
-                if (libraryPaths == null)
+                // library sweep dirs from the .red's .inc search paths. --no-lib-paths: the host
+                // passed none on purpose.
+                if (libraryPaths == null && !noLibraryPaths)
                 {
                     var incPaths = red.GetSearchPaths(".inc");
                     if (incPaths.Count > 0)
@@ -175,6 +285,7 @@ namespace ClarionIndexer
             }
 
             Console.Error.WriteLine("Indexing: " + slnPath);
+            Console.Error.WriteLine("Process: " + (Environment.Is64BitProcess ? "64-bit" : "32-bit") + ", pid " + Process.GetCurrentProcess().Id);
             Console.Error.WriteLine("Database: " + dbPath);
             Console.Error.WriteLine("Mode requested: " + (incremental ? "incremental" : "full"));
             if (libraryPaths != null && libraryPaths.Count > 0)
@@ -183,50 +294,74 @@ namespace ClarionIndexer
                 Console.Error.WriteLine("Redirection: " + redPath);
             Console.Error.WriteLine();
 
+            // Cooperative cancel from the host: "cancel" on stdin, or stdin closing (the host process died -
+            // the pipe's write end goes with it), which must not leave an orphan writing the database.
+            int cancelFlag = 0;
+            int hostGone = 0;
+            if (protocol)
+            {
+                var stdinWatch = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
+                        string line;
+                        while ((line = input.ReadLine()) != null)
+                        {
+                            if (line.Trim().Trim('\uFEFF').Equals(IndexerProtocol.CancelCommand, StringComparison.OrdinalIgnoreCase))
+                            {
+                                System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
+                                return;
+                            }
+                        }
+                        System.Threading.Interlocked.Exchange(ref hostGone, 1);
+                        System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
+                    }
+                    catch { }
+                }) { IsBackground = true, Name = "host-cancel" };
+                stdinWatch.Start();
+            }
+
+            CodeGraphIndexer indexer = null;
+            CodeGraphDatabase db = null;
             try
             {
-                var db = new CodeGraphDatabase();
+                db = new CodeGraphDatabase();
                 db.Open(dbPath);
 
-                var indexer = new CodeGraphIndexer(db);
+                indexer = new CodeGraphIndexer(db);
                 indexer.RedService = red;
                 indexer.BuildConfiguration = configuration;
-                indexer.OnProgress += msg => Console.Error.WriteLine("  " + msg);
+                if (protocol)
+                {
+                    var self = indexer;
+                    bool modeSent = false;
+                    indexer.OnProgress += msg =>
+                    {
+                        // EffectiveIncremental is decided before the first progress message, and before anything is
+                        // cleared: the host needs it to handle a cancel (a cancelled FULL run leaves a partial db).
+                        if (!modeSent) { modeSent = true; Console.Error.WriteLine(IndexerProtocol.EncodeMode(self.EffectiveIncremental)); }
+                        Console.Error.WriteLine(IndexerProtocol.EncodeMessage(msg));
+                    };
+                    indexer.OnProgressEvent += ev =>
+                    {
+                        Console.Error.WriteLine(IndexerProtocol.EncodeEvent(ev));
+                        if (testSlowMs > 0) System.Threading.Thread.Sleep(testSlowMs);
+                    };
+                    indexer.CancelRequested = () => !testIgnoreCancel
+                        && System.Threading.Interlocked.CompareExchange(ref cancelFlag, 0, 0) == 1;
+                }
+                else
+                {
+                    indexer.OnProgress += msg => Console.Error.WriteLine("  " + msg);
+                }
 
                 var sw = Stopwatch.StartNew();
                 var result = indexer.IndexSolution(slnPath, incremental, libraryPaths);
                 sw.Stop();
 
-                // Output JSON result to stdout for LSP server to consume
-                Console.WriteLine("{");
-                Console.WriteLine("  \"success\": true,");
-                Console.WriteLine("  \"slnPath\": " + JsonEscape(result.SlnPath) + ",");
-                Console.WriteLine("  \"dbPath\": " + JsonEscape(dbPath) + ",");
-                Console.WriteLine("  \"projectCount\": " + result.ProjectCount + ",");
-                Console.WriteLine("  \"fileCount\": " + result.FileCount + ",");
-                Console.WriteLine("  \"symbolCount\": " + result.SymbolCount + ",");
-                // #244 item 3: "success" means the run finished; "status" says how much it covered.
-                Console.WriteLine("  \"status\": " + JsonEscape(result.Status) + ",");
-                Console.WriteLine("  \"indexerVersion\": " + JsonEscape(result.IndexerVersion) + ",");
-                Console.WriteLine("  \"featureLevel\": " + result.FeatureLevel + ",");
-                // ef2fd2a9: what ran. --incremental on a database below the current feature level runs full; "mode" says so
-                // ("incremental" / "full"), "requestedMode" is what was asked, "upgradedFromFeatureLevel" is -1 unless upgraded.
-                Console.WriteLine("  \"mode\": " + JsonEscape(result.Incremental ? "incremental" : "full") + ",");
-                Console.WriteLine("  \"requestedMode\": " + JsonEscape(result.RequestedIncremental ? "incremental" : "full") + ",");
-                Console.WriteLine("  \"upgradedFromFeatureLevel\": " + result.UpgradedFromFeatureLevel + ",");
-                Console.WriteLine("  \"upToDate\": " + (result.UpToDate ? "true" : "false") + ",");
-                Console.WriteLine("  \"modeText\": " + JsonEscape(result.ModeText) + ",");
-                Console.WriteLine("  \"projectsResolved\": " + result.ProjectsResolved + ",");
-                Console.WriteLine("  \"projectsUnresolved\": " + result.ProjectsUnresolved + ",");
-                Console.WriteLine("  \"cwprojFilesListed\": " + result.CwprojFilesListed + ",");
-                Console.WriteLine("  \"cwprojFilesUnresolved\": " + result.CwprojFilesUnresolved + ",");
-                Console.WriteLine("  \"filesParsed\": " + result.FilesParsed + ",");
-                Console.WriteLine("  \"filesUnresolved\": " + result.FilesUnresolved + ",");
-                Console.WriteLine("  \"filesSkipped\": " + result.FilesSkipped + ",");
-                Console.WriteLine("  \"moduleFilesIndexed\": " + result.ModuleFilesIndexed + ",");
-                Console.WriteLine("  \"moduleTargetsUnresolved\": " + result.ModuleTargetsUnresolved + ",");
-                Console.WriteLine("  \"durationMs\": " + sw.ElapsedMilliseconds);
-                Console.WriteLine("}");
+                // The result as JSON on stdout: what a host (OutOfProcessIndexer) rebuilds its IndexResult from.
+                Console.WriteLine(IndexerProtocol.ResultToJson(result, dbPath, sw.ElapsedMilliseconds));
 
                 Console.Error.WriteLine();
                 Console.Error.WriteLine("Done: " + result.SymbolCount + " symbols, " +
@@ -236,16 +371,33 @@ namespace ClarionIndexer
                 Console.Error.WriteLine(result.CoverageText());
 
                 db.Close();
-                return 0;
+                return IndexerProtocol.ExitOk;
+            }
+            catch (OperationCanceledException ex)
+            {
+                bool? mode = indexer != null ? indexer.EffectiveIncremental : (bool?)null;
+                try { if (db != null) db.Close(); } catch { }
+                // The host died mid-run: nobody is left to delete a cancelled FULL run's partial database, which
+                // would otherwise pass for a complete one. (A host that is alive deletes it itself, verified.)
+                if (System.Threading.Interlocked.CompareExchange(ref hostGone, 0, 0) == 1 && mode == false)
+                {
+                    try { File.Delete(dbPath); } catch { }
+                    if (!File.Exists(dbPath))
+                    {
+                        try { File.Delete(dbPath + "-wal"); } catch { }
+                        try { File.Delete(dbPath + "-shm"); } catch { }
+                    }
+                }
+                Console.WriteLine(IndexerProtocol.FailureToJson(ex, true, mode));
+                Console.Error.WriteLine("Cancelled: " + ex.Message);
+                return IndexerProtocol.ExitCancelled;
             }
             catch (Exception ex)
             {
-                Console.WriteLine("{");
-                Console.WriteLine("  \"success\": false,");
-                Console.WriteLine("  \"error\": " + JsonEscape(ex.Message));
-                Console.WriteLine("}");
-                Console.Error.WriteLine("Error: " + ex.Message);
-                return 1;
+                try { if (db != null) db.Close(); } catch { }
+                Console.WriteLine(IndexerProtocol.FailureToJson(ex, false, indexer != null ? indexer.EffectiveIncremental : (bool?)null));
+                Console.Error.WriteLine("Error: " + ex.GetType().Name + ": " + ex.Message);
+                return IndexerProtocol.ExitFailed;
             }
         }
 
