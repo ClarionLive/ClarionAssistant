@@ -170,6 +170,11 @@ A `.dctx` ingest now stores key case sensitivity (`keys.is_case_sensitive`, 0 = 
 
 Re-index your solution after updating to pick these up. Thanks to @MarkGoldberg.
 
+<!-- release-docs: covered=codegraph -->
+### Reindex no longer runs Clarion out of memory on large solutions
+
+**Reindex** and **Update** used to build the CodeGraph index inside Clarion, a 32-bit program that already uses about 1.5 GB of its 2 GB on its own. On a large solution the index ran out of memory partway through ("Rebuilding call relationships") and stopped. The index now runs in a separate 64-bit process, `clarion-indexer.exe` in the add-in folder, so Clarion's own memory stays flat, however large the solution. The progress window, Cancel, the run log and the result look and work as before; the `index_codegraph` and `index_solution` tools and the standalone server use the same process. If that process fails, the error names it, gives its exit code and shows the last lines it printed. If `clarion-indexer.exe` is missing from the add-in folder, indexing still works inside Clarion as before, and the result warns you to reinstall.
+
 ## What's New in v6.0
 
 6.0 is a major release. Claude's editor and embed tools now work on the text you see in the CA Editor and CA Embeditor, the bundled language server moves to v1.0.8 with incremental sync, hover, completion and diagnostics are more accurate, and the CA Editor gains keymap profiles. Full notes: **[docs/releases/v6.0.0.md](docs/releases/v6.0.0.md)**.

@@ -125,6 +125,7 @@
     <Compile Include="..\CodeGraph\Graph\CodeGraphDatabase.cs"><Link>Graph\CodeGraphDatabase.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphIndexer.cs"><Link>Graph\CodeGraphIndexer.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\IndexProgress.cs"><Link>Graph\IndexProgress.cs</Link></Compile>
+    <Compile Include="..\CodeGraph\Graph\IndexerProtocol.cs"><Link>Graph\IndexerProtocol.cs</Link></Compile>
     <Compile Include="..\CodeGraph\Graph\CodeGraphQuery.cs"><Link>Graph\CodeGraphQuery.cs</Link></Compile>
     <!-- Declares CodeGraphProvider and CodeGraphSymbol, which SharedLspBridge uses to answer
          definition / references / workspace-symbol from the CodeGraph when the LSP returns
@@ -194,6 +195,7 @@
     <Compile Include="..\Services\ClarionSourceText.cs"><Link>Services\ClarionSourceText.cs</Link></Compile>
     <Compile Include="..\Services\IndexRunGate.cs"><Link>Services\IndexRunGate.cs</Link></Compile>
     <Compile Include="..\Services\IndexRunLog.cs"><Link>Services\IndexRunLog.cs</Link></Compile>
+    <Compile Include="..\Services\OutOfProcessIndexer.cs"><Link>Services\OutOfProcessIndexer.cs</Link></Compile>
     <Compile Include="..\Services\InstanceCoordinationService.cs"><Link>Services\InstanceCoordinationService.cs</Link></Compile>
     <!-- The LSP subsystem's diagnostic sink. Linked BEFORE the three files that call it so the
          reason it exists reads in order: they used to call Debug.WriteLine, which a Release build

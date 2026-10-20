@@ -758,13 +758,12 @@ namespace ClarionAssistant.McpServer
                 }
 
                 SymbolIndex.Release(dbPath);   // completion's read-only handle (1c685f2e) - never across a write open
-                var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
-                db.Open(dbPath);
-                try
                 {
-                    var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
-                    indexer.RedService = activeRed;
-                    indexer.BuildConfiguration = McpToolRegistry.BuildConfigurationForIndex(slnPath); // GH #245
+                    // 583abdec: the same 64-bit child process the addin uses. This server is 32-bit too (it shares the
+                    // addin's x86 SQLite), so a large solution had the same address-space ceiling here; and one
+                    // indexing path for every host means one behaviour to test.
+                    var indexer = new OutOfProcessIndexer();
+                    if (runLog != null) { try { runLog.WriteLine("Indexer process: " + (indexer.ExePath ?? "(unknown)")); } catch { } }
                     indexer.OnProgress += msg =>
                     {
                         if (runLog != null) { try { runLog.WriteLine(msg); } catch { } }
@@ -777,7 +776,15 @@ namespace ClarionAssistant.McpServer
                         };
                     }
 
-                    var result = indexer.IndexSolution(slnPath, incremental, libPaths);
+                    var result = indexer.Run(new IndexRunRequest
+                    {
+                        SlnPath = slnPath,
+                        DbPath = dbPath,
+                        Incremental = incremental,
+                        Red = activeRed,
+                        BuildConfiguration = McpToolRegistry.BuildConfigurationForIndex(slnPath), // GH #245
+                        LibraryPaths = libPaths
+                    });
 
                     // #244 item 3: a run that resolved little of the solution says so (status + coverage).
                     complete(string.Format(
@@ -789,11 +796,8 @@ namespace ClarionAssistant.McpServer
                         .TrimStart()
                         // ef2fd2a9: an incremental request on an older database ran full - say so.
                         + "\n  Mode: " + result.ModeText
-                        + "\n" + result.CoverageText());
-                }
-                finally
-                {
-                    try { db.Close(); } catch { }
+                        + "\n" + result.CoverageText()
+                        + (indexer.FallbackWarning != null ? "\n  " + indexer.FallbackWarning : ""));
                 }
             }
             catch (Exception ex)

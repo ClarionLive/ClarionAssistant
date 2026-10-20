@@ -5995,11 +5995,10 @@ IdeOnly = true,
             try
             {
                 SymbolIndex.Release(dbPath);   // completion's read-only handle (1c685f2e) - never across a write open
-                var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
-                db.Open(dbPath);
-                try
                 {
-                    var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
+                    // 583abdec: the index runs in clarion-indexer.exe (64-bit), never inside this host - in the IDE
+                    // pane that host is the 32-bit Clarion.exe, which ran out of memory on a large solution.
+                    var indexer = new OutOfProcessIndexer();
                     // PARITY with RunIndex/index_solution: same active .red, same library
                     // paths. This handler used to pass neither, so the same db was more or
                     // less complete depending on which tool indexed last (ticket d1a0aea6).
@@ -6023,10 +6022,10 @@ IdeOnly = true,
                             red = _workspace.ActiveRedFileService;
                             libPaths = snap.IndexLibraryPaths;
                         }
-                        indexer.RedService = red;
                     }
                     runLog.WriteLine("Redirection file: " + (red != null && red.RedFilePath != null ? red.RedFilePath : "(none)")
                         + " (for " + slnPath + ")");
+                    runLog.WriteLine("Indexer process: " + (indexer.ExePath ?? "(addin folder unknown)"));
                     indexer.OnProgress += msg => runLog.WriteLine(msg);
                     if (onProgress != null)
                     {
@@ -6035,8 +6034,16 @@ IdeOnly = true,
                             DescribeIndexEvent(ev));
                     }
 
-                    indexer.BuildConfiguration = BuildConfigurationForIndex(slnPath);
-                    var result = indexer.IndexSolution(slnPath, incremental, libPaths);
+                    string buildConfiguration = BuildConfigurationForIndex(slnPath);
+                    var result = indexer.Run(new IndexRunRequest
+                    {
+                        SlnPath = slnPath,
+                        DbPath = dbPath,
+                        Incremental = incremental,
+                        Red = red,
+                        BuildConfiguration = buildConfiguration,
+                        LibraryPaths = libPaths
+                    });
 
                     // #244 item 3: the headline and the coverage block say when most of the solution did
                     // not resolve, instead of "indexed successfully" over a near-empty graph.
@@ -6058,12 +6065,9 @@ IdeOnly = true,
                         // run holds the per-solution file) — say so instead of a bare "Log: ".
                         runLog.LogPath ?? "(no log written — another index run may hold the log file)",
                         red != null && red.RedFilePath != null ? red.RedFilePath : "(none)")
-                        + "\n  Build configuration: " + (indexer.BuildConfiguration ?? "(unknown - .red sections Common, Debug, Release)")
-                        + "\n" + result.CoverageText();
-                }
-                finally
-                {
-                    db.Close();
+                        + "\n  Build configuration: " + (buildConfiguration ?? "(unknown - .red sections Common, Debug, Release)")
+                        + "\n" + result.CoverageText()
+                        + (indexer.FallbackWarning != null ? "\n  " + indexer.FallbackWarning : "");
                 }
             }
             catch (Exception ex)

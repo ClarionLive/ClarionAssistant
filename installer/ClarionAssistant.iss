@@ -258,6 +258,8 @@ Source: "{#SrcC10}\Everything32.dll"; DestDir: "{code:GetC10Path}\accessory\addi
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant"; Components: clarion10; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\x86"; Components: clarion10; Flags: ignoreversion
+; 64-bit SQLite interop for clarion-indexer.exe, which is x64 (ticket 583abdec: every reindex runs in it, out of the 32-bit IDE).
+Source: "{#SrcFts5}\x64\SQLite.Interop.dll"; DestDir: "{code:GetC10Path}\accessory\addins\ClarionAssistant\x64"; Components: clarion10; Flags: ignoreversion
 ; Terminal/ web assets — recursive copy so new pages/scripts ship automatically and the hand-list
 ; can't drift (fixes clean-install "Cannot create object" + missing Monaco assets, ticket 0abd79df).
 ; Excludes the C# source (compiled into the DLL) and dev-only mockups/tests; ClassModels ships (runtime).
@@ -323,6 +325,8 @@ Source: "{#SrcC11}\Everything32.dll"; DestDir: "{code:GetC11Path}\accessory\addi
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant"; Components: clarion11; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\x86"; Components: clarion11; Flags: ignoreversion
+; 64-bit SQLite interop for clarion-indexer.exe, which is x64 (ticket 583abdec: every reindex runs in it, out of the 32-bit IDE).
+Source: "{#SrcFts5}\x64\SQLite.Interop.dll"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\x64"; Components: clarion11; Flags: ignoreversion
 ; Terminal/ web assets — recursive copy (see C10 block above). Ticket 0abd79df.
 Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion11; Flags: ignoreversion recursesubdirs; Excludes: "*.cs,\mockups\*,\test\*"
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC11Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion11; Flags: ignoreversion
@@ -390,6 +394,8 @@ Source: "{#SrcC11_1}\Everything32.dll"; DestDir: "{code:GetC111Path}\accessory\a
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant"; Components: clarion111; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\x86"; Components: clarion111; Flags: ignoreversion
+; 64-bit SQLite interop for clarion-indexer.exe, which is x64 (ticket 583abdec: every reindex runs in it, out of the 32-bit IDE).
+Source: "{#SrcFts5}\x64\SQLite.Interop.dll"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\x64"; Components: clarion111; Flags: ignoreversion
 ; Terminal/ web assets — recursive copy (see C10 block above). Ticket 0abd79df.
 Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion111; Flags: ignoreversion recursesubdirs; Excludes: "*.cs,\mockups\*,\test\*"
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC111Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion111; Flags: ignoreversion
@@ -454,6 +460,8 @@ Source: "{#SrcC12}\Everything32.dll"; DestDir: "{code:GetC12Path}\accessory\addi
 Source: "{#SrcFts5}\System.Data.SQLite.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant"; Components: clarion12; Flags: ignoreversion
 Source: "{#SrcFts5}\SQLite.Interop.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\x86"; Components: clarion12; Flags: ignoreversion
+; 64-bit SQLite interop for clarion-indexer.exe, which is x64 (ticket 583abdec: every reindex runs in it, out of the 32-bit IDE).
+Source: "{#SrcFts5}\x64\SQLite.Interop.dll"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\x64"; Components: clarion12; Flags: ignoreversion
 ; Terminal/ web assets — recursive copy (see C10 block above). Ticket 0abd79df.
 Source: "{#SrcTerminal}\*"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\Terminal"; Components: clarion12; Flags: ignoreversion recursesubdirs; Excludes: "*.cs,\mockups\*,\test\*"
 Source: "{#SrcTaskBoard}\lifecycle-board.html"; DestDir: "{code:GetC12Path}\accessory\addins\ClarionAssistant\TaskLifecycleBoard"; Components: clarion12; Flags: ignoreversion

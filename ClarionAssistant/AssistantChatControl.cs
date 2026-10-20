@@ -2538,42 +2538,43 @@ namespace ClarionAssistant
             bool wasCancelled = false;
             bool partialDbDeleted = false;
             bool ranIncremental = incremental;   // what actually ran (see the feature-level check in IndexSolution)
+            string fallbackWarning = null;       // set only when clarion-indexer.exe was missing (in-process fallback)
             worker.DoWork += (s, e) =>
             {
                 // The editor's completion holds a read-only connection to this db (SymbolIndex, 1c685f2e);
-                // drop it before the write open, so a cancelled full run's delete below is not blocked.
+                // drop it before the child's write open, so a cancelled full run's delete below is not blocked.
                 SymbolIndex.Release(dbPath);
-                var db = new ClarionCodeGraph.Graph.CodeGraphDatabase();
-                db.Open(dbPath);
+                // 583abdec: the index runs in clarion-indexer.exe (64-bit), NOT in Clarion.exe - a 32-bit process
+                // already ~1.5 GB at idle that ran out of memory on a large solution's relationship pass. Same
+                // inputs, same progress channels, same cancel semantics; the IndexResult comes back as JSON.
+                var indexer = new ClarionAssistant.Services.OutOfProcessIndexer();
+                indexer.CancelRequested = () =>
+                    System.Threading.Interlocked.CompareExchange(ref cancelFlag, 0, 0) == 1;
+                indexer.OnProgress += msg =>
+                {
+                    runLog.WriteLine(msg);
+                    ((BackgroundWorker)s).ReportProgress(0, msg);
+                };
+                indexer.OnProgressEvent += ev =>
+                {
+                    // Percent is deliberately 0 on both channels — routing happens on the
+                    // UserState type below, and a fake number invites someone to read it.
+                    ((BackgroundWorker)s).ReportProgress(0, ev);
+                };
+                runLog.WriteLine("Indexer process: " + (indexer.ExePath ?? "(addin folder unknown)"));
                 try
                 {
-                    var indexer = new ClarionCodeGraph.Graph.CodeGraphIndexer(db);
-                    indexer.RedService = activeRed; // the IDE's ACTIVE .red — version file + local override
-                    indexer.BuildConfiguration = buildConfiguration; // GH #245: the configuration's .red sections
-                    indexer.CancelRequested = () =>
-                        System.Threading.Interlocked.CompareExchange(ref cancelFlag, 0, 0) == 1;
-                    indexer.OnProgress += msg =>
+                    var result = indexer.Run(new ClarionAssistant.Services.IndexRunRequest
                     {
-                        runLog.WriteLine(msg);
-                        ((BackgroundWorker)s).ReportProgress(0, msg);
-                    };
-                    indexer.OnProgressEvent += ev =>
-                    {
-                        // Percent is deliberately 0 on both channels — routing happens on the
-                        // UserState type below, and a fake number invites someone to read it.
-                        ((BackgroundWorker)s).ReportProgress(0, ev);
-                    };
-                    try
-                    {
-                        var result = indexer.IndexSolution(slnPath, incremental, libPaths);
-                        e.Result = result;
-                    }
-                    finally
-                    {
-                        // ef2fd2a9: an incremental request on a database below the current feature level runs FULL
-                        // (it clears the database first), so a cancel of it must be handled as a full cancel.
-                        ranIncremental = indexer.EffectiveIncremental;
-                    }
+                        SlnPath = slnPath,
+                        DbPath = dbPath,
+                        Incremental = incremental,
+                        Red = activeRed,                         // the IDE's ACTIVE .red — version file + local override
+                        BuildConfiguration = buildConfiguration, // GH #245: the configuration's .red sections
+                        LibraryPaths = libPaths
+                    });
+                    fallbackWarning = indexer.FallbackWarning;
+                    e.Result = result;
                 }
                 catch (OperationCanceledException)
                 {
@@ -2581,7 +2582,9 @@ namespace ClarionAssistant
                 }
                 finally
                 {
-                    db.Close();
+                    // ef2fd2a9: an incremental request on a database below the current feature level runs FULL
+                    // (it clears the database first), so a cancel of it must be handled as a full cancel.
+                    ranIncremental = indexer.EffectiveIncremental;
                 }
 
                 // A cancelled FULL index cleared the database up front, so what's on disk is
@@ -2595,6 +2598,14 @@ namespace ClarionAssistant
                     SymbolIndex.Release(dbPath);   // a completion may have reopened it mid-run
                     try { File.Delete(dbPath); } catch { }
                     partialDbDeleted = !File.Exists(dbPath);
+                    // A child KILLED after the cancel grace (583abdec) never closed the database, so its WAL and
+                    // shared-memory files are still there. Without the database they describe nothing - and a WAL
+                    // left beside the next run's new file of the same name is what SQLite warns corrupts it.
+                    if (partialDbDeleted)
+                    {
+                        try { File.Delete(dbPath + "-wal"); } catch { }
+                        try { File.Delete(dbPath + "-shm"); } catch { }
+                    }
                 }
             };
             worker.ProgressChanged += (s, e) =>
@@ -2644,7 +2655,11 @@ namespace ClarionAssistant
                                 ShowIndexProgress(progressForm);
                             }
                         }
-                        _header.SetIndexStatus("Error: " + e.Error.Message, "error");
+                        // The child's failure message carries the end of its stderr on later lines (583abdec):
+                        // the window and the log show all of it, the one-line header only the first.
+                        string headline = e.Error.Message ?? "";
+                        int nl = headline.IndexOfAny(new[] { '\r', '\n' });
+                        _header.SetIndexStatus("Error: " + (nl >= 0 ? headline.Substring(0, nl) : headline), "error");
                         UpdateIndexStatus();
                         return;
                     }
@@ -2682,6 +2697,7 @@ namespace ClarionAssistant
                             result.ModeText,
                             runLog.LogPath ?? "(no log written — another index run may hold the log file)")
                             + "\n" + result.CoverageText()
+                            + (fallbackWarning != null ? "\n  " + fallbackWarning : "")
                         : "Error: index returned no result.";
                     runLog.Dispose();
                     if (formAlive)
