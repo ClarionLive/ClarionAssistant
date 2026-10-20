@@ -396,7 +396,24 @@ static class EmbedSaveFlowTest
             Ok("written with this process's pid", e.Pid == me);
             Ok("same session, reopen shows the saved text -> Keep (not retired, no offer)",
                 EmbedSaveJournal.Decide(e, saved, me) == EmbedSaveJournal.OpenDecision.Keep);
-            Ok("a later session reads the saved text back -> Retire", EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.OpenDecision.Retire);
+            // G1 (live test 2026-10-19): reading it back in a later session is not enough; the .app must be saved after it.
+            Ok("G1: a later session reads the saved text back, .app time unknown -> Keep (red on 96ac495: Retire)",
+                EmbedSaveJournal.Decide(e, saved, me + 1) == EmbedSaveJournal.OpenDecision.Keep);
+#if !OLD_JOURNAL
+            Ok("G1: ...and the .app last written BEFORE the entry (or at the same second) -> Keep",
+                EmbedSaveJournal.Decide(e, saved, me + 1, null, e.Written.AddMinutes(-1)) == EmbedSaveJournal.OpenDecision.Keep &&
+                EmbedSaveJournal.Decide(e, saved, me + 1, null, e.Written) == EmbedSaveJournal.OpenDecision.Keep);
+            Ok("G1: a later session, .app written AFTER the entry -> Retire",
+                EmbedSaveJournal.Decide(e, saved, me + 1, null, e.Written.AddSeconds(1)) == EmbedSaveJournal.OpenDecision.Retire);
+            Ok("G1: same session stays Keep even after a later .app write",
+                EmbedSaveJournal.Decide(e, saved, me, null, e.Written.AddMinutes(5)) == EmbedSaveJournal.OpenDecision.Keep);
+            Ok("G1: the .app time is compared in UTC (a local value of the same instant is not 'after')",
+                EmbedSaveJournal.Decide(e, saved, me + 1, null, e.Written.ToLocalTime()) == EmbedSaveJournal.OpenDecision.Keep &&
+                EmbedSaveJournal.Decide(e, saved, me + 1, null, e.Written.AddSeconds(1).ToLocalTime()) == EmbedSaveJournal.OpenDecision.Retire);
+            Ok("G1: the .app time never changes Lost -> Offer",
+                EmbedSaveJournal.Decide(e, origT, me + 1, null, e.Written.AddMinutes(5)) == EmbedSaveJournal.OpenDecision.Offer &&
+                EmbedSaveJournal.Decide(e, origT, me + 1, null, e.Written.AddMinutes(-5)) == EmbedSaveJournal.OpenDecision.Offer);
+#endif
             Ok("not landed -> Offer (either session)", EmbedSaveJournal.Decide(e, origT, me) == EmbedSaveJournal.OpenDecision.Offer &&
                 EmbedSaveJournal.Decide(e, origT, me + 1) == EmbedSaveJournal.OpenDecision.Offer);
             // Live test 2026-10-19 (PM ruling): only THIS session's changed-since entry is archived silently; an
@@ -436,7 +453,10 @@ static class EmbedSaveFlowTest
             var shifted = new List<string> { saved[0], "", "  ! new control's embed", O1, big };
             Ok("slot count changed after a landed save -> Persisted (no false alert)",
                 EmbedSaveJournal.Assess(e, shifted) == EmbedSaveJournal.Verdict.Persisted);
-            Ok("...and a later session retires it", EmbedSaveJournal.Decide(e, shifted, me + 1) == EmbedSaveJournal.OpenDecision.Retire);
+#if !OLD_JOURNAL
+            Ok("...and a later session retires it once the .app was saved after it",
+                EmbedSaveJournal.Decide(e, shifted, me + 1, null, e.Written.AddMinutes(1)) == EmbedSaveJournal.OpenDecision.Retire);
+#endif
             var shiftedLost = new List<string> { O0, "", "  ! new control's embed", O1, O2 };
             Ok("slot count changed and the save is missing -> Diverged (archived, not offered by position)",
                 EmbedSaveJournal.Assess(e, shiftedLost) == EmbedSaveJournal.Verdict.Diverged);
@@ -455,8 +475,13 @@ static class EmbedSaveFlowTest
                 ea.Index.Add(7); ea.Baseline.Add(""); ea.Saved.Add(Saved1);
                 Ok("(a) Recover: the saved line re-indented by Clarion -> Persisted",
                     EmbedSaveJournal.Assess(ea, withSlot(Recovered)) == EmbedSaveJournal.Verdict.Persisted);
-                Ok("(a) ...a later session retires it (no silent archive, no offer)",
-                    EmbedSaveJournal.Decide(ea, withSlot(Recovered), me) == EmbedSaveJournal.OpenDecision.Retire);
+                // G1: that is the in-memory app Recover rebuilt; the .app on disk may not have it. Kept, not retired.
+                Ok("(a) ...a later session KEEPS it while the .app is not saved after it (G1; red on 96ac495: Retire)",
+                    EmbedSaveJournal.Decide(ea, withSlot(Recovered), me) == EmbedSaveJournal.OpenDecision.Keep);
+#if !OLD_JOURNAL
+                Ok("(a) ...and retires it once the .app was saved after it (no silent archive, no offer)",
+                    EmbedSaveJournal.Decide(ea, withSlot(Recovered), me, null, ea.Written.AddMinutes(3)) == EmbedSaveJournal.OpenDecision.Retire);
+#endif
                 Ok("(a) ...and CRLF + a trailing blank line on top of the indent still count as landed",
                     EmbedSaveJournal.Assess(ea, withSlot("\t" + Saved1.TrimEnd() + "\r\n\r\n")) == EmbedSaveJournal.Verdict.Persisted);
                 Ok("(a) guard: a re-indented DIFFERENT text is not 'landed'",
@@ -765,6 +790,143 @@ static class EmbedSaveFlowTest
                 string c4 = EmbedSaveJournal.Archive(rp2, "test: answered");
                 Ok("5: ...and answering the offer reuses it (Archive retires the journal, no second file)",
                     c4 == c1 && EmbedSaveJournal.Read(App, "P2") == null && Directory.GetFiles(jdir, "P2-*.txt").Length == 2);
+            }
+
+            // ================= live test 2026-10-19, G1 + G2 =================
+            // Red on 96ac495: compile this file with /define:OLD_JOURNAL against that commit's EmbedSaveJournal.cs +
+            // EmbedRecovery.cs (the #if blocks use the new Decide/Begin overloads it does not have).
+            Console.WriteLine("live test 2026-10-19: G1 (Recover's text is only in memory) and G2 (current-copy header)");
+            {
+                const string B6 = "  ! G1-BEFORE-6", B7 = "  ! G1-BEFORE-7";
+                const string R1 = "  ! G1-R1 slot 6 saved in the CA Embeditor", L1 = "  ! G1-L1 slot 7 saved later";
+                var orig8 = new List<string> { "", "  ! s1", "", "  ! s3", "", "  ! s5", B6, B7 };
+                Func<string, string, List<string>> slots = (s6, s7) => { var l = new List<string>(orig8); l[6] = s6; l[7] = s7; return l; };
+
+                // ---- the whole live sequence, through the journal file ----
+                // 1. CA save of slot 6, then Clarion is killed (the entry is from an EARLIER session from here on).
+                EmbedSaveJournal.Begin(App, "G1Proc", orig8, slots(R1, B7), out arch);
+                var g = EmbedSaveJournal.Read(App, "G1Proc");
+                g.Pid = me + 3;
+                Begin179(App, "G1Proc", g);
+                g = EmbedSaveJournal.Read(App, "G1Proc");
+                // 2. Restart, Recover: the open finds slot 6 with its saved text (re-indented), the .app not saved since.
+                var recovered = slots("    " + R1.Trim(), B7);
+                Ok("G1 step 2: Recover shows the saved text -> Persisted", EmbedSaveJournal.Assess(g, recovered) == EmbedSaveJournal.Verdict.Persisted);
+                Ok("G1 step 2: ...but the .app was not saved since -> Keep, not Retire (red on 96ac495)",
+                    EmbedSaveJournal.Decide(g, recovered, me) == EmbedSaveJournal.OpenDecision.Keep);
+#if !OLD_JOURNAL
+                DateTime appBefore = g.Written.AddMinutes(-20);   // the .app's last write is older than the CA save
+                Ok("G1 step 2: ...with the real .app time (older than the entry) -> Keep",
+                    EmbedSaveJournal.Decide(g, recovered, me, null, appBefore) == EmbedSaveJournal.OpenDecision.Keep);
+                string why = EmbedSaveJournal.KeepReason(g, me, null, appBefore);
+                Ok("G1 step 2: the log says why", why == "the .app has not been saved since; Recover's text is only in memory", why);
+                Ok("G1: ...same session and unknown .app time have their own reasons",
+                    EmbedSaveJournal.KeepReason(g, me + 3, null, appBefore).StartsWith("saved in this session") &&
+                    EmbedSaveJournal.KeepReason(g, me, null, null).StartsWith("the .app's last write time is unknown"));
+#endif
+                // Act as CheckSaveJournal does: Retire deletes the file, Keep returns and leaves it.
+                if (EmbedSaveJournal.Decide(g, recovered, me) == EmbedSaveJournal.OpenDecision.Retire) EmbedSaveJournal.Retire(App, "G1Proc");
+                // 3-4. Clarion stops again; Last Saved: slot 6 is back at its pre-save text.
+                var g4 = EmbedSaveJournal.Read(App, "G1Proc");
+                Ok("G1 step 4: the journal is still there after the Recover open", g4 != null && g4.Index.SequenceEqual(new[] { 6 }));
+                Ok("G1 step 4: Last Saved -> Lost -> Offer", g4 != null && EmbedSaveJournal.Assess(g4, orig8) == EmbedSaveJournal.Verdict.Lost &&
+                    EmbedSaveJournal.Decide(g4, orig8, me) == EmbedSaveJournal.OpenDecision.Offer);
+                var pg4 = g4 != null ? EmbedSaveJournal.PlanRestore(g4, orig8) : null;
+                Ok("G1 step 4: ...and Restore puts slot 6's saved text back", pg4 != null && pg4.Placed == 1 && pg4.Slots[6] == R1 &&
+                    pg4.Slots.Where((t, i) => i != 6).SequenceEqual(orig8.Where((t, i) => i != 6)));
+#if !OLD_JOURNAL
+                Ok("G1: an open after the .app WAS saved since -> Retire",
+                    EmbedSaveJournal.Decide(g, recovered, me, null, g.Written.AddMinutes(2)) == EmbedSaveJournal.OpenDecision.Retire);
+#endif
+                EmbedSaveJournal.Retire(App, "G1Proc");
+
+                // ---- a NEWER CA save of the same procedure while the kept entry is unsaved ----
+                // E1: slot 6 = R1 (kept, not on disk). Then the developer CA-saves slot 7 = L1 (the procedure shows R1 in slot 6).
+                // The App path does not exist here, so the .app time is unknown: carried (the safe side).
+                EmbedSaveJournal.Begin(App, "G1Merge", orig8, slots(R1, B7), out arch);
+                EmbedSaveJournal.Begin(App, "G1Merge", slots(R1, B7), slots(R1, L1), out arch);
+                var m2 = EmbedSaveJournal.Read(App, "G1Merge");
+                Ok("G1 merge: the newer entry carries E1's unpersisted slot 6 with E1's texts, and its own slot 7 (red on 96ac495)",
+                    m2 != null && m2.Index.SequenceEqual(new[] { 6, 7 }) &&
+                    m2.Baseline[0] == B6 && m2.Saved[0] == R1 && m2.Baseline[1] == B7 && m2.Saved[1] == L1,
+                    m2 == null ? "null" : "index=" + string.Join(",", m2.Index));
+                Ok("G1 merge: nothing archived (E1 was not unconfirmed-and-replaced; it is carried)", arch == null);
+                Ok("G1 merge: crash + Last Saved -> Lost -> Offer, and Restore brings back BOTH slots",
+                    m2 != null && EmbedSaveJournal.Assess(m2, orig8) == EmbedSaveJournal.Verdict.Lost &&
+                    EmbedSaveJournal.Decide(m2, orig8, me + 1) == EmbedSaveJournal.OpenDecision.Offer &&
+                    EmbedSaveJournal.PlanRestore(m2, orig8).Slots.SequenceEqual(slots(R1, L1)));
+                Ok("G1 merge: crash + Recover showing both -> Persisted -> Keep",
+                    m2 != null && EmbedSaveJournal.Decide(m2, slots(R1, L1), me + 1) == EmbedSaveJournal.OpenDecision.Keep);
+                Ok("G1 merge: Last Saved that kept slot 6 but lost slot 7 -> offered, slot 6 left alone",
+                    m2 != null && EmbedSaveJournal.Decide(m2, slots(R1, B7), me + 1) == EmbedSaveJournal.OpenDecision.Offer &&
+                    EmbedSaveJournal.PlanRestore(m2, slots(R1, B7)).Placed == 1 && EmbedSaveJournal.PlanRestore(m2, slots(R1, B7)).Present == 1);
+                EmbedSaveJournal.Retire(App, "G1Merge");
+
+                // The newer save edits slot 6 AGAIN (R1 -> R2): its own texts win (baseline = what the procedure showed).
+                const string R2 = "  ! G1-R2 slot 6 edited again";
+                EmbedSaveJournal.Begin(App, "G1Again", orig8, slots(R1, B7), out arch);
+                EmbedSaveJournal.Begin(App, "G1Again", slots(R1, B7), slots(R2, B7), out arch);
+                var ag = EmbedSaveJournal.Read(App, "G1Again");
+                Ok("G1 merge: a slot the newer save changed again keeps the newer save's texts (no duplicate slot)",
+                    ag != null && ag.Index.SequenceEqual(new[] { 6 }) && ag.Baseline[0] == R1 && ag.Saved[0] == R2);
+                Ok("G1 merge: ...and Last Saved still gets R2 offered back",
+                    ag != null && EmbedSaveJournal.Decide(ag, orig8, me + 1) == EmbedSaveJournal.OpenDecision.Offer &&
+                    EmbedSaveJournal.PlanRestore(ag, orig8).Slots[6] == R2);
+                EmbedSaveJournal.Retire(App, "G1Again");
+
+                // The slot count changed between the saves (a control added in front): carried to where it was proven.
+                var orig9 = new List<string> { "  ! new control" }; orig9.AddRange(orig8);
+                Func<string, string, List<string>> slots9 = (s6, s7) => { var l = new List<string>(orig9); l[7] = s6; l[8] = s7; return l; };
+                EmbedSaveJournal.Begin(App, "G1Count", orig8, slots(R1, B7), out arch);
+                EmbedSaveJournal.Begin(App, "G1Count", slots9(R1, B7), slots9(R1, L1), out arch);
+                var cg = EmbedSaveJournal.Read(App, "G1Count");
+                Ok("G1 merge, count changed: E1's slot is carried at its proven new position",
+                    cg != null && cg.SlotCount == 9 && cg.Index.SequenceEqual(new[] { 7, 8 }) && cg.Baseline[0] == B6 && cg.Saved[0] == R1,
+                    cg == null ? "null" : "index=" + string.Join(",", cg.Index));
+                Ok("G1 merge, count changed: Last Saved offers both back",
+                    cg != null && EmbedSaveJournal.PlanRestore(cg, orig9).Slots.SequenceEqual(slots9(R1, L1)));
+                EmbedSaveJournal.Retire(App, "G1Count");
+#if !OLD_JOURNAL
+                // Control: the .app WAS saved after E1, so E1 is on disk and the newer journal holds only its own slot.
+                EmbedSaveJournal.Begin(App, "G1Saved", orig8, slots(R1, B7), null, out arch);
+                var e1 = EmbedSaveJournal.Read(App, "G1Saved");
+                EmbedSaveJournal.Begin(App, "G1Saved", slots(R1, B7), slots(R1, L1), e1.Written.AddMinutes(1), out arch);
+                var sg = EmbedSaveJournal.Read(App, "G1Saved");
+                Ok("G1 merge control: .app saved after E1 -> nothing carried", sg != null && sg.Index.SequenceEqual(new[] { 7 }) && arch == null);
+                EmbedSaveJournal.Begin(App, "G1Saved2", orig8, slots(R1, B7), null, out arch);
+                var e1b = EmbedSaveJournal.Read(App, "G1Saved2");
+                EmbedSaveJournal.Begin(App, "G1Saved2", slots(R1, B7), slots(R1, L1), e1b.Written.AddMinutes(-1), out arch);
+                var sg2 = EmbedSaveJournal.Read(App, "G1Saved2");
+                Ok("G1 merge control: .app last written BEFORE E1 -> carried", sg2 != null && sg2.Index.SequenceEqual(new[] { 6, 7 }));
+                EmbedSaveJournal.Retire(App, "G1Saved"); EmbedSaveJournal.Retire(App, "G1Saved2");
+#endif
+
+                // ---- G2: the current-text copy says what it holds ----
+                var g2 = new EmbedSaveJournal.Entry { App = App, Proc = "G2Proc", Written = new DateTime(2026, 10, 18, 14, 5, 6), Pid = me + 1, SlotCount = 3 };
+                g2.Index.Add(1); g2.Baseline.Add("  ! G2-BEFORE"); g2.Saved.Add("  ! G2-CA-SAVE");
+                var g2Fresh = new List<string> { O0, "  ! G2-NATIVE-SAVED", O2 };
+                string g2c = EmbedSaveJournal.WriteCurrentCopy(g2, g2Fresh, EmbedSaveJournal.PlanRestore(g2, g2Fresh));
+                string g2t = g2c != null ? File.ReadAllText(g2c) : "";
+                var g2l = g2t.Split(new[] { "\r\n" }, StringSplitOptions.None);
+                Ok("G2: the current-text copy's header names the procedure's text before the restore (red on 96ac495)",
+                    g2l.Length > 3 && g2l[0] == "! CA Embeditor recovery: the text of procedure 'G2Proc' as it was before restoring your " +
+                        "CA Embeditor save of 2026-10-18 14:05:06 (process " + (me + 1) + ")" &&
+                    g2l[1].StartsWith("! Written ") && g2l[1].EndsWith(" so the text that Restore replaces can be copied back."), g2t);
+                Ok("G2: ...and never calls it unsaved edits or 'as you last had it'",
+                    g2c != null && !g2t.Contains("unsaved edits") && !g2t.Contains("as you last had it") && g2t.Contains("G2-NATIVE-SAVED") &&
+                    !g2t.Contains("G2-CA-SAVE"), g2t);
+                var g2b = g2c != null ? File.ReadAllBytes(g2c) : new byte[0];
+                Ok("G2: ...without a BOM", g2b.Length > 3 && !(g2b[0] == 0xEF && g2b[1] == 0xBB && g2b[2] == 0xBF));
+                // The other copy kinds hold the developer's own (CA-saved or unsaved) text: their header is right as it is.
+                string g2s = EmbedSaveJournal.WriteCopy(g2, "test: control");
+                Ok("G2 control: the copy of the CA save itself keeps the unsaved-edits header",
+                    g2s != null && File.ReadAllText(g2s).StartsWith("! CA Embeditor recovery: unsaved edits to procedure 'G2Proc'") &&
+                    File.ReadAllText(g2s).Contains("G2-CA-SAVE"));
+                string g2f = EmbedRecovery.Format("G2Proc", "a test", null, new List<string> { "a" }, new List<string> { "b" }, DateTime.Now);
+                Ok("G2 control: a failed-save recovery file keeps the unsaved-edits header",
+                    g2f.StartsWith("! CA Embeditor recovery: unsaved edits to procedure 'G2Proc'\r\n") && g2f.Contains("as you last had it"));
+                if (g2c != null) File.Delete(g2c);
+                if (g2s != null) File.Delete(g2s);
             }
         }
         finally

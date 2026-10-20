@@ -208,21 +208,32 @@ static class EmbedSaveOrderSourceScan
         string cjBody = cj >= 0 && cjEnd > cj ? view.Substring(cj, cjEnd - cj) : "";
         // Live test 2026-10-19: the process start time joins the pid, so a recycled pid is not "this session". The
         // bare verdict is read only for the log line; it never branches.
-        Ok("the open decides with the session rule (EmbedSaveJournal.Decide + pid + process start), not the bare verdict",
-            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart())") &&
+        // Live test 2026-10-19 G1: ... and the .app's last write, so a Persisted entry read back after Clarion's Recover
+        // is retired only once the .app was saved after it (Keep otherwise, with the reason in the log).
+        Ok("the open decides with the session rule (EmbedSaveJournal.Decide + pid + process start + .app write), not the bare verdict",
+            cjBody.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart(), appWrite)") &&
+            Count(cjBody, "EmbedSaveJournal.Decide(") == 1 &&
             Count(cjBody, "verdict") == 2 && cjBody.Contains("\" -> \" + verdict + \" -> \" + act"));
+        Ok("G1: the .app time is read BEFORE Decide, and a Keep logs its reason",
+            cjBody.IndexOf("appWrite = File.GetLastWriteTimeUtc(JournalApp())", StringComparison.Ordinal) > 0 &&
+            cjBody.IndexOf("appWrite = File.GetLastWriteTimeUtc(JournalApp())", StringComparison.Ordinal) <
+                cjBody.IndexOf("EmbedSaveJournal.Decide(", StringComparison.Ordinal) &&
+            cjBody.Contains("EmbedSaveJournal.KeepReason(e, MyPid(), MyStart(), appWrite)"));
         // ---- pipeline run 2 (PM ruling) ----
         Ok("the offer's wording uses the .app's last-write time (it never decides whether to offer)",
             cjBody.Contains("appWrite = File.GetLastWriteTimeUtc(JournalApp())") &&
             cjBody.Contains("EmbedSaveJournal.OfferMessage(e, appWrite, _originalSlotTexts, plan, copy, current)") && !cjBody.Contains("IsSuperseded") &&
             !cjBody.Contains("AppWrittenSince"));
-        // Every use of the .app time in the open check is its read, the log line, or the offer's wording: none may
-        // branch on it (a later write is the #179 reporter's crash, and it must still be offered).
+        // Every use of the .app time in the open check is its read, the log line, the offer's wording, or Decide (whose
+        // unit tests pin that it only decides Retire vs Keep for a Persisted entry, G1): nothing here may branch on it
+        // (a later write is the #179 reporter's crash, and it must still be offered).
         string badUse = null;
         foreach (var line in cjBody.Split('\n'))
         {
             if (!line.Contains("appWrite")) continue;
             if (line.Contains("DateTime? appWrite = null;") || line.Contains("appWrite = File.GetLastWriteTimeUtc(JournalApp())") ||
+                line.Contains("EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart(), appWrite);") ||
+                line.Contains("? \" (\" + Services.EmbedSaveJournal.KeepReason(e, MyPid(), MyStart(), appWrite) + \")\" : \"\"));") ||
                 line.Contains("(appWrite.HasValue ? appWrite.Value.ToLocalTime().ToString(") || line.Contains("OfferMessage(e, appWrite, _originalSlotTexts, plan, copy, current)")) continue;
             badUse = line.Trim();
         }

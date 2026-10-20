@@ -14,7 +14,8 @@ namespace ClarionAssistant.Services
     /// and the IDE's UI dies with the edit. <see cref="EmbedRecovery"/> only writes when a save FAILS, so on that
     /// path nothing was kept. This journal is written BEFORE the native save round-trip and is NOT retired on
     /// ok=True. It is retired by evidence instead: on the next CA Embeditor open of that procedure, the freshly
-    /// loaded slots either hold the saved text (it persisted: retire silently), are back at their pre-save text
+    /// loaded slots either hold the saved text (it persisted: retire silently, once the .app was written after it),
+    /// are back at their pre-save text
     /// (the save was lost: offer it), or hold something else (changed since: archive it as a dated recovery file).
     /// A timer or "the save sequence finished" would prove nothing: the reporter's fault lands after the sequence
     /// ends, and the zombie process that follows still consolidates the .app, without the embed.
@@ -96,8 +97,23 @@ namespace ClarionAssistant.Services
         /// offered and left, or the embed changed since), it is archived as a dated recovery file first, so a new
         /// save never silently replaces the only copy of an older one; <paramref name="archived"/> names it.
         /// Throws on an I/O failure: the caller logs it and saves anyway (refusing to save would be worse).
+        ///
+        /// An earlier entry that the embed DOES show (Persisted) is not simply replaced unless the .app was written
+        /// after it (G1, live test 2026-10-19): until then its text may live only in Clarion's memory (this session,
+        /// or Clarion's Recover), and replacing it with a journal of only the newer save's slots lost it when Clarion
+        /// stopped again. So its changed slots that the newer save does not touch are CARRIED into the new entry
+        /// (<see cref="CarryUnsaved"/>), with their own pre-save and saved text. One file per procedure stays the
+        /// rule, and every open-time path (Assess, PlanRestore, the offer) sees one entry covering both saves. The
+        /// .app's write time is read from <paramref name="app"/> itself (unknown = carried).
         /// </summary>
         public static string Begin(string app, string proc, IList<string> baseline, IList<string> saved, out string archived)
+        {
+            return Begin(app, proc, baseline, saved, AppLastWrite(app), out archived);
+        }
+
+        /// <param name="appLastWrite">When the .app on disk was last written (UTC), or null when unknown.</param>
+        public static string Begin(string app, string proc, IList<string> baseline, IList<string> saved, DateTime? appLastWrite,
+            out string archived)
         {
             archived = null;
             // No app, no journal (pipeline run 1): an entry filed under a guessed app is read back by the wrong one.
@@ -114,12 +130,60 @@ namespace ClarionAssistant.Services
             if (e.Index.Count == 0) return null;
 
             var old = Read(app, proc);
-            if (old != null && Assess(old, baseline) != Verdict.Persisted)
-                archived = Archive(old, "an earlier save of it was never confirmed, and a newer save replaced it");
+            if (old != null)
+            {
+                if (Assess(old, baseline) != Verdict.Persisted)
+                    archived = Archive(old, "an earlier save of it was never confirmed, and a newer save replaced it");
+                else if (!AppWrittenSince(old, appLastWrite))
+                    CarryUnsaved(old, baseline, e);   // shown, but maybe only in memory: never dropped (G1)
+            }
 
             string target = PathFor(app, proc);
             WriteAtomic(target, Serialize(e));
             return target;
+        }
+
+        /// <summary>The .app's last write time in UTC, or null when it cannot be read.</summary>
+        internal static DateTime? AppLastWrite(string app)
+        {
+            try { return !string.IsNullOrWhiteSpace(app) && File.Exists(app) ? File.GetLastWriteTimeUtc(app) : (DateTime?)null; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// G1: add to <paramref name="e"/> (the newer save) each changed slot of <paramref name="old"/> (an entry the
+        /// newer save's baseline shows as Persisted) that <paramref name="e"/> does not already cover, with OLD's
+        /// pre-save text as its baseline and OLD's saved text as its saved text. That is what the .app on disk may
+        /// still hold, and what the slot shows if Clarion stops before the .app is saved, so a later open reads it
+        /// as Lost there and offers it back. A slot the newer save changed again keeps the newer save's own texts
+        /// (its baseline is what the procedure showed). Positions: the old entry's own while the slot count is
+        /// unchanged, else where <see cref="LandedAt"/> proved the old text is (Persisted needs that proof).
+        /// Whitespace-only slots are not carried. The result is in slot order.
+        /// </summary>
+        internal static void CarryUnsaved(Entry old, IList<string> baseline, Entry e)
+        {
+            if (old == null || baseline == null || e == null) return;
+            int[] at = old.SlotCount == baseline.Count ? null : LandedAt(old, baseline);
+            var rows = new List<KeyValuePair<int, string[]>>();
+            var taken = new HashSet<int>();
+            for (int k = 0; k < e.Index.Count; k++)
+            {
+                rows.Add(new KeyValuePair<int, string[]>(e.Index[k], new[] { e.Baseline[k], e.Saved[k] }));
+                taken.Add(e.Index[k]);
+            }
+            int carried = 0;
+            for (int k = 0; k < old.Index.Count; k++)
+            {
+                if (WhitespaceOnly(old, k)) continue;
+                int i = at == null ? old.Index[k] : at[k];
+                if (i < 0 || i >= e.SlotCount || !taken.Add(i)) continue;
+                rows.Add(new KeyValuePair<int, string[]>(i, new[] { old.Baseline[k] ?? "", old.Saved[k] ?? "" }));
+                carried++;
+            }
+            if (carried == 0) return;
+            rows.Sort((a, b) => a.Key.CompareTo(b.Key));
+            e.Index.Clear(); e.Baseline.Clear(); e.Saved.Clear();
+            foreach (var r in rows) { e.Index.Add(r.Key); e.Baseline.Add(r.Value[0]); e.Saved.Add(r.Value[1]); }
         }
 
         /// <summary>The journal entry for this app + procedure, or null when there is none or it is damaged
@@ -157,10 +221,11 @@ namespace ClarionAssistant.Services
         /// <summary>What to do with a journal entry when its procedure opens (pipeline run 1).</summary>
         public enum OpenDecision
         {
-            /// <summary>It landed AND was read back by a later process, so it came from the saved .app: delete.</summary>
+            /// <summary>It landed, was read back by a later process, AND the .app was written after it (G1): delete.</summary>
             Retire,
-            /// <summary>It landed, but only in THIS session's in-memory .app, which a crash can still lose: keep it,
-            /// say nothing. A later session decides.</summary>
+            /// <summary>It landed, but possibly only in an in-memory .app (this session's, or one Clarion's Recover
+            /// rebuilt after a crash, not saved since), which a crash can still lose: keep it, say nothing. A later
+            /// open decides.</summary>
             Keep,
             /// <summary>It did not land: offer it back.</summary>
             Offer,
@@ -199,13 +264,40 @@ namespace ClarionAssistant.Services
         /// started, so a recycled pid is not mistaken for this session.</param>
         public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? currentProcessStart)
         {
+            return Decide(e, fresh, currentPid, currentProcessStart, null);
+        }
+
+        /// <param name="appLastWrite">When the .app on disk was last written (UTC; a non-UTC value is read as local),
+        /// or null when unknown.
+        ///
+        /// Live test 2026-10-19 (G1, PM ruling): an entry from an EARLIER session that reads as Persisted is retired
+        /// only when the .app was written AFTER the entry (<see cref="AppWrittenSince"/>). Clarion's "Recover" brings
+        /// the saved text back into the app in MEMORY: the open shows it, but the .app on disk does not have it until
+        /// the developer saves. Retiring then left nothing when Clarion stopped again and "Last Saved" was chosen.
+        /// So such an entry is KEPT (an unknown .app time keeps it too), a later open after the .app was saved retires
+        /// it, and a later open that finds the pre-save text again offers it (Lost). The same-session rule is
+        /// unchanged: Persisted in this session is always Keep. <see cref="KeepReason"/> says which applies.</param>
+        public static OpenDecision Decide(Entry e, IList<string> fresh, int currentPid, DateTime? currentProcessStart,
+            DateTime? appLastWrite)
+        {
             bool sameSession = SameSession(e, currentPid, currentProcessStart);
             switch (Assess(e, fresh))
             {
-                case Verdict.Persisted: return sameSession ? OpenDecision.Keep : OpenDecision.Retire;
+                case Verdict.Persisted:
+                    return sameSession || !AppWrittenSince(e, appLastWrite) ? OpenDecision.Keep : OpenDecision.Retire;
                 case Verdict.Lost: return OpenDecision.Offer;
                 default: return sameSession ? OpenDecision.Archive : OpenDecision.Offer;
             }
+        }
+
+        /// <summary>Why <see cref="Decide(Entry, IList{string}, int, DateTime?, DateTime?)"/> keeps a Persisted entry,
+        /// for the log line (G1).</summary>
+        public static string KeepReason(Entry e, int currentPid, DateTime? currentProcessStart, DateTime? appLastWrite)
+        {
+            if (SameSession(e, currentPid, currentProcessStart))
+                return "saved in this session; the .app on disk may not have it yet";
+            if (!appLastWrite.HasValue) return "the .app's last write time is unknown; its text may be only in memory";
+            return "the .app has not been saved since; Recover's text is only in memory";
         }
 
         /// <summary>True when the entry was written by the current process: same pid (a 0 pid is never "same") and,
@@ -218,7 +310,8 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>True when the .app file was last written after the entry was taken (compared in UTC). It changes
-        /// only the offer's wording, never whether it is offered.</summary>
+        /// the offer's wording, never whether it is offered; for a Persisted entry it decides whether it may be
+        /// retired (G1), and in <see cref="Begin"/> whether a kept entry's slots must be carried into a newer save.</summary>
         public static bool AppWrittenSince(Entry e, DateTime? appLastWrite)
         {
             return e != null && appLastWrite.HasValue && ToUtc(appLastWrite.Value) > ToUtc(e.Written);
@@ -604,9 +697,18 @@ namespace ClarionAssistant.Services
                 orig[i] = null;                // never equal: always written, even when empty
                 edit[i] = fresh[i] ?? "";
             }
-            return EmbedRecovery.Write(e.Proc,
-                "this is the procedure's text, as it was opened, of the embed(s) that restoring the CA Embeditor save of " +
-                ToLocal(e.Written).ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid + ") replaces", null, orig, edit, tag);
+            return EmbedRecovery.Write(e.Proc, null, null, orig, edit, tag, w => CurrentCopyHeader(e, w));
+        }
+
+        /// <summary>The header of <see cref="WriteCurrentCopy"/>'s file (live test 2026-10-19, G2). That copy holds the
+        /// procedure's CURRENT text, which may be work already saved in the .app, so it must not carry the
+        /// "unsaved edits ... as you last had it" header of a copy of the developer's own edits.</summary>
+        internal static string CurrentCopyHeader(Entry e, DateTime written)
+        {
+            return "! CA Embeditor recovery: the text of procedure '" + e.Proc + "' as it was before restoring your CA Embeditor " +
+                   "save of " + ToLocal(e.Written).ToString("yyyy-MM-dd HH:mm:ss") + " (process " + e.Pid + ")\r\n" +
+                   "! Written " + written.ToString("yyyy-MM-dd HH:mm:ss") + " so the text that Restore replaces can be copied back.\r\n" +
+                   "! Each block below is one embed slot as the procedure held it when it was opened.\r\n";
         }
 
         private static string Hash(string s)

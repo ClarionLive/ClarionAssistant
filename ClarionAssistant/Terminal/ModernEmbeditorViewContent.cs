@@ -2136,18 +2136,22 @@ namespace ClarionAssistant.Terminal
                 DateTime? appWrite = null;
                 try { if (File.Exists(JournalApp())) appWrite = File.GetLastWriteTimeUtc(JournalApp()); } catch { }
                 var verdict = Services.EmbedSaveJournal.Assess(e, _originalSlotTexts);
-                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart());
+                // G1 (live test 2026-10-19): a Persisted entry is retired only once the .app was written after it;
+                // until then Recover's text may be only in memory, so it is kept and the log says why.
+                var act = Services.EmbedSaveJournal.Decide(e, _originalSlotTexts, MyPid(), MyStart(), appWrite);
                 MonacoSpikeLog.Write("[save-journal] open " + _procedureName + ": entry of " + e.Written.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") +
                     " (pid " + e.Pid + ", " + e.Index.Count + " slot(s), " + e.SlotCount + " slots then, " +
                     (_originalSlotTexts == null ? "?" : _originalSlotTexts.Count.ToString()) + " now), app written " +
-                    (appWrite.HasValue ? appWrite.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "?") + " -> " + verdict + " -> " + act);
+                    (appWrite.HasValue ? appWrite.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "?") + " -> " + verdict + " -> " + act +
+                    (act == Services.EmbedSaveJournal.OpenDecision.Keep
+                        ? " (" + Services.EmbedSaveJournal.KeepReason(e, MyPid(), MyStart(), appWrite) + ")" : ""));
                 var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
                 if (act == Services.EmbedSaveJournal.OpenDecision.Retire)
                 {
-                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // a later session read it back: it landed
+                    Services.EmbedSaveJournal.Retire(JournalApp(), _procedureName);   // read back by a later session, .app saved since
                     return;
                 }
-                if (act == Services.EmbedSaveJournal.OpenDecision.Keep) return;   // landed in memory only, this session: say nothing
+                if (act == Services.EmbedSaveJournal.OpenDecision.Keep) return;   // maybe only in an in-memory .app: say nothing
                 string when = e.Written.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
                 if (act == Services.EmbedSaveJournal.OpenDecision.Archive)
                 {
@@ -2258,7 +2262,12 @@ namespace ClarionAssistant.Terminal
                 string archived;
                 string path = Services.EmbedSaveJournal.Begin(JournalApp(), _procedureName, _originalSlotTexts, current, out archived);
                 if (archived != null) MonacoSpikeLog.Write("[save-journal] an unconfirmed earlier save was archived to " + archived);
-                if (path != null) MonacoSpikeLog.Write("[save-journal] kept " + path);
+                if (path != null)
+                {
+                    // The slot list shows any slots carried over from a kept, not-yet-saved earlier entry (G1).
+                    var kept = Services.EmbedSaveJournal.Read(JournalApp(), _procedureName);
+                    MonacoSpikeLog.Write("[save-journal] kept " + path + (kept != null ? " (slots " + string.Join(",", kept.Index) + ")" : ""));
+                }
             }
             catch (Exception ex) { MonacoSpikeLog.Write("[save-journal] write FAILED (saving anyway): " + ex.Message); }
         }
