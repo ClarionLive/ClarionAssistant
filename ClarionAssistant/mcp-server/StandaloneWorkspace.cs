@@ -274,7 +274,14 @@ namespace ClarionAssistant.McpServer
         /// <summary>ISolutionScopedWorkspace: the scope of a solution the caller named (run 2) - not necessarily the followed one.</summary>
         public SolutionScope ScopeFor(string solutionPath)
         {
-            return ScopeOf(solutionPath, ReadIdeRecord(), null);
+            // 583abdec review M1 (security): this is the standalone server's door for a CALLER-NAMED solution
+            // (index_codegraph's sln_path), and building a scope reads that path (its folder's .red, its version). The
+            // path policy judges it first, as index_codegraph itself does before it gets here - so no caller of this
+            // method can make the server touch a UNC path (NTLM) or a folder outside the allowed roots.
+            string canonical;
+            string refusal = McpPathGate.GatePath("index_codegraph", solutionPath, PathAccess.Read, this, out canonical);
+            if (refusal != null) throw new UnauthorizedAccessException(refusal);
+            return ScopeOf(canonical, ReadIdeRecord(), null);
         }
 
         /// <summary>Everything keyed on <paramref name="sln"/>, the version decided from the record <paramref name="rec"/>.</summary>
@@ -802,8 +809,9 @@ namespace ClarionAssistant.McpServer
             }
             catch (Exception ex)
             {
+                // 583abdec review L3: the full message to the run log; the MCP caller gets a short reply naming it.
                 if (runLog != null) { try { runLog.WriteLine("FAILED: " + ex.Message); } catch { } }
-                complete("Error indexing solution: " + ex.Message);
+                complete(OutOfProcessIndexer.McpFailureReply(ex, runLog != null ? runLog.LogPath : null));
             }
             finally
             {

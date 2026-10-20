@@ -131,6 +131,26 @@ static class McpPathPolicyTest
             Ok("'..' out of the solution, lexical check", !p.CheckLexical(Path.Combine(sol, "..", "Solution2", "Main.clw"), PathAccess.Read).Allowed);
             Ok("'..' through a missing folder, lexical check", !p.CheckLexical(sol + "\\nope\\..\\..\\Solution2\\Main.clw", PathAccess.Read).Allowed);
 
+            // 583abdec review M1: index_codegraph's explicit sln_path (Read) and the database beside it (Write) are
+            // judged by these same rules before the tool touches either; IndexCodeGraphPathGate.StandaloneE2ETest
+            // drives the real server. Here: the decisions those two calls get.
+            Console.WriteLine("=== index_codegraph sln_path / database (583abdec M1) ===");
+            string idxSln = Touch(Path.Combine(sol, "Main.sln"));
+            Allowed(p, "index_codegraph: a .sln inside the solution root may be read", idxSln);
+            Allowed(p, "index_codegraph: its .codegraph.db beside it may be written", Path.Combine(sol, "Main.codegraph.db"), PathAccess.Write);
+            var idxOut = Denied(p, "index_codegraph: a .sln outside every allowed root is refused", Touch(Path.Combine(sibling, "Other.sln")));
+            Ok("...with the read_file refusal convention, naming index_codegraph and the outside-root reason",
+                idxOut.Refusal("index_codegraph", "x").StartsWith("Error: index_codegraph refused by the Clarion Assistant path policy")
+                && idxOut.Reason != null && idxOut.Reason.StartsWith("it is outside every allowed root"), idxOut.Refusal("index_codegraph", "x"));
+            Denied(p, "index_codegraph: the database beside an outside .sln may not be written", Path.Combine(sibling, "Other.codegraph.db"), PathAccess.Write);
+            Denied(p, "index_codegraph: a .codegraph.db inside the read-only Clarion root may not be written", Path.Combine(clarion, "Examples", "x.codegraph.db"), PathAccess.Write);
+            // A host name that resolves nowhere: any SMB or name-resolution attempt costs seconds; a lexical refusal does not.
+            var uncWatch = Stopwatch.StartNew();
+            var idxUnc = p.Check("\\\\ca-583abdec-no-such-host\\share\\Sol\\Main.sln", PathAccess.Read);
+            uncWatch.Stop();
+            Ok("index_codegraph: a UNC .sln is refused as UNC, with no network I/O (" + uncWatch.ElapsedMilliseconds + " ms)",
+                !idxUnc.Allowed && idxUnc.Reason != null && idxUnc.Reason.Contains("UNC") && uncWatch.ElapsedMilliseconds < 500, idxUnc.Reason);
+
             Console.WriteLine("=== UNC, device, network ===");
             var unc = Denied(p, "UNC path", "\\\\server\\share\\x.clw");
             // The drive-letter rule would refuse it too; this pins the explicit UNC rule and its message.

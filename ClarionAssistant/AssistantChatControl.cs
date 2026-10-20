@@ -2639,7 +2639,9 @@ namespace ClarionAssistant
 
                     if (e.Error != null)
                     {
-                        externalSummary = "Error indexing solution: " + e.Error.Message;
+                        // 583abdec review L3: an MCP caller (index_solution) gets the short form naming the run log;
+                        // the log and the progress window get the whole message.
+                        externalSummary = ClarionAssistant.Services.OutOfProcessIndexer.McpFailureReply(e.Error, runLog.LogPath);
                         runLog.WriteLine("FAILED: " + e.Error.Message);
                         runLog.Dispose();
                         if (formAlive)

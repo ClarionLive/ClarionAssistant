@@ -149,6 +149,9 @@ namespace ClarionCodeGraph.Graph
             });
         }
 
+        /// <summary>Inside one file's relationship scan, the cancel probe runs every (mask + 1) lines.</summary>
+        private const int CancelPollLineMask = 4095;
+
         private void ThrowIfCancelled()
         {
             var probe = CancelRequested;
@@ -2198,6 +2201,10 @@ namespace ClarionCodeGraph.Graph
 
                     for (int i = target.StartLine; i < lines.Length; i++)
                     {
+                        // 583abdec review D1: one generated module can be 80k+ lines and take seconds here, so the
+                        // cancel probe (an Interlocked read - and in the indexer child, the host-died signal) is
+                        // also polled every 4096 lines, not only between files.
+                        if (((i - target.StartLine) & CancelPollLineMask) == CancelPollLineMask) ThrowIfCancelled();
                         string line = lines[i];
                         string trimmed = line.TrimStart();
 

@@ -3,7 +3,7 @@
 //
 // This harness is the 32-bit HOST (compiled x86, like Clarion.exe). It:
 //   P   round-trips the stderr progress protocol and the stdout result JSON (tricky text, every IndexResult field);
-//   B   builds the REAL clarion-indexer.exe from the shared sources (x64, as the csproj does) into a folder laid out
+//   B   builds the REAL clarion-indexer.exe from the shared sources (AnyCPU, as the csproj does) into a folder laid out
 //       like the deployed addin folder - with the 32-bit SQLite.Interop.dll at its ROOT, the trap the indexer's
 //       preload exists for - and runs it through the REAL OutOfProcessIndexer;
 //   E   indexes one fixture solution in-process and through the child, with the IDE's kind of inputs (an explicit
@@ -13,6 +13,10 @@
 //   C   cancel: graceful ("cancel" on stdin, exit 2) and forced (a child that ignores it is killed after the grace);
 //   F   failures: a child error, a child that dies without a result, a missing x64 interop - each names the exe, the
 //       exit code and the end of its stderr; a missing exe falls back in-process WITH a warning.
+//   583abdec review: D1 the child's own writer lock, held against the gate and a second child; D2 an exe that will not
+//       start falls back with a warning; D3 a finished run is never reported as cancelled, and a child that exited on
+//       its own is never "killed"; D4a the last stdout object; D4b UTF-8 pipes before the interop preload (a non-ASCII
+//       path); L1 absolute paths; L2 a multi-line error is one stderr text line; L3 the short MCP failure reply.
 //
 // Args: <csc.exe> <ClarionAssistant dir>.   Exit: 0 pass, 1 fail.
 using System;
@@ -140,7 +144,7 @@ static class OutOfProcessIndexerTest
         "CodeGraph\\Parsing\\Models\\ClarionSymbol.cs", "CodeGraph\\Parsing\\Models\\ClarionRelationship.cs",
         "CodeGraph\\Parsing\\Models\\SolutionProject.cs", "CodeGraph\\Parsing\\Models\\ParseResult.cs",
         "Services\\RedFileService.cs", "Services\\RedResolution.cs", "Services\\ClarionConfigDirectory.cs",
-        "Services\\ClarionVersionService.cs", "Services\\EncodingHelper.cs"
+        "Services\\ClarionVersionService.cs", "Services\\EncodingHelper.cs", "Services\\IndexRunGate.cs"
     };
 
     static int RunCsc(string args)
@@ -171,7 +175,7 @@ static class OutOfProcessIndexerTest
         }
         string exe = Path.Combine(stage, "clarion-indexer.exe");
         var src = string.Join(" ", IndexerSources.Select(s => "\"" + Path.Combine(RepoDir, s) + "\""));
-        int rc = RunCsc("/nologo /warn:0 /platform:x64 /out:\"" + exe + "\" /r:System.dll /r:System.Core.dll /r:System.Xml.dll /r:System.Data.dll " +
+        int rc = RunCsc("/nologo /warn:0 /platform:anycpu /out:\"" + exe + "\" /r:System.dll /r:System.Core.dll /r:System.Xml.dll /r:System.Data.dll " +
                         "/r:\"" + Path.Combine(lib, "System.Data.SQLite.dll") + "\" " + src);
         return rc == 0 ? exe : null;
     }
@@ -235,6 +239,50 @@ static class OutOfProcessIndexerTest
         Check(OutOfProcessIndexer.QuoteArgument("C:\\dir\\") == "C:\\dir\\" && OutOfProcessIndexer.QuoteArgument("C:\\a b\\") == "\"C:\\a b\\\\\""
               && OutOfProcessIndexer.QuoteArgument("x\"y") == "\"x\\\"y\"" && OutOfProcessIndexer.QuoteArgument("") == "\"\"",
             "P12", "argument quoting doubles a trailing backslash inside quotes and escapes quotes");
+
+        // Review L1: every path the child gets is absolute, resolved against THIS process's current directory.
+        string cwd = Environment.CurrentDirectory;
+        string relArgs = OutOfProcessIndexer.BuildArguments(new IndexRunRequest
+        {
+            SlnPath = "rel sol\\S.sln", DbPath = "rel.codegraph.db", LibraryPaths = new List<string> { "libs\\inc", "C:\\Abs\\Lib\\" }
+        });
+        Check(relArgs.Contains(OutOfProcessIndexer.QuoteArgument(Path.Combine(cwd, "rel sol\\S.sln")))
+              && relArgs.Contains(OutOfProcessIndexer.QuoteArgument(Path.Combine(cwd, "rel.codegraph.db")))
+              && relArgs.Contains(Path.Combine(cwd, "libs\\inc") + ";C:\\Abs\\Lib\\")
+              && !relArgs.Contains(" \"rel sol\\S.sln\"") && !relArgs.Contains(" rel.codegraph.db"),
+            "P13", "relative solution, database and library paths reach the child absolute (a fully qualified one unchanged): " + relArgs);
+
+        // Review D4a: more than one JSON object on stdout - the LAST complete one is the outcome.
+        var first = IndexerProtocol.FailureToJson(new InvalidOperationException("earlier"), false, null);
+        var two = IndexerProtocol.ParseOutcome("lib says {\"x\":1}\n" + first + "\nnoise { not json\n" + IndexerProtocol.ResultToJson(r, "C:\\d.db", 5) + "\n");
+        Check(two != null && two.Success && two.Result != null && two.Result.SymbolCount == 555,
+            "P14", "stdout with a stray object, a failure object, a stray '{' and then the result: the result (the last object) wins");
+        var lastFail = IndexerProtocol.ParseOutcome(IndexerProtocol.ResultToJson(r, "C:\\d.db", 5) + "\n" + first);
+        Check(lastFail != null && !lastFail.Success && lastFail.Error == "earlier",
+            "P15", "a result followed by a failure object reads as the failure (the last object), never the first");
+
+        // Review L3: the MCP reply - headline, the last 5 lines cut at ~200 chars, the run log named.
+        var reply = typeof(OutOfProcessIndexer).GetMethod("McpFailureReply", new[] { typeof(Exception), typeof(string) });
+        Check(reply != null, "P16", "OutOfProcessIndexer.McpFailureReply(Exception, string) exists");
+        if (reply != null)
+        {
+            var tailLines = new List<string>();
+            for (int i = 1; i <= 25; i++) tailLines.Add("tail line " + i.ToString("00") + " " + new string('x', 480));
+            string tailText = string.Join(Environment.NewLine, tailLines);
+            string headline = "The indexer process clarion-indexer.exe (C:\\a\\clarion-indexer.exe) failed with exit code 1: boom.";
+            var ex = new IndexerProcessException(headline + Environment.NewLine + "Last indexer output:" + Environment.NewLine + tailText,
+                "C:\\a\\clarion-indexer.exe", 1, tailText);
+            string text = (string)reply.Invoke(null, new object[] { ex, "C:\\logs\\codegraph-index-S.log" });
+            string[] outLines = text.Split('\n');
+            bool shortLines = outLines.All(l => l.Length <= 330);
+            int tailShown = outLines.Count(l => l.Contains("tail line "));
+            Check(text.StartsWith("Error indexing solution: " + headline) && tailShown == 5 && text.Contains("tail line 25") && text.Contains("tail line 21")
+                  && !text.Contains("tail line 20") && outLines.Where(l => l.Contains("tail line ")).All(l => l.Length <= 2 + 200)
+                  && shortLines && text.Contains("C:\\logs\\codegraph-index-S.log") && text.Length < 2000,
+                "P16", "a 25-line, 500-char-per-line tail is cut to the headline + the last 5 lines (<= 200 chars each) + the run log (" + text.Length + " chars, " + outLines.Length + " lines)");
+            string plain = (string)reply.Invoke(null, new object[] { new IOException("disk full"), null });
+            Check(plain.StartsWith("Error indexing solution: disk full") && plain.Contains("no run log"), "P17", "a non-child error keeps its message and says no run log was written");
+        }
     }
 
     // ------------------------------------------------------------------ helpers over a database
@@ -290,7 +338,7 @@ static class OutOfProcessIndexerTest
             ProtocolRoundTrip();
 
             string exe = StageIndexer(Path.Combine(root, "addin"), true);
-            Check(exe != null && File.Exists(exe), "B1", "the real clarion-indexer.exe builds from the shared sources (x64)");
+            Check(exe != null && File.Exists(exe), "B1", "the real clarion-indexer.exe builds from the shared sources (AnyCPU, Prefer32Bit off - as the csproj does)");
             if (exe == null) return Finish();
 
             string sln = BuildFixture(Path.Combine(root, "sol"));
@@ -416,6 +464,87 @@ static class OutOfProcessIndexerTest
                 Check(!k.EffectiveIncremental, "C6", "a KILLED child wrote no result, yet the host knows its incremental request ran FULL (the mode line comes first) - so the partial database is deleted");
             }
 
+            // ---- D1: the child holds its OWN writer lock; the host-side gate treats it as held ----
+            {
+                string dbL = Path.Combine(root, "lock.codegraph.db");
+                Check(IndexRunGate.TryEnter(dbL), "D1", "control: the gate is free before the run (the host claims it, as every entry point does)");
+                var lk = new OutOfProcessIndexer { ExePath = exe, ExtraArgumentsForTest = "--test-slow-ms 300" };
+                int lev = 0; bool probed = false;
+                bool? heldWithHostLockGone = null; string holder = null; string second = null; int childPid = -1;
+                lk.ChildStarted += pr => childPid = pr.Id;
+                lk.OnProgressEvent += e =>
+                {
+                    if (lev++ != 0) return;
+                    // The host's own lock goes - as it does when the host process dies - while the child keeps writing.
+                    IndexRunGate.Exit(dbL);
+                    string h;
+                    bool entered = IndexRunGate.TryEnter(dbL, out h);
+                    heldWithHostLockGone = !entered; holder = h;
+                    if (entered) IndexRunGate.Exit(dbL);
+                    // A second child on the same database, started while the first writes.
+                    try
+                    {
+                        new OutOfProcessIndexer { ExePath = exe }.Run(new IndexRunRequest { SlnPath = sln, DbPath = dbL, Red = red, LibraryPaths = libs });
+                        second = "THE SECOND RUN INDEXED THE SAME DATABASE";
+                    }
+                    catch (IndexerProcessException ex) { second = ex.Message; }
+                    catch (Exception ex) { second = "WRONG TYPE " + ex.GetType().Name + ": " + ex.Message; }
+                    probed = true;
+                };
+                lk.CancelRequested = () => probed;
+                bool lcancelled = false;
+                try { lk.Run(new IndexRunRequest { SlnPath = sln, DbPath = dbL, Red = red, LibraryPaths = libs }); }
+                catch (OperationCanceledException) { lcancelled = true; }
+                catch (Exception ex) { Check(false, "D1", "the first run threw " + ex.GetType().Name + ": " + ex.Message); }
+                Check(heldWithHostLockGone == true && holder != null && holder.Contains("process " + childPid) && holder.Contains("still writing"), "D1a",
+                    "with the host's lock released mid-run, TryEnter still refuses while the child writes, naming the child (pid " + childPid + "): " + (holder ?? "(entered)"));
+                Check(second != null && second.Contains("another index run is writing") && second.Contains("exit code 1"), "D1b",
+                    "a second child on the same database refuses at start instead of writing alongside: " + FirstLine(second));
+                bool freeAfter = IndexRunGate.TryEnter(dbL);
+                if (freeAfter) IndexRunGate.Exit(dbL);
+                Check(lcancelled && freeAfter, "D1c", "once the child exits the gate is free again (cancelled=" + lcancelled + ")");
+            }
+
+            // ---- D3: a cancel that lands as the child finishes never turns its result into a cancel ----
+            {
+                // A stand-in child: writes its JSON, exits at once, and leaves a grandchild holding the inherited stdout/
+                // stderr pipes for 3 s - so the host sees the child exited well before its pipes close, the window in which
+                // the cancel grace ran out and the old code marked a child that had already exited as "killed".
+                string fakeSrc = Path.Combine(root, "fake.cs");
+                File.WriteAllText(fakeSrc,
+                    "using System; using System.Diagnostics;\r\n" +
+                    "class F { static int Main(string[] a) {\r\n" +
+                    "  if (a.Length > 0 && a[0] == \"hold\") { System.Threading.Thread.Sleep(3000); return 0; }\r\n" +
+                    "  Process.Start(new ProcessStartInfo(typeof(F).Assembly.Location, \"hold\") { UseShellExecute = false });\r\n" +
+                    "  bool fail = Array.IndexOf(a, \"--fake-fail\") >= 0;\r\n" +
+                    "  Console.WriteLine(fail ? \"{\\\"success\\\": false, \\\"cancelled\\\": false, \\\"error\\\": \\\"fake failure\\\"}\"\r\n" +
+                    "                     : \"{\\\"success\\\": true, \\\"slnPath\\\": \\\"x.sln\\\", \\\"symbolCount\\\": 4242, \\\"mode\\\": \\\"full\\\", \\\"requestedMode\\\": \\\"full\\\"}\");\r\n" +
+                    "  Console.Out.Flush();\r\n" +
+                    "  return fail ? 1 : 0; } }\r\n", new UTF8Encoding(false));
+                string fakeExe = Path.Combine(root, "fake", "clarion-indexer.exe");
+                Directory.CreateDirectory(Path.GetDirectoryName(fakeExe));
+                RunCsc("/nologo /out:\"" + fakeExe + "\" \"" + fakeSrc + "\"");
+
+                var ok = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = TimeSpan.FromMilliseconds(300) };
+                ok.CancelRequested = () => true;
+                IndexResult okRes = null; string okWhat = null;
+                try { okRes = ok.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "fake.db") }); }
+                catch (OperationCanceledException) { okWhat = "reported as CANCELLED"; }
+                catch (Exception ex) { okWhat = ex.GetType().Name + ": " + ex.Message; }
+                Check(okRes != null && okRes.SymbolCount == 4242 && ok.ExitCode == 0, "D3a",
+                    "a child that finished (exit 0, success) after a cancel was sent returns its result, never a cancel: " + (okWhat ?? "result"));
+
+                var bad = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = TimeSpan.FromMilliseconds(300), ExtraArgumentsForTest = "--fake-fail" };
+                bad.CancelRequested = () => true;
+                string badWhat = null;
+                try { bad.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "fake.db") }); badWhat = "returned a result"; }
+                catch (IndexerProcessException ex) { badWhat = "IPE " + ex.Message; }
+                catch (OperationCanceledException) { badWhat = "reported as CANCELLED"; }
+                catch (Exception ex) { badWhat = ex.GetType().Name + ": " + ex.Message; }
+                Check(badWhat != null && badWhat.StartsWith("IPE ") && badWhat.Contains("fake failure") && badWhat.Contains("exit code 1"), "D3b",
+                    "a child that exited on its own with a failure is a failure, not \"killed\"/cancelled: " + FirstLine(badWhat));
+            }
+
             // ---- F: failures ----
             {
                 var f = new OutOfProcessIndexer { ExePath = exe };
@@ -461,6 +590,56 @@ static class OutOfProcessIndexerTest
                 Check(gr != null && g.RanInProcess && g.FallbackWarning != null && g.FallbackWarning.Contains("clarion-indexer.exe was not found")
                       && gm.Count > 0 && gm[0] == g.FallbackWarning && gr.SymbolCount == inRes.SymbolCount,
                     "F4", "a missing exe runs in-process with a warning first on the progress channel, same result");
+
+                // Review D2: an exe that is THERE but will not start (error 193: not a valid Win32 application) is the
+                // missing-exe case - an in-process run with a WARNING naming the reason - not a hard failure.
+                string garbage = Path.Combine(root, "garbage", "clarion-indexer.exe");
+                Directory.CreateDirectory(Path.GetDirectoryName(garbage));
+                // The first 1 KB of a real exe: a truncated download. Windows refuses it (193, bad exe format) - a real PE
+                // header, so the loader never takes the DOS-program path (which can raise a "16-bit application" dialog).
+                var realPe = File.ReadAllBytes(crashExe);
+                var junkPe = new byte[Math.Min(1024, realPe.Length)];
+                Array.Copy(realPe, junkPe, junkPe.Length);
+                File.WriteAllBytes(garbage, junkPe);
+                var gb = new OutOfProcessIndexer { ExePath = garbage };
+                var gbm = new List<string>();
+                gb.OnProgress += x => gbm.Add(x);
+                IndexResult gbr = null; string gbErr = null;
+                try { gbr = gb.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "garbage.db"), Red = red, BuildConfiguration = config, LibraryPaths = libs }); }
+                catch (Exception ex) { gbErr = ex.GetType().Name + ": " + FirstLine(ex.Message); }
+                Check(gbr != null && gb.RanInProcess && gb.FallbackWarning != null && gb.FallbackWarning.StartsWith("WARNING:")
+                      && gb.FallbackWarning.Contains("could not be started") && (gb.FallbackWarning.Contains("Win32 error 193") || gb.FallbackWarning.Contains("Win32 error 216")) && gbm.Count > 0 && gbm[0] == gb.FallbackWarning
+                      && gbr.SymbolCount == inRes.SymbolCount,
+                    "D2", "an exe that fails to START (Win32 error 193/216) falls back in-process with a warning: " + (gbErr ?? gb.FallbackWarning));
+
+                // Review D4b: the UTF-8 pipes are set up BEFORE the interop preload, so its error - which names a
+                // path - reaches the host intact. A folder name with an accented letter and a non-Latin-1 symbol.
+                string uniStage = Path.Combine(root, "addin " + (char)0x00E9 + (char)0x2603 + " no-x64");
+                string uniExe = StageIndexer(uniStage, false);
+                var um = new OutOfProcessIndexer { ExePath = uniExe };
+                msg = null;
+                try { um.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "uni.db") }); }
+                catch (IndexerProcessException ex) { msg = ex.Message; }
+                catch (Exception ex) { msg = "WRONG TYPE " + ex.GetType().Name + ": " + ex.Message; }
+                string uniWant = "the x64 SQLite interop is missing: " + Path.Combine(uniStage, "x64", "SQLite.Interop.dll");
+                Check(msg != null && msg.Contains(uniWant), "D4b",
+                    "the preload error names a non-ASCII path exactly (UTF-8 pipes first): " + FirstLine(msg));
+
+                // Review L2: an error message carrying line breaks - and a forged protocol record after one - reaches
+                // the host as ONE text line; nothing in it is decoded as a protocol record.
+                string forged = "boom\r\n" + IndexerProtocol.EncodeMessage("INJECTED") + "\nmore";
+                var lt = new OutOfProcessIndexer { ExePath = exe, ExtraArgumentsForTest = "--test-throw " + OutOfProcessIndexer.QuoteArgument(forged) };
+                var ltm = new List<string>();
+                lt.OnProgress += x => ltm.Add(x);
+                IndexerProcessException lte = null; string ltOther = null;
+                try { lt.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "forged.db"), Red = red, LibraryPaths = libs }); ltOther = "the run succeeded"; }
+                catch (IndexerProcessException ex) { lte = ex; }
+                catch (Exception ex) { ltOther = ex.GetType().Name + ": " + ex.Message; }
+                string[] tailLinesL2 = lte != null ? (lte.StderrTail ?? "").Split('\n') : new string[0];
+                Check(lte != null && !ltm.Contains("INJECTED") && !ltm.Exists(x => x.Contains("INJECTED"))
+                      && tailLinesL2.Any(l => l.Contains("boom") && l.Contains("INJECTED") && l.Contains("more") && l.StartsWith("Error: InvalidOperationException"))
+                      && !tailLinesL2.Any(l => l.TrimEnd('\r').StartsWith(IndexerProtocol.Prefix)),
+                    "L2", "a multi-line error with a forged record stays one stderr text line, never decoded: " + (ltOther ?? FirstLine(lte.StderrTail)));
             }
         }
         catch (Exception ex)

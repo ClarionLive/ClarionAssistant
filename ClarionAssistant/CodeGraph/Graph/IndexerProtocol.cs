@@ -201,16 +201,14 @@ namespace ClarionCodeGraph.Graph
             public string DbPath;
         }
 
-        /// <summary>Parse the child's stdout. Null when it holds no JSON object (the child died before writing one).</summary>
+        /// <summary>
+        /// Parse the child's stdout. Null when it holds no complete JSON object (the child died before writing one).
+        /// 583abdec review D4a: when stdout holds MORE than one object (a library that printed one, a result followed
+        /// by another line), the LAST complete object is the outcome; text and partial objects around it are skipped.
+        /// </summary>
         public static Outcome ParseOutcome(string stdout)
         {
-            if (string.IsNullOrEmpty(stdout)) return null;
-            int start = stdout.IndexOf('{');
-            int end = stdout.LastIndexOf('}');
-            if (start < 0 || end < start) return null;
-            Dictionary<string, object> o;
-            try { o = Json.Parse(stdout.Substring(start, end - start + 1)) as Dictionary<string, object>; }
-            catch (FormatException) { return null; }
+            Dictionary<string, object> o = LastObject(stdout);
             if (o == null) return null;
 
             var outcome = new Outcome
@@ -226,6 +224,32 @@ namespace ClarionCodeGraph.Graph
             else if (mode == "full") outcome.EffectiveIncremental = false;
             if (outcome.Success) outcome.Result = ResultFromDictionary(o);
             return outcome;
+        }
+
+        /// <summary>The last complete top-level JSON object in <paramref name="text"/>, or null. Scans forward: at each
+        /// '{' it tries to read one object; a success skips past it (its inner braces are not candidates), a failure
+        /// moves on by one character, so stray braces in console text cannot hide a later object.</summary>
+        private static Dictionary<string, object> LastObject(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            Dictionary<string, object> last = null;
+            int i = text.IndexOf('{');
+            while (i >= 0 && i < text.Length)
+            {
+                object v;
+                int end;
+                if (Json.TryParseAt(text, i, out v, out end) && v is Dictionary<string, object>)
+                {
+                    last = (Dictionary<string, object>)v;
+                    i = end;
+                }
+                else
+                {
+                    i++;
+                }
+                i = i < text.Length ? text.IndexOf('{', i) : -1;
+            }
+            return last;
         }
 
         /// <summary>Rebuild an IndexResult from <see cref="ResultToJson"/>'s output.</summary>
@@ -368,6 +392,21 @@ namespace ClarionCodeGraph.Graph
                 SkipWs(s, ref i);
                 if (i != s.Length) throw new FormatException("trailing characters after JSON at " + i);
                 return v;
+            }
+
+            /// <summary>Read ONE JSON value starting at <paramref name="start"/>; <paramref name="end"/> is the index just
+            /// past it. False (never a throw) when no complete value starts there.</summary>
+            public static bool TryParseAt(string s, int start, out object value, out int end)
+            {
+                value = null;
+                end = start;
+                if (s == null || start < 0 || start >= s.Length) return false;
+                int i = start;
+                try { value = ParseValue(s, ref i); }
+                catch (FormatException) { return false; }
+                catch (OverflowException) { return false; }
+                end = i;
+                return true;
             }
 
             private static void SkipWs(string s, ref int i)
