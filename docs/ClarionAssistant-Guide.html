@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.9 &middot; for Clarion.Assistant 6.0</div>
+  <div class="version-badge">User Guide &middot; v1.10 &middot; for Clarion.Assistant 6.1</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-61" class="sub">v6.1</a>
     <a href="#whats-new-60" class="sub">v6.0</a>
     <a href="#whats-new-59" class="sub">v5.9</a>
     <a href="#whats-new-58" class="sub">v5.8</a>
@@ -502,6 +503,7 @@
     <a href="#tools-editor-operations" class="sub">Editor Operations</a>
     <a href="#tools-app-tree" class="sub">Application Tree</a>
     <a href="#tools-file-system" class="sub">File System</a>
+    <a href="#tools-path-scope" class="sub">Path Scope</a>
     <a href="#tools-class-intelligence" class="sub">Class Intelligence</a>
     <a href="#tools-codegraph" class="sub">CodeGraph</a>
     <a href="#tools-lsp" class="sub">Language Server</a>
@@ -531,6 +533,49 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-61">v6.1 &mdash; Indexing Outside Clarion, a Boundary for the MCP Tools, Safer Saves</h3>
+
+  <p>
+    <strong>Reindex</strong> and <strong>Update</strong> now build the
+    <a href="#tools-codegraph">CodeGraph</a> index in a separate 64-bit process,
+    <code>clarion-indexer.exe</code>, instead of inside the 32-bit Clarion IDE, so a large solution
+    no longer runs Clarion out of memory. The progress window, Cancel and the run log work as before.
+  </p>
+
+  <p>
+    The <a href="#tools-file-system">file tools</a> and <a href="#tools-search">Everything search
+    tools</a> now stay inside your solution, its projects, the Clarion install and the
+    <code>.red</code> folders, and only the solution folder is writable. Add other folders with
+    <code>Mcp.AllowedRoots</code> (see <a href="#tools-path-scope">Path scope</a>).
+    <code>write_file</code> no longer loses to a stale native Clarion editor tab: it reloads a tab
+    with no unsaved changes and refuses to write under one that has them.
+  </p>
+
+  <p>
+    A <a href="#ca-embed-recovery">CA Embeditor save that Clarion lost</a> by crashing right after it
+    is offered back the next time you open that procedure. Every tool in a terminal tab now follows
+    the solution open in the IDE, and <a href="#claude-chat-tabs">tab names</a> follow it too; Copilot
+    and Codex terminals are named <strong>CP1</strong> and <strong>CX1</strong>. The
+    <a href="#tools-build">build tools</a> now say plainly that they generate source and do not
+    compile it. The CA editors grey out code that <code>OMIT</code>/<code>COMPILE</code> leaves out,
+    and the control hover card can show clickable attribute chips. CodeGraph follows class libraries
+    reached through <code>MODULE()</code>/<code>LINK()</code>, globals from INCLUDEd files and
+    <code>.red</code> <code>{include}</code> lines.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>After upgrading:</strong> update Clarion Assistant in <em>every</em> Clarion version you
+    use, not just the newest; run a <strong>Reindex</strong> (or <strong>Update</strong>, which runs a
+    full index by itself on an older database) for each solution; and re-run
+    <code>ingest_schema</code> on your dictionary to fill SchemaGraph's new columns. If Claude now
+    reports a folder it used to reach as out of scope, add it to <code>Mcp.AllowedRoots</code>.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v6.1.0.md">v6.1.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-60">v6.0 &mdash; Claude Edits What You See, Language Server v1.0.8, Keymap Profiles</h3>
 
@@ -1320,6 +1365,22 @@
       the session and close it. The Home tab cannot be closed.</li>
   </ul>
 
+  <h4>Tab names</h4>
+  <p>
+    Each terminal is named for its assistant and a number: <strong>CA1</strong>, <strong>CA2</strong>
+    for Claude, <strong>CP1</strong> for Copilot and <strong>CX1</strong> for Codex. Each kind is
+    numbered on its own, and the number is given back when the assistant in that tab exits. The same
+    name is the terminal's MultiTerminal name. After it, the tab shows what it was opened on, for
+    example <code>CA1 &middot; MySolution</code>.
+  </p>
+  <p>
+    A tab opened on a solution, and a <strong>New Chat</strong> tab, follow the solution open in the
+    IDE: switch solutions and the tab reads <code>CA1 &middot; OtherSolution</code>, and with no
+    solution open it reads plain <code>CA1</code>. Its tools follow the same way: the Clarion
+    version, the <code>.red</code>, the CodeGraph database and the language server move to the IDE's
+    solution. Tabs opened on a project, a class or Evaluate Code keep their own label.
+  </p>
+
   <div class="info-box info-box--tip">
     <strong>Tip:</strong> Use multiple tabs to work on different parts of a multi-solution project.
     Each tab has its own Claude Code process with full IDE integration.
@@ -1384,6 +1445,18 @@
     <strong>Tip:</strong> Run a <strong>Reindex</strong> once when you first open a solution,
     then use <strong>Update</strong> periodically as you make changes. Claude's CodeGraph queries
     are only as current as the last index.
+  </div>
+
+  <div class="info-box">
+    <strong>Indexing runs outside Clarion.</strong> Reindex and Update run in
+    <code>clarion-indexer.exe</code>, a separate 64-bit process in the add-in folder, so even a very
+    large solution cannot run the 32-bit Clarion IDE out of memory. <strong>Cancel</strong> stops it
+    (and ends it if it hasn't stopped within 15 seconds); a cancelled Reindex deletes the partial
+    database so a half-built graph never passes for a complete one, and a cancelled Update keeps the
+    database but says not to trust it until the next run. An <strong>Update</strong> on a database
+    made by an older version runs a full index by itself and says so. If the indexer fails, the
+    message names it, gives its exit code and shows its last lines; if it is missing, indexing runs
+    inside Clarion as before and warns you to reinstall.
   </div>
 
   <h4>Schema Sources</h4>
@@ -1689,6 +1762,24 @@
     One procedure is open in the CA Embeditor at a time, as in Clarion's own embeditor.
   </p>
 
+  <h4 id="ca-embed-recovery">If Clarion crashes after a save</h4>
+  <p>
+    On large procedures, Clarion's Generator can crash a moment <em>after</em> the CA Embeditor has
+    handed it your text and reported the save as done. Every save therefore writes the embeds you
+    changed to a recovery file first, and keeps it until a later open of the procedure shows the text
+    really arrived (and, after Clarion's own <strong>Recover</strong>, until the <code>.app</code>
+    itself has been saved).
+  </p>
+  <p>
+    If the text never arrived, the next time you open that procedure a notice offers
+    <strong>Restore</strong> and <strong>Discard (a copy is kept)</strong>. Restore puts the text back
+    as unsaved edits for you to review and save; nothing is applied unless you choose it. Closing the
+    notice without choosing leaves the offer for the next open. If the procedure was changed and saved
+    after your CA save, the notice says so, and a dated copy of the current text is written first, so
+    neither version is lost. Copies are kept in <code>%APPDATA%\ClarionAssistant\embed-recovery</code>
+    and cleared after 30 days.
+  </p>
+
   <h3 id="ca-monaco-editor">Monaco Source Editor</h3>
 
   <p>
@@ -1696,6 +1787,13 @@
     Monaco-powered editor with Clarion syntax highlighting, code folding, go-to-definition
     (<kbd>F12</kbd> / <kbd>Ctrl</kbd>+click), inline diagnostics, and completion. It replaces the
     native Clarion text editor while keeping the same save and navigation behavior.
+  </p>
+
+  <p>
+    As in Clarion's own editor, code that <code>OMIT</code> or <code>COMPILE</code> leaves out of the
+    build is greyed out, in the CA Editor and the CA Embeditor. When the condition depends on
+    something the editor can't see (a project define such as <code>_DEBUG_</code>, or an EQUATE from an
+    included file), the code keeps its normal colours and a faint bar in the margin marks the block.
   </p>
 
   <h4>Completion, hover and squiggles</h4>
@@ -2547,11 +2645,56 @@
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>read_file</code></td><td>Read file content from disk. Supports <code>start_line</code> and <code>end_line</code> for specific ranges.</td></tr>
-      <tr><td><code>write_file</code></td><td>Write content to a file on disk.</td></tr>
-      <tr><td><code>append_to_file</code></td><td>Append text to an existing file.</td></tr>
+      <tr><td><code>write_file</code></td><td>Write content to a file on disk. If the file is open in a native Clarion editor tab with no unsaved changes, the tab is reloaded with your caret kept; if the tab has unsaved changes, the write is refused until you save or close it.</td></tr>
+      <tr><td><code>append_to_file</code></td><td>Append text to an existing file. Checks open editor tabs the same way as <code>write_file</code>.</td></tr>
       <tr><td><code>list_directory</code></td><td>List files in a directory with an optional pattern filter.</td></tr>
     </tbody>
   </table>
+
+  <h3 id="tools-path-scope">Path Scope for the File and Search Tools</h3>
+  <p>
+    Claude Code's permission rules apply only to its built-in tools, never to an MCP tool, so the file
+    tools above and the <a href="#tools-search">Everything search tools</a> enforce their own boundary:
+  </p>
+  <ul>
+    <li><strong>Allowed:</strong> the open solution's folder and its project folders, the Clarion
+      install, every folder in the active <code>.red</code> and each project's own <code>.red</code>,
+      and <code>%APPDATA%\ClarionAssistant</code> (its logs).</li>
+    <li><strong>Writable:</strong> only the solution folder and the folders you add with
+      <code>Mcp.AllowedRoots</code>. The Clarion install and <code>.red</code> or project folders
+      outside the solution are read-only.</li>
+    <li><strong>Never written:</strong> instruction files such as <code>CLAUDE.md</code> and
+      <code>AGENTS.md</code>, anything in a <code>.claude</code> or <code>.git</code> folder, files that
+      make other tools run commands (<code>.mcp.json</code>, <code>.vscode\tasks.json</code> and the
+      like), and the files that decide the scope (<code>*.sln</code>, <code>*.cwproj</code>,
+      <code>*.red</code>, <code>clarion-assistant.json</code>, <code>ClarionProperties.xml</code>).
+      Edit these yourself, or with the assistant's own Edit/Write tools, which ask you first.</li>
+    <li><strong>Never read or written:</strong> token and credential stores (Clarion Assistant's
+      <code>settings.txt</code>, your Claude Code config, <code>.ssh</code>, <code>.git-credentials</code>
+      and so on), other users' profiles, device paths, and network drives and shares unless you name
+      them in <code>Mcp.AllowedRoots</code>.</li>
+  </ul>
+  <p>
+    A refused path returns an error, and every gated path is recorded in
+    <code>%APPDATA%\ClarionAssistant\mcp-path-audit.log</code>. The settings go in
+    <code>%APPDATA%\ClarionAssistant\settings.txt</code>:
+  </p>
+  <table class="tools-table">
+    <thead><tr><th>Setting</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>Mcp.AllowedRoots=D:\Shared\Templates;\\nas\team\ClarionApps</code></td><td>Extra allowed roots, separated by semicolons, readable and writable. The only way to allow a network drive or share. The <code>CLARION_MCP_ALLOWED_ROOTS</code> environment variable adds to it.</td></tr>
+      <tr><td><code>Mcp.DeniedPaths=D:\Work\Customers;*\*.pfx</code></td><td>Extra denied paths: a full path covers that folder and below, a bare name matches anywhere, <code>*</code> is a wildcard. A denied path always wins. <code>CLARION_MCP_DENIED_PATHS</code> adds to it.</td></tr>
+      <tr><td><code>Mcp.EverythingContentSearch=true</code></td><td>Turns <code>search_content</code> on. It reads file contents, so it is off by default.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="info-box info-box--warning">
+    <strong>Solution on a network drive, or templates in another folder?</strong> Add the folder to
+    <code>Mcp.AllowedRoots</code>. Until you do, Claude's file and search tools refuse it, and
+    <code>get_solution_info</code> says so when that leaves your solution folder out. The full rules
+    are in the README under
+    <a href="https://github.com/ClarionLive/ClarionAssistant#path-scope-for-the-file-and-search-tools">Path scope for the file and search tools</a>.
+  </div>
 
   <h3 id="tools-class-intelligence">Clarion Class Intelligence</h3>
   <p>Specialized tools for working with Clarion CLASS structures.</p>
@@ -2571,7 +2714,8 @@
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
       <tr><td><code>query_codegraph</code></td><td>Run SQL queries against the indexed CodeGraph database to find symbols, trace call chains, and analyze dependencies.</td></tr>
-      <tr><td><code>list_codegraph_databases</code></td><td>Find available indexed CodeGraph databases.</td></tr>
+      <tr><td><code>list_codegraph_databases</code></td><td>Find available indexed CodeGraph databases. An index made by an older indexer is marked STALE.</td></tr>
+      <tr><td><code>index_codegraph</code></td><td>Index a solution, full or incremental, in the separate <code>clarion-indexer.exe</code> process. An explicit <code>sln_path</code> is checked by the <a href="#tools-path-scope">path scope</a> first: a network path, or a solution outside the allowed folders, is refused.</td></tr>
     </tbody>
   </table>
 
@@ -2634,14 +2778,14 @@
   </table>
 
   <h3 id="tools-search">Everything Search (Instant File Search)</h3>
-  <p>Instant file search powered by <a href="https://www.voidtools.com/" target="_blank" style="color: var(--primary-dark);">Everything</a> (voidtools). Requires Everything to be installed and running. Searches file and folder names across all indexed drives.</p>
+  <p>Instant file search powered by <a href="https://www.voidtools.com/" target="_blank" style="color: var(--primary-dark);">Everything</a> (voidtools). Requires Everything to be installed and running. Searches are limited to the same folders as the file tools (see <a href="#tools-path-scope">Path Scope</a>), and every result is checked before it is returned, so nothing in a query can widen them. <code>max_results</code> is capped at 1000, and a query that names nothing (<code>*</code>) is refused.</p>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>search_files</code></td><td>Instant file name search across all indexed drives. Supports case-sensitive, whole-word, and regex modes.</td></tr>
+      <tr><td><code>search_files</code></td><td>Instant file name search within the allowed folders. Supports case-sensitive, whole-word, and regex modes.</td></tr>
       <tr><td><code>search_files_advanced</code></td><td>Advanced search with path, extension, size, and date-modified filters. Supports multiple sort orders.</td></tr>
-      <tr><td><code>find_duplicates</code></td><td>Find all instances of a filename across all indexed drives. Useful for locating duplicate or shadowed files.</td></tr>
-      <tr><td><code>search_content</code></td><td>Search for text content within files. Requires Everything content indexing to be enabled.</td></tr>
+      <tr><td><code>find_duplicates</code></td><td>Find all instances of a filename within the allowed folders. Useful for locating duplicate or shadowed files.</td></tr>
+      <tr><td><code>search_content</code></td><td>Search for text content within files. <strong>Off by default</strong>: set <code>Mcp.EverythingContentSearch=true</code> to turn it on. Requires Everything content indexing to be enabled.</td></tr>
     </tbody>
   </table>
 
@@ -2677,20 +2821,30 @@
   </table>
 
   <h3 id="tools-build">Build Tools</h3>
-  <p>Build and generate Clarion applications and C# COM controls directly from the assistant. All tools auto-detect paths when possible &mdash; solution, active app, Clarion install, and MSBuild location.</p>
+  <p>Generate Clarion applications and build C# COM controls directly from the assistant. All tools auto-detect paths when possible &mdash; solution, active app, Clarion install, and MSBuild location.</p>
   <table class="tools-table">
     <thead><tr><th>Tool</th><th>Description</th></tr></thead>
     <tbody>
-      <tr><td><code>build_solution</code></td><td>Build the entire loaded Clarion solution using <code>ClarionCL.exe</code>. Generates and compiles all .app files in the solution.</td></tr>
-      <tr><td><code>build_app</code></td><td>Build a single .app file. Ideal for multi-DLL solutions where you only need to rebuild one target. Defaults to the currently active app.</td></tr>
+      <tr><td><code>build_solution</code></td><td>Generate source for every .app in the loaded Clarion solution using <code>ClarionCL.exe</code>. Generates only: it does <strong>not</strong> compile or link.</td></tr>
+      <tr><td><code>build_app</code></td><td>Generate source for a single .app file. Ideal for multi-DLL solutions where you only need one target. Defaults to the currently active app. Generates only; it does not compile.</td></tr>
       <tr><td><code>generate_source</code></td><td>Generate Clarion source code (.clw/.inc) from an .app file via template code generation. Supports conditional and #DEBUG generation toggles.</td></tr>
       <tr><td><code>build_com_project</code></td><td>Build a C# COM control project (.csproj) using MSBuild. Auto-detects Visual Studio 2022/2019. Supports Debug/Release configuration.</td></tr>
       <tr><td><code>run_command</code></td><td>Execute a command-line process and capture output. Use for scripts, utilities, or tools not covered by the dedicated build tools.</td></tr>
     </tbody>
   </table>
 
+  <div class="info-box info-box--warning">
+    <strong>The Clarion build tools generate; they do not compile.</strong> <code>build_app</code>,
+    <code>build_solution</code> and <code>generate_source</code> run ClarionCL, which has no switch to
+    compile. Their results open with <strong>GENERATION SUCCEEDED &mdash; NOT COMPILED: no .exe/.dll was
+    produced by this call</strong>, and name the project's existing output file with the time it was
+    last written, marked as <em>not produced by this call</em>. A hand-written source project is
+    refused with &ldquo;nothing to generate&rdquo; and the MSBuild command line that compiles it. To
+    produce the .exe or .dll, compile in the IDE (or with that MSBuild command).
+  </div>
+
   <div class="info-box">
-    <strong>Example:</strong> Ask Claude to &ldquo;build the current app&rdquo; and it will invoke <code>build_app</code> on the active .app file, returning any errors and warnings directly in the chat.
+    <strong>Example:</strong> Ask Claude to &ldquo;generate the current app&rdquo; and it will invoke <code>build_app</code> on the active .app file, returning any generation errors and warnings directly in the chat.
   </div>
 
   <h3 id="tools-traces">Trace Tools (Self-Improvement)</h3>
@@ -2880,7 +3034,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.9 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.10 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->
