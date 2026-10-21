@@ -397,8 +397,9 @@ namespace ClarionAssistant.Services
 
             // H4 (Owner decision): a card from the live dictionary or the symbol index is FINAL (authoritative),
             // so the page skips the LSP hover and Monaco shows no "Loading..." tail under it. Keyword cards were
-            // final too until GH #250 (below). Still non-authoritative: an in-buffer local-class member
-            // (LocalScopeIndex decides that; the LSP may know inherited members).
+            // final too until GH #250 (below), and so were procedures from the index (below). Still
+            // non-authoritative: an in-buffer local-class member (LocalScopeIndex decides that; the LSP may know
+            // inherited members).
             var dict = LiveDictionaryIndex.HoverWord(word);
             if (dict != null) { dict.Authoritative = true; return dict; }
 
@@ -440,7 +441,16 @@ namespace ClarionAssistant.Services
                         if (includedFiles != null && SymbolIndex.IsEquateOutside(s, includedFiles))
                             s = idx.FindByName(word, true, includedFiles);
                     }
-                    if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = true, Kind = "index" };
+                    if (s != null)
+                    {
+                        // A procedure is found by name alone, so the row can be a same-named body this file never
+                        // sees (another library's, in a module not built into this app). Only the server knows which
+                        // prototype the file sees (its MAP, and the MAPs its includes declare), so the index card is
+                        // its FALLBACK, as a keyword card is (GH #250).
+                        bool proc = string.Equals(s.Type, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(s.Type, "function", StringComparison.OrdinalIgnoreCase);
+                        return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = !proc, Fallback = proc, Kind = "index" };
+                    }
                 }
             }
             // GH #250: a keyword card is a FALLBACK, never final. The server's card for END / ELSE / ELSIF / OF /

@@ -238,8 +238,8 @@ static class LocalLayerHandlersTest
                 string call = ModBuffer.Replace("  x# = INV:Qty + GloVar + Clip", "  x# = ~PASSWORD('IN',103) + 1");
 
                 var withDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), o);
-                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable)",
-                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && (bool)withDb["authoritative"], Json(withDb));
+                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable), a FALLBACK for the server's",
+                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && !(bool)withDb["authoritative"] && (bool)withDb["fallback"], Json(withDb));
 
                 LocalLayerHandlers.ProjectDbPath = null;
                 LocalLayerHandlers.ResetPathCache();
@@ -455,9 +455,13 @@ static class LocalLayerHandlersTest
             var hCall = SlotHover(16, "Button", o);
             Check("Button(1) in CODE (a control name is not reserved: a call) -> still the procedure from the index",
                 Kind(hCall) == "index" && Contents(hCall).Contains("pId"), Json(hCall));
+            // A procedure from the index is a FALLBACK: only the server knows which prototype this file sees
+            // (its MAP, and the MAPs its includes declare), and a same-named body elsewhere in the index is not it.
+            Check("...a FALLBACK for the server's card, not authoritative",
+                !(bool)hCall["authoritative"] && (bool)hCall["fallback"], Json(hCall));
             var hPwBare = SlotHover(17, "Password", o);
-            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index",
-                Kind(hPwBare) == "index" && (bool)hPwBare["authoritative"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
+            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index, a FALLBACK",
+                Kind(hPwBare) == "index" && !(bool)hPwBare["authoritative"] && (bool)hPwBare["fallback"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
             var hTextRef = SlotHover(15, "Text", o);
             Check("'Text' in CODE -> the INCLUDED equate (the slot rule is position-specific)",
                 Kind(hTextRef) == "index" && Contents(hTextRef).Contains("seen.inc"), Json(hTextRef));
