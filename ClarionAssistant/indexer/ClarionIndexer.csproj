@@ -22,19 +22,20 @@
   -->
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
-    <!-- 64-bit (ticket 583abdec): the index of a large solution runs in THIS process, not in the 32-bit IDE,
-         so it must not inherit a 32-bit address-space cap. Needs the x64 SQLite.Interop.dll (x64\ below). -->
-    <Platform Condition=" '$(Platform)' == '' ">x64</Platform>
+    <!-- AnyCPU with Prefer32Bit OFF (ticket 583abdec, review D2): the index of a large solution runs in THIS
+         process, not in the 32-bit IDE, so on 64-bit Windows it runs 64-bit and has no 32-bit address-space cap;
+         on 32-bit Windows it still starts (as a 32-bit process). Program.PreloadSqliteInterop loads x64\ or x86\
+         SQLite.Interop.dll to match whichever it is. -->
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{B2C3D4E5-F6A7-8901-BCDE-F12345678901}</ProjectGuid>
     <OutputType>Exe</OutputType>
     <RootNamespace>ClarionIndexer</RootNamespace>
     <AssemblyName>clarion-indexer</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|x64' ">
-    <PlatformTarget>x64</PlatformTarget>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
@@ -44,8 +45,8 @@
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
   </PropertyGroup>
-  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|x64' ">
-    <PlatformTarget>x64</PlatformTarget>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <DebugType>pdbonly</DebugType>
     <Optimize>true</Optimize>
@@ -102,6 +103,9 @@
     <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
     <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
     <Compile Include="..\Services\EncodingHelper.cs"><Link>Services\EncodingHelper.cs</Link></Compile>
+    <!-- The index-run gate (583abdec review D1): this process takes the database's WRITER lock for its whole run,
+         the lock the hosts' IndexRunGate.TryEnter treats as held. IDE-free (System.* only). -->
+    <Compile Include="..\Services\IndexRunGate.cs"><Link>Services\IndexRunGate.cs</Link></Compile>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- SQLite.Interop.dll for BOTH bitnesses under x86\ and x64\ (Program.PreloadSqliteInterop loads the one

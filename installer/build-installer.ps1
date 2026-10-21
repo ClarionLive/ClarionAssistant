@@ -219,9 +219,9 @@ if (-not $SkipBuild) {
 
     # Build ClarionIndexer (VENDORED into the repo — GitHub #30 — not the old external H:\DevLaptop\ClarionLSP tree)
     # NOTE: no /p:Platform override here. ClarionIndexer.csproj only defines <OutputPath> for
-    # Platform=x64 (its own default when Platform is unset) — forcing AnyCPU here matches neither
-    # PropertyGroup condition, so MSBuild errors with "BaseOutputPath/OutputPath property is not
-    # set". deploy.ps1 already builds it this way (Platform left unset); mirror that here.
+    # Platform=AnyCPU (its own default when Platform is unset; AnyCPU with Prefer32Bit off since the
+    # 583abdec review) - forcing another platform matches neither PropertyGroup condition, so MSBuild
+    # errors with "BaseOutputPath/OutputPath property is not set". deploy.ps1 builds it the same way.
     #
     # FATAL since ticket 583abdec: the addin and the standalone MCP server run EVERY index in this exe
     # (64-bit, out of the 32-bit IDE), so a failed build would ship a stale indexer that every Reindex uses.
@@ -330,18 +330,90 @@ if (Test-Path $versionProps) {
     Write-Warning "Version.props not found at $versionProps - skipping freshness gate."
 }
 
-# ── Step 1c: the indexer the addin runs every index in must be the 64-bit build, with its x64 interop
-# (ticket 583abdec). A 32-bit exe from an old build would put large solutions back under a 2-4 GB cap;
-# a missing x64\SQLite.Interop.dll makes every Reindex fail at start.
+# ── Step 1c: the indexer the addin runs every index in must run 64-bit wherever Windows is 64-bit, with its
+# x64 interop (ticket 583abdec). A 32-bit-only exe from an old build would put large solutions back under a
+# 2-4 GB cap; a missing x64\SQLite.Interop.dll makes every Reindex fail at start.
+#
+# Review D2: the indexer builds AnyCPU with Prefer32Bit OFF, so it runs 64-bit on 64-bit Windows and still
+# starts on 32-bit Windows. Its PE header then says i386 (0x014C) like a 32-bit exe - what tells them apart is
+# the CLR header's flags. Get-PeArchitecture reads both; pure functions of a file, so a harness calls them
+# (tests\InstallerIndexerGate.Test.ps1).
+
+# 'x64', 'ARM64', 'AnyCPU', 'AnyCPU-32BitPreferred', 'x86' (managed 32-bit-only or native i386), or 'unknown'.
+function Get-PeArchitecture($path) {
+    $b = [System.IO.File]::ReadAllBytes($path)
+    if ($b.Length -lt 0x40 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { return 'unknown' }
+    $pe = [BitConverter]::ToInt32($b, 0x3C)
+    if ($pe -lt 0 -or $pe + 24 -gt $b.Length) { return 'unknown' }
+    $machine = [BitConverter]::ToUInt16($b, $pe + 4)
+    if ($machine -eq 0x8664) { return 'x64' }
+    if ($machine -eq 0xAA64) { return 'ARM64' }
+    if ($machine -ne 0x014C) { return 'unknown' }
+    $sections = [BitConverter]::ToUInt16($b, $pe + 6)
+    $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
+    $opt = $pe + 24
+    $magic = [BitConverter]::ToUInt16($b, $opt)
+    $dataDirs = if ($magic -eq 0x20B) { $opt + 112 } else { $opt + 96 }
+    $clrRva = [BitConverter]::ToUInt32($b, $dataDirs + 14 * 8)       # IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR
+    if ($clrRva -eq 0) { return 'x86' }                               # native i386
+    $clrOffset = -1
+    for ($s = 0; $s -lt $sections; $s++) {
+        $h = $opt + $optSize + $s * 40
+        $va = [BitConverter]::ToUInt32($b, $h + 12)
+        $rawSize = [BitConverter]::ToUInt32($b, $h + 16)
+        $raw = [BitConverter]::ToUInt32($b, $h + 20)
+        if ($clrRva -ge $va -and $clrRva -lt $va + $rawSize) { $clrOffset = [int]($clrRva - $va + $raw); break }
+    }
+    if ($clrOffset -lt 0 -or $clrOffset + 20 -gt $b.Length) { return 'unknown' }
+    $flags = [BitConverter]::ToUInt32($b, $clrOffset + 16)            # IMAGE_COR20_HEADER.Flags
+    $required = ($flags -band 0x2) -ne 0                              # COMIMAGE_FLAGS_32BITREQUIRED
+    $preferred = ($flags -band 0x20000) -ne 0                         # COMIMAGE_FLAGS_32BITPREFERRED
+    if ($required -and $preferred) { return 'AnyCPU-32BitPreferred' }
+    if ($required) { return 'x86' }
+    return 'AnyCPU'
+}
+
+# True when an exe of this architecture runs 64-bit on a 64-bit build machine (i.e. it is NOT 32-bit-only).
+# On a 32-bit machine nothing can be proven about 64-bit Windows: anything that starts there passes.
+function Test-IndexerBitness([string]$arch, [bool]$is64BitOs) {
+    if (-not $is64BitOs) { return $arch -in @('AnyCPU', 'AnyCPU-32BitPreferred', 'x86') }
+    return $arch -in @('AnyCPU', 'x64')
+}
+
+# Review L4: the vendored native SQLite interops, pinned by SHA-256. Both are System.Data.SQLite 1.0.118
+# (stub.system.data.sqlite.core.netframework 1.0.118, build\net46\x86 and \x64), Authenticode-signed by
+# Mistachkin Systems. A changed byte here is a different native DLL loaded into Clarion.exe and the indexer.
+function Get-PinnedSqliteInterop {
+    return @{
+        'ClarionAssistant\lib\sqlite-fts5\SQLite.Interop.dll'     = '70E48EF5C14766F3601C97451B47859FDDCBE7F237E1C5200CEA8E7A7609D809'
+        'ClarionAssistant\lib\sqlite-fts5\x64\SQLite.Interop.dll' = 'ABA67C7E6C01856838B8BC6B0BA95E864E1FDCB3750AA7CDC1BC73511CEA6FE4'
+    }
+}
+
+function Test-PinnedFileHash([string]$path, [string]$expectedSha256) {
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $actual = -join ($sha.ComputeHash([System.IO.File]::ReadAllBytes($path)) | ForEach-Object { $_.ToString('X2') })
+    } finally { $sha.Dispose() }
+    return $actual -eq $expectedSha256.ToUpperInvariant()
+}
+
 $indexerExe = "$repoRoot\ClarionAssistant\indexer\bin\Debug\clarion-indexer.exe"
 $x64Interop = "$repoRoot\ClarionAssistant\lib\sqlite-fts5\x64\SQLite.Interop.dll"
 if (-not (Test-Path $indexerExe)) { Write-Error "clarion-indexer.exe not found at $indexerExe. Build indexer\ClarionIndexer.csproj first."; exit 1 }
 if (-not (Test-Path $x64Interop)) { Write-Error "x64 SQLite interop missing: $x64Interop"; exit 1 }
-$peBytes = [IO.File]::ReadAllBytes($indexerExe)
-$peOffset = [BitConverter]::ToInt32($peBytes, 0x3C)
-$machine = [BitConverter]::ToUInt16($peBytes, $peOffset + 4)
-if ($machine -ne 0x8664) {
-    Write-Error ("clarion-indexer.exe is not 64-bit (PE machine 0x{0:X4}, expected 0x8664). Rebuild indexer\ClarionIndexer.csproj." -f $machine)
+$pinned = Get-PinnedSqliteInterop
+foreach ($rel in @($pinned.Keys)) {
+    $full = Join-Path $repoRoot $rel
+    if (-not (Test-PinnedFileHash $full $pinned[$rel])) {
+        Write-Error "$rel does not match its pinned SHA-256 ($($pinned[$rel])). It is not the vendored System.Data.SQLite 1.0.118 interop; restore it from git, or re-verify a new one (Authenticode, package source) and update the pin in Get-PinnedSqliteInterop."
+        exit 1
+    }
+}
+$indexerArch = Get-PeArchitecture $indexerExe
+if (-not (Test-IndexerBitness $indexerArch ([Environment]::Is64BitOperatingSystem))) {
+    Write-Error "clarion-indexer.exe is $indexerArch - it would run 32-bit on 64-bit Windows. Expected AnyCPU with Prefer32Bit off (or x64). Rebuild indexer\ClarionIndexer.csproj."
     exit 1
 }
 $idxVer = (Get-Item $indexerExe).VersionInfo.FileVersion
@@ -352,23 +424,28 @@ if ($expected -and $idxVer -ne $expected) {
         exit 1
     }
 }
-Write-Host "  OK   clarion-indexer.exe is 64-bit ($idxVer); x64 SQLite interop present" -ForegroundColor Green
+Write-Host "  OK   clarion-indexer.exe is $indexerArch ($idxVer, runs 64-bit on 64-bit Windows); SQLite interops match their pins" -ForegroundColor Green
 
 # ── Step 2: Sign DLLs before packaging (if requested) ──
-if ($Sign -and $signtool) {
+# Review L4: with -Sign every failure is FATAL. An unsigned binary inside a signed installer is still an
+# unsigned binary loaded into Clarion.exe; a release that asked to be signed must not ship one quietly.
+if ($Sign) {
+    if (-not $signtool) { Write-Error "-Sign was passed but signtool.exe was not found under Windows Kits\10\bin. Install the Windows SDK signing tools."; exit 1 }
     Write-Host "`nSigning binaries..." -ForegroundColor Yellow
-    $filesToSign = @(
+    $requiredToSign = @(
         "$repoRoot\ClarionAssistant\bin\Debug\ClarionAssistant.dll",
         "$repoRoot\ClarionAssistant\indexer\bin\Debug\clarion-indexer.exe",
-        "$repoRoot\ClarionAssistant\mcp-server\bin\Debug\clarion-mcp-server.exe",
-        'H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug\ClarionCOMBrowser.dll'
+        "$repoRoot\ClarionAssistant\mcp-server\bin\Debug\clarion-mcp-server.exe"
     )
-    foreach ($f in $filesToSign) {
-        if (Test-Path $f) {
-            Write-Host "  Signing $([IO.Path]::GetFileName($f))..."
-            & $signtool sign /sha1 $signCertThumbprint /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /d "Clarion Assistant" $f
-            if ($LASTEXITCODE -ne 0) { Write-Warning "Failed to sign $f" }
-        }
+    # Built outside this repo and only when present (Step 1 skips it otherwise); signed when it is there.
+    $optionalToSign = @('H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug\ClarionCOMBrowser.dll')
+    foreach ($f in $requiredToSign) {
+        if (-not (Test-Path $f)) { Write-Error "Cannot sign $f - it does not exist."; exit 1 }
+    }
+    foreach ($f in @($requiredToSign + @($optionalToSign | Where-Object { Test-Path $_ }))) {
+        Write-Host "  Signing $([IO.Path]::GetFileName($f))..."
+        & $signtool sign /sha1 $signCertThumbprint /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /d "Clarion Assistant" $f
+        if ($LASTEXITCODE -ne 0) { Write-Error "Failed to sign $f (signtool exit $LASTEXITCODE). Plug in the Sectigo EV dongle and rebuild."; exit 1 }
     }
 }
 
@@ -479,7 +556,8 @@ if (Test-Path (Join-Path $scriptDir 'ClarionAssistant.iss.tmp')) {
 
 # ── Step 6: Sign the installer itself ──
 $installerExe = Get-ChildItem $outputDir -Filter '*.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if ($Sign -and $signtool -and $installerExe) {
+if ($Sign -and -not $installerExe) { Write-Error "-Sign was passed but no installer .exe was found in $outputDir to sign."; exit 1 }
+if ($Sign) {
     Write-Host "`nSigning installer..." -ForegroundColor Yellow
     & $signtool sign /sha1 $signCertThumbprint /fd sha256 /tr http://timestamp.sectigo.com /td sha256 /d "Clarion Assistant Installer" $installerExe.FullName
     if ($LASTEXITCODE -ne 0) {

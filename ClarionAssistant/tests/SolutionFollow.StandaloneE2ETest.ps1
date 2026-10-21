@@ -126,6 +126,9 @@ try {
     $psi.StandardErrorEncoding  = New-Object System.Text.UTF8Encoding($false)
     $psi.EnvironmentVariables['CA_FAKE_LSP_LOG'] = $log
     $psi.EnvironmentVariables['CA_TEST_INDEX_SETUP_PAUSE'] = $pause   # inert until the file exists (S7, S8)
+    # S9 names B explicitly while A is followed. Since 583abdec review M1 an explicit sln_path goes through the path
+    # policy, and B's folder is a root only while B is followed - so the developer's explicit root names it here.
+    $psi.EnvironmentVariables['CLARION_MCP_ALLOWED_ROOTS'] = $solB
     $p = [System.Diagnostics.Process]::Start($psi)
     $stderrTask = $p.StandardError.ReadToEndAsync()
     $script:nextId = 1

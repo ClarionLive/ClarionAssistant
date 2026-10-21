@@ -5966,6 +5966,16 @@ IdeOnly = true,
         private object ExecuteIndexCodeGraph(Dictionary<string, object> args, Action<double, string> onProgress)
         {
             string slnPath = McpJsonRpc.GetString(args, "sln_path");
+            // 583abdec review M1 (security): an EXPLICIT sln_path is caller input, so the path policy (GH #266) judges it
+            // FIRST - before File.Exists, the run gate, the solution scope or any other I/O on it. File.Exists on a UNC
+            // path is an SMB connection, which hands the share this user's NTLM credentials; a path outside every
+            // allowed root is refused like read_file refuses it. The database it would write is gated for WRITE.
+            bool explicitSln = !string.IsNullOrEmpty(slnPath);
+            if (explicitSln)
+            {
+                string slnRefusal = McpPathGate.GatePath("index_codegraph", slnPath, PathAccess.Read, _workspace, out slnPath);
+                if (slnRefusal != null) return slnRefusal;
+            }
             // 9e1bd280 run 1: ONE read of the solution, its .red and its library paths, taken here - a switch between
             // this and the set-up below indexed A's db with B's .red and library paths.
             SolutionScope snap = _workspace != null ? SnapshotSolution(true) : null;
@@ -5973,14 +5983,20 @@ IdeOnly = true,
                 slnPath = snap.SolutionPath;
             if (string.IsNullOrEmpty(slnPath))
                 return "Error: no solution path provided and no solution is open in the IDE.";
-            if (!File.Exists(slnPath))
-                return "Error: solution file not found: " + slnPath;
-
-            bool incremental = McpJsonRpc.GetString(args, "incremental") != "false";
 
             string dbPath = Path.Combine(
                 Path.GetDirectoryName(slnPath),
                 Path.GetFileNameWithoutExtension(slnPath) + ".codegraph.db");
+            if (explicitSln)
+            {
+                string dbRefusal = McpPathGate.GatePath("index_codegraph", dbPath, PathAccess.Write, _workspace, out dbPath);
+                if (dbRefusal != null) return dbRefusal;
+            }
+
+            if (!File.Exists(slnPath))
+                return "Error: solution file not found: " + slnPath;
+
+            bool incremental = McpJsonRpc.GetString(args, "incremental") != "false";
 
             // Cross-entry-point gate: RunIndex (header buttons / index_solution) may already
             // be writing this database. Refuse BEFORE opening the run log so this call can't
@@ -6072,8 +6088,10 @@ IdeOnly = true,
             }
             catch (Exception ex)
             {
+                // 583abdec review L3: the whole message (the child's full stderr tail) goes to the run log; the caller
+                // gets the headline, the last few lines, each cut short, and where the rest is.
                 runLog.WriteLine("FAILED: " + ex.Message);
-                return "Error indexing solution: " + ex.Message;
+                return OutOfProcessIndexer.McpFailureReply(ex, runLog.LogPath);
             }
             finally
             {

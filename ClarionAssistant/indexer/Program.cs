@@ -35,13 +35,52 @@ namespace ClarionIndexer
             return null;
         }
 
+        /// <summary>True under --protocol: stderr is read by a host, and only protocol records may start a record.</summary>
+        static bool _protocol;
+
+        /// <summary>
+        /// 583abdec review L2: every NON-protocol stderr line. Under --protocol its line breaks (CR, LF, NEL, the two
+        /// Unicode separators) become spaces, and a line that would itself begin with the protocol prefix is indented,
+        /// so no text - an exception message, a path - can ever start a protocol record on the host's side.
+        /// Protocol records are written with <see cref="Record"/>, never through here.
+        /// </summary>
+        static void ErrLine(string text = "")
+        {
+            Console.Error.WriteLine(_protocol ? ProtocolSafe(text) : text);
+        }
+
+        internal static string ProtocolSafe(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text ?? "";
+            var sb = new StringBuilder(text.Length);
+            foreach (char c in text)
+                sb.Append(c == '\r' || c == '\n' || c == '\u0085' || c == '\u2028' || c == '\u2029' || c == '\f' || c == '\v' ? ' ' : c);
+            string s = sb.ToString();
+            return s.StartsWith(IndexerProtocol.Prefix.TrimEnd(), StringComparison.Ordinal) ? "  " + s : s;
+        }
+
+        /// <summary>One protocol record (IndexerProtocol.Encode*) on stderr: the only raw write to it under --protocol.</summary>
+        static void Record(string encoded)
+        {
+            Console.Error.WriteLine(encoded);
+        }
+
         static int Main(string[] args)
         {
+            // 583abdec review D4b: the UTF-8 (no BOM) pipes FIRST, before anything that can fail and report - the
+            // interop preload's error names a path, and a host decodes the pipes as UTF-8.
+            _protocol = Array.IndexOf(args, "--protocol") >= 0;
+            if (_protocol)
+            {
+                Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
+                Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
+            }
+
             string preloadError = args.Length > 0 && args[0] != "--help" && args[0] != "-h" ? PreloadSqliteInterop() : null;
             if (preloadError != null)
             {
-                Console.Error.WriteLine("Error: " + preloadError);
-                if (Array.IndexOf(args, "--protocol") >= 0)
+                ErrLine("Error: " + preloadError);
+                if (_protocol)
                     Console.WriteLine(IndexerProtocol.FailureToJson(new DllNotFoundException(preloadError), false, null));
                 return 1;
             }
@@ -68,7 +107,7 @@ namespace ClarionIndexer
                     {
                         return RunIndex(new[] { "index", args[0] });
                     }
-                    Console.Error.WriteLine("Unknown command: " + command);
+                    ErrLine("Unknown command: " + command);
                     PrintUsage();
                     return 1;
             }
@@ -125,20 +164,16 @@ namespace ClarionIndexer
         {
             if (args.Length < 2)
             {
-                Console.Error.WriteLine("Error: Solution path required");
+                ErrLine("Error: Solution path required");
                 return 1;
             }
 
             // --protocol (ticket 583abdec): run as a host's child - the addin in Clarion.exe, or the standalone
-            // MCP server. Progress goes to stderr as IndexerProtocol lines, the pipes are UTF-8 without a BOM,
-            // "cancel" on stdin (or stdin closing: the host died) cancels, and paths are taken VERBATIM - the
-            // host resolved them, and a re-normalised library path would change the stored library hash.
-            bool protocol = Array.IndexOf(args, "--protocol") >= 0;
-            if (protocol)
-            {
-                Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
-                Console.SetError(new StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false)) { AutoFlush = true });
-            }
+            // MCP server. Progress goes to stderr as IndexerProtocol lines, the pipes are UTF-8 without a BOM
+            // (set up first thing in Main), "cancel" on stdin (or stdin closing: the host died) cancels, and paths
+            // are taken VERBATIM - the host made them absolute (review L1), and a re-normalised library path would
+            // change the stored library hash.
+            bool protocol = _protocol;
             Func<string, string> fullPath = p => protocol ? p : Path.GetFullPath(p);
 
             string slnPath = fullPath(args[1]);
@@ -154,6 +189,7 @@ namespace ClarionIndexer
             var redMacros = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             int testSlowMs = 0;
             bool testIgnoreCancel = false;
+            string testThrow = null;
 
             for (int i = 2; i < args.Length; i++)
             {
@@ -216,11 +252,17 @@ namespace ClarionIndexer
                     // Harness only: never honour a cancel, so the host's kill-after-grace path is exercised.
                     testIgnoreCancel = true;
                 }
+                else if (args[i] == "--test-throw" && i + 1 < args.Length)
+                {
+                    // Harness only: fail the run with this exception message once the database is open (review L2:
+                    // a message with line breaks must not reach the host as more than one stderr line).
+                    testThrow = args[++i];
+                }
             }
 
             if (!File.Exists(slnPath))
             {
-                Console.Error.WriteLine("Error: Solution file not found: " + slnPath);
+                ErrLine("Error: Solution file not found: " + slnPath);
                 if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new FileNotFoundException("Solution file not found: " + slnPath), false, null));
                 return 1;
             }
@@ -242,7 +284,7 @@ namespace ClarionIndexer
             {
                 if (!File.Exists(redPath))
                 {
-                    Console.Error.WriteLine("Error: redirection file not found: " + redPath);
+                    ErrLine("Error: redirection file not found: " + redPath);
                     if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new FileNotFoundException("redirection file not found: " + redPath), false, null));
                     return 1;
                 }
@@ -268,7 +310,7 @@ namespace ClarionIndexer
                 }
                 if (!loaded)
                 {
-                    Console.Error.WriteLine("Error: failed to parse redirection file: " + redPath);
+                    ErrLine("Error: failed to parse redirection file: " + redPath);
                     if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new InvalidDataException("failed to parse redirection file: " + redPath), false, null));
                     return 1;
                 }
@@ -284,15 +326,30 @@ namespace ClarionIndexer
                 }
             }
 
-            Console.Error.WriteLine("Indexing: " + slnPath);
-            Console.Error.WriteLine("Process: " + (Environment.Is64BitProcess ? "64-bit" : "32-bit") + ", pid " + Process.GetCurrentProcess().Id);
-            Console.Error.WriteLine("Database: " + dbPath);
-            Console.Error.WriteLine("Mode requested: " + (incremental ? "incremental" : "full"));
+            ErrLine("Indexing: " + slnPath);
+            ErrLine("Process: " + (Environment.Is64BitProcess ? "64-bit" : "32-bit") + ", pid " + Process.GetCurrentProcess().Id);
+            ErrLine("Database: " + dbPath);
+            ErrLine("Mode requested: " + (incremental ? "incremental" : "full"));
             if (libraryPaths != null && libraryPaths.Count > 0)
-                Console.Error.WriteLine("Library paths: " + string.Join("; ", libraryPaths));
+                ErrLine("Library paths: " + string.Join("; ", libraryPaths));
             if (redPath != null)
-                Console.Error.WriteLine("Redirection: " + redPath);
-            Console.Error.WriteLine();
+                ErrLine("Redirection: " + redPath);
+            ErrLine();
+
+            // 583abdec review D1: THIS process's own exclusive writer lock (<db>.writer.lock) for the whole run - never
+            // a handle inherited from the host. The host's lock (<db>.lock) dies with the host; if the host dies this
+            // process keeps writing until its next cancel poll, and the host-side gate (IndexRunGate.TryEnter) treats
+            // this lock as held, so a new run cannot ClearAll() under it. A second writer is refused here too.
+            IDisposable writerLock;
+            string writerHolder;
+            if (ClarionAssistant.Services.IndexRunGate.TryAcquireWriterLock(dbPath, out writerLock, out writerHolder)
+                == ClarionAssistant.Services.IndexRunGate.LockResult.Blocked)
+            {
+                string why = "another index run is writing " + dbPath + " - held by " + (writerHolder ?? "another process");
+                ErrLine("Error: " + why);
+                if (protocol) Console.WriteLine(IndexerProtocol.FailureToJson(new IOException(why), false, null));
+                return IndexerProtocol.ExitFailed;
+            }
 
             // Cooperative cancel from the host: "cancel" on stdin, or stdin closing (the host process died -
             // the pipe's write end goes with it), which must not leave an orphan writing the database.
@@ -340,12 +397,12 @@ namespace ClarionIndexer
                     {
                         // EffectiveIncremental is decided before the first progress message, and before anything is
                         // cleared: the host needs it to handle a cancel (a cancelled FULL run leaves a partial db).
-                        if (!modeSent) { modeSent = true; Console.Error.WriteLine(IndexerProtocol.EncodeMode(self.EffectiveIncremental)); }
-                        Console.Error.WriteLine(IndexerProtocol.EncodeMessage(msg));
+                        if (!modeSent) { modeSent = true; Record(IndexerProtocol.EncodeMode(self.EffectiveIncremental)); }
+                        Record(IndexerProtocol.EncodeMessage(msg));
                     };
                     indexer.OnProgressEvent += ev =>
                     {
-                        Console.Error.WriteLine(IndexerProtocol.EncodeEvent(ev));
+                        Record(IndexerProtocol.EncodeEvent(ev));
                         if (testSlowMs > 0) System.Threading.Thread.Sleep(testSlowMs);
                     };
                     indexer.CancelRequested = () => !testIgnoreCancel
@@ -353,24 +410,32 @@ namespace ClarionIndexer
                 }
                 else
                 {
-                    indexer.OnProgress += msg => Console.Error.WriteLine("  " + msg);
+                    indexer.OnProgress += msg => ErrLine("  " + msg);
                 }
+
+                if (testThrow != null) throw new InvalidOperationException(testThrow);
 
                 var sw = Stopwatch.StartNew();
                 var result = indexer.IndexSolution(slnPath, incremental, libraryPaths);
                 sw.Stop();
 
+                // 583abdec review D4a: the database is CLOSED (and the writer lock released) before the result is
+                // printed - a host that reads the result may delete, reopen or re-index the file at once.
+                db.Close();
+                db = null;
+                ReleaseWriter(ref writerLock);
+
                 // The result as JSON on stdout: what a host (OutOfProcessIndexer) rebuilds its IndexResult from.
                 Console.WriteLine(IndexerProtocol.ResultToJson(result, dbPath, sw.ElapsedMilliseconds));
 
-                Console.Error.WriteLine();
-                Console.Error.WriteLine("Done: " + result.SymbolCount + " symbols, " +
+                ErrLine();
+                ErrLine("Done: " + result.SymbolCount + " symbols, " +
                     result.FileCount + " files, " + result.ProjectCount + " projects in " +
                     sw.ElapsedMilliseconds + "ms");
-                Console.Error.WriteLine("Mode: " + result.ModeText);
-                Console.Error.WriteLine(result.CoverageText());
+                ErrLine("Mode: " + result.ModeText);
+                foreach (string coverageLine in result.CoverageText().Split('\n'))
+                    ErrLine(coverageLine.TrimEnd('\r'));
 
-                db.Close();
                 return IndexerProtocol.ExitOk;
             }
             catch (OperationCanceledException ex)
@@ -379,6 +444,7 @@ namespace ClarionIndexer
                 try { if (db != null) db.Close(); } catch { }
                 // The host died mid-run: nobody is left to delete a cancelled FULL run's partial database, which
                 // would otherwise pass for a complete one. (A host that is alive deletes it itself, verified.)
+                // Deleted while this process still holds the writer lock, so no new run can start in between.
                 if (System.Threading.Interlocked.CompareExchange(ref hostGone, 0, 0) == 1 && mode == false)
                 {
                     try { File.Delete(dbPath); } catch { }
@@ -388,17 +454,30 @@ namespace ClarionIndexer
                         try { File.Delete(dbPath + "-shm"); } catch { }
                     }
                 }
+                ReleaseWriter(ref writerLock);
                 Console.WriteLine(IndexerProtocol.FailureToJson(ex, true, mode));
-                Console.Error.WriteLine("Cancelled: " + ex.Message);
+                ErrLine("Cancelled: " + ex.Message);
                 return IndexerProtocol.ExitCancelled;
             }
             catch (Exception ex)
             {
                 try { if (db != null) db.Close(); } catch { }
+                ReleaseWriter(ref writerLock);
                 Console.WriteLine(IndexerProtocol.FailureToJson(ex, false, indexer != null ? indexer.EffectiveIncremental : (bool?)null));
-                Console.Error.WriteLine("Error: " + ex.GetType().Name + ": " + ex.Message);
+                ErrLine("Error: " + ex.GetType().Name + ": " + ex.Message);
                 return IndexerProtocol.ExitFailed;
             }
+            finally
+            {
+                ReleaseWriter(ref writerLock);
+            }
+        }
+
+        static void ReleaseWriter(ref IDisposable writerLock)
+        {
+            var h = writerLock;
+            writerLock = null;
+            if (h != null) { try { h.Dispose(); } catch { } }
         }
 
         static int RunQuery(string[] args)

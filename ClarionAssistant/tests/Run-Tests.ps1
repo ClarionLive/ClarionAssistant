@@ -529,6 +529,9 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             # harness builds the REAL indexer into a deployed-addin-like folder (32-bit interop at its root), runs it
             # through the REAL OutOfProcessIndexer, and requires the in-process run's result, rows and progress stream;
             # plus the protocol round trip, cancel (graceful and killed), child failures and the missing-exe fallback.
+            # Review fixes: the child's own writer lock (D1), an unstartable exe falls back (D2), a finished run is never
+            # a cancel (D3), the last stdout object (D4a), UTF-8 before the preload (D4b), absolute paths (L1), one-line
+            # stderr text (L2), the short MCP failure reply (L3).
             @{ Name = "OutOfProcessIndexer.Test"
                Sources = @("tests\OutOfProcessIndexer.Test.cs", "Services\OutOfProcessIndexer.cs", "CodeGraph\Graph\IndexerProtocol.cs",
                            "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
@@ -537,7 +540,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
                            "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
-                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs", "Services\IndexRunGate.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
