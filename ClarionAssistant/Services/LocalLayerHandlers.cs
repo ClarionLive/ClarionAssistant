@@ -386,13 +386,22 @@ namespace ClarionAssistant.Services
         /// then the live dictionary, then the solution and library DBs, then keywords/built-ins.</summary>
         internal static LocalHoverResult HoverAt(LocalSource source, int line0, int col0, LocalLayerOptions options)
         {
-            var local = source.Hover(line0, col0, options.FileName);
-            if (local != null) return local;
             string lineText = source.CaretLine(line0);
+            int col = lineText == null ? 0 : Math.Max(0, Math.Min(col0, lineText.Length));
+            string word = lineText == null ? null : LocalScopeIndex.WordAt(lineText, col);
+            // The declaration keyword right after a column-1 label ("Window  WINDOW(...)") is the keyword even when a
+            // label in scope has its name: Clarion is case-insensitive, so a WINDOW labelled Window is the same word,
+            // and the buffer's card for that label must not answer the keyword after it. Only this slot: the
+            // parameter-type slot ("Proc(*WINDOW pW)") has the shape of a call in code ("OPEN(Window)").
+            bool keywordAfterLabel = !string.IsNullOrEmpty(word) && IsDeclarationKeywordSlot(lineText, col, word) &&
+                                     FollowsColumnOneLabel(lineText, col, word);
+            if (!keywordAfterLabel)
+            {
+                var local = source.Hover(line0, col0, options.FileName);
+                if (local != null) return local;
+            }
             if (lineText == null) return null;
-            int col = Math.Max(0, Math.Min(col0, lineText.Length));
             if (LocalScopeIndex.IsInsideStringOrComment(lineText, col)) return null;
-            string word = LocalScopeIndex.WordAt(lineText, col);
             if (string.IsNullOrEmpty(word)) return null;
 
             // H4 (Owner decision): a card from the live dictionary or the symbol index is FINAL (authoritative),
@@ -472,6 +481,20 @@ namespace ClarionAssistant.Services
 
         private static readonly System.Text.RegularExpressions.Regex LabelThenSpace =
             new System.Text.RegularExpressions.Regex(@"^[A-Za-z_][A-Za-z0-9_:]*[ \t]+$");
+
+        /// <summary>True when the occurrence of <paramref name="word"/> under column <paramref name="col"/> comes
+        /// right after a column-1 label and its spacing ("Label  WORD...").</summary>
+        internal static bool FollowsColumnOneLabel(string lineText, int col, string word)
+        {
+            if (string.IsNullOrEmpty(lineText) || string.IsNullOrEmpty(word)) return false;
+            for (int i = lineText.IndexOf(word, StringComparison.OrdinalIgnoreCase); i >= 0;
+                 i = lineText.IndexOf(word, i + 1, StringComparison.OrdinalIgnoreCase))
+            {
+                if (col < i || col > i + word.Length) continue;
+                return LabelThenSpace.IsMatch(lineText.Substring(0, i));
+            }
+            return false;
+        }
 
         /// <summary>True when <paramref name="word"/> is a declaration keyword (<see cref="ClarionKeywordIndex.DeclarationKind"/>)
         /// and its occurrence under column <paramref name="col"/> sits in a declaration's keyword slot:
