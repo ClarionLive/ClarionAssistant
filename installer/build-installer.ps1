@@ -432,13 +432,21 @@ Write-Host "  OK   clarion-indexer.exe is $indexerArch ($idxVer, runs 64-bit on 
 if ($Sign) {
     if (-not $signtool) { Write-Error "-Sign was passed but signtool.exe was not found under Windows Kits\10\bin. Install the Windows SDK signing tools."; exit 1 }
     Write-Host "`nSigning binaries..." -ForegroundColor Yellow
+    # The add-in DLLs signed are the per-Clarion ones the installer SHIPS (bin\Debug-C<v>), not the
+    # generic bin\Debug that nothing packages - signing that one left every shipped add-in DLL unsigned.
+    # C10, C11 and C12 are required; C11.1 is signed when built (the .iss guards it with HaveC11_1).
     $requiredToSign = @(
-        "$repoRoot\ClarionAssistant\bin\Debug\ClarionAssistant.dll",
+        "$repoRoot\ClarionAssistant\bin\Debug-C10\ClarionAssistant.dll",
+        "$repoRoot\ClarionAssistant\bin\Debug-C11\ClarionAssistant.dll",
+        "$repoRoot\ClarionAssistant\bin\Debug-C12\ClarionAssistant.dll",
         "$repoRoot\ClarionAssistant\indexer\bin\Debug\clarion-indexer.exe",
         "$repoRoot\ClarionAssistant\mcp-server\bin\Debug\clarion-mcp-server.exe"
     )
     # Built outside this repo and only when present (Step 1 skips it otherwise); signed when it is there.
-    $optionalToSign = @('H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug\ClarionCOMBrowser.dll')
+    $optionalToSign = @(
+        "$repoRoot\ClarionAssistant\bin\Debug-C11.1\ClarionAssistant.dll",
+        'H:\DevLaptop\ClarionIdeCOMPane\ClarionCOMBrowser\bin\Debug\ClarionCOMBrowser.dll'
+    )
     foreach ($f in $requiredToSign) {
         if (-not (Test-Path $f)) { Write-Error "Cannot sign $f - it does not exist."; exit 1 }
     }

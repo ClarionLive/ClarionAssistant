@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/ClarionLive/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2011.1%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 11.1 | 12">
-  <img src="https://img.shields.io/badge/version-6.0-blue?style=for-the-badge" alt="v6.0">
+  <img src="https://img.shields.io/badge/version-6.1-blue?style=for-the-badge" alt="v6.1">
 </p>
 
 <p align="center">
@@ -55,9 +55,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New (Unreleased)
+## What's New in v6.1
 
-<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+6.1 moves CodeGraph indexing out of Clarion into a 64-bit process, so large solutions no longer run Clarion out of memory, and closes the open GitHub issues from the 6.0 cycle: a path policy for every file tool, no more stale native editor tabs after Claude writes a file, recovery of a CA Embeditor save lost when Clarion stops, and CodeGraph coverage of CLASS MODULE/LINK files and INCLUDEd global data. Full notes: **[docs/releases/v6.1.0.md](docs/releases/v6.1.0.md)**.
 
 ### Upgrade notes
 
