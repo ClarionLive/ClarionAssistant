@@ -157,6 +157,8 @@ namespace ClarionCodeGraph.Graph
                 { "moduleTargetsUnresolved", r.ModuleTargetsUnresolved },
                 { "moduleTargetsSkipped", r.ModuleTargetsSkipped },
                 { "includeTargetsUnresolved", r.IncludeTargetsUnresolved },
+                { "unresolvedIncludeNames", new List<object>(r.UnresolvedIncludeNames) },
+                { "includeTargetsConditional", r.IncludeTargetsConditional },
                 { "globalDataFilesRead", r.GlobalDataFilesRead },
                 { "warnings", new List<object>(r.Warnings) },
                 // The indexer's own duration (IndexResult.DurationMs, what every host prints) and the
@@ -281,6 +283,7 @@ namespace ClarionCodeGraph.Graph
                 ModuleTargetsUnresolved = (int)Json.Num(o, "moduleTargetsUnresolved"),
                 ModuleTargetsSkipped = (int)Json.Num(o, "moduleTargetsSkipped"),
                 IncludeTargetsUnresolved = (int)Json.Num(o, "includeTargetsUnresolved"),
+                IncludeTargetsConditional = (int)Json.Num(o, "includeTargetsConditional"),
                 GlobalDataFilesRead = (int)Json.Num(o, "globalDataFilesRead"),
                 IndexerVersion = Json.Str(o, "indexerVersion"),
                 FeatureLevel = (int)Json.Num(o, "featureLevel"),
@@ -293,6 +296,9 @@ namespace ClarionCodeGraph.Graph
             if (o.TryGetValue("unresolvedProjectNames", out names) && names is List<object>)
                 foreach (object n in (List<object>)names)
                     if (n is string) r.UnresolvedProjectNames.Add((string)n);
+            if (o.TryGetValue("unresolvedIncludeNames", out names) && names is List<object>)
+                foreach (object n in (List<object>)names)
+                    if (n is string) r.UnresolvedIncludeNames.Add((string)n);
             // Status and Warnings are DERIVED from the counts (Decide), exactly as the in-process result's are.
             r.Decide();
             return r;
