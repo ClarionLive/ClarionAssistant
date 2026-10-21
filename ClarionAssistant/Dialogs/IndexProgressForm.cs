@@ -40,7 +40,43 @@ namespace ClarionAssistant.Dialogs
             protected override void OnTextChanged(EventArgs e)
             {
                 base.OnTextChanged(e);
+                FitHeight();  // no-op unless wrapping
                 Invalidate(); // Control (unlike Label) does not repaint on Text change by itself
+            }
+
+            // Single line while the run is live (a height that tracks changing text would make the
+            // window jump); a terminal state switches to word wrap so the long completion summary and
+            // warning are readable instead of cut off at the window edge (John, 583abdec live test).
+            private int _wrapMaxLines;
+            private int _singleLineHeight;
+
+            /// <summary>Wraps the text onto up to <paramref name="maxLines"/> lines and grows the
+            /// label to fit (never below its single-line height); 0 turns wrapping off.</summary>
+            public void WrapToFit(int maxLines)
+            {
+                if (_singleLineHeight == 0) _singleLineHeight = Height;
+                _wrapMaxLines = maxLines;
+                FitHeight();
+                Invalidate();
+            }
+
+            private void FitHeight()
+            {
+                if (_wrapMaxLines <= 0) return;
+                int width = Math.Max(1, Width - Padding.Left - Padding.Right);
+                int line = TextRenderer.MeasureText("Ag", Font).Height;
+                int text = string.IsNullOrEmpty(Text) ? 0
+                    : TextRenderer.MeasureText(Text, Font, new Size(width, int.MaxValue),
+                        TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height;
+                int want = Math.Min(text, line * _wrapMaxLines) + Padding.Top + Padding.Bottom + 2;
+                int height = Math.Max(_singleLineHeight, want);
+                if (Height != height) Height = height;
+            }
+
+            protected override void OnResize(EventArgs e)
+            {
+                base.OnResize(e);
+                FitHeight(); // a narrower window needs more lines (Dock=Top: height never changes the width)
             }
 
             protected override void OnPaint(PaintEventArgs e)
@@ -48,10 +84,13 @@ namespace ClarionAssistant.Dialogs
                 e.Graphics.Clear(BackColor);
                 var rect = new Rectangle(Padding.Left, Padding.Top,
                     Width - Padding.Left - Padding.Right, Height - Padding.Top - Padding.Bottom);
-                TextRenderer.DrawText(e.Graphics, Text, Font, rect, ForeColor,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
-                    TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine |
-                    TextFormatFlags.NoPrefix);
+                var flags = _wrapMaxLines > 0
+                    ? TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.WordBreak |
+                      TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                    : TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                      TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine |
+                      TextFormatFlags.NoPrefix;
+                TextRenderer.DrawText(e.Graphics, Text, Font, rect, ForeColor, flags);
             }
         }
 
@@ -366,6 +405,8 @@ namespace ClarionAssistant.Dialogs
             _fileLabel.Text = detail;
             _summaryText = summary;
             _statsLabel.Text = summary;
+            _fileLabel.WrapToFit(3);
+            _statsLabel.WrapToFit(4);   // the project list (Dock=Fill) gives up the room
             _copyButton.Enabled = true;
             MorphToClose();
         }
