@@ -7,8 +7,8 @@ using ClarionCodeGraph.Parsing;
 namespace ClarionAssistant.Services
 {
     /// <summary>A buffer-local hover answer. <see cref="Authoritative"/> is true when the word resolved to
-    /// something declared right here (a local, a parameter, a routine, or a procedure of this file), so no
-    /// other source can name a better declaration and the caller may skip the language server.</summary>
+    /// something declared right here (a local, a routine, or a procedure of this file), so no other source can
+    /// name a better declaration and the caller may skip the language server.</summary>
     public sealed class LocalHoverResult
     {
         public string Markdown;
@@ -16,7 +16,8 @@ namespace ClarionAssistant.Services
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
         /// deadline. Also set for module data and GROUP/QUEUE/CLASS structures declared in the buffer, whose server
-        /// card carries scope, field count and a link to the declaration. Never set together with <see cref="Authoritative"/>.</summary>
+        /// card carries scope, field count and a link to the declaration, and for a parameter, whose server card
+        /// names its procedure and links the PROCEDURE line. Never set together with <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
         public string Kind;
@@ -944,7 +945,14 @@ namespace ClarionAssistant.Services
                     if (ps != null)
                         foreach (var p in ps)
                             if (string.Equals(p.Name, word, StringComparison.OrdinalIgnoreCase))
-                                return Card(string.IsNullOrEmpty(p.Type) ? p.Name : p.Name + "  " + p.Type, "parameter", fileName, "parameter");
+                            {
+                                // A parameter: the server's card names the procedure and links its PROCEDURE line,
+                                // which this one cannot (a slice's line is not the file's), so this is its FALLBACK.
+                                var pc = Card(string.IsNullOrEmpty(p.Type) ? p.Name : p.Name + "  " + p.Type, "parameter", fileName, "parameter");
+                                pc.Authoritative = false;
+                                pc.Fallback = true;
+                                return pc;
+                            }
                 }
                 // Procedures, narrowest declaration first: a procedure's local MAP, the header MAP (global in
                 // a PROGRAM file, module in a MEMBER one), then an implementation whose prototype is not in
