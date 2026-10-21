@@ -595,28 +595,7 @@ namespace ClarionAssistant.Services
         {
             string sig = s.Name + (string.IsNullOrEmpty(s.Params) ? "" : " " + s.Params) +
                          (string.IsNullOrEmpty(s.ReturnType) ? "" : " : " + s.ReturnType);
-            string where = string.IsNullOrEmpty(s.FilePath) ? "" : "\n\n" + LocationLink(s.FilePath, s.LineNumber);
-            return "```clarion\n" + sig + "\n```\n" + SymbolIndex.CompletionDetail(s) + where;
-        }
-
-        /// <summary>"File.inc:12" as a markdown link to <c>file:///…/File.inc#L12</c>, which the page's link opener
-        /// (monaco-embeditor.html registerLinkOpener) hands to the IDE, as the language server's hover footers
-        /// do. Plain text when the path is not an absolute path (a relative or malformed index row) or has no line.
-        /// <paramref name="line"/> is the 1-based line the index stores.</summary>
-        internal static string LocationLink(string filePath, int line)
-        {
-            string name;
-            try { name = System.IO.Path.GetFileName(filePath); }
-            catch (ArgumentException) { name = filePath; }   // .NET Framework rejects some characters: one bad row must not abort the card
-            string label = name + (line > 0 ? ":" + line : "");
-            try
-            {
-                if (line <= 0 || !System.IO.Path.IsPathRooted(filePath)) return label;
-                var uri = new Uri(filePath);
-                if (!uri.IsAbsoluteUri || !uri.IsFile) return label;
-                return "[" + label.Replace("[", "\\[").Replace("]", "\\]") + "](" + uri.AbsoluteUri + "#L" + line + ")";
-            }
-            catch (Exception) { return label; }
+            return "```clarion\n" + sig + "\n```\n" + SymbolIndex.CompletionDetail(s) + SymbolIndex.LocationLine(s.FilePath, s.LineNumber);
         }
 
         private static void AddAll(List<LspClient.CompletionItemInfo> into, HashSet<string> seen, List<LspClient.CompletionItemInfo> from)

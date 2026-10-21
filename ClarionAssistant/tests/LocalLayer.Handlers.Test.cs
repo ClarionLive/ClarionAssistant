@@ -488,14 +488,20 @@ static class LocalLayerHandlersTest
             Check("...and its location is a clickable link: [seen.inc:1](file:///C:/src/seen.inc#L1)",
                 Contents(hSeen).Contains("[seen.inc:1](file:///C:/src/seen.inc#L1)"), Json(hSeen));
             Check("LocationLink: an absolute path -> a file: link with the 1-based line as #L<n>",
-                LocalLayerHandlers.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
+                SymbolIndex.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
             Check("LocationLink: a space and a '#' in the path are escaped, and the link keeps one fragment",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3));
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3));
             Check("LocationLink: a relative path, no line, or a malformed path -> plain text, never a broken link",
-                LocalLayerHandlers.LocationLink("x.clw", 1) == "x.clw:1" &&
-                LocalLayerHandlers.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
-                !LocalLayerHandlers.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+                SymbolIndex.LocationLink("x.clw", 1) == "x.clw:1" &&
+                SymbolIndex.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
+                !SymbolIndex.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+            // The closing location line both the index card and the host's CodeGraph card end with: the host's card
+            // answers in the server's place when the server has nothing, so it must not drop the link the index card has.
+            Check("LocationLine: a file -> a blank line, then the link; no file -> nothing",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70) == "\n\n[x.inc:70](file:///D:/lib/win/x.inc#L70)" &&
+                SymbolIndex.LocationLine(null, 70) == "" && SymbolIndex.LocationLine("", 3) == "",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70));
             var hHidden = SlotHover(14, "Hidden", o);
             Check("an EQUATE from a .inc this file never includes -> no card at all",
                 hHidden["contents"] == null && hHidden["kind"] == null, Json(hHidden));

@@ -592,6 +592,34 @@ namespace ClarionAssistant.Services
             return string.IsNullOrEmpty(t) ? null : t;
         }
 
+        /// <summary>A card's closing location line: a blank line, then <see cref="LocationLink"/>; empty when the
+        /// row has no file. Shared by the local layer's index card and the host's CodeGraph hover card
+        /// (SharedLspBridge.CgHoverText), so it lives here, where both the addin and the MCP server compile it.</summary>
+        public static string LocationLine(string filePath, int line)
+        {
+            return string.IsNullOrEmpty(filePath) ? "" : "\n\n" + LocationLink(filePath, line);
+        }
+
+        /// <summary>"File.inc:12" as a markdown link to <c>file:///…/File.inc#L12</c>, which the page's link opener
+        /// (monaco-embeditor.html registerLinkOpener) hands to the IDE, as the language server's hover footers
+        /// do. Plain text when the path is not an absolute path (a relative or malformed index row) or has no line.
+        /// <paramref name="line"/> is the 1-based line the index stores.</summary>
+        public static string LocationLink(string filePath, int line)
+        {
+            string name;
+            try { name = Path.GetFileName(filePath); }
+            catch (ArgumentException) { name = filePath; }   // .NET Framework rejects some characters: one bad row must not abort the card
+            string label = name + (line > 0 ? ":" + line : "");
+            try
+            {
+                if (line <= 0 || !Path.IsPathRooted(filePath)) return label;
+                var uri = new Uri(filePath);
+                if (!uri.IsAbsoluteUri || !uri.IsFile) return label;
+                return "[" + label.Replace("[", "\\[").Replace("]", "\\]") + "](" + uri.AbsoluteUri + "#L" + line + ")";
+            }
+            catch (Exception) { return label; }
+        }
+
         // ================================================================== plumbing
 
         private static string EscapeLike(string s)
