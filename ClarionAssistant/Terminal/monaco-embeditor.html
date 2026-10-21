@@ -765,6 +765,32 @@
         box-shadow: 0 0 0 1px var(--vscode-textLink-foreground, #3794ff);
         filter: brightness(1.15);
     }
+    /* The hover footer row (hoverContentsWithFooter): a card's second content entry, drawn like the bar
+       Monaco puts under a problem hover (View Problem / Quick Fix) — its background, a rule above it,
+       12px text on a 22px line, the links 16px apart. Monaco renders every entry of one hover result as a
+       .markdown-hover in the same row, and the page's cards are a single entry, so the last of two or
+       more is always a footer. */
+    .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child {
+        background-color: var(--vscode-editorHoverWidget-statusBarBackground);
+        border-top: 1px solid var(--vscode-editorHoverWidget-border);
+    }
+    .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child > .hover-contents {
+        padding-top: 0;
+        padding-bottom: 0;
+        font-size: 12px;
+        line-height: 22px;
+    }
+    .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child p {
+        margin: 0;
+        font-family: inherit;
+    }
+    .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child a {
+        margin-right: 16px;
+        white-space: nowrap;
+    }
+    .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child a:last-child {
+        margin-right: 0;
+    }
 </style>
 </head>
 <body>
@@ -6062,7 +6088,7 @@
     // is down, or has not answered by the hover's deadline ({passed, fire}, armed when the hover started). Past
     // the deadline no hover is posted: nobody would read its answer.
     function fallbackHover(model, position, localCard, deadline) {
-        var localHover = { contents: [{ value: markDiskSelfLinks(localCard) }] };
+        var localHover = { contents: hoverContentsWithFooter(markDiskSelfLinks(localCard), model, position) };
         if (deadline.passed) return Promise.resolve(localHover);
         return new Promise(function (resolve) {
             var settled = false;
@@ -6070,7 +6096,7 @@
             deadline.fire = function () { settle(localHover); };
             whenIdleSynced(model, { line: position.lineNumber, column: position.column })
                 .then(function (payload) { return payload && !settled ? requestFromHost('hover', payload) : null; })
-                .then(function (resp) { settle(resp && resp.contents ? { contents: [serverCardContent(resp.contents, model, position)] } : localHover); })
+                .then(function (resp) { settle(resp && resp.contents ? { contents: hoverContentsWithFooter(serverCardContent(resp.contents, model, position), model, position) } : localHover); })
                 .catch(function () { settle(localHover); });
         });
     }
@@ -6499,7 +6525,85 @@
             ed.trigger('clarion-attr', 'editor.action.showHover', {});
         } catch (e) { /* nothing more to try */ }
     }
+    // Close the hover card on screen, through the content-hover controller's own (private) close; see the
+    // MONACO PIN above. Without it the card stays up until the mouse leaves, which does no harm.
+    function hideHoverCard(ed) {
+        try {
+            var c = ed && typeof ed.getContribution === 'function' ? ed.getContribution('editor.contrib.contentHover') : null;
+            if (c && typeof c._hideWidgets === 'function') c._hideWidgets();
+        } catch (e) { /* the card closes when the mouse leaves */ }
+    }
     // ---- end attribute edit links ----
+
+    // ---- Hover footer row: the card's links and actions in a bar under it ----
+    // A problem hover ends in Monaco's "View Problem / Quick Fix" bar. A hover provider cannot add to that
+    // bar (Monaco 0.52 builds it only for its own hover participants), so the page draws a look-alike: the
+    // hover's content list gets a second entry, which the CSS styles as that bar. It holds
+    //   * the card's location links: every line (outside a code block) that is only
+    //     [File.clw:12](file:///...#L12) links, with an optional 📍 and a → between a declaration and its
+    //     implementation, moved out of the card;
+    //   * on a WINDOW/REPORT header card or a control card, "Open Structure Designer (<its key>)": the
+    //     Structure Designer command (Ctrl+D by default) run on the hovered line, offered only where that
+    //     command would run. It designs the WINDOW or REPORT around the line, whichever control it is on.
+    var STRUCTURE_DESIGNER_COMMAND = 'clarion.openStructureDesigner';
+    var LOCATION_LINK_SRC = '\\[[^\\]\\r\\n]+\\]\\(file:\\/\\/[^)\\s]*#L\\d+\\)';
+    var LOCATION_LINE_RX = new RegExp('^\\s*(?:📍\\s*)?' + LOCATION_LINK_SRC + '(?:\\s*→\\s*' + LOCATION_LINK_SRC + ')*\\s*$');
+    // The server's control card lists the control's attributes; its WINDOW/REPORT header card opens with
+    // "**Label WINDOW**".
+    var CONTROL_CARD_RX = /^\*\*(?:Attributes|Available|With value):\*\*/m;
+    var STRUCTURE_HEADER_CARD_RX = /^\*\*[A-Za-z_][\w:]* (?:WINDOW|REPORT)\*\*/;
+    var designerCardTarget = null;   // { model, line, column } — where the card last offering the designer was hovered
+
+    // A hover's content list: the card (a markdown string or a content object), then the footer row when
+    // there is anything to put in it.
+    function hoverContentsWithFooter(card, model, position) {
+        var content = typeof card === 'string' ? { value: card } : (card || { value: '' });
+        var lines = String(content.value || '').split('\n'), kept = [], parts = [], inFence = false;
+        for (var i = 0; i < lines.length; i++) {
+            if (/^\s*```/.test(lines[i])) inFence = !inFence;
+            if (!inFence && LOCATION_LINE_RX.test(lines[i])) parts.push(lines[i].trim().replace(/^📍\s*/, ''));
+            else kept.push(lines[i]);
+        }
+        var designer = designerActionFor(content.value, model, position);
+        if (designer) parts.push(designer);
+        if (!parts.length) return [content];
+        var body = { value: kept.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') };
+        if (content.isTrusted) body.isTrusted = content.isTrusted;
+        var footer = { value: parts.join(' ') };
+        if (designer) footer.isTrusted = { enabledCommands: [STRUCTURE_DESIGNER_COMMAND] };
+        return [body, footer];
+    }
+
+    // The footer's designer action for this card, or '' — the same conditions cmdStructureDesigner checks
+    // before it asks the host, so the action is not offered where the key would only show a refusal.
+    function designerActionFor(md, model, position) {
+        md = String(md || '');
+        if (!model || !position) return '';
+        if (!STRUCTURE_HEADER_CARD_RX.test(md) && !CONTROL_CARD_RX.test(md)) return '';
+        if ((fileMode && !designerEnabled) || designerSession) return '';
+        var key = '';
+        try { var entry = keyEntryById('structureDesigner'); key = (entry && effectiveChord(entry)) || ''; } catch (e) { key = ''; }
+        designerCardTarget = { model: model, line: position.lineNumber, column: position.column };
+        return '[Open Structure Designer' + (key ? ' (' + key + ')' : '') + '](command:' + STRUCTURE_DESIGNER_COMMAND +
+            ' "Design the WINDOW or REPORT around this line")';
+    }
+
+    // The footer's designer action was clicked: put the cursor where the card was hovered and run the
+    // Structure Designer command, as its key would there. Returns true when it ran the command.
+    function openDesignerFromCard() {
+        var t = designerCardTarget;
+        try {
+            if (!t || !t.model || t.model.isDisposed()) return false;
+            var ed = editorShowingModel(t.model);
+            if (!ed) return false;
+            hideHoverCard(ed);
+            ed.setPosition({ lineNumber: t.line, column: t.column });
+            ed.focus();
+            cmdStructureDesigner();
+            return true;
+        } catch (e) { return false; }
+    }
+    // ---- end hover footer row ----
 
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
@@ -6757,7 +6861,7 @@
                     .then(function (local) {
                         if (!local || !local.contents) return null;
                         if (local.fallback) return null;   // the LSP provider shows it if the server has nothing
-                        return { contents: [{ value: markDiskSelfLinks(local.contents) }] };
+                        return { contents: hoverContentsWithFooter(markDiskSelfLinks(local.contents), model, position) };
                     })
                     .then(function (h) { return noteHoverCard(hoverReq, h); })
                     .catch(function () { return null; });
@@ -6788,7 +6892,7 @@
                                 if (!resp || !resp.contents) return null;
                                 // Same symbol as the local card already on screen: one card, not two.
                                 if (localSymbol && localSymbol === hoverCardSymbol(resp.contents)) return null;
-                                return { contents: [serverCardContent(resp.contents, model, position)] };
+                                return { contents: hoverContentsWithFooter(serverCardContent(resp.contents, model, position), model, position) };
                             });
                     })
                     .then(function (h) { return noteHoverCard(hoverReq, h); })
@@ -6807,6 +6911,11 @@
                 // is swallowed here, whether or not it applies, so none ever runs as a Monaco command, and
                 // so is every file:///clarion-attr/ link (the retired draft form), so none of them ever
                 // reaches openLocation (the host's navigation/open-file path).
+                // The hover footer's designer action (see hoverContentsWithFooter).
+                if (uri && uri.scheme === 'command' && uri.path === STRUCTURE_DESIGNER_COMMAND) {
+                    openDesignerFromCard();
+                    return true;
+                }
                 if (isAttributeLinkUri(uri)) {
                     var payload = attributeEditPayloadOfUri(uri);
                     if (payload) applyAttributeEditLink(payload);
