@@ -69,6 +69,55 @@ namespace ClarionAssistant.Services
         // for zero information gain.
         private const int ProgressThrottleMs = 1000;
 
+        // ---- b8f9431c review M2 / M3: process-wide, shared by EVERY McpServer of the IDE (the chat pane's on 19372
+        // and IdeCallbackHost's), because they marshal onto the same UI thread. ----
+
+        /// <summary>
+        /// params._meta key a forwarded call carries: the solution the plugin's server matched this IDE to
+        /// (IdeToolForwarder). Its presence also marks the call as FORWARDED (from a client outside the IDE).
+        /// </summary>
+        public const string ExpectedSolutionMetaKey = "clarionAssistant/expectedSolution";
+
+        /// <summary>
+        /// M2: (expected solution) -> null when this IDE still has it open, else the complete refusal text. Set by the
+        /// addin (IdeCallbackHost); null = no check (the standalone, the test harnesses). Called ON THE UI THREAD, just
+        /// before the handler runs, for a call that carries <see cref="ExpectedSolutionMetaKey"/> - never for a CA tab's
+        /// own calls, which carry none.
+        /// </summary>
+        public static Func<string, string> ExpectedSolutionGuard;
+
+        /// <summary>A forwarded call (one that carries <see cref="ExpectedSolutionMetaKey"/>) passed its checks and is
+        /// about to run: (tool name). The addin logs the write tools and shows a status-bar note. Never throws out.</summary>
+        public static Action<string> ForwardedCallObserver;
+
+        /// <summary>M1: (tool, arguments) -> the refusal for a FORWARDED call of a tool or command not served to clients
+        /// outside the IDE, or null. Set by the addin (McpToolRegistry.ForwardedRefusal); checked before anything runs.</summary>
+        public static Func<string, Dictionary<string, object>, string> ForwardedCallFilter;
+
+        /// <summary>
+        /// M3: tools that never take <see cref="UiGate"/> - the standalone server's CALL-BACKS (McpToolRegistry.
+        /// IdeCallbackTools; IdeProxy.SourceScan.ps1 pins the two lists equal). The standalone may make one while an
+        /// IDE tool it is serving waits on it; gating them could deadlock that tool until its timeout.
+        /// </summary>
+        public static readonly HashSet<string> UiGateExemptTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "get_live_text", "editor_tab_sync" };
+
+        /// <summary>M3: how long a UI-thread call waits for another one to finish before it is refused as busy.
+        /// Settable for the harness. Kept well under IdeToolForwarder.MarginSeconds, so the refusal reaches a
+        /// forwarded caller before it stops waiting.</summary>
+        public static int UiGateWaitSeconds = 10;
+
+        /// <summary>TEST SEAM ONLY (tests\McpDispatcher.UiTimeout.Test.cs): its PR #198 timeout cases run several "UI
+        /// threads" at once on purpose, which the real single UI thread never does. Never set in production.</summary>
+        internal static bool UiGateBypassForTest;
+
+        /// <summary>M3: ONE UI-thread tool call at a time across every dispatcher in the process. Taken on the WORKER
+        /// thread before the call is posted, so a call can no longer be pumped into another one's DoEvents loop.</summary>
+        private static readonly SemaphoreSlim UiGate = new SemaphoreSlim(1, 1);
+        private static readonly object UiGateInfoLock = new object();
+        private static string _uiGateTool;            // the tool holding the gate (for the busy message)
+        private static McpDispatcher _uiGateOwner;    // its dispatcher
+
         private readonly McpToolRegistry _toolRegistry;
         private readonly IUiDispatcher _ui;
         private readonly Action<string, string> _onToolCall;
@@ -242,19 +291,40 @@ namespace ClarionAssistant.Services
 
             object progressToken = sendNotification != null ? ExtractProgressToken(parms) : null;
             bool streaming = progressToken != null && _toolRegistry.SupportsStreaming(toolName);
+            string expectedSolution = ExtractExpectedSolution(parms);
+            if (expectedSolution != null)
+            {
+                string filtered = null;
+                var filter = ForwardedCallFilter;
+                try { filtered = filter != null ? filter(toolName, arguments) : null; }
+                catch (Exception ex) { filtered = "Error: " + toolName + " could not be checked (" + ex.Message + "); nothing was run."; }
+                if (filtered != null)
+                {
+                    RaiseToolCall(toolName, "REFUSED (not served outside the IDE)");
+                    return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(filtered, true));
+                }
+            }
 
             object result;
             try
             {
                 if (streaming)
                 {
+                    // A forwarded call never streams (the forwarder sends no progressToken); checked all the same.
+                    string refusal = expectedSolution != null ? CheckExpectedSolutionMarshalled(toolName, expectedSolution) : null;
+                    if (refusal != null)
+                    {
+                        RaiseToolCall(toolName, "REFUSED (solution changed)");
+                        return McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(refusal, true));
+                    }
+                    if (expectedSolution != null) NotifyForwarded(toolName);
                     result = _toolRegistry.ExecuteToolStreaming(
                         toolName, arguments, BuildProgressRelay(progressToken, sendNotification));
                 }
                 else
                 {
                     string timeoutError;
-                    if (!ExecuteWithUiPolicy(request, toolName, arguments, out result, out timeoutError))
+                    if (!ExecuteWithUiPolicy(request, toolName, arguments, expectedSolution, out result, out timeoutError))
                         return timeoutError;
                 }
             }
@@ -309,6 +379,7 @@ namespace ClarionAssistant.Services
             JsonRpcRequest request,
             string toolName,
             Dictionary<string, object> arguments,
+            string expectedSolution,
             out object result,
             out string timeoutResponse)
         {
@@ -318,13 +389,51 @@ namespace ClarionAssistant.Services
             bool marshal = _toolRegistry.RequiresUiThread(toolName) && _ui != null && _ui.HasUiThread;
             if (!marshal)
             {
+                // M2: a worker-thread tool (open_file, the EditorRouter writes, build_app, ...) is checked on the UI
+                // thread too, right before its handler runs here.
+                if (expectedSolution != null)
+                {
+                    string refusal = CheckExpectedSolutionMarshalled(toolName, expectedSolution);
+                    if (refusal != null)
+                    {
+                        RaiseToolCall(toolName, "REFUSED (solution changed)");
+                        timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(refusal, true));
+                        return false;
+                    }
+                    NotifyForwarded(toolName);
+                }
                 result = _toolRegistry.ExecuteTool(toolName, arguments);
                 return true;
             }
 
             object uiResult = null;
             Exception uiException = null;
+            string uiRefusal = null;
             int timeoutSeconds = ResolveUiToolTimeoutSeconds(toolName);
+
+            // M3 (b8f9431c review): ONE UI-thread call at a time across every server of this IDE. The gate is taken
+            // HERE, on the worker, before anything is posted: a second client's call (or a second parallel call of the
+            // same client) waits on this thread until the running one is done, instead of being pumped into its
+            // DoEvents loop and running in the middle of it. Not acquired within UiGateWaitSeconds = refused as busy,
+            // never run. The standalone's call-backs are exempt (UiGateExemptTools).
+            bool gated = !UiGateBypassForTest && !UiGateExemptTools.Contains(toolName);
+            if (gated && !UiGate.Wait(TimeSpan.FromSeconds(Math.Max(0, UiGateWaitSeconds))))
+            {
+                string holder; McpDispatcher owner;
+                lock (UiGateInfoLock) { holder = _uiGateTool; owner = _uiGateOwner; }
+                RaiseToolCall(toolName, "REFUSED (UI busy with " + (holder ?? "another call") + ")");
+                timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(
+                    BusyMessage(toolName, holder, owner == this), true));
+                return false;
+            }
+            if (gated) lock (UiGateInfoLock) { _uiGateTool = toolName; _uiGateOwner = this; }
+            int released = 0;
+            Action release = () =>
+            {
+                if (!gated || Interlocked.Exchange(ref released, 1) != 0) return;
+                lock (UiGateInfoLock) { _uiGateTool = null; _uiGateOwner = null; }
+                UiGate.Release();
+            };
 
             // Marshal onto the UI thread WITHOUT blocking the worker forever. A synchronous
             // Control.Invoke here deadlocks (and leaks the connection as CLOSE_WAIT) whenever the
@@ -338,16 +447,29 @@ namespace ClarionAssistant.Services
             {
                 _ui.BeginInvokeOnUi(() =>
                 {
+                    bool started = false;
                     try
                     {
-                        if (!token.TryStart()) return;   // abandoned before the UI thread got to it
-                        var outer = McpCallContext.Current;   // a re-entrant (DoEvents-pumped) call nests
+                        if (!token.TryStart()) return;   // abandoned before the UI thread got to it (the worker releases)
+                        started = true;
+                        // M2: on the UI thread, immediately before the handler - nothing can switch the solution between.
+                        if (expectedSolution != null)
+                        {
+                            uiRefusal = CheckExpectedSolution(expectedSolution);
+                            if (uiRefusal != null) return;
+                            NotifyForwarded(toolName);
+                        }
+                        var outer = McpCallContext.Current;   // an exempt call-back pumped re-entrantly still nests
                         McpCallContext.Current = token;
                         try { uiResult = _toolRegistry.ExecuteTool(toolName, arguments); }
-                        finally { McpCallContext.Current = outer; token.Complete(); }
+                        finally { McpCallContext.Current = outer; }
                     }
                     catch (Exception ex) { uiException = ex; }
-                    finally { try { done.Set(); } catch { } }
+                    finally
+                    {
+                        if (started) { token.Complete(); release(); }
+                        try { done.Set(); } catch { }
+                    }
                 });
 
                 // Give the UI thread a bounded window to run the tool. On timeout we abandon the call
@@ -355,6 +477,9 @@ namespace ClarionAssistant.Services
                 if (!done.Wait(TimeSpan.FromSeconds(timeoutSeconds)))
                 {
                     int found = token.Abandon();
+                    if (found == McpCallToken.NotStarted) release();   // it will never run: free the gate now
+                    // Running/Committed: the UI thread is still inside it and releases the gate when it returns,
+                    // so nothing else is run in the middle of an abandoned call.
                     if (found == McpCallToken.Completed)
                     {
                         // Finished in the same instant we gave up: its result is real, use it.
@@ -370,9 +495,72 @@ namespace ClarionAssistant.Services
                 }
             }
 
+            if (uiRefusal != null)
+            {
+                RaiseToolCall(toolName, "REFUSED (solution changed)");
+                timeoutResponse = McpJsonRpc.SerializeResponse(request.Id, McpJsonRpc.BuildToolResult(uiRefusal, true));
+                return false;
+            }
             if (uiException != null) throw uiException;
             result = uiResult;
             return true;
+        }
+
+        /// <summary>M3: the refusal for a call that could not get the UI thread. Says nothing ran.</summary>
+        public static string BusyMessage(string toolName, string holder, bool sameClient)
+        {
+            string what = holder == null ? "another call"
+                : sameClient ? holder + " (an earlier call of this client)" : "another client's " + holder;
+            return "Error: Clarion is busy with " + what + "; " + toolName + " was not run, try again"
+                + (holder != null ? " when " + holder + " has finished." : ".");
+        }
+
+        /// <summary>params._meta[ExpectedSolutionMetaKey] as a non-empty string, or null.</summary>
+        internal static string ExtractExpectedSolution(Dictionary<string, object> parms)
+        {
+            object metaObj;
+            if (parms == null || !parms.TryGetValue("_meta", out metaObj)) return null;
+            var meta = metaObj as Dictionary<string, object>;
+            object v;
+            if (meta == null || !meta.TryGetValue(ExpectedSolutionMetaKey, out v)) return null;
+            var s = v as string;
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+
+        /// <summary>M2, on the calling thread (the UI thread for a marshalled call). A guard that throws refuses.</summary>
+        private static string CheckExpectedSolution(string expected)
+        {
+            var guard = ExpectedSolutionGuard;
+            if (guard == null) return null;
+            try { return guard(expected); }
+            catch (Exception ex) { return "Error: this Clarion could not check which solution it has open (" + ex.Message + "); nothing was run."; }
+        }
+
+        /// <summary>M2 for a call that runs OFF the UI thread: the check itself is marshalled (bounded) when there is one.</summary>
+        private string CheckExpectedSolutionMarshalled(string toolName, string expected)
+        {
+            if (ExpectedSolutionGuard == null) return null;
+            if (_ui == null || !_ui.HasUiThread) return CheckExpectedSolution(expected);
+            string refusal = null;
+            using (var done = new ManualResetEventSlim(false))
+            {
+                _ui.BeginInvokeOnUi(() =>
+                {
+                    try { refusal = CheckExpectedSolution(expected); }
+                    finally { try { done.Set(); } catch { } }
+                });
+                if (!done.Wait(TimeSpan.FromSeconds(Math.Max(1, UiGateWaitSeconds))))
+                    return "Error: Clarion's UI thread did not answer the solution check for " + toolName + " within "
+                        + Math.Max(1, UiGateWaitSeconds) + " s; nothing was run, try again.";
+            }
+            return refusal;
+        }
+
+        private static void NotifyForwarded(string toolName)
+        {
+            var o = ForwardedCallObserver;
+            if (o == null) return;
+            try { o(toolName); } catch { }
         }
 
         /// <summary>

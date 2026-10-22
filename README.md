@@ -74,6 +74,11 @@ A Claude session outside a CA tab (a MultiTerminal or VS Code terminal with the 
 - **One Clarion per solution.** If two Clarions have the same solution open, an IDE tool asks you to close one, or to set `CLARION_IDE_PID` to the one you mean, rather than guess which one to change.
 - **No CA tab needed.** Clarion serves these tools whether or not a Clarion Assistant pane is open. A CA tab itself is unchanged: its tools are not listed twice.
 - **`--capabilities` reports `ide-proxy=1`** for a server that can do this.
+- **The same file-access rules, for every path an IDE tool takes.** `open_file`, `export_txa`, `import_txa`, `export_dctx`, `import_dctx`, `show_diff`'s files and `build_app` / `generate_source`'s `app_path` / `project_path` are now checked like `read_file` / `write_file`, **in a CA tab too**: a network (`\\server\share`) path is refused before Clarion touches it, and so is a path outside the solution, the Clarion folders and your `Mcp.AllowedRoots`. An `export_dctx` with no path writes beside the dictionary only when that folder is inside the solution; otherwise pass a path in the solution.
+- **Some diagnostics stay inside the IDE.** `execute_command` and `dump_object_api` are not offered outside a CA tab, and there `inspect_ide` takes only `active_view`, `editor_text`, `all_windows`, `all_pads` and `app_details`.
+- **Clarion checks again before it runs anything.** If Clarion has switched to another solution since the plugin's server picked it, the call says so and nothing is run. One IDE tool runs at a time across all clients: a call that arrives while another client's tool is running waits up to 10 s, then says Clarion is busy and that nothing was run.
+- **You can see changes made from outside.** Each editing, saving, importing or generating call from a plugin client writes `[ide-callback] <tool> from plugin client` to `monaco-spike.log` and shows a note in Clarion's status bar.
+- **Known limitation: one call at a time per client.** The plugin's server handles one request at a time, so a long IDE call (an embeditor open, a build) holds up that client's next call until it finishes, and cancelling the call in the client does not stop it in Clarion. Serving calls in parallel would let two calls from the same client reach Clarion out of order, so it was left out.
 
 ## What's New in v6.1
 

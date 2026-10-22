@@ -43,8 +43,10 @@ namespace ClarionAssistant.Services
         /// <summary>What this side waits beyond the IDE's own UI-dispatch timeout.</summary>
         public const int MarginSeconds = 30;
 
-        /// <summary>The longest any one forwarded call is waited for, whatever a setting or argument says.</summary>
-        public const int MaxSeconds = 3600;
+        /// <summary>The longest any one forwarded call is waited for, whatever a setting or argument says: the longest
+        /// the IDE lets one run (McpUiTimeoutPolicy.MaxForwardedSeconds, a build's timeout capped there too) plus the
+        /// margin, so this side never gives up first (review L6).</summary>
+        public const int MaxSeconds = McpUiTimeoutPolicy.MaxForwardedSeconds + MarginSeconds;
 
         /// <summary>The add-in release that serves the IDE tools on its call-back endpoint.</summary>
         public const string MinAddinVersion = "6.2";
@@ -72,9 +74,10 @@ namespace ClarionAssistant.Services
         };
         /// <summary>The verified open solution of the IDE with this pid, or null.</summary>
         public static Func<int, string> OpenSolutionOf = pid => { string note; return IdeSolutionRecord.Read(pid, out note); };
-        /// <summary>One tools/call: the whole MCP result. Throws on transport failure.</summary>
-        public static Func<IdeEndpointRecord.Endpoint, string, Dictionary<string, object>, int, Dictionary<string, object>> Caller =
-            (ep, name, args, budgetMs) => IdeLiveTextClient.CallToolRaw(ep, name, args, Stopwatch.StartNew(), budgetMs);
+        /// <summary>One tools/call: the whole MCP result. Throws on transport failure. The last argument is params._meta
+        /// (the expected solution, review M2).</summary>
+        public static Func<IdeEndpointRecord.Endpoint, string, Dictionary<string, object>, int, Dictionary<string, object>, Dictionary<string, object>> Caller =
+            (ep, name, args, budgetMs, meta) => IdeLiveTextClient.CallToolRaw(ep, name, args, Stopwatch.StartNew(), budgetMs, meta);
         /// <summary>"C:\Clarion12" for an IDE pid (its Clarion.exe two folders up), or null.</summary>
         public static Func<int, string> ClarionRootOf = ReadClarionRoot;
         /// <summary>The CLARION_IDE_PID value. A seam so a test does not have to set the process environment.</summary>
@@ -110,7 +113,10 @@ namespace ClarionAssistant.Services
             Dictionary<string, object> res;
             try
             {
-                res = Caller(ep, name, args ?? new Dictionary<string, object>(), budgetMs);
+                // M2: the IDE checks, on its UI thread right before the handler, that it STILL has this solution open
+                // (the records it was matched by are up to 10 s old); a switched IDE refuses with nothing run.
+                var meta = new Dictionary<string, object> { { McpDispatcher.ExpectedSolutionMetaKey, sel.Solution } };
+                res = Caller(ep, name, args ?? new Dictionary<string, object>(), budgetMs, meta);
             }
             catch (Exception ex)
             {
@@ -122,8 +128,12 @@ namespace ClarionAssistant.Services
             var raw = new McpRawToolResult { Result = res };
             if (raw.IsError && IsUnknownToolReply(raw.FirstText, name))
             {
-                string older = OlderAddinError(name, ep, sel.Solution);
-                Write("[ide-proxy] " + name + " -> IDE " + ep.Label + ": older add-in (Unknown tool) ms=" + sw.ElapsedMilliseconds);
+                // L5: an add-in that forwards (its endpoint record says ideTools >= 1) but has no such tool is NEWER
+                // forwarding with an older tool set - not the "no forwarding at all" add-in.
+                bool forwards = ep.IdeToolsProtocol >= 1;
+                string older = forwards ? MissingToolError(name, ep, sel.Solution) : OlderAddinError(name, ep, sel.Solution);
+                Write("[ide-proxy] " + name + " -> IDE " + ep.Label + ": " + (forwards ? "that add-in lacks this tool" : "older add-in")
+                    + " (Unknown tool, ideTools=" + ep.IdeToolsProtocol + ") ms=" + sw.ElapsedMilliseconds);
                 return McpRawToolResult.Error(older);
             }
             Write("[ide-proxy] " + name + " -> IDE " + ep.Label + (raw.IsError ? " isError" : " ok") + " ms=" + sw.ElapsedMilliseconds);
@@ -246,10 +256,28 @@ namespace ClarionAssistant.Services
                 + "has these tools already.)";
         }
 
+        private static string MissingToolError(string toolName, IdeEndpointRecord.Endpoint ep, string sln)
+        {
+            string root = null;
+            try { root = ClarionRootOf != null ? ClarionRootOf(ep.Pid) : null; } catch { }
+            return "Error: " + toolName + " is not available from the Clarion IDE that has " + Path.GetFileName(sln) + " open (pid "
+                + ep.Pid + "): its Clarion Assistant" + (string.IsNullOrEmpty(root) ? "" : " (in " + root + ")")
+                + " serves the IDE tools to other clients, but does not have " + toolName + " - this server is newer than "
+                + "that add-in. Nothing was run. Update Clarion Assistant in that Clarion to the release this client's plugin "
+                + "comes from, restart Clarion, and call it again.";
+        }
+
         private static string TransportError(string toolName, IdeEndpointRecord.Endpoint ep, string sln, Exception ex,
                                              int budgetMs, Stopwatch sw)
         {
             string ide = "the Clarion IDE that has " + Path.GetFileName(sln) + " open (pid " + ep.Pid + ")";
+            // L4: a JSON-RPC error keeps the IDE's code and message; the codes that reject the request say nothing ran.
+            var rpc = ex as IdeJsonRpcErrorException;
+            if (rpc != null)
+                return "Error: " + toolName + " was refused by " + ide + " (JSON-RPC error " + rpc.Code
+                    + (string.IsNullOrEmpty(rpc.RpcMessage) ? "" : ": " + rpc.RpcMessage) + "). "
+                    + (rpc.NothingRan ? "Nothing was run."
+                                      : "The call may or may not have run in the IDE: check it before calling again.");
             var status = ex as IdeHttpStatusException;
             if (status != null)
             {

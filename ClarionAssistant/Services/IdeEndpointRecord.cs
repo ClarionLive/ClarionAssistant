@@ -32,12 +32,39 @@ namespace ClarionAssistant.Services
         public const string RecordDirEnv = "CA_IDE_RECORD_DIR";
         /// <summary>Test override for the expected IDE image name (production: "Clarion").</summary>
         public const string ImageNameEnv = "CA_IDE_IMAGE_NAME";
+        /// <summary>
+        /// b8f9431c review L2: <see cref="RecordDirEnv"/> and <see cref="ImageNameEnv"/> (and IdeSolutionRecord's use of
+        /// them) are honoured ONLY when this is also set to "1". Without it a stray CA_IDE_IMAGE_NAME in a user's
+        /// environment cannot make the trust rules accept a non-Clarion process, nor CA_IDE_RECORD_DIR point discovery
+        /// at another folder. The harnesses set it.
+        /// </summary>
+        public const string TestHooksEnv = "CA_TEST_HOOKS";
+
+        /// <summary>The value of a test-only environment hook, or null unless <see cref="TestHooksEnv"/>=1.</summary>
+        public static string TestHook(string name)
+        {
+            try
+            {
+                if (Environment.GetEnvironmentVariable(TestHooksEnv) != "1") return null;
+                return Environment.GetEnvironmentVariable(name);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// b8f9431c review L5: the IDE-tool forwarding protocol this add-in serves, written into its endpoint record as
+        /// "ideTools". 1 = every IdeOnly tool on the call-back endpoint, with the params._meta solution check. A record
+        /// without it is an add-in that serves no forwarded tools (only the call-backs, or a CA tab's pane).
+        /// </summary>
+        public const int IdeToolsProtocolVersion = 1;
 
         public sealed class Endpoint
         {
             public int Pid;
             public int Port;
             public string Token;
+            /// <summary>The record's "ideTools" (see <see cref="IdeToolsProtocolVersion"/>); 0 when absent (an older add-in).</summary>
+            public int IdeToolsProtocol;
             /// <summary>"pid:port", the only form that may appear in a log line.</summary>
             public string Label { get { return Pid + ":" + Port; } }
         }
@@ -46,7 +73,7 @@ namespace ClarionAssistant.Services
         {
             get
             {
-                string env = Environment.GetEnvironmentVariable(RecordDirEnv);
+                string env = TestHook(RecordDirEnv);
                 if (!string.IsNullOrEmpty(env)) return Path.Combine(env, "ide-endpoint");
                 return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                                     "ClarionAssistant", "ide-endpoint");
@@ -72,7 +99,8 @@ namespace ClarionAssistant.Services
                     { "port", port },
                     { "token", token },
                     { "startTime", me.StartTime.ToUniversalTime().ToString("o") },
-                    { "writtenAt", DateTime.UtcNow.ToString("o") }
+                    { "writtenAt", DateTime.UtcNow.ToString("o") },
+                    { "ideTools", IdeToolsProtocolVersion }
                 };
                 string tmp = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(rec), EncodingHelper.Utf8NoBom);
@@ -265,7 +293,7 @@ namespace ClarionAssistant.Services
             try
             {
                 if (p.HasExited) { why = "stale: IDE " + pid + ":" + port + " has exited"; return null; }
-                string image = Environment.GetEnvironmentVariable(ImageNameEnv);
+                string image = TestHook(ImageNameEnv);
                 if (string.IsNullOrEmpty(image)) image = "Clarion";
                 if (!string.Equals(p.ProcessName, image, StringComparison.OrdinalIgnoreCase))
                 { why = "stale: pid " + pid + " is now '" + p.ProcessName + "', not the IDE (pid reused)"; return null; }
@@ -275,7 +303,9 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex) { why = "unverifiable (" + ex.GetType().Name + ")"; return null; }   // e.g. access denied: skip, keep
 
-            return new Endpoint { Pid = pid, Port = port, Token = token };
+            int ideTools;
+            if (!TryInt(rec, "ideTools", out ideTools) || ideTools < 0) ideTools = 0;
+            return new Endpoint { Pid = pid, Port = port, Token = token, IdeToolsProtocol = ideTools };
         }
 
         private static bool TryInt(Dictionary<string, object> rec, string key, out int value)

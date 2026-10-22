@@ -376,6 +376,17 @@ namespace ClarionAssistant.Services
         /// </summary>
         public Func<string> UiTimeoutSettingReader { get; set; }
 
+        /// <summary>
+        /// b8f9431c review L6: the "Mcp.UiToolTimeoutSeconds" setting read FRESH from settings.txt (null when unset or
+        /// unreadable). The plugin's forwarder reads the file per call too, so the IDE and the client budget a forwarded
+        /// call from the same value even after a hand edit - the client never gives up before the IDE does.
+        /// </summary>
+        public static string ReadUiTimeoutSettingLive()
+        {
+            try { return new SettingsService().Get(McpUiTimeoutPolicy.SettingKey); }
+            catch { return null; }
+        }
+
         // GH #205: ONE endpoint record per IDE process, whichever of its servers (the chat pane's, the always-on
         // IdeCallbackHost's) is running. Both serve get_live_text and editor_tab_sync, so either answers the standalone
         // server; publishing both would leave it two records for one IDE. The first running server publishes; when it
@@ -1111,9 +1122,12 @@ namespace ClarionAssistant.Services
                         // PR #198: an install can override the UI-thread tool budget (5-600s, never below a tool's declared minimum) (see McpUiTimeoutPolicy).
                         // b8f9431c: a server built without settings (IdeCallbackHost: passing them would also turn on the
                         // external token) supplies the reader on its own.
+                        // L6: a server WITH settings (the chat pane, also a forwarding target when it holds the endpoint
+                        // record) reads the file live too, falling back to its snapshot; none = the 30 s default.
                         var reader = UiTimeoutSettingReader;
                         _dispatcher.UiTimeoutSettingReader = reader ?? (() =>
-                            _settings != null ? _settings.Get(McpUiTimeoutPolicy.SettingKey) : null);
+                            _settings == null ? null
+                                : (ReadUiTimeoutSettingLive() ?? _settings.Get(McpUiTimeoutPolicy.SettingKey)));
                     }
                     return _dispatcher;
                 }

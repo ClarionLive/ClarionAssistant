@@ -13,7 +13,7 @@ namespace ClarionAssistant.McpServer
     /// throw is worse than an absent one.
     ///
     /// b8f9431c: started WITHOUT --ide-pid (by the plugin launcher, for MultiTerminal, VS Code and the like) it also
-    /// lists those 59, with their real schemas, and FORWARDS each call to a running Clarion IDE that has this solution
+    /// lists 57 of those 59 (not execute_command or dump_object_api: McpToolRegistry.IdeCallbackExcludedTools), with their real schemas, and FORWARDS each call to a running Clarion IDE that has this solution
     /// open (ConfigureIdeProxy, IdeToolForwarder); with none, the call says so. Started by an IDE (a CA tab), it does
     /// not, because that IDE's pane serves them itself.
     ///
@@ -982,8 +982,10 @@ namespace ClarionAssistant.McpServer
                     forwardedName = tool.Name;
                     return ClarionAssistant.Services.McpRawToolResult.Error("forwarded:" + tool.Name);
                 }, ClarionAssistant.Services.IdeToolForwarder.DescriptionNote);
-                if (agnostic + added != withIdeCount)
-                    failures.Add("proxy: " + agnostic + " + " + added + " forwarded != " + withIdeCount + " (the full set)");
+                // Review M1: the named exclusions (execute_command, dump_object_api) are the only IdeOnly tools not forwarded.
+                int excludedCount = ClarionAssistant.Services.McpToolRegistry.IdeCallbackExcludedTools.Count;
+                if (agnostic + added + excludedCount != withIdeCount)
+                    failures.Add("proxy: " + agnostic + " + " + added + " forwarded + " + excludedCount + " excluded != " + withIdeCount + " (the full set)");
                 var real = new Dictionary<string, Dictionary<string, object>>();
                 foreach (var t in new ClarionAssistant.Services.McpToolRegistry(new GateProbeEditorService(),
                              new ClarionAssistant.Services.ClarionClassParser(), ideToolsOnly: true).GetToolDefinitions())

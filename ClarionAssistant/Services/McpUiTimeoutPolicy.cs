@@ -24,6 +24,13 @@ namespace ClarionAssistant.Services
         public const int MaxSeconds = 600;
 
         /// <summary>
+        /// b8f9431c L6: the longest one call forwarded from the plugin's server may run in the IDE (a ClarionCL tool's own
+        /// "timeout" argument is capped to it there). The forwarder waits for at most this plus its margin
+        /// (IdeToolForwarder.MarginSeconds), so it never gives up on a call the IDE is still running by design.
+        /// </summary>
+        public const int MaxForwardedSeconds = 3600;
+
+        /// <summary>
         /// The larger of the configured setting (default 30; unparsable or non-positive = default) and the
         /// tool's declared minimum, clamped to [MinSeconds, MaxSeconds] so neither a typo nor a zero can
         /// disable the guard. Taking the LARGER means the setting overrides the default (up or down) for every tool,
