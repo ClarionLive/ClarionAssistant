@@ -27,9 +27,14 @@
 #     solution events; a read-only InstanceCoordinationService (L3); the live UI-budget reader (L6)
 #  13 L2: the record env hooks are read only through TestHook (CA_TEST_HOOKS=1)
 #  14 M2: the forwarder sends the expected solution in params._meta
+# Security re-check (b8f9431c):
+#  15 N1: edits/saves gated on the ACTIVE document's write access (router + registry wiring, close_file the only
+#     exemption, the embed exemption by channel type / native .app), the save-before-build asks the gate before it
+#     writes; N2: EditorToolRouter.cs touches no path on disk; N3: the build tools' READ gate is commented as deliberate;
+#     N6: open_file uses the gated path
 #
 # MUST BE ABLE TO GO RED: against 385a3da (-Root <its ClarionAssistant>) checks 1, 3, 4, 5 and 7 fail; against c627adc
-# checks 4 and 8-14 fail.
+# checks 4 and 8-14 fail; against 21d0205 every check in 15 fails.
 #
 # Run:  pwsh -ExecutionPolicy Bypass -File ClarionAssistant\tests\IdeProxy.SourceScan.ps1 [-Root <dir>] [-StandaloneExe <exe>]
 # Exit: 0 pass, 1 fail, 2 could-not-run.
@@ -154,7 +159,7 @@ else { Check $false 'IdeToolForwarder.cs exists' }
 
 # ---- 8: H1, every path-like argument of an IdeOnly tool is gated, or allow-listed with a reason ----
 # Allow-list: tool.arg -> why it is not a file the tool opens. Anything else path-like must be gated.
-$editorTarget = 'compared LEXICALLY with the active editor''s path (EditorToolRouter.SamePath: Path.GetFullPath, no I/O) so a write to the wrong tab is refused; never opened'
+$editorTarget = 'compared as TEXT with the active editor''s path (EditorToolRouter.SamePath: FileIdentity.NormalizeText, no I/O - check 15) so a write to the wrong tab is refused; never opened. The write itself is gated on the ACTIVE file (N1)'
 $allow = @{
     'dump_object_api.path'        = 'a dot-path through the IDE object graph from the App object, not a file (and the tool is excluded outside the IDE)'
     'insert_text_at_cursor.file_path' = $editorTarget
@@ -250,6 +255,39 @@ if (Test-Path $fwdFile) {
     $fwd2 = [System.IO.File]::ReadAllText($fwdFile)
     Check ($fwd2 -match 'McpDispatcher\.ExpectedSolutionMetaKey, sel\.Solution') 'M2: the forwarder sends the matched solution in params._meta'
 }
+
+# ---- 15: security re-check (b8f9431c N1, N2, N3, N6) ----
+function CodeOnly([string]$src) { return [regex]::Replace($src, '(?m)//.*$', '') }
+$routerFile = Join-Path $Root 'Services\EditorToolRouter.cs'
+$monacoFile = Join-Path $Root 'MonacoClarionSourceEditor.cs'
+$probeFile = Join-Path $Root 'Services\IdeProbeService.cs'
+if ((Test-Path $routerFile) -and (Test-Path $monacoFile) -and (Test-Path $probeFile)) {
+    $router = CodeOnly ([System.IO.File]::ReadAllText($routerFile))
+    $monaco = [System.IO.File]::ReadAllText($monacoFile)
+    $probeSrc = [System.IO.File]::ReadAllText($probeFile)
+    $io = @([regex]::Matches($router, '\bGetFullPath\(|\bFile\.\w+\(|\bFileInfo\b|\bDirectory\.\w+\(|GetLongPathName') | ForEach-Object { $_.Value })
+    Check ($io.Count -eq 0) 'N2: EditorToolRouter.cs never resolves or touches a path on disk (no GetFullPath, File.*, FileInfo, Directory.*): file_path is compared as text' ($io -join ', ')
+    Check ($router -match 'FileIdentity\.Lexical\(FileIdentity\.NormalizeText\(') 'N2: SamePath compares FileIdentity.NormalizeText forms'
+    Check ($reg -match 'new EditorToolRouter\(\(\) => _ui, \(\) => _editorService\.GetActiveDocumentPath\(\), ActiveDocumentWriteRefusal\)' -and
+           $reg -match 'private string ActiveDocumentWriteRefusal\(string tool, string activePath\)\s*\{[^}]*McpPathGate\.GatePath\(tool, activePath, PathAccess\.Write, _workspace') `
+        'N1: the registry builds its EditorToolRouter with the #266 WRITE gate on the active document'
+    Check ($router -match 'bool gated = opts\.IsWrite && !opts\.NoFileWrite && _writeGate != null;' -and $router -match 'if \(ch is IEmbedOverlayChannel\) return' -and
+           $router -match 'EndsWith\("\.app", StringComparison\.OrdinalIgnoreCase\)') 'N1: the router gates every IsWrite call; the embed exemption is the embed channel type, or a native .app window'
+    $noFile = [regex]::Matches($reg, 'NoFileWrite = true').Count
+    $closeBlock = [regex]::Match($reg, 'Name = "close_file"(?<b>.*?)Register\(new McpTool', 'Singleline').Groups['b'].Value
+    Check ($noFile -eq 1 -and $closeBlock.Contains('opts.NoFileWrite = true;')) 'N1: only close_file is exempt from the write gate (NoFileWrite)' "NoFileWrite = true x$noFile"
+    $saveBody = [regex]::Match($monaco, 'private void SaveDirtyBeforeBuild\(Func<string, string> writeRefusal, List<string> skipped\)\s*\{(?<b>.*?)\n        \}', 'Singleline').Groups['b'].Value
+    $iGateM = $saveBody.IndexOf('writeRefusal(_filePath)'); $iWrite = $saveBody.IndexOf('WriteToDisk(')
+    Check ($iGateM -ge 0 -and $iWrite -gt $iGateM -and $saveBody.Contains('skipped.Add(')) 'N1: a CA Editor tab''s save-before-build asks the write gate BEFORE WriteToDisk, and reports a skip'
+    Check ($probeSrc -match 'MonacoClarionEditor\.SaveAllDirtyBeforeBuild\(writeRefusal\)') 'N1: IdeProbeService passes the gate through to the CA Editor tabs'
+    Check ($reg -match '_ideProbe\.SaveAllDirtyEditors\(p =>\s*\{\s*string canonical;\s*return McpPathGate\.GatePath\(gateTool, p, PathAccess\.Write, _workspace' -and
+           $reg -match 'skippedNote = SaveBeforeBuildSkippedNote\(skipped\);') 'N1: the ClarionCL tools save dirty tabs through the WRITE gate and name the skipped ones'
+    Check ($helpers['ResolveClarionClTarget'] -match 'DELIBERATELY the READ gate') 'N3: ResolveClarionClTarget says why app_path / project_path take the READ gate'
+    $openBlock = [regex]::Match($reg, 'Name = "open_file"(?<b>.*?)Register\(new McpTool', 'Singleline').Groups['b'].Value
+    $iAssign = $openBlock.IndexOf('path = gatedPath;'); $iExists = $openBlock.IndexOf('File.Exists(path)')
+    Check ($iAssign -ge 0 -and $iExists -gt $iAssign) 'N6: open_file uses the gated canonical path from the gate on (checked, opened, waited for)'
+}
+else { Check $false 'N1/N2: EditorToolRouter.cs, MonacoClarionSourceEditor.cs and IdeProbeService.cs exist' }
 
 Write-Host ""
 if ($fail -eq 0) { Write-Host "PASS - $pass checks" -ForegroundColor Green; exit 0 }

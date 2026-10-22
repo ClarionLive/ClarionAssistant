@@ -137,8 +137,12 @@ namespace ClarionAssistant
         /// IDE's own save-before-build (SaveAllFiles.SaveAll, which only reaches AbstractViewContent.IsDirty).
         /// Without this, "Build Solution" can silently compile a stale on-disk version of a file being
         /// edited in the CA Editor. Best-effort per tab; one tab's failure must not stop the others.</summary>
-        internal static void SaveAllDirtyBeforeBuild()
+        /// <param name="writeRefusal">b8f9431c N1: the assistant's build tools pass the #266 Write gate (path -> null to
+        /// save, else why not); a dirty tab it refuses is NOT written and is returned as "path: why". Null (the IDE's own
+        /// Build, SaveSourceEditorsBeforeBuildCommand: the developer's action) saves every dirty tab, as before.</param>
+        internal static List<string> SaveAllDirtyBeforeBuild(Func<string, string> writeRefusal = null)
         {
+            var skipped = new List<string>();
             List<MonacoClarionEditor> snapshot;
             lock (_instances) { snapshot = new List<MonacoClarionEditor>(_instances); }
 
@@ -162,9 +166,10 @@ namespace ClarionAssistant
 
             foreach (var inst in snapshot)
             {
-                try { inst.SaveDirtyBeforeBuild(); }
+                try { inst.SaveDirtyBeforeBuild(writeRefusal, skipped); }
                 catch (Exception ex) { MonacoSpikeLog.Write("SaveAllDirtyBeforeBuild per-instance error: " + ex.Message); }
             }
+            return skipped;
         }
 
         /// <summary>
@@ -275,12 +280,26 @@ namespace ClarionAssistant
         /// (the host doesn't track Monaco's edit-sequence counter, so it can't safely clear it). Silently
         /// skips a read-only file rather than throwing (matches OnSave's own guard) — the build will simply
         /// compile the file as it already is on disk.</summary>
-        private void SaveDirtyBeforeBuild()
+        private void SaveDirtyBeforeBuild(Func<string, string> writeRefusal, List<string> skipped)
         {
             try
             {
                 if (!(_overlayDirty && _overlayLiveText != null && !string.IsNullOrEmpty(_filePath))) return;
                 if (IsFileReadOnly()) return;
+                // b8f9431c N1: the assistant's build tools ask the #266 Write gate first. A refused file is not written
+                // (fail closed: a gate that throws refuses too) and stays dirty; the build result names it.
+                if (writeRefusal != null)
+                {
+                    string why;
+                    try { why = writeRefusal(_filePath); }
+                    catch (Exception ex) { why = "the path policy check failed (" + ex.Message + ")"; }
+                    if (why != null)
+                    {
+                        skipped.Add(_filePath + ": " + why);
+                        MonacoSpikeLog.Write("[save-before-build] NOT saved (write gate): " + _filePath);
+                        return;
+                    }
+                }
                 long seq = _overlayLiveSeq;
                 int n = WriteToDisk(_overlayLiveText);
                 _overlayDirty = false;
