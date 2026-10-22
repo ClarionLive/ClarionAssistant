@@ -508,13 +508,26 @@ static class OutOfProcessIndexerTest
             // ---- D3: a cancel that lands as the child finishes never turns its result into a cancel ----
             {
                 // A stand-in child: writes its JSON, exits at once, and leaves a grandchild holding the inherited stdout/
-                // stderr pipes for 3 s - so the host sees the child exited well before its pipes close, the window in which
-                // the cancel grace ran out and the old code marked a child that had already exited as "killed".
+                // stderr pipes until the test releases it - so the host sees the child exited well before its pipes close,
+                // the window in which the cancel grace ran out and the old code marked a child that had already exited as
+                // "killed".
+                //
+                // DETERMINISTIC (b8f9431c gate: D3a/D3b failed 2 of 5 runs under load). It used to send the cancel at once
+                // (CancelRequested = () => true) with a 300 ms grace and a grandchild that slept a fixed 3 s; on a loaded
+                // machine the fake child had not even started its CLR within 300 ms, so the host killed a RUNNING child -
+                // a correct "cancelled", and a red test. Now the cancel is sent only once the child HAS exited on its own
+                // (the D3 window by construction), and the grandchild holds the pipes until a release file appears, which
+                // the test creates CancelGrace + 1.5 s after the cancel - so the kill branch always gets its turn while the
+                // pipes are still open (cap 60 s, so a broken test cannot hang the run).
                 string fakeSrc = Path.Combine(root, "fake.cs");
                 File.WriteAllText(fakeSrc,
                     "using System; using System.Diagnostics;\r\n" +
                     "class F { static int Main(string[] a) {\r\n" +
-                    "  if (a.Length > 0 && a[0] == \"hold\") { System.Threading.Thread.Sleep(3000); return 0; }\r\n" +
+                    "  if (a.Length > 0 && a[0] == \"hold\") {\r\n" +
+                    "    string rel = Environment.GetEnvironmentVariable(\"CA_FAKE_RELEASE\");\r\n" +
+                    "    var until = DateTime.UtcNow.AddSeconds(60);\r\n" +
+                    "    while (DateTime.UtcNow < until && !(rel != null && System.IO.File.Exists(rel))) System.Threading.Thread.Sleep(20);\r\n" +
+                    "    return 0; }\r\n" +
                     "  Process.Start(new ProcessStartInfo(typeof(F).Assembly.Location, \"hold\") { UseShellExecute = false });\r\n" +
                     "  bool fail = Array.IndexOf(a, \"--fake-fail\") >= 0;\r\n" +
                     "  Console.WriteLine(fail ? \"{\\\"success\\\": false, \\\"cancelled\\\": false, \\\"error\\\": \\\"fake failure\\\"}\"\r\n" +
@@ -525,22 +538,53 @@ static class OutOfProcessIndexerTest
                 Directory.CreateDirectory(Path.GetDirectoryName(fakeExe));
                 RunCsc("/nologo /out:\"" + fakeExe + "\" \"" + fakeSrc + "\"");
 
-                var ok = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = TimeSpan.FromMilliseconds(300) };
-                ok.CancelRequested = () => true;
+                var grace = TimeSpan.FromMilliseconds(300);
+                // Arm one run: the cancel goes only after the child exited by itself; the pipes are released only after
+                // the grace (and the kill decision it triggers) has passed.
+                Func<OutOfProcessIndexer, string, Func<bool>> arm = (runner, tag) =>
+                {
+                    string release = Path.Combine(root, "release-" + tag);
+                    try { File.Delete(release); } catch { }
+                    Environment.SetEnvironmentVariable("CA_FAKE_RELEASE", release);
+                    Process childProc = null; bool releasing = false;
+                    runner.ChildStarted += p => childProc = p;
+                    runner.CancelRequested = () =>
+                    {
+                        bool exited;
+                        try { exited = childProc != null && childProc.HasExited; } catch { exited = false; }
+                        if (exited && !releasing)
+                        {
+                            releasing = true;
+                            new System.Threading.Thread(() =>
+                            {
+                                System.Threading.Thread.Sleep(grace + TimeSpan.FromMilliseconds(1500));
+                                try { File.WriteAllText(release, "go"); } catch { }
+                            }) { IsBackground = true }.Start();
+                        }
+                        return exited;
+                    };
+                    return () => releasing;
+                };
+
+                var ok = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = grace };
+                var okCancelled = arm(ok, "ok");
                 IndexResult okRes = null; string okWhat = null;
                 try { okRes = ok.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "fake.db") }); }
                 catch (OperationCanceledException) { okWhat = "reported as CANCELLED"; }
                 catch (Exception ex) { okWhat = ex.GetType().Name + ": " + ex.Message; }
+                Check(okCancelled(), "D3a0", "control: the cancel WAS sent, after the child had exited on its own");
                 Check(okRes != null && okRes.SymbolCount == 4242 && ok.ExitCode == 0, "D3a",
                     "a child that finished (exit 0, success) after a cancel was sent returns its result, never a cancel: " + (okWhat ?? "result"));
 
-                var bad = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = TimeSpan.FromMilliseconds(300), ExtraArgumentsForTest = "--fake-fail" };
-                bad.CancelRequested = () => true;
+                var bad = new OutOfProcessIndexer { ExePath = fakeExe, CancelGrace = grace, ExtraArgumentsForTest = "--fake-fail" };
+                var badCancelled = arm(bad, "bad");
                 string badWhat = null;
                 try { bad.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "fake.db") }); badWhat = "returned a result"; }
                 catch (IndexerProcessException ex) { badWhat = "IPE " + ex.Message; }
                 catch (OperationCanceledException) { badWhat = "reported as CANCELLED"; }
                 catch (Exception ex) { badWhat = ex.GetType().Name + ": " + ex.Message; }
+                Environment.SetEnvironmentVariable("CA_FAKE_RELEASE", null);
+                Check(badCancelled(), "D3b0", "control: the cancel WAS sent, after the failing child had exited on its own");
                 Check(badWhat != null && badWhat.StartsWith("IPE ") && badWhat.Contains("fake failure") && badWhat.Contains("exit code 1"), "D3b",
                     "a child that exited on its own with a failure is a failure, not \"killed\"/cancelled: " + FirstLine(badWhat));
             }
