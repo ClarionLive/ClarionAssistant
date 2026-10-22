@@ -42,13 +42,6 @@ namespace ClarionAssistant.Services
         public int UiTimeoutSeconds { get; set; }
 
         /// <summary>
-        /// b8f9431c: on a tool the standalone server FORWARDS to an IDE, whether the IDE runs it on its UI thread (the
-        /// original tool's RequiresUiThread; the forwarded copy itself never marshals). Informational, for the
-        /// forwarder's budget and logs. False everywhere else.
-        /// </summary>
-        public bool ForwardedRequiresUiThread { get; set; }
-
-        /// <summary>
         /// This tool's handler drives the IDE itself, so it is registered ONLY in a host that has
         /// one. Set on 57 of the 118 tools (ticket d051fbd1; get_app_dictionary added for GitHub #210;
         /// supersede_knowledge + remove_knowledge added standalone by PR #199 -
@@ -273,9 +266,8 @@ namespace ClarionAssistant.Services
         public int GetToolCount() { return _tools.Count; }
 
         /// <summary>
-        /// GH #205: keep only <paramref name="names"/> and drop every other tool. For the addin's IDE callback endpoint
-        /// (IdeCallbackHost), which must serve the standalone server's call-backs (get_live_text, editor_tab_sync) with
-        /// no chat pane open, and nothing else: it is not a tool surface for a model.
+        /// GH #205: keep only <paramref name="names"/> and drop every other tool. (IdeCallbackHost used it to serve only the
+        /// two call-backs; since b8f9431c it serves every IdeOnly tool, see <see cref="BuildIdeCallbackRegistry"/>.)
         /// </summary>
         public void RetainOnly(params string[] names)
         {
@@ -365,7 +357,6 @@ namespace ClarionAssistant.Services
                     IdeOnly = true,
                     RequiresUiThread = false,
                     UiTimeoutSeconds = def.UiTimeoutSeconds,
-                    ForwardedRequiresUiThread = def.RequiresUiThread,
                     Handler = args => forward(meta, args ?? new Dictionary<string, object>())
                 };
                 added++;
@@ -373,12 +364,6 @@ namespace ClarionAssistant.Services
             return added;
         }
 
-        /// <summary>True when <paramref name="toolName"/> is an IdeOnly tool this host forwards to an IDE.</summary>
-        public bool IsForwarded(string toolName)
-        {
-            McpTool tool;
-            return _tools.TryGetValue(toolName ?? "", out tool) && tool.IdeOnly && !HasIde;
-        }
         public IAppTreeService GetAppTreeService() { return _appTree; }
 
         public bool RequiresUiThread(string toolName)

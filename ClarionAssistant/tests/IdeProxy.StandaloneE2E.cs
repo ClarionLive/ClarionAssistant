@@ -100,7 +100,7 @@ static class IdeProxyE2E
                     { "content", new object[]
                         {
                             new Dictionary<string, object> { { "type", "text" }, { "text", "IDE ran " + name + " pid " + Process.GetCurrentProcess().Id } },
-                            new Dictionary<string, object> { { "type", "text" }, { "text", "second block åé " + Js.Serialize(args) } }
+                            new Dictionary<string, object> { { "type", "text" }, { "text", "second block \u00e5\u00e9 " + Js.Serialize(args) } }
                         }
                     },
                     { "isError", false }
@@ -171,6 +171,7 @@ static class IdeProxyE2E
         public readonly StringBuilder Err = new StringBuilder();
         public readonly StringBuilder Out = new StringBuilder();
         public string Instructions;
+        public StreamWriter In;
         int _id = 10;
 
         public static Server Start(string exe, string args, string cwd, Dictionary<string, string> env)
@@ -186,21 +187,23 @@ static class IdeProxyE2E
             psi.EnvironmentVariables.Remove("CLARION_IDE_PID");
             if (env != null) foreach (var kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value;
             var s = new Server { P = Process.Start(psi) };
+            // UTF-8 on the pipe, as a real MCP client writes it: .NET Framework's StandardInput uses the console code page,
+            // which turns non-ASCII into '?' before the server ever sees it.
+            s.In = new StreamWriter(s.P.StandardInput.BaseStream, new UTF8Encoding(false)) { AutoFlush = true };
             s.P.ErrorDataReceived += (o, e) => { if (e.Data != null) lock (s.Err) s.Err.AppendLine(e.Data); };
             s.P.BeginErrorReadLine();
             var init = s.Send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"e2e\",\"version\":\"1\"}}}", 1);
             object ins;
             var ir = init["result"] as Dictionary<string, object>;
             s.Instructions = ir != null && ir.TryGetValue("instructions", out ins) ? ins as string : null;
-            s.P.StandardInput.WriteLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}");
-            s.P.StandardInput.Flush();
+            s.In.WriteLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}");
+
             return s;
         }
 
         public Dictionary<string, object> Send(string line, int id)
         {
-            P.StandardInput.WriteLine(line);
-            P.StandardInput.Flush();
+            In.WriteLine(line);
             while (true)
             {
                 string outLine = P.StandardOutput.ReadLine();
@@ -233,7 +236,7 @@ static class IdeProxyE2E
 
         public void Stop()
         {
-            try { P.StandardInput.Close(); if (!P.WaitForExit(15000)) P.Kill(); } catch { }
+            try { In.Close(); if (!P.WaitForExit(15000)) P.Kill(); } catch { }
         }
     }
 
@@ -315,13 +318,13 @@ static class IdeProxyE2E
 
             // ---------------- C: the matching IDE ----------------
             WriteEndpoint(me, _port, _token); WriteSolution(me, _sln);
-            var callArgs = new Dictionary<string, object> { { "filter", "Upd*" }, { "n", 3 }, { "code", "  ! comment å\r\n" } };
+            var callArgs = new Dictionary<string, object> { { "filter", "Upd*" }, { "n", 3 }, { "code", "  ! comment \u00e5\r\n" } };
             var rC = srv.Call("list_procedures", callArgs);
             Console.WriteLine("C  match     " + FirstText(rC));
             var cContent = rC != null && rC.ContainsKey("content") ? rC["content"] as object[] : null;
             Check(!IsErr(rC) && cContent != null && cContent.Length == 2
                   && FirstText(rC) == "IDE ran list_procedures pid " + me.Id
-                  && ((cContent[1] as Dictionary<string, object>)["text"] as string) == "second block åé " + Js.Serialize(callArgs),
+                  && ((cContent[1] as Dictionary<string, object>)["text"] as string) == "second block \u00e5\u00e9 " + Js.Serialize(callArgs),
                 "C: expected the IDE's two content blocks verbatim (non-ASCII intact) with isError false; got " + Show(rC));
             Check(LastSeen() == "list_procedures " + Js.Serialize(callArgs), "C: the IDE did not receive the arguments as sent: " + LastSeen());
             var rC2 = srv.Call("save_file", null);

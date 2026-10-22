@@ -254,7 +254,8 @@ try {
     Assert-That (([string]$r9w.Instructions) -match 'tell the developer' -and ([string]$r9w.Instructions) -match 'OLDER' -and ([string]$r9w.Instructions) -match '99\.0\.0\.0') "9: initialize instructions should carry the downgrade WARNING and ask the model to tell the developer, got: $($r9w.Instructions)"
     Assert-That (([string]$r9w.Info.serverChosenBy) -match 'OLDER' -and ([string]$script:lastErr) -match 'WARNING: this Clarion Assistant server') "9: serverChosenBy and stderr should carry it too, got: $($r9w.Info.serverChosenBy)"
     $r9n = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }
-    Assert-That ([string]::IsNullOrEmpty([string]$r9n.Instructions)) "9: a server that is not older must send no instructions, got: $($r9n.Instructions)"
+    # b8f9431c: a plugin-launched server always carries the IDE tools' write-approval rule; what must be absent is the downgrade warning.
+    Assert-That (([string]$r9n.Instructions) -notmatch 'OLDER' -and ([string]$r9n.Instructions) -notmatch 'tell the developer') "9: a server that is not older must send no downgrade instructions, got: $($r9n.Instructions)"
 
     # ---- 8: launched by the launcher: serverChosenBy ----
     $r8 = Get-Info '' @{ CLARION_MCP_LAUNCHER = 'pick'; CLARION_ROOTS = $fakeRoot }; Show '8' $r8
