@@ -134,16 +134,9 @@ static class IdeProxyCallbackRegistry
             McpToolRegistry.AppTreeFactory = () => Make<IAppTreeService>(appF);
             McpToolRegistry.IdeProbeFactory = () => Make<IIdeProbeService>(probeF);
 
-            // L3: a read-only coordination service on a temp database, with a PEER instance holding the procedure.
+            // L3: a read-only coordination service on a temp database (the peer row is written at the L3 check).
             string coordDb = Path.Combine(root, "instances.db");
             var coord = new InstanceCoordinationService(coordDb);
-            using (var conn = new System.Data.SQLite.SQLiteConnection("Data Source=" + coordDb))
-            {
-                conn.Open();
-                using (var cmd = new System.Data.SQLite.SQLiteCommand(
-                    "INSERT INTO instances (pid, app_file, active_procedure, heartbeat_at) VALUES (999999, @a, 'BrowseCustomers', datetime('now'))", conn))
-                { cmd.Parameters.AddWithValue("@a", inApp); cmd.ExecuteNonQuery(); }
-            }
 
 #if OLD_API
             // Fail-on-old proof only (compiled with /define:OLD_API against c627adc's exe, which has no coordination parameter).
@@ -244,6 +237,15 @@ static class IdeProxyCallbackRegistry
 
             // ---- L3 ----
             Console.WriteLine("=== L3: open_procedure_embed's conflict check on the call-back registry ===");
+            // The peer row is written HERE, not at setup: its heartbeat must be fresh (a slow H1 run - the old code's
+            // 42 s UNC attempt - would otherwise age it past InstanceCoordinationService.StaleSeconds).
+            using (var conn = new System.Data.SQLite.SQLiteConnection("Data Source=" + coordDb))
+            {
+                conn.Open();
+                using (var cmd = new System.Data.SQLite.SQLiteCommand(
+                    "INSERT INTO instances (pid, app_file, active_procedure, heartbeat_at) VALUES (999999, @a, 'BrowseCustomers', datetime('now'))", conn))
+                { cmd.Parameters.AddWithValue("@a", inApp); cmd.ExecuteNonQuery(); }
+            }
             string opened = Run(reg, "open_procedure_embed", A("procedure_name", "BrowseCustomers"));
             Check(opened.Contains("Another IDE instance (PID 999999)") && opened.Contains("FAKE opened BrowseCustomers"),
                 "a peer IDE that has the procedure open is reported (the registry has a read-only InstanceCoordinationService)", Short(opened));
