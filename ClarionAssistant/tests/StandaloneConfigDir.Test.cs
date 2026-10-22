@@ -360,6 +360,11 @@ static class StandaloneConfigDirTest
                 "this build's --capabilities parses back and meets its own floor");
             Check(ServerPicker.ParsePathPolicy("pick-server=2\r\npath-policy=3\r\n") == 3 && ServerPicker.ParsePathPolicy("usage: ...") == 0
                   && ServerPicker.ParsePathPolicy("path-policy=x") == 0, "path-policy parsing: found, absent, malformed");
+            // b8f9431c: the IDE proxy is announced, and adding its line leaves the path-policy floor reading unchanged.
+            Check(ServerPicker.ParseIdeProxy(ServerPicker.CapabilitiesText()) == ServerPicker.IdeProxyCapability
+                  && ServerPicker.IdeProxyCapability >= 1
+                  && ServerPicker.ParseIdeProxy("path-policy=2\npick-server=2\n") == 0 && ServerPicker.ParseIdeProxy("ide-proxy=x") == 0,
+                "--capabilities announces ide-proxy=1; an older server's output reads as none");
             Check(ServerPicker.ProbePathPolicy(Cand(@"C:\Fake\Nowhere", null)) == 0, "a server that cannot be run reports no capability");
             string notPe = Path.Combine(root, "notpe", ServerPicker.RelativeExe);
             Directory.CreateDirectory(Path.GetDirectoryName(notPe));
