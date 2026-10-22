@@ -210,6 +210,8 @@
     <Compile Include="..\Services\OpenTabGuard.cs"><Link>Services\OpenTabGuard.cs</Link></Compile>
     <Compile Include="..\Services\IdeTabClient.cs"><Link>Services\IdeTabClient.cs</Link></Compile>
     <Compile Include="..\Services\IdeFanOut.cs"><Link>Services\IdeFanOut.cs</Link></Compile>
+    <!-- b8f9431c: the IDE proxy - lists the IdeOnly tools and forwards each call to a running Clarion IDE on this solution. -->
+    <Compile Include="..\Services\IdeToolForwarder.cs"><Link>Services\IdeToolForwarder.cs</Link></Compile>
     <Compile Include="..\Services\FileIdentity.cs"><Link>Services\FileIdentity.cs</Link></Compile>
     <Compile Include="..\Services\EditorToolRouter.cs"><Link>Services\EditorToolRouter.cs</Link></Compile>
     <Compile Include="..\Services\EditorTextOps.cs"><Link>Services\EditorTextOps.cs</Link></Compile>

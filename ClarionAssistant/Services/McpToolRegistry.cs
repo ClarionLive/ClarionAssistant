@@ -42,6 +42,13 @@ namespace ClarionAssistant.Services
         public int UiTimeoutSeconds { get; set; }
 
         /// <summary>
+        /// b8f9431c: on a tool the standalone server FORWARDS to an IDE, whether the IDE runs it on its UI thread (the
+        /// original tool's RequiresUiThread; the forwarded copy itself never marshals). Informational, for the
+        /// forwarder's budget and logs. False everywhere else.
+        /// </summary>
+        public bool ForwardedRequiresUiThread { get; set; }
+
+        /// <summary>
         /// This tool's handler drives the IDE itself, so it is registered ONLY in a host that has
         /// one. Set on 57 of the 118 tools (ticket d051fbd1; get_app_dictionary added for GitHub #210;
         /// supersede_knowledge + remove_knowledge added standalone by PR #199 -
@@ -213,6 +220,23 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
+        /// b8f9431c: a registry that only READS the tool definitions (<see cref="IdeOnlyToolDefinitions"/>): it registers as
+        /// a host with an IDE would (HasIde true, IdeOnly tools only) but has no editor, app tree or probe, and its
+        /// handlers are never called. The self-test's GateProbeEditorService proves registration itself touches none of them.
+        /// </summary>
+        private McpToolRegistry(ClarionClassParser parser, bool definitionsOnly)
+        {
+            _definitionsOnly = definitionsOnly;
+            _ideToolsOnly = true;
+            _parser = parser;
+            _docGraph = new DocGraphService();
+            _traceService = new ClarionTraceService();
+            RegisterAllTools();
+        }
+
+        private readonly bool _definitionsOnly;
+
+        /// <summary>
         /// Supply the workspace ("which solution am I on") and the UI thread to marshal to.
         /// Was SetChatControl(AssistantChatControl); the control implements both interfaces, so
         /// the addin passes itself twice and nothing about its behaviour changes.
@@ -260,8 +284,24 @@ namespace ClarionAssistant.Services
                 if (!keep.Contains(name)) _tools.Remove(name);
         }
 
-        /// <summary>The standalone server's call-backs into the IDE, all IdeCallbackHost serves.</summary>
+        /// <summary>The standalone server's own call-backs into the IDE (lsp_diagnostics, write_file/append_to_file).
+        /// IdeCallbackHost serves them, and since b8f9431c every other IdeOnly tool too.</summary>
         public static readonly string[] IdeCallbackTools = { "get_live_text", "editor_tab_sync" };
+
+        /// <summary>
+        /// b8f9431c: IdeOnly tools the IDE call-back endpoint does NOT serve, each with the reason. The standalone server
+        /// forwards exactly the IdeOnly tools minus these, so a tool named here is neither listed nor forwarded there
+        /// (it stays available in a CA tab). EMPTY BY MEASUREMENT, not by default: every IdeOnly handler was checked for
+        /// chat-pane-only state. The five registry statics only the chat pane set (AppTreeFactory, IdeProbeFactory,
+        /// DiagnosticLog, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe) are now set by IdeCallbackHost at addin start;
+        /// the diff tools get their own DiffService there (it is IDE-wide, not the pane's); open_procedure_embed's
+        /// instance-coordination conflict check is null-guarded (with no CA tab there is no registered instance to
+        /// conflict with); build_app / generate_source read only the solution, version and Clarion root, which
+        /// IdeWorkspace answers. tests\IdeProxy.SourceScan.ps1 fails if an IdeOnly tool is missing from the callback
+        /// registry without an entry here.
+        /// </summary>
+        public static readonly Dictionary<string, string> IdeCallbackExcludedTools =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
         /// GH #205 pipeline run 2: the IDE call-back endpoint's registry, WITH a workspace. editor_tab_sync's check is
@@ -269,15 +309,75 @@ namespace ClarionAssistant.Services
         /// root, .red folders); with none, every solution file is "outside every allowed root" and every check fails.
         /// The workspace and dispatcher are set on THIS registry only: unlike <see cref="SetWorkspace"/>, the shared
         /// SharedLspBridge providers are left alone, so a call-back host started after the chat pane cannot rebind them.
+        ///
+        /// b8f9431c: it serves EVERY IdeOnly tool (minus <see cref="IdeCallbackExcludedTools"/>), so the standalone server
+        /// a plugin client (MultiTerminal, VS Code) runs can forward them to this IDE. The handlers are the same ones a
+        /// CA tab runs, with this IDE's workspace, so the #266 path policy (McpPathGate.BuildPolicy) and the 73bd1f03
+        /// overlay guard apply exactly as there. <paramref name="diffService"/> backs show_diff / get_diff_result /
+        /// get_diff_content (null: they answer "not initialized", as before).
         /// </summary>
         public static McpToolRegistry BuildIdeCallbackRegistry(IEditorService editorService, ClarionClassParser parser,
-                                                               IWorkspaceContext workspace, IUiDispatcher ui)
+                                                               IWorkspaceContext workspace, IUiDispatcher ui,
+                                                               IDiffService diffService = null)
         {
-            var registry = new McpToolRegistry(editorService, parser, true);
-            registry.RetainOnly(IdeCallbackTools);
+            var registry = new McpToolRegistry(editorService, parser, true);   // ideToolsOnly: only the IdeOnly tools register
+            foreach (var name in IdeCallbackExcludedTools.Keys) registry._tools.Remove(name);
             registry._workspace = workspace;
             registry._ui = ui;
+            registry._diffService = diffService;
             return registry;
+        }
+
+        /// <summary>
+        /// b8f9431c: the IdeOnly tools as a host with an IDE registers them - name, description, schema, UI-thread flag and
+        /// declared UI budget - for a host WITHOUT one (the standalone server) to list and forward. Built from the same
+        /// RegisterAllTools the addin runs, in a registry that only pretends to have an IDE: no handler of it is ever
+        /// invoked (the copies <see cref="AddForwardedIdeTools"/> registers have their own). Excludes
+        /// <see cref="IdeCallbackExcludedTools"/>.
+        /// </summary>
+        public static List<McpTool> IdeOnlyToolDefinitions()
+        {
+            var defs = new McpToolRegistry(new ClarionClassParser(), definitionsOnly: true);
+            return defs._tools.Values.Where(t => t.IdeOnly && !IdeCallbackExcludedTools.ContainsKey(t.Name))
+                                     .OrderBy(t => t.Name, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>
+        /// b8f9431c, the standalone server: register every IdeOnly tool (<see cref="IdeOnlyToolDefinitions"/>) with its
+        /// REAL description and schema, and a handler that hands the call to <paramref name="forward"/> (which sends it to
+        /// a running Clarion IDE that has this solution open). <paramref name="descriptionNote"/> is appended to each
+        /// description. The copy runs OFF any UI thread here (RequiresUiThread false): the IDE marshals it. A name this
+        /// registry already serves is skipped (the split is a partition, so none is). Returns how many were added.
+        /// </summary>
+        public int AddForwardedIdeTools(Func<McpTool, Dictionary<string, object>, object> forward, string descriptionNote)
+        {
+            if (forward == null) throw new ArgumentNullException("forward");
+            int added = 0;
+            foreach (var def in IdeOnlyToolDefinitions())
+            {
+                if (_tools.ContainsKey(def.Name)) continue;
+                var meta = def;
+                _tools[def.Name] = new McpTool
+                {
+                    Name = def.Name,
+                    Description = string.IsNullOrEmpty(descriptionNote) ? def.Description : def.Description + " " + descriptionNote,
+                    InputSchema = def.InputSchema,
+                    IdeOnly = true,
+                    RequiresUiThread = false,
+                    UiTimeoutSeconds = def.UiTimeoutSeconds,
+                    ForwardedRequiresUiThread = def.RequiresUiThread,
+                    Handler = args => forward(meta, args ?? new Dictionary<string, object>())
+                };
+                added++;
+            }
+            return added;
+        }
+
+        /// <summary>True when <paramref name="toolName"/> is an IdeOnly tool this host forwards to an IDE.</summary>
+        public bool IsForwarded(string toolName)
+        {
+            McpTool tool;
+            return _tools.TryGetValue(toolName ?? "", out tool) && tool.IdeOnly && !HasIde;
         }
         public IAppTreeService GetAppTreeService() { return _appTree; }
 
@@ -6617,7 +6717,7 @@ IdeOnly = true,
         /// server, where AppTreeFactory / IdeProbeFactory are left unset and no IEditorService is
         /// injected.
         /// </summary>
-        private bool HasIde { get { return _editorService != null || _appTree != null || _ideProbe != null; } }
+        private bool HasIde { get { return _definitionsOnly || _editorService != null || _appTree != null || _ideProbe != null; } }
 
         private void Register(McpTool tool)
         {

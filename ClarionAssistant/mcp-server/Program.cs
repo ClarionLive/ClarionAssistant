@@ -12,6 +12,11 @@ namespace ClarionAssistant.McpServer
     /// McpTool.IdeOnly — an MCP client reads the tool list as a contract, so a tool that can only
     /// throw is worse than an absent one.
     ///
+    /// b8f9431c: started WITHOUT --ide-pid (by the plugin launcher, for MultiTerminal, VS Code and the like) it also
+    /// lists those 59, with their real schemas, and FORWARDS each call to a running Clarion IDE that has this solution
+    /// open (ConfigureIdeProxy, IdeToolForwarder); with none, the call says so. Started by an IDE (a CA tab), it does
+    /// not, because that IDE's pane serves them itself.
+    ///
     /// All 57 function. The eleven that need to know which solution they are on — the CodeGraph
     /// and solution family, index_solution and query_codegraph among them — get it from
     /// StandaloneWorkspace, resolved from --solution or the working directory. The other 46
@@ -245,7 +250,13 @@ namespace ClarionAssistant.McpServer
                 Console.Error.WriteLine(ServerName + ": settings: " + workspace.SettingsNote);
 
             var bundle = BuildDispatcher(workspace);
-            bundle.Dispatcher.InstructionsProvider = () => ServerPicker.DowngradeInstructions(workspace.DowngradeWarning);
+            bool ideProxy = ConfigureIdeProxy(bundle, workspace);
+            bundle.Dispatcher.InstructionsProvider = () =>
+            {
+                string downgrade = ServerPicker.DowngradeInstructions(workspace.DowngradeWarning);
+                if (!ideProxy) return downgrade;
+                return string.IsNullOrEmpty(downgrade) ? IdeProxyInstructions : downgrade + "\n\n" + IdeProxyInstructions;
+            };
             RegisterAsVisibleInstance(bundle, workspace);
             StartLspInBackground(bundle, workspace);
 
@@ -262,6 +273,56 @@ namespace ClarionAssistant.McpServer
                 // the finally every clean exit would rely on the next server's cleanup, and a
                 // developer closing their client would linger as a phantom peer for 30 seconds.
                 StopBeingAVisibleInstance(bundle);
+            }
+        }
+
+        /// <summary>
+        /// b8f9431c: THE IDE PROXY. A client that loads the clarion-assistant plugin (MultiTerminal, VS Code) runs only this
+        /// server, so it also lists the IdeOnly tools - with their real schemas - and forwards each call to a running
+        /// Clarion IDE that has this server's solution open (IdeToolForwarder). With no such IDE the call explains itself;
+        /// the server itself never needs one to start.
+        ///
+        /// NOT when an IDE launched this server (--ide-pid): that is a CA tab, whose own pane already serves the IdeOnly
+        /// tools as clarion-assistant; listing them here too would offer every one twice under two prefixes.
+        /// </summary>
+        /// <summary>
+        /// b8f9431c: the initialize instructions while the IDE tools are listed. Inside a CA tab the IDE's own CLAUDE.md
+        /// states the approval rule for writes (its rule #10); a plugin client has no such file, and these tools now
+        /// write into the developer's open Clarion, so the rule travels with the tools.
+        /// </summary>
+        internal const string IdeProxyInstructions =
+            "The IDE tools (described as running in the Clarion IDE) act on the developer's open Clarion: they need Clarion open "
+            + "on this server's solution, and they change what the developer is working on. Never write code to the embeditor, "
+            + ".clw or .inc files (write_embed_content, apply_embed_edits, replace_text, replace_range, insert_text_at_cursor, "
+            + "import_txa, save_and_close_embeditor) without the developer's explicit approval: show the code, say where it "
+            + "goes, and ask first.";
+
+        private static bool ConfigureIdeProxy(McpDispatcherBundle bundle, StandaloneWorkspace workspace)
+        {
+            if (bundle == null || workspace == null) return false;
+            int? launchingIde = ClarionAssistant.Services.McpToolRegistry.IdeProcessId;
+            if (launchingIde.HasValue)
+            {
+                Console.Error.WriteLine(ServerName + ": IDE tools: not listed here - launched by the Clarion IDE (pid "
+                    + launchingIde.Value + "), whose own pane serves them");
+                return false;
+            }
+            try
+            {
+                ClarionAssistant.Services.IdeToolForwarder.SolutionProvider = () => workspace.CurrentSolutionPath;
+                ClarionAssistant.Services.IdeToolForwarder.SolutionNote = () => workspace.ResolutionNote;
+                ClarionAssistant.Services.IdeToolForwarder.Log = ClarionAssistant.Services.LspTrace.Write;
+                int n = bundle.Registry.AddForwardedIdeTools(ClarionAssistant.Services.IdeToolForwarder.Forward,
+                    ClarionAssistant.Services.IdeToolForwarder.DescriptionNote);
+                Console.Error.WriteLine(ServerName + ": IDE tools: " + n + " listed, forwarded to a running Clarion IDE that has "
+                    + (workspace.CurrentSolutionPath ?? "this server's solution (none yet)") + " open (" + ServerPicker.IdeProxyText + ")");
+                return n > 0;
+            }
+            catch (Exception ex)
+            {
+                // The proxy is an addition: losing it must cost the IDE tools, never the server's own sixty-odd.
+                Console.Error.WriteLine(ServerName + ": IDE tools unavailable - " + ex.GetType().Name + ": " + ex.Message);
+                return false;
             }
         }
 
@@ -908,6 +969,73 @@ namespace ClarionAssistant.McpServer
                 failures.Add("split check: " + ex.GetType().Name + " - " + ex.Message);
             }
 
+            // b8f9431c: THE IDE PROXY LISTS EVERY IdeOnly TOOL WITH ITS REAL SCHEMA, and its handler is the forwarder - never
+            // the IDE handler, which would throw here. The agnostic tools are untouched, and the whole set is the full set.
+            try
+            {
+                int before = failures.Count;
+                var proxy = new ClarionAssistant.Services.McpToolRegistry(null, new ClarionAssistant.Services.ClarionClassParser());
+                int agnostic = proxy.GetToolCount();
+                string forwardedName = null;
+                int added = proxy.AddForwardedIdeTools((tool, a) =>
+                {
+                    forwardedName = tool.Name;
+                    return ClarionAssistant.Services.McpRawToolResult.Error("forwarded:" + tool.Name);
+                }, ClarionAssistant.Services.IdeToolForwarder.DescriptionNote);
+                if (agnostic + added != withIdeCount)
+                    failures.Add("proxy: " + agnostic + " + " + added + " forwarded != " + withIdeCount + " (the full set)");
+                var real = new Dictionary<string, Dictionary<string, object>>();
+                foreach (var t in new ClarionAssistant.Services.McpToolRegistry(new GateProbeEditorService(),
+                             new ClarionAssistant.Services.ClarionClassParser(), ideToolsOnly: true).GetToolDefinitions())
+                    real[(string)t["name"]] = t;
+                var ser = new System.Web.Script.Serialization.JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                foreach (var t in proxy.GetToolDefinitions())
+                {
+                    string n = (string)t["name"];
+                    Dictionary<string, object> r;
+                    if (!real.TryGetValue(n, out r)) continue;   // an agnostic tool
+                    if (ser.Serialize(t["inputSchema"]) != ser.Serialize(r["inputSchema"]))
+                        failures.Add("proxy: " + n + " is listed with a different schema than the IDE's");
+                    if (!((string)t["description"]).StartsWith((string)r["description"], StringComparison.Ordinal)
+                        || !((string)t["description"]).EndsWith(ClarionAssistant.Services.IdeToolForwarder.DescriptionNote, StringComparison.Ordinal))
+                        failures.Add("proxy: " + n + "'s description is not the IDE's plus the forwarding note");
+                }
+                if (proxy.RequiresUiThread("open_procedure_embed"))
+                    failures.Add("proxy: a forwarded tool would marshal onto a UI thread this host does not have");
+                var res = proxy.ExecuteTool("open_procedure_embed", new Dictionary<string, object>()) as ClarionAssistant.Services.McpRawToolResult;
+                if (forwardedName != "open_procedure_embed" || res == null || res.FirstText != "forwarded:open_procedure_embed")
+                    failures.Add("proxy: open_procedure_embed did not reach the forwarder (got " + (forwardedName ?? "nothing") + ")");
+                // The wait: the IDE's UI budget for the tool (setting, never below the tool's own minimum) + the margin,
+                // or the tool's own "timeout" argument + the margin when longer.
+                var defs = new Dictionary<string, ClarionAssistant.Services.McpTool>();
+                foreach (var d in ClarionAssistant.Services.McpToolRegistry.IdeOnlyToolDefinitions()) defs[d.Name] = d;
+                Func<string, Dictionary<string, object>, string, int> budget = (n, a, s) =>
+                    ClarionAssistant.Services.IdeToolForwarder.BudgetMs(defs[n], a ?? new Dictionary<string, object>(), s) / 1000;
+                int m = ClarionAssistant.Services.IdeToolForwarder.MarginSeconds;
+                var cases = new[]
+                {
+                    Tuple.Create("get_app_info", (Dictionary<string, object>)null, (string)null, 30 + m),
+                    Tuple.Create("open_procedure_embed", (Dictionary<string, object>)null, (string)null, 180 + m),
+                    Tuple.Create("open_procedure_embed", (Dictionary<string, object>)null, "300", 300 + m),
+                    Tuple.Create("get_app_info", (Dictionary<string, object>)null, "90", 90 + m),
+                    Tuple.Create("build_app", new Dictionary<string, object> { { "timeout", 400 } }, (string)null, 400 + m),
+                    Tuple.Create("build_app", (Dictionary<string, object>)null, (string)null, 120 + m),
+                };
+                foreach (var c in cases)
+                {
+                    int got = budget(c.Item1, c.Item2, c.Item3);
+                    if (got != c.Item4)
+                        failures.Add("proxy budget: " + c.Item1 + " (setting " + (c.Item3 ?? "unset") + ") waits " + got + " s, expected " + c.Item4);
+                }
+                if (failures.Count == before)
+                    Console.WriteLine("  ok  IDE proxy: " + agnostic + " own + " + added + " forwarded = " + withIdeCount
+                        + " tools, real schemas, calls reach the forwarder; waits = the IDE's UI budget + " + m + " s");
+            }
+            catch (Exception ex)
+            {
+                failures.Add("proxy check: " + ex.GetType().Name + " - " + ex.Message);
+            }
+
             // GH #205 pipeline run 2 (HIGH): THE IDE CALL-BACK ENDPOINT MUST ANSWER A TAB CHECK FOR A SOLUTION FILE.
             // IdeCallbackHost serves editor_tab_sync with no chat pane; its check is read-gated by the #266 path policy,
             // which is built from the registry's workspace. Built without one, every solution file was refused, the
@@ -933,8 +1061,29 @@ namespace ClarionAssistant.McpServer
                     new ClarionAssistant.Services.ClarionClassParser(), new SelfTestWorkspace(sln), null);
                 var names = new List<string>();
                 foreach (var t in withWs.GetToolDefinitions()) names.Add((string)t["name"]);
-                if (names.Count != 2 || !names.Contains("editor_tab_sync") || !names.Contains("get_live_text"))
-                    failures.Add("the call-back registry serves [" + string.Join(", ", names.ToArray()) + "], not exactly get_live_text + editor_tab_sync");
+                // b8f9431c: the call-back endpoint serves EVERY IdeOnly tool (the forwarded ones too), minus the named
+                // exclusions - exactly the set the standalone forwards. Checked against an independent IdeOnly registry.
+                var ideOnlyNames = new List<string>();
+                foreach (var t in new ClarionAssistant.Services.McpToolRegistry(new GateProbeEditorService(),
+                             new ClarionAssistant.Services.ClarionClassParser(), ideToolsOnly: true).GetToolDefinitions())
+                    if (!ClarionAssistant.Services.McpToolRegistry.IdeCallbackExcludedTools.ContainsKey((string)t["name"]))
+                        ideOnlyNames.Add((string)t["name"]);
+                var forwardedNames = new List<string>();
+                foreach (var d in ClarionAssistant.Services.McpToolRegistry.IdeOnlyToolDefinitions()) forwardedNames.Add(d.Name);
+                var missingCb = ideOnlyNames.FindAll(n => !names.Contains(n));
+                var extraCb = names.FindAll(n => !ideOnlyNames.Contains(n));
+                if (missingCb.Count > 0 || extraCb.Count > 0 || !names.Contains("editor_tab_sync") || !names.Contains("get_live_text"))
+                    failures.Add("the call-back registry does not serve exactly the IdeOnly tools: missing [" + string.Join(", ", missingCb.ToArray())
+                                 + "], extra [" + string.Join(", ", extraCb.ToArray()) + "]");
+                var fwdMissing = ideOnlyNames.FindAll(n => !forwardedNames.Contains(n));
+                if (missingCb.Count > 0 || extraCb.Count > 0) { }   // reported above
+                else if (fwdMissing.Count > 0 || forwardedNames.Count != ideOnlyNames.Count)
+                    failures.Add("the forwarded set is not the call-back set: " + forwardedNames.Count + " forwarded vs " + ideOnlyNames.Count
+                                 + " served, missing [" + string.Join(", ", fwdMissing.ToArray()) + "]");
+                else
+                    Console.WriteLine("  ok  IDE call-back endpoint serves all " + names.Count + " IdeOnly tools ("
+                        + ClarionAssistant.Services.McpToolRegistry.IdeCallbackExcludedTools.Count + " excluded); the standalone forwards the same "
+                        + forwardedNames.Count);
                 var answered = ClarionAssistant.Services.OpenTabGuard.CheckFromWire(
                     withWs.ExecuteTool("editor_tab_sync", args) as Dictionary<string, object>, "selftest");
                 if (!answered.Reachable || answered.Kind != ClarionAssistant.Services.OpenTabGuard.KindNative || !answered.Dirty)

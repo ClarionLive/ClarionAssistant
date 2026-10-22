@@ -26,6 +26,27 @@ namespace ClarionAssistant
     ///
     /// It also publishes the IDE's open solution (IdeSolutionRecord.Publish, which writes only on change and removes
     /// on close) every 10 s, the same poll the chat pane runs; two publishers of the same value are harmless.
+    ///
+    /// b8f9431c: IT SERVES EVERY IdeOnly TOOL (McpToolRegistry.BuildIdeCallbackRegistry; exclusions, if any, are named
+    /// with reasons in McpToolRegistry.IdeCallbackExcludedTools). The standalone server that MultiTerminal, VS Code and
+    /// other plugin clients run lists those tools and forwards them here (IdeToolForwarder), so they work whenever
+    /// Clarion is open on the client's solution, with no CA tab. The handlers are the CA tab's own, on this IDE's
+    /// workspace (#266 path policy and its allowed roots) and UI dispatcher (McpDispatcher's UI timeout and call token).
+    ///
+    /// TRUST MODEL (b8f9431c). The listener is the same McpServer as the chat pane's 19372 (an http://localhost:&lt;port&gt;/
+    /// HttpListener prefix; the standalone only ever connects to 127.0.0.1), every request must carry this server's per-start token (constant-time compare; NO external token: the server is built
+    /// without settings), and Host/Origin are validated (McpServer.ValidateHost / ValidateOrigin: DNS rebinding and
+    /// browser drive-by). The token is written to the endpoint record under %LOCALAPPDATA%, so ANY PROCESS RUNNING AS THIS
+    /// USER can read it and now reach the IDE's write tools (write_embed_content, replace_text, import_txa, ...). That is
+    /// not a new boundary crossed: (1) whenever a CA chat pane is open, its server on 19372 serves the same tools, and
+    /// its per-session token sits in %APPDATA%\ClarionAssistant\mcp-config.json (McpServer.WriteMcpConfigFile), the
+    /// external token (when enabled) in settings.txt, and the endpoint record itself carries the PANE's token whenever the
+    /// pane's server holds it - all readable by the same user; (2) with no pane open, 19372 is not listening, so what
+    /// this change adds is that state: Clarion open, no CA tab. A same-user process could already drive Clarion there
+    /// by other means - inject into Clarion.exe (same user, same integrity level), rewrite the .app/.clw files or the
+    /// add-in's settings, or replace the plugin's server exe. The record trust rules (IdeEndpointRecord: pid alive, is
+    /// Clarion, start time matches) protect the CLIENT from talking to a non-Clarion process; they are not, and never
+    /// were, a defence against the user's own processes (IdeSolutionRecord.VerifyWriter says the same).
     /// </summary>
     internal static class IdeCallbackHost
     {
@@ -36,6 +57,23 @@ namespace ClarionAssistant
         private static Timer _solutionTimer;
 
         internal static McpServer Server { get { return _server; } }
+
+        /// <summary>
+        /// b8f9431c: the registry statics the IdeOnly handlers read, which used to be set ONLY by the chat pane
+        /// (AssistantChatControl.StartMcpServer) - the chat-only-initialization trap. Without them, with no CA tab: the
+        /// app-tree and embeditor tools had no AppTreeService (the registry reads AppTreeFactory in its constructor), the
+        /// probe tools no IdeProbeService, and - the dangerous one - EmbedOverlayGuard had no CA Embeditor probes, so it
+        /// read "no CA Embeditor" and would have let write_embed_content / save_and_close_embeditor write the native
+        /// embeditor hidden behind one. The values are the chat pane's own, so whichever sets them first, they agree.
+        /// </summary>
+        internal static void InstallRegistryHooks()
+        {
+            McpToolRegistry.AppTreeFactory = () => new AppTreeService();
+            McpToolRegistry.IdeProbeFactory = () => new IdeProbeService();
+            McpToolRegistry.DiagnosticLog = msg => MonacoSpikeLog.Write(msg);
+            McpToolRegistry.CaEmbeditorLiveProbe = () => Terminal.ModernEmbeditorViewContent.HasLiveOverlay;
+            McpToolRegistry.ActiveEditorCoveredProbe = () => Terminal.ModernEmbeditorViewContent.ActiveEditorIsCoveredByOverlay();
+        }
 
         /// <summary>UI thread, addin start. Never throws.</summary>
         internal static void Start()
@@ -48,9 +86,15 @@ namespace ClarionAssistant
                 // error, and the write went ahead under a dirty native tab.
                 Control ui = WorkbenchSingleton.MainForm;
                 try { ModernEmbeditorLauncher.EnsureRedirectionLoaded(); } catch { }   // the .red the policy's roots come from
+                InstallRegistryHooks();   // BEFORE the registry is built: its constructor reads AppTreeFactory/IdeProbeFactory
                 var registry = McpToolRegistry.BuildIdeCallbackRegistry(new EditorService(), new ClarionClassParser(),
-                    new IdeWorkspace(), new McpServer.ControlUiDispatcher(ui));
-                var server = new McpServer(ui, null) { ReclaimPreferredPort = false };
+                    new IdeWorkspace(), new McpServer.ControlUiDispatcher(ui), new DiffService());
+                var settings = new SettingsService();   // read here for the UI budget only; NOT given to the server (external token)
+                var server = new McpServer(ui, null)
+                {
+                    ReclaimPreferredPort = false,
+                    UiTimeoutSettingReader = () => settings.Get(McpUiTimeoutPolicy.SettingKey)
+                };
                 server.SetToolRegistry(registry);
                 if (!server.Start(PreferredPort))
                 {
@@ -58,7 +102,8 @@ namespace ClarionAssistant
                     return;
                 }
                 _server = server;
-                MonacoSpikeLog.Write("[ide-callback] serving " + string.Join(", ", CallbackTools) + " on port " + server.Port
+                MonacoSpikeLog.Write("[ide-callback] serving " + registry.GetToolCount() + " IDE tools (the call-backs "
+                    + string.Join(", ", CallbackTools) + " and every IdeOnly tool, for plugin clients) on port " + server.Port
                     + (McpServer.EndpointOwner == server ? " (endpoint record published)" : " (another server of this IDE holds the record)"));
                 Application.ApplicationExit += (s, e) => { try { server.Stop(); } catch { } };
             }

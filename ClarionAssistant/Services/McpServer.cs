@@ -369,6 +369,13 @@ namespace ClarionAssistant.Services
         /// </summary>
         public bool ReclaimPreferredPort { get; set; } = true;
 
+        /// <summary>
+        /// b8f9431c: the raw "Mcp.UiToolTimeoutSeconds" setting for this server's UI-thread tool budget, when the server
+        /// was built with no SettingsService (IdeCallbackHost, which must not accept the external token that settings
+        /// would enable). Null: the settings passed to the constructor, else the 30 s default. Set before Start.
+        /// </summary>
+        public Func<string> UiTimeoutSettingReader { get; set; }
+
         // GH #205: ONE endpoint record per IDE process, whichever of its servers (the chat pane's, the always-on
         // IdeCallbackHost's) is running. Both serve get_live_text and editor_tab_sync, so either answers the standalone
         // server; publishing both would leave it two records for one IDE. The first running server publishes; when it
@@ -1102,8 +1109,11 @@ namespace ClarionAssistant.Services
                             "clarion-assistant",
                             "1.0.0");
                         // PR #198: an install can override the UI-thread tool budget (5-600s, never below a tool's declared minimum) (see McpUiTimeoutPolicy).
-                        _dispatcher.UiTimeoutSettingReader = () =>
-                            _settings != null ? _settings.Get(McpUiTimeoutPolicy.SettingKey) : null;
+                        // b8f9431c: a server built without settings (IdeCallbackHost: passing them would also turn on the
+                        // external token) supplies the reader on its own.
+                        var reader = UiTimeoutSettingReader;
+                        _dispatcher.UiTimeoutSettingReader = reader ?? (() =>
+                            _settings != null ? _settings.Get(McpUiTimeoutPolicy.SettingKey) : null);
                     }
                     return _dispatcher;
                 }

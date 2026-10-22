@@ -262,10 +262,41 @@ namespace ClarionAssistant.McpServer
                 + " Until they update it, treat this server's tools as missing recent fixes.";
         }
 
+        /// <summary>
+        /// b8f9431c: this server lists the IdeOnly tools and forwards them to a running Clarion IDE on the same solution
+        /// (IdeToolForwarder). Printed by --capabilities as "ide-proxy=N".
+        ///
+        /// THE PICK DOES NOT PREFER IT, deliberately. The pick chooses the server under the PROJECT'S Clarion (its
+        /// redirection file, library paths and bundled language server); trading that for a capability would bring back
+        /// the install-keyed mismatch GH #244 removed. And no preference is needed: every server from this release on has
+        /// it, and the downgrade guard above already refuses an OLDER server than the bootstrap unless the developer named
+        /// that Clarion (then it warns that the server lacks every fix since - this one included). Forwarding works with
+        /// any Clarion's server: what decides is the add-in in the IDE the call goes to. The security floor
+        /// (PathPolicyFloor) is unchanged: the IDE enforces its own path policy on forwarded calls.
+        /// </summary>
+        public const int IdeProxyCapability = 1;
+
+        /// <summary>"ide-proxy=1", the capability line and the stderr label.</summary>
+        public static string IdeProxyText { get { return "ide-proxy=" + IdeProxyCapability; } }
+
         /// <summary>What --capabilities prints for this build.</summary>
         public static string CapabilitiesText()
         {
-            return "path-policy=" + PathPolicyCapability + "\npick-server=2\n";
+            return "path-policy=" + PathPolicyCapability + "\npick-server=2\n" + IdeProxyText + "\n";
+        }
+
+        /// <summary>"ide-proxy=N" from --capabilities output; 0 when absent or malformed (a server before b8f9431c).</summary>
+        public static int ParseIdeProxy(string capabilities)
+        {
+            if (string.IsNullOrEmpty(capabilities)) return 0;
+            foreach (string line in capabilities.Split('\n'))
+            {
+                string l = line.Trim();
+                if (!l.StartsWith("ide-proxy=", StringComparison.OrdinalIgnoreCase)) continue;
+                int n;
+                return int.TryParse(l.Substring("ide-proxy=".Length), out n) && n > 0 ? n : 0;
+            }
+            return 0;
         }
 
         /// <summary>

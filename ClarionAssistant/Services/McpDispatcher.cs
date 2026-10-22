@@ -5,6 +5,45 @@ using System.Threading;
 namespace ClarionAssistant.Services
 {
     /// <summary>
+    /// b8f9431c: a tool result that IS a complete MCP tools/call result ({content: [...], isError}), passed through by
+    /// <see cref="McpDispatcher"/> as it is. The standalone server's forwarded IDE tools return one, so the IDE's answer
+    /// reaches the client verbatim, isError included; and so do their own refusals (no IDE, an older add-in), which must
+    /// read as errors.
+    /// </summary>
+    public sealed class McpRawToolResult
+    {
+        public Dictionary<string, object> Result;
+
+        public bool IsError
+        {
+            get
+            {
+                object e;
+                return Result != null && Result.TryGetValue("isError", out e) && e is bool && (bool)e;
+            }
+        }
+
+        /// <summary>The text of the first text block, or null.</summary>
+        public string FirstText
+        {
+            get
+            {
+                object c;
+                var list = Result != null && Result.TryGetValue("content", out c) ? c as System.Collections.IList : null;
+                var first = list != null && list.Count > 0 ? list[0] as Dictionary<string, object> : null;
+                object t;
+                return first != null && first.TryGetValue("text", out t) ? t as string : null;
+            }
+        }
+
+        /// <summary>An error result of one text block (isError true).</summary>
+        public static McpRawToolResult Error(string text)
+        {
+            return new McpRawToolResult { Result = (Dictionary<string, object>)McpJsonRpc.BuildToolResult(text, true) };
+        }
+    }
+
+    /// <summary>
     /// Transport-agnostic MCP/JSON-RPC dispatch (ticket d051fbd1).
     ///
     /// Lifted verbatim out of McpServer so the stdio server can reuse it rather than grow a
@@ -225,6 +264,15 @@ namespace ClarionAssistant.Services
                 var errorResult = McpJsonRpc.BuildToolResult(
                     "Error executing tool '" + toolName + "': " + ex.Message, true);
                 return McpJsonRpc.SerializeResponse(request.Id, errorResult);
+            }
+
+            // b8f9431c: a tool the standalone forwarded to the IDE returns the IDE's MCP result itself (content AND
+            // isError), which goes out as it came instead of being wrapped as one text block with isError false.
+            var raw = result as McpRawToolResult;
+            if (raw != null && raw.Result != null)
+            {
+                RaiseToolCall(toolName, raw.IsError ? "ERROR (from the IDE)" : "(from the IDE)");
+                return McpJsonRpc.SerializeResponse(request.Id, raw.Result);
             }
 
             string resultText = result is string
