@@ -382,7 +382,8 @@ namespace ClarionAssistant.Services
             return result;
         }
 
-        /// <summary>localHover: the buffer (authoritative for locals, parameters, routines, local procedures),
+        /// <summary>localHover: the buffer (authoritative for parameters and local procedures, a fallback for
+        /// locals and routines),
         /// then the live dictionary, then the solution and library DBs, then keywords/built-ins.</summary>
         internal static LocalHoverResult HoverAt(LocalSource source, int line0, int col0, LocalLayerOptions options)
         {

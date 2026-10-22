@@ -7,16 +7,18 @@ using ClarionCodeGraph.Parsing;
 namespace ClarionAssistant.Services
 {
     /// <summary>A buffer-local hover answer. <see cref="Authoritative"/> is true when the word resolved to
-    /// something declared right here (a local, a parameter, a routine, or a procedure of this file), so no
-    /// other source can name a better declaration and the caller may skip the language server.</summary>
+    /// something declared right here (a parameter, or a procedure of this file), so no other source can name a
+    /// better declaration and the caller may skip the language server.</summary>
     public sealed class LocalHoverResult
     {
         public string Markdown;
         public bool Authoritative;
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
-        /// deadline. Also set for module data and GROUP/QUEUE/CLASS structures declared in the buffer, whose server
-        /// card carries scope, field count and a link to the declaration. Never set together with <see cref="Authoritative"/>.</summary>
+        /// deadline. Also set for every DATA label declared in the buffer (procedure and routine locals, module
+        /// data, GROUP/QUEUE/CLASS structures) and for a routine, whose server card carries scope, field count and
+        /// a link to the declaration - a slice's line is not the file's, so this card cannot link it. Never set
+        /// together with <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
         public string Kind;
@@ -930,14 +932,11 @@ namespace ClarionAssistant.Services
                         BuildVarDetail(rest, null, out detail, out doc);
                         string sig = string.IsNullOrEmpty(detail) ? word : word + "  " + detail;
                         var card = Card(sig, "local", fileName, "local");
-                        // Module data and GROUP/QUEUE/CLASS structures: the server's card says more (scope, field
-                        // count, a link to the declaration), so this one is only its FALLBACK (GH #250 semantics).
-                        // Procedure/routine locals that are not structures stay authoritative - instant, no LSP call.
-                        if (r.Kind == "module" || IsStructureDecl(word, rest))
-                        {
-                            card.Authoritative = false;
-                            card.Fallback = true;
-                        }
+                        // Any DATA label: the server's card says more (scope, field count, a link to the
+                        // declaration), so this one is only its FALLBACK (GH #250 semantics). The page waits for the
+                        // server at most FALLBACK_LSP_DEADLINE_MS and shows this card if the server misses it.
+                        card.Authoritative = false;
+                        card.Fallback = true;
                         return card;
                     }
                     var ps = r.Kind == "proc" ? _params : (r.Kind == "owner" ? _ownerParams : null);
@@ -960,7 +959,14 @@ namespace ClarionAssistant.Services
                         return Card(pe.Value, "procedure", fileName, "procedure");
                 foreach (var name in RoutineNames())
                     if (string.Equals(name, word, StringComparison.OrdinalIgnoreCase))
-                        return Card(name + " ROUTINE", "routine", fileName, "routine");
+                    {
+                        // A routine: the server's card names its procedure and links the ROUTINE line, so this
+                        // one is its FALLBACK.
+                        var rc = Card(name + " ROUTINE", "routine", fileName, "routine");
+                        rc.Authoritative = false;
+                        rc.Fallback = true;
+                        return rc;
+                    }
                 return null;
             }
 
@@ -1001,13 +1007,6 @@ namespace ClarionAssistant.Services
         }
 
         private static bool IsEnd(string ln) { return EndLine.IsMatch(ln) || PeriodEnd.IsMatch(ln); }
-
-        /// <summary>A depth-0 declaration (label + rest-of-line) that opens a GROUP/QUEUE/CLASS/INTERFACE.</summary>
-        private static bool IsStructureDecl(string label, string rest)
-        {
-            string ln = label + " " + rest;
-            return GroupQueueOpen.IsMatch(ln) || ClassOpen.IsMatch(ln);
-        }
 
         /// <summary>Depth-0 labels of one DATA range matching <paramref name="prefix"/>: plain locals plus a
         /// GROUP/QUEUE/CLASS container's own label, never its fields or members.</summary>
