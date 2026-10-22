@@ -55,6 +55,26 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+### Upgrade notes
+
+Do these once after installing this release:
+
+- **Update Clarion Assistant in the Clarion you open your solution in.** The IDE tools below reach only a Clarion running Clarion Assistant 6.2 or later; an older one is named in the error, with the folder to update.
+
+<!-- release-docs: covered=ide-proxy,mcp-server -->
+### MultiTerminal, VS Code and other plugin clients can use the IDE tools while Clarion is open
+
+A Claude session outside a CA tab (a MultiTerminal or VS Code terminal with the clarion-assistant plugin, or any other client that loads it) used to get only the tools that work without the IDE: documentation, CodeGraph, LSP, schema, file and search. It now gets the IDE tools too (opening and editing embed points, driving the editor, reading the app tree and dictionary, building), the same ones a CA tab has, whenever Clarion is open on the same solution as the client. The plugin's server sends each call to that Clarion and returns its answer, so these tools behave as they do in a CA tab, inside the same file-access rules.
+
+- **The plugin's server starts without Clarion.** With Clarion closed, or open on a different solution, an IDE tool says so and tells you to open the solution in Clarion; every other tool works as before. A Clarion that has a different solution open is never used.
+- **One Clarion per solution.** If two Clarions have the same solution open, an IDE tool asks you to close one, or to set `CLARION_IDE_PID` to the one you mean, rather than guess which one to change.
+- **No CA tab needed.** Clarion serves these tools whether or not a Clarion Assistant pane is open. A CA tab itself is unchanged: its tools are not listed twice.
+- **`--capabilities` reports `ide-proxy=1`** for a server that can do this.
+
 ## What's New in v6.1
 
 6.1 moves CodeGraph indexing out of Clarion into a 64-bit process, so large solutions no longer run Clarion out of memory, and closes the open GitHub issues from the 6.0 cycle: a path policy for every file tool, no more stale native editor tabs after Claude writes a file, recovery of a CA Embeditor save lost when Clarion stops, and CodeGraph coverage of CLASS MODULE/LINK files and INCLUDEd global data. Full notes: **[docs/releases/v6.1.0.md](docs/releases/v6.1.0.md)**.
