@@ -108,14 +108,24 @@ namespace ClarionAssistant.Services
         {
             return new EditorToolRouter.RouteOptions { IsWrite = true, ExpectedPath = McpJsonRpc.GetString(args, "file_path"), NativeLine = nativeLine };
         }
-        private const string WriteFilePathHelp = "Optional. Absolute path of the file you mean to change: refused (nothing changed) unless it is the active editor. Pass it after open_file.";
+        private const string WriteFilePathHelp = "Optional. Absolute path of the file you mean to change: refused (nothing changed) unless it is the active editor. Pass it after open_file. " +
+            "Edits and saves are also refused when the active file is one the path policy does not let these tools write (e.g. .vscode\\tasks.json, CLAUDE.md, a file under the Clarion folders); embed code in the embeditor is not affected.";
         // GH #262: the column rules replace_range / delete_range / select_range share (EditorTextOps.ColumnIndex, both editors).
         private const string RangeColumnRules = "Columns count characters (a tab is 1). end_col is EXCLUSIVE: the character AT end_col is kept. " +
             "Omit start_col for column 1. Omit end_col to go to the end of end_line (its line break is kept). " +
             "Columns past a line's end are clamped to it.";
         private const string RangeStartColHelp = "Start column (1-based, characters; a tab is 1). Default 1.";
         private const string RangeEndColHelp = "End column, EXCLUSIVE (the character at end_col is kept). Default: end of end_line. Clamped to the line's end.";
-        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui, () => _editorService.GetActiveDocumentPath())); } }
+        private EditorToolRouter EditorRouter { get { return _editorRouterField ?? (_editorRouterField = new EditorToolRouter(() => _ui, () => _editorService.GetActiveDocumentPath(), ActiveDocumentWriteRefusal)); } }
+        // b8f9431c N1: the #266 WRITE gate on the ACTIVE document, for every editor write (edits, undo/redo, save) on a CA
+        // tab and on a forwarded call alike. open_file needs only the read gate, so without this a file the policy refuses
+        // to write (.vscode\tasks.json, .git\config, CLAUDE.md, .mcp.json, a .sln/.red, a template under the Clarion root)
+        // could be opened, edited and saved through the tools. The embeditor is exempt in the router (EmbedExemption).
+        private string ActiveDocumentWriteRefusal(string tool, string activePath)
+        {
+            string canonical;
+            return McpPathGate.GatePath(tool, activePath, PathAccess.Write, _workspace, out canonical);
+        }
         // 73bd1f03 fix (2): the embed tools, routed to the CA Embeditor's Monaco buffer while it holds the procedure.
         private EmbedToolRouter _embedRouterField;
         private EmbedToolRouter EmbedRouter { get { return _embedRouterField ?? (_embedRouterField = new EmbedToolRouter(() => _ui)); } }
@@ -820,9 +830,16 @@ IdeOnly = true,
                 RequiresUiThread = false,   // fc420c30: EditorRouter marshals
                 // fc420c30: a CA Editor with unsaved edits is NOT closed (John, 2026-10-05). CloseWindow(true) skips the
                 // closing prompt, and the overlay's Dispose fallback would then write the edits silently.
-                Handler = args => EditorRouter.Run("close_file",
-                    () => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close",
-                    ov => ov.Close(), WriteOpts(args))
+                // b8f9431c N1: NoFileWrite - closing writes nothing (a dirty CA Editor refuses, a native close discards), so
+                // the write gate does not stop the developer's tab on, say, .vscode\tasks.json from being closed.
+                Handler = args =>
+                {
+                    var opts = WriteOpts(args);
+                    opts.NoFileWrite = true;
+                    return EditorRouter.Run("close_file",
+                        () => _editorService.CloseActiveDocument() ? "File closed" : "Error: could not close",
+                        ov => ov.Close(), opts);
+                }
             });
 
             Register(new McpTool
@@ -1831,11 +1848,12 @@ IdeOnly = true,
                         return "Error: path is required";
                     // b8f9431c H1: the #266 path policy, as read_file (get_active_file then returns the content), BEFORE
                     // File.Exists: a UNC path is never touched (that would send this user's NTLM credentials to the host).
-                    // The caller's spelling is what is opened, so the tab is the one the developer would get; the check
-                    // judged its real location.
+                    // N6: from here on only the GATED canonical path is used (checked, opened, waited for): the caller's
+                    // own spelling is never handed to the IDE, so what opens is exactly what the policy judged.
                     string gatedPath;
                     string refusal = McpPathGate.GatePath("open_file", path, PathAccess.Read, _workspace, out gatedPath);
                     if (refusal != null) return refusal;
+                    path = gatedPath;
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
 
@@ -4041,7 +4059,7 @@ Rebuilds both the bundled and the personal DocGraph DBs when both exist.",
             {
                 Name = "build_app",
 IdeOnly = true,
-                Description = "Run ClarionCL.exe template generation (/ag) for ONE .app-driven project: generated, NOT compiled. ClarionCL has no compile step, so this produces .clw/.inc source, never the .exe/.dll; compile in the IDE or with MSBuild. Ideal for multi-DLL solutions where only one target changed. Defaults to the currently active app in the IDE. Accepts project_path (.cwproj): a hand-written source project (no .app) is refused with the MSBuild command that compiles it. Every result names the project kind (app-generated or source) with its evidence, and the real OUTPUT file (from the .cwproj's OutputName/OutputType/OutputPath for the IDE's active configuration, else the .red) with whether it exists and when it was last written; that file is existing output, not produced by this call.",
+                Description = "Run ClarionCL.exe template generation (/ag) for ONE .app-driven project: generated, NOT compiled. ClarionCL has no compile step, so this produces .clw/.inc source, never the .exe/.dll; compile in the IDE or with MSBuild. Ideal for multi-DLL solutions where only one target changed. Defaults to the currently active app in the IDE. Accepts project_path (.cwproj): a hand-written source project (no .app) is refused with the MSBuild command that compiles it. Every result names the project kind (app-generated or source) with its evidence, and the real OUTPUT file (from the .cwproj's OutputName/OutputType/OutputPath for the IDE's active configuration, else the .red) with whether it exists and when it was last written; that file is existing output, not produced by this call. app_path / project_path need read access only: ClarionCL writes the app's own generated modules, in its folder.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -4079,7 +4097,7 @@ IdeOnly = true,
             {
                 Name = "generate_source",
 IdeOnly = true,
-                Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe template generation (/ag): generated, NOT compiled. Defaults to the currently active app. Accepts project_path (.cwproj): a hand-written source project with no .app is refused (\"nothing to generate\") instead of running ClarionCL into a misleading \"no templates have been registered\" error. The result names the project kind with its evidence and the real OUTPUT file with whether it exists and when it was last written (existing output, not produced by this call).",
+                Description = "Generate Clarion source code (.clw/.inc files) from an .app file using ClarionCL.exe template generation (/ag): generated, NOT compiled. Defaults to the currently active app. Accepts project_path (.cwproj): a hand-written source project with no .app is refused (\"nothing to generate\") instead of running ClarionCL into a misleading \"no templates have been registered\" error. The result names the project kind with its evidence and the real OUTPUT file with whether it exists and when it was last written (existing output, not produced by this call). app_path / project_path need read access only: ClarionCL writes the app's own generated modules, in its folder.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>
                     {
@@ -6466,6 +6484,10 @@ IdeOnly = true,
             string projectPath = McpJsonRpc.GetString(args, "project_path", null);
             // b8f9431c H1: both caller-named paths go through the #266 path policy, as read_file, BEFORE any File.Exists
             // or parse (a UNC path is never touched). The default (the IDE's active app) is the developer's own.
+            // N3: DELIBERATELY the READ gate, not Write. ClarionCL /ag generates into the developer's own app folder, as the
+            // IDE's own Generate does, and an app outside the solution folder (a read-only project folder) must still
+            // generate. What is written is the template engine's output for that app's own modules; no caller-chosen file
+            // is written. What WE write before the run - dirty CA Editor tabs - goes through the Write gate (RunBuildProcess).
             if (!string.IsNullOrEmpty(appPath))
             {
                 string refusal = McpPathGate.GatePath(toolName, appPath, PathAccess.Read, _workspace, out appPath);
@@ -6579,6 +6601,16 @@ IdeOnly = true,
             return ClarionBuildTarget.Refusal(toolName, target.Project, FindMSBuild(), _workspace.GetClarionInstallPath());
         }
 
+        /// <summary>b8f9431c N1: the result line naming the dirty CA Editor tabs the save-before-build did NOT save (the
+        /// path policy refuses to write them). Empty when there are none.</summary>
+        internal static string SaveBeforeBuildSkippedNote(IList<string> skipped)
+        {
+            if (skipped == null || skipped.Count == 0) return "";
+            return "NOT SAVED before the run (the Clarion Assistant path policy refuses to write "
+                + (skipped.Count == 1 ? "this file" : "these files") + "; the tab keeps its unsaved edits, and ClarionCL read the "
+                + "file as it is on disk - save it yourself if you mean to): " + string.Join("; ", skipped) + "\n";
+        }
+
         private string RunBuildProcess(string fileName, string arguments, string workingDirectory, int timeoutSeconds, string toolName = null, string targetFile = null, bool exitCodeIsErrorCount = false,
                                        Func<string> resultPreamble = null)
         {
@@ -6604,10 +6636,32 @@ IdeOnly = true,
             // but benignly so: the page pushes fileState on every edit and is explicitly not debounced, so
             // the worst case is text from moments ago rather than stale-since-last-save. Best-effort — a
             // failure here must never block the build the user actually asked for.
+            //
+            // b8f9431c N1: through the #266 WRITE gate, per tab. A dirty tab on a file the policy refuses to write
+            // (.vscode\tasks.json, CLAUDE.md, a template under the Clarion root) is NOT saved: it stays dirty and the
+            // result names it, so the developer saves it themselves if they mean to.
+            string skippedNote = "";
             if (toolName != null && ClarionSourceBuildTools.Contains(toolName))
             {
-                try { if (_ideProbe != null) _ideProbe.SaveAllDirtyEditors(); }
+                try
+                {
+                    if (_ideProbe != null)
+                    {
+                        string gateTool = toolName + " (save before build)";
+                        var skipped = _ideProbe.SaveAllDirtyEditors(p =>
+                        {
+                            string canonical;
+                            return McpPathGate.GatePath(gateTool, p, PathAccess.Write, _workspace, out canonical);
+                        });
+                        skippedNote = SaveBeforeBuildSkippedNote(skipped);
+                    }
+                }
                 catch (Exception ex) { if (DiagnosticLog != null) DiagnosticLog("[save-before-build] " + toolName + " pre-flush failed: " + ex.Message); }
+            }
+            if (skippedNote.Length > 0)
+            {
+                var inner = resultPreamble;
+                resultPreamble = () => skippedNote + (inner != null ? inner() ?? "" : "");
             }
 
             try

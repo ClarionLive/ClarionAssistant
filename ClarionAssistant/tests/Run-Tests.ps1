@@ -298,7 +298,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EmbedToolRouter.Test"
                Sources = @("tests\EmbedToolRouter.Test.cs", "Services\EmbedToolRouter.cs", "Services\EmbedSlotText.cs",
                            "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs", "Services\EditorTextOps.cs",
-                           "Services\IUiDispatcher.cs")
+                           "Services\IUiDispatcher.cs", "Services\FileIdentity.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # PR #198 pipeline round: apply_embed_edits' write/commit/save half - an abandoned call rolls
             # back instead of saving; a failed save or unconfirmed close discards our writes.
@@ -349,9 +349,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Args = @((Join-Path $TestDir "fixtures\incremental-sync\fake-lsp.js")) }
             # fc420c30: the MCP editor tools against the CA Editor (Monaco) — reads and writes hit its text, never the
             # native document under it; save keeps the edit; a dirty close is refused; fail closed; native unchanged.
+            # b8f9431c N1/N2: edits and saves gated on the ACTIVE file's write access (embeds exempt); file_path as text.
             @{ Name = "EditorToolRouter.Test"
                Sources = @("tests\EditorToolRouter.Test.cs", "Services\EditorToolRouter.cs", "Services\HostRequestBroker.cs",
-                           "Services\EditorTextOps.cs", "Services\IUiDispatcher.cs")
+                           "Services\EditorTextOps.cs", "Services\IUiDispatcher.cs", "Services\FileIdentity.cs",
+                           "Services\EmbedToolRouter.cs", "Services\EmbedSlotText.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             @{ Name = "LspClient.Robustness.Test"
                Sources = @("tests\LspClient.Robustness.Test.cs", "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")

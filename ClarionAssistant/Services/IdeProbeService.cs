@@ -93,9 +93,9 @@ namespace ClarionAssistant.Services
             catch { return null; }
         }
 
-        public void SaveAllDirtyEditors()
+        public IList<string> SaveAllDirtyEditors(System.Func<string, string> writeRefusal)
         {
-            try { MonacoClarionEditor.SaveAllDirtyBeforeBuild(); } catch { }
+            try { return MonacoClarionEditor.SaveAllDirtyBeforeBuild(writeRefusal); } catch { return new List<string>(); }
         }
 
         public Dictionary<string, object> GetFocusedEmbeditorSelection()

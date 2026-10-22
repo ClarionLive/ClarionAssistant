@@ -105,17 +105,66 @@ namespace ClarionAssistant.Services
             public string ExpectedPath;
             /// <summary>The line a native write touched, when the arguments say (0 = unknown).</summary>
             public int NativeLine;
+            /// <summary>b8f9431c N1: an IsWrite call that changes nothing on disk, so the write gate does not judge it.
+            /// close_file only: it is IsWrite so a mismatched file_path is refused and its result names the file, but a
+            /// dirty CA Editor refuses to close and a native close discards (CloseWindow(true)); nothing is written.</summary>
+            public bool NoFileWrite;
         }
 
         private readonly Func<IUiDispatcher> _ui;
         private readonly Func<string> _nativeActivePath;
+        private readonly Func<string, string, string> _writeGate;
 
         /// <param name="nativeActivePath">The native editor's active document path (UI thread), for the active-file
         /// checks when no CA Editor holds it.</param>
-        public EditorToolRouter(Func<IUiDispatcher> ui, Func<string> nativeActivePath = null)
+        /// <param name="writeGate">b8f9431c N1: (tool, active document path) -> null to allow, else the refusal text. Asked
+        /// for every IsWrite call (edits, undo/redo, save) before anything is applied, with the ACTIVE document's path:
+        /// open_file only needs the read gate, so without this a file the #266 policy refuses to WRITE (.vscode\tasks.json,
+        /// .git\config, CLAUDE.md, a .sln/.red, a template under the Clarion root) could be opened, edited and saved.
+        /// McpToolRegistry passes McpPathGate.GatePath(..., PathAccess.Write, ...). Null = no gate (unit tests only).</param>
+        public EditorToolRouter(Func<IUiDispatcher> ui, Func<string> nativeActivePath = null, Func<string, string, string> writeGate = null)
         {
             _ui = ui;
             _nativeActivePath = nativeActivePath;
+            _writeGate = writeGate;
+        }
+
+        /// <summary>
+        /// b8f9431c N1: why the active "document" of a write is NOT a file the write gate judges, or null when it is.
+        /// An embed's document is the procedure, not a path:
+        ///   - the CA Embeditor: the resolved channel is the embed channel (it implements <see cref="IEmbedOverlayChannel"/>,
+        ///     as only ModernEmbeditorViewContent.EmbedChannel does). Its FilePath is the .app the native view reports, or a
+        ///     description when there is none; the text it edits is the procedure's embed buffer, saved by the app tree.
+        ///   - the native (PWEE) embeditor: no overlay, and the active window is the app's (its path is the .app). An .app is
+        ///     never a text document: the only text area its window holds is the embeditor's, and the embed is written
+        ///     into the app by the app tree, exactly as write_embed_content / save_and_close_embeditor do (ungated).
+        /// The generated module (.clw) is never the target here; a module opened as a source tab is gated like any file.
+        /// </summary>
+        internal static string EmbedExemption(IEditorOverlayChannel ch, string activePath)
+        {
+            if (ch is IEmbedOverlayChannel) return "the CA Embeditor (the document is the procedure's embed buffer)";
+            if (ch == null && !string.IsNullOrEmpty(activePath)
+                && activePath.Trim().EndsWith(".app", StringComparison.OrdinalIgnoreCase))
+                return "the native embeditor of an .app (the document is the procedure's embed buffer)";
+            return null;
+        }
+
+        // b8f9431c N1: the write gate on the active document. Fails closed: no path, or a gate that throws, refuses.
+        private string GateWrite(string tool, string activePath)
+        {
+            if (string.IsNullOrEmpty(activePath))
+                return "Error: " + tool + " refused by the Clarion Assistant path policy (GH #266): the IDE did not say which "
+                    + "file the active editor holds, so the write could not be checked; nothing was changed.";
+            try
+            {
+                string refusal = _writeGate(tool, activePath);
+                return refusal == null ? null : refusal + " (It is the file in the active editor; nothing was changed.)";
+            }
+            catch (Exception ex)
+            {
+                return "Error: " + tool + " refused by the Clarion Assistant path policy (GH #266): the check failed ("
+                    + ex.Message + "); nothing was changed.";
+            }
         }
 
         private sealed class Target { public IEditorOverlayChannel Channel; public string NativePath; }
@@ -156,7 +205,39 @@ namespace ClarionAssistant.Services
                     + ", not " + opts.ExpectedPath + "; nothing was changed. Open it with open_file (and wait for it) first.";
             }
 
-            if (ch == null) return Label(RunNative(tool, native, sw), opts, activePath, opts.NativeLine);
+            // b8f9431c N1: a write (edit, undo/redo, save) needs the #266 WRITE gate on the active document.
+            bool gated = opts.IsWrite && !opts.NoFileWrite && _writeGate != null;
+            if (gated)
+            {
+                string exempt = EmbedExemption(ch, activePath);
+                if (exempt == null)
+                {
+                    string refusal = GateWrite(tool, activePath);
+                    if (refusal != null)
+                    {
+                        Write(tool, ch != null ? "overlay" : "native", activePath, sw, "refused: write gate");
+                        return refusal;
+                    }
+                }
+                else Write(tool, ch != null ? "overlay" : "native", activePath, sw, "write gate not applied: " + exempt);
+            }
+
+            if (ch == null)
+            {
+                if (!gated) return Label(RunNative(tool, native, sw), opts, activePath, opts.NativeLine);
+                // The gate judged the file active a moment ago, on another marshal: the write runs only if it still is
+                // (a tab switch in between must not carry the edit into a file nobody checked).
+                string judged = activePath;
+                Func<object> checkedNative = () =>
+                {
+                    string now = SafeNativePath();
+                    if (!SamePath(now, judged))
+                        return "Error: the active editor changed (now " + (string.IsNullOrEmpty(now) ? "no file" : now)
+                            + ") while the write was being checked; nothing was changed. Try again.";
+                    return native();
+                };
+                return Label(RunNative(tool, checkedNative, sw), opts, activePath, opts.NativeLine);
+            }
 
             if (!ch.PageReady)
             {
@@ -246,11 +327,16 @@ namespace ClarionAssistant.Services
             return false;
         }
 
-        private static bool SamePath(string a, string b)
+        // b8f9431c N2: TEXT only (FileIdentity.NormalizeText: separators, '.', '..'; no I/O). It used to call
+        // Path.GetFullPath on the caller's file_path, which on .NET Framework expands a segment with '~' through
+        // GetLongPathNameW: file_path="\\attacker\s\A~1\x.clw" made an SMB connection, and sent the developer's NTLM
+        // credentials, before any check (see McpPathPolicy.Canonical). Nothing in this router touches the file system
+        // with a caller's text; a spelling that only a lookup would equate (an 8.3 name) is "not the active file",
+        // which refuses the write: the safe side.
+        internal static bool SamePath(string a, string b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
-            try { a = System.IO.Path.GetFullPath(a); b = System.IO.Path.GetFullPath(b); } catch { }
-            return string.Equals(a.TrimEnd('\\'), b.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+            return FileIdentity.Lexical(FileIdentity.NormalizeText(a.Trim()), FileIdentity.NormalizeText(b.Trim()));
         }
 
         // Files open_file hands to something other than a text editor (the app tree, the dictionary editor, a solution):

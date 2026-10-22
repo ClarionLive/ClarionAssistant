@@ -71,8 +71,11 @@ namespace ClarionAssistant.Services
         /// Flush any dirty Monaco editors to disk before a build, so ClarionCL compiles what the
         /// developer can see rather than the last saved version. Was
         /// MonacoClarionEditor.SaveAllDirtyBeforeBuild().
+        /// b8f9431c N1: <paramref name="writeRefusal"/> (path -> null to save, else why not) is asked for each DIRTY tab
+        /// before it is written; a refused tab is not saved (it keeps its edits) and is returned as "path: why". The
+        /// registry passes the #266 Write gate. Never null; empty when every dirty tab was saved.
         /// </summary>
-        void SaveAllDirtyEditors();
+        IList<string> SaveAllDirtyEditors(System.Func<string, string> writeRefusal);
 
         /// <summary>
         /// The selection in the focused CA Embeditor (Monaco/WebView2), with its 1-based
