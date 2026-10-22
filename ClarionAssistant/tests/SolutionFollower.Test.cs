@@ -56,6 +56,7 @@ static class SolutionFollowerTest
     {
         Console.WriteLine("SolutionFollower: every tool follows the IDE's open solution (9e1bd280)");
         // Run 1: a record names its writer, which must be a Clarion IDE; THIS process plays the IDE.
+        Environment.SetEnvironmentVariable("CA_TEST_HOOKS", "1");   // L2: the record hooks need it
         Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-follow-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(root);

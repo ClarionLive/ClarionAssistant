@@ -61,6 +61,7 @@ static class SolutionVersionResolverTest
     static int Main()
     {
         // 9e1bd280 run 1: a record now names its writer, which must be a Clarion IDE; THIS process plays the IDE.
+        Environment.SetEnvironmentVariable("CA_TEST_HOOKS", "1");   // L2: the record hooks need it
         Environment.SetEnvironmentVariable("CA_IDE_IMAGE_NAME", System.Diagnostics.Process.GetCurrentProcess().ProcessName);
         string root = Path.Combine(Path.GetTempPath(), "ca-solver-" + Guid.NewGuid().ToString("N").Substring(0, 8));
         Directory.CreateDirectory(root);

@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using System.Threading;
 using ClarionAssistant.Services;
@@ -15,6 +18,14 @@ using ClarionAssistant.Services;
 //     never runs; one already committed is reported "may still complete". Each message says which.
 //   * The real McpToolRegistry.cs still declares the embed round-trip budget on the four slow tools
 //     (source scan - the registry itself cannot compile outside the IDE).
+//   * b8f9431c review M3: ONE UI-thread call at a time across EVERY dispatcher of the process (the chat pane's and the
+//     call-back host's): a second client's call waits for the first instead of running inside it, is refused as busy
+//     (nothing run) when the first takes longer than the gate wait, and the standalone's call-backs are exempt.
+//   * b8f9431c review M2: a forwarded call (params._meta expected solution) is checked by ExpectedSolutionGuard ON THE
+//     UI THREAD, for a UI tool and a worker tool alike, and a mismatch runs nothing; ForwardedCallFilter refuses before
+//     anything; ForwardedCallObserver sees only forwarded calls that passed. A call without _meta is untouched.
+//   The new statics are set by REFLECTION, so this same file compiles against c627adc's McpDispatcher.cs for the
+//   fail-on-old proof (where those checks then fail instead of not compiling).
 // Run:  tests\Run-Tests.ps1   (arg 0 = the ClarionAssistant project dir)
 static class UiTimeoutTest
 {
@@ -31,6 +42,27 @@ static class UiTimeoutTest
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool + "\",\"arguments\":{}}}",
             null);
     }
+
+    const string MetaKey = "clarionAssistant/expectedSolution";
+
+    static string CallForwarded(McpDispatcher d, string tool, string expectedSolution)
+    {
+        return d.ProcessJsonRpc(
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool + "\",\"arguments\":{},"
+            + "\"_meta\":{\"" + MetaKey + "\":\"" + expectedSolution.Replace("\\", "\\\\") + "\"}}}",
+            null);
+    }
+
+    /// <summary>Set a public/internal static of McpDispatcher by name; false when it does not exist (old code).</summary>
+    static bool SetStatic(string name, object value)
+    {
+        var f = typeof(McpDispatcher).GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+        if (f == null) return false;
+        f.SetValue(null, value);
+        return true;
+    }
+
+    static bool IsError(string response) { return response != null && response.Contains("\"isError\":true"); }
 
     static int Main(string[] args)
     {
@@ -49,6 +81,9 @@ static class UiTimeoutTest
         Ok("setting 10 never undercuts a declared 180", McpUiTimeoutPolicy.Resolve("10", 180) == 180, null);
 
         // ---- the real dispatcher honours it, and abandons what it gives up on ----
+        // These cases run five fake "UI threads" at once on purpose (the real UI thread never does); M3's gate would
+        // serialise them, so it is bypassed here and tested on its own below.
+        SetStatic("UiGateBypassForTest", true);
         var reg = new McpToolRegistry();
         reg.Add("fast_tool", 100, 0);
         reg.Add("slow_undeclared", 7000, 0);                              // outlives a 5s setting
@@ -119,6 +154,111 @@ static class UiTimeoutTest
         dThrow.UiTimeoutSettingReader = () => { throw new InvalidOperationException("settings broken"); };
         string rThrow = Call(dThrow, "fast_tool");
         Ok("a throwing settings reader is treated as unset", rThrow.Contains("done:fast_tool"), rThrow);
+        SetStatic("UiGateBypassForTest", false);
+
+        // ---- b8f9431c review M3: one UI-thread call at a time across every dispatcher ----
+        {
+            var r3 = new McpToolRegistry();
+            r3.Add("long_a", 1500, 0);
+            r3.Add("short_b", 100, 0);
+            r3.Add("long_c", 3000, 0);
+            r3.Add("short_d", 100, 0);
+            r3.Add("get_live_text", 100, 0);   // a standalone call-back: exempt
+            var pane = new McpDispatcher(r3, new ThreadUiDispatcher(), null, "pane", "1");        // the chat pane's server
+            var callback = new McpDispatcher(r3, new ThreadUiDispatcher(), null, "callback", "1"); // IdeCallbackHost's
+
+            McpToolRegistry.ResetConcurrency();
+            string ra = null, rb = null;
+            var ta = new Thread(() => ra = Call(pane, "long_a"));
+            ta.Start();
+            Thread.Sleep(300);
+            rb = Call(callback, "short_b");
+            ta.Join();
+            string[] order = McpToolRegistry.Finished.ToArray();
+            Ok("M3: another client's UI call waits for the running one instead of running inside it (never 2 at once)",
+                McpToolRegistry.MaxRunning == 1 && ra.Contains("done:long_a") && rb.Contains("done:short_b"),
+                "max at once " + McpToolRegistry.MaxRunning + "; " + rb);
+            Ok("M3: ...and runs after it", order.Length == 2 && order[0] == "long_a" && order[1] == "short_b", string.Join(",", order));
+
+            bool waitSet = SetStatic("UiGateWaitSeconds", 1);
+            McpToolRegistry.ResetConcurrency();
+            int dBefore = McpToolRegistry.Executions.TryGetValue("short_d", out dBefore) ? dBefore : 0;
+            string rc = null, rd = null, rSame = null, rLive = null;
+            var tc = new Thread(() => rc = Call(pane, "long_c"));
+            tc.Start();
+            Thread.Sleep(300);
+            rd = Call(callback, "short_d");
+            rSame = Call(pane, "short_d");
+            var swLive = System.Diagnostics.Stopwatch.StartNew();
+            rLive = Call(callback, "get_live_text");
+            swLive.Stop();
+            tc.Join();
+            int dAfter = McpToolRegistry.Executions.TryGetValue("short_d", out dAfter) ? dAfter : 0;
+            Ok("M3: a call that cannot get the UI thread within the gate wait is refused as busy, naming the other client's tool",
+                waitSet && IsError(rd) && rd.Contains("Clarion is busy with another client") && rd.Contains("s long_c;") && rd.Contains("was not run, try again"), rd);
+            Ok("M3: ...the same client's second call says it is its own earlier call",
+                IsError(rSame) && rSame.Contains("long_c (an earlier call of this client)"), rSame);
+            Ok("M3: ...and neither refused call ran", dAfter == dBefore, dBefore + " -> " + dAfter);
+            Ok("M3: the standalone's call-back get_live_text is exempt (runs at once, beside the running call)",
+                rLive != null && rLive.Contains("done:get_live_text") && swLive.ElapsedMilliseconds < 1500,
+                swLive.ElapsedMilliseconds + " ms; " + rLive);
+            Ok("M3: the long call itself completed", rc != null && rc.Contains("done:long_c"), rc);
+            SetStatic("UiGateWaitSeconds", 10);
+        }
+
+        // ---- b8f9431c review M2: the IDE re-checks the solution on the UI thread; filter and observer ----
+        {
+            var r2 = new McpToolRegistry();
+            r2.Add("ui_tool", 50, 0);
+            r2.AddWorker("worker_tool", 50);
+            r2.Add("blocked_tool", 50, 0);
+            var d2 = new McpDispatcher(r2, new ThreadUiDispatcher(), null, "callback", "1");
+            var guardThreads = new List<string>();
+            var observed = new List<string>();
+            Func<string, string> guard = exp =>
+            {
+                lock (guardThreads) guardThreads.Add(Thread.CurrentThread.Name ?? "(unnamed)");
+                return string.Equals(exp, @"C:\Work\A.sln", StringComparison.OrdinalIgnoreCase) ? null
+                    : "Error: Clarion now has A.sln open, not " + Path.GetFileName(exp) + "; nothing was run.";
+            };
+            bool g = SetStatic("ExpectedSolutionGuard", guard);
+            bool o = SetStatic("ForwardedCallObserver", (Action<string>)(t => { lock (observed) observed.Add(t); }));
+            bool f = SetStatic("ForwardedCallFilter", (Func<string, Dictionary<string, object>, string>)((t, a) => t == "blocked_tool" ? "Error: blocked_tool is not available to clients outside the Clarion IDE; nothing was run." : null));
+
+            int Ex(string n) { int v; return McpToolRegistry.Executions.TryGetValue(n, out v) ? v : 0; }
+
+            int uiBefore = Ex("ui_tool"), wBefore = Ex("worker_tool");
+            string sameUi = CallForwarded(d2, "ui_tool", @"C:\Work\A.sln");
+            string otherUi = CallForwarded(d2, "ui_tool", @"C:\Work\B.sln");
+            string sameW = CallForwarded(d2, "worker_tool", @"C:\Work\A.sln");
+            string otherW = CallForwarded(d2, "worker_tool", @"C:\Work\B.sln");
+            Ok("M2: a forwarded UI call on the solution this IDE has open runs", g && sameUi.Contains("done:ui_tool"), sameUi);
+            Ok("M2: a forwarded UI call for ANOTHER solution is refused, saying which, and does not run",
+                IsError(otherUi) && otherUi.Contains("Clarion now has A.sln open, not B.sln; nothing was run.") && Ex("ui_tool") == uiBefore + 1, otherUi);
+            Ok("M2: the same for a worker-thread tool (open_file, the editor writes, build_app)",
+                sameW.Contains("done:worker_tool") && IsError(otherW) && otherW.Contains("not B.sln") && Ex("worker_tool") == wBefore + 1, otherW);
+            string[] gt; lock (guardThreads) gt = guardThreads.ToArray();
+            Ok("M2: the check ran ON THE UI THREAD every time (4 checks)", gt.Length == 4 && gt.All(n => n == "fake-ui"), string.Join(",", gt));
+
+            lock (guardThreads) guardThreads.Clear();
+            string plain = Call(d2, "ui_tool");
+            Ok("M2: a CA tab's own call (no _meta) is not checked", plain.Contains("done:ui_tool") && guardThreads.Count == 0, plain);
+
+            int bBefore = Ex("blocked_tool");
+            string blockedFwd = CallForwarded(d2, "blocked_tool", @"C:\Work\A.sln");
+            string blockedTab = Call(d2, "blocked_tool");
+            Ok("M1: ForwardedCallFilter refuses a forwarded call before anything runs",
+                f && IsError(blockedFwd) && blockedFwd.Contains("not available to clients outside") && Ex("blocked_tool") == bBefore + 1, blockedFwd);
+            Ok("M1: ...a CA tab's own call of the same tool still runs", blockedTab.Contains("done:blocked_tool"), blockedTab);
+
+            string[] obs; lock (observed) obs = observed.ToArray();
+            Ok("visibility: ForwardedCallObserver saw exactly the forwarded calls that ran (ui_tool, worker_tool)",
+                o && obs.Length == 2 && obs.Contains("ui_tool") && obs.Contains("worker_tool"), string.Join(",", obs));
+
+            SetStatic("ExpectedSolutionGuard", null);
+            SetStatic("ForwardedCallObserver", null);
+            SetStatic("ForwardedCallFilter", null);
+        }
 
         // ---- the real registry still declares the round-trip budget on the slow embed tools ----
         string projectDir = args.Length > 0 ? args[0] : null;

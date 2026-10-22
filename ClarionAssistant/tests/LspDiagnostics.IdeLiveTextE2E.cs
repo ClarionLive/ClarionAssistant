@@ -228,6 +228,7 @@ static class IdeLiveTextE2E
         };
         psi.EnvironmentVariables["VSCODE_EXTENSIONS"] = Path.Combine(work, "ext");
         psi.EnvironmentVariables["FAKE_LOG"] = fakeLog;
+        psi.EnvironmentVariables["CA_TEST_HOOKS"] = "1";   // L2: the record hooks need it
         psi.EnvironmentVariables["CA_IDE_RECORD_DIR"] = _recDir;
         psi.EnvironmentVariables["CA_IDE_IMAGE_NAME"] = me.ProcessName;   // the stand-in IDE is this process
         _srv = Process.Start(psi);

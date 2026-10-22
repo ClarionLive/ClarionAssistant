@@ -9,6 +9,10 @@
 #
 # MUST BE ABLE TO GO RED: against 385a3da's standalone (pass -StandaloneExe <its clarion-mcp-server.exe>) it fails:
 # tools/list has 61 tools and no IdeOnly tool, and every forwarded call is answered "Unknown tool".
+# Against c627adc's (the review round's base) the review-fix cases fail: 120 tools listed with execute_command and
+# dump_object_api, no params._meta solution (M2), the JSON-RPC errors reported as "no result" (L4), the ideTools=1
+# add-in called "older" (L5); and IdeProxy.CallbackRegistry.cs, compiled with /define:OLD_API against that exe, fails
+# 53 of its 67 checks (every path gate, M1, L1, L3, L6; open_file's UNC check took 42 s - the SMB attempt).
 #
 # Run:  pwsh -ExecutionPolicy Bypass -File ClarionAssistant\tests\IdeProxy.StandaloneE2ETest.ps1 [-StandaloneExe <exe>]
 # Exit: 0 pass, 1 fail, 2 could-not-run (the suite counts 2 as a failure, never as green).
@@ -62,6 +66,24 @@ try {
     New-Item -ItemType Directory -Force $run | Out-Null
     & $driver $exe $run | Out-Host
     $code = $LASTEXITCODE
+
+    # Review fixes, the IDE half: the REAL McpToolRegistry (from the exe just built, which links the same source as the
+    # add-in) built as IdeCallbackHost builds it, with recording fakes - the path gates (H1), what is not served outside
+    # the IDE (M1), on/off only (L1), the conflict check's coordination service (L3), the build budget (L6). Compiled
+    # INTO the bin copy so the exe and its SQLite resolve beside it.
+    Write-Host ""
+    Write-Host "--- IdeProxy.CallbackRegistry (the IDE handlers the standalone forwards to) ---"
+    $cb = Join-Path $bin 'IdeProxyCallbackRegistry.exe'
+    & $csc /nologo /warn:0 /platform:x86 /out:$cb /r:System.dll /r:System.Core.dll /r:System.Data.dll /r:System.Web.Extensions.dll `
+        ("/r:" + $exe) ("/r:" + (Join-Path $bin 'System.Data.SQLite.dll')) (Join-Path $PSScriptRoot 'IdeProxy.CallbackRegistry.cs') | Out-Host
+    if ($LASTEXITCODE -ne 0) { Write-Host "COULD NOT RUN: compile of IdeProxy.CallbackRegistry.cs failed." -ForegroundColor Red; $code = 2 }
+    else {
+        $cbRun = Join-Path $work 'cbrun'
+        New-Item -ItemType Directory -Force $cbRun | Out-Null
+        & $cb $cbRun | Out-Host
+        $cbCode = $LASTEXITCODE
+        if ($cbCode -eq 2 -or $code -eq 2) { $code = 2 } elseif ($cbCode -ne 0) { $code = 1 }
+    }
 }
 finally {
     # The driver removes its junction itself; remove it here too before the recursive delete, in case it was killed.

@@ -32,6 +32,7 @@ static class EndpointRecordSweepTest
     static int Main()
     {
         string root = Path.Combine(Path.GetTempPath(), "ca-sweep-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        Environment.SetEnvironmentVariable("CA_TEST_HOOKS", "1");   // L2: the record hooks need it
         Environment.SetEnvironmentVariable(IdeEndpointRecord.RecordDirEnv, root);
         var me = Process.GetCurrentProcess();
         Environment.SetEnvironmentVariable(IdeEndpointRecord.ImageNameEnv, me.ProcessName);
@@ -69,6 +70,23 @@ static class EndpointRecordSweepTest
             Ok("a record with a non-numeric pid/port does not abort discovery", eps != null && eps.Exists(e => e.Pid == me.Id), eps == null ? "threw" : eps.Count + " found");
             Ok("...it is skipped but KEPT while its file name's pid is running (not provably stale)", File.Exists(badLive));
             Ok("...and deleted once its file name's pid is not running (provably stale)", !File.Exists(badDead));
+
+            // b8f9431c review L5: Publish writes the forwarding protocol (IdeProxy.StandaloneE2E L5 proves discovery reads it).
+            string pubText = File.ReadAllText(Path.Combine(dir, me.Id + "-19405.json"));
+            Ok("L5: the published record says which IDE-tool forwarding protocol this add-in serves (\"ideTools\":1)",
+                pubText.Contains("\"ideTools\":1"), pubText.Length > 160 ? pubText.Substring(0, 160) : pubText);
+
+            // b8f9431c review L2: the two env hooks only count with CA_TEST_HOOKS=1. Without it, discovery reads the
+            // REAL record folder (and only a process named Clarion is trusted: the same TestHook gates CA_IDE_IMAGE_NAME).
+            Environment.SetEnvironmentVariable("CA_TEST_HOOKS", null);
+            try
+            {
+                string realDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClarionAssistant", "ide-endpoint");
+                Ok("L2: without CA_TEST_HOOKS=1, CA_IDE_RECORD_DIR is ignored (the real record folder)",
+                    string.Equals(IdeEndpointRecord.DirectoryPath, realDir, StringComparison.OrdinalIgnoreCase), IdeEndpointRecord.DirectoryPath);
+            }
+            finally { Environment.SetEnvironmentVariable("CA_TEST_HOOKS", "1"); }
+            Ok("L2: with CA_TEST_HOOKS=1 it is honoured again", IdeEndpointRecord.DirectoryPath.StartsWith(root, StringComparison.OrdinalIgnoreCase));
         }
         catch (Exception ex) { fail++; Console.WriteLine("  [FAIL] harness threw: " + ex); }
         finally { try { Directory.Delete(root, true); } catch { } }

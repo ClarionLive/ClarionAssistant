@@ -16,8 +16,20 @@
 #   5 its McpServer is built WITHOUT settings (no external token is accepted) and takes the UI budget setting on its own
 #   6 McpServer still validates Host, Origin and the token before dispatching anything
 #   7 the standalone connects to 127.0.0.1 only, with no proxy, and the forwarder never touches the token
+# Review round (b8f9431c pipeline):
+#   8 H1: every PATH-LIKE argument (path, file, file_path, *_path, *_file) of every IdeOnly tool is either gated by
+#     McpPathGate.GatePath - in the tool's block or a helper it calls (ResolveClarionClTarget) - BEFORE the block's first
+#     File.Exists, or is on an explicit allow-list here with the reason it is not a file the tool opens
+#   9 M1: execute_command and dump_object_api are excluded (with reasons); inspect_ide is limited off the IDE
+#  10 M3: McpDispatcher's gate-exempt tools are exactly McpToolRegistry.IdeCallbackTools
+#  11 every IdeOnly tool is classified exactly once as a write tool or a read-only one (the visibility log)
+#  12 IdeCallbackHost: the M2 guard, the M1 filter and the visibility observer are installed; the write log line; the
+#     solution events; a read-only InstanceCoordinationService (L3); the live UI-budget reader (L6)
+#  13 L2: the record env hooks are read only through TestHook (CA_TEST_HOOKS=1)
+#  14 M2: the forwarder sends the expected solution in params._meta
 #
-# MUST BE ABLE TO GO RED: against 385a3da (-Root <its ClarionAssistant>) checks 1, 3, 4, 5 and 7 fail.
+# MUST BE ABLE TO GO RED: against 385a3da (-Root <its ClarionAssistant>) checks 1, 3, 4, 5 and 7 fail; against c627adc
+# checks 4 and 8-14 fail.
 #
 # Run:  pwsh -ExecutionPolicy Bypass -File ClarionAssistant\tests\IdeProxy.SourceScan.ps1 [-Root <dir>] [-StandaloneExe <exe>]
 # Exit: 0 pass, 1 fail, 2 could-not-run.
@@ -54,9 +66,13 @@ foreach ($block in [regex]::Split($reg, 'Register\(new McpTool')) {
     if ($m.Success -and $block -match 'IdeOnly\s*=\s*true') { $ideOnly.Add($m.Groups[1].Value) }
 }
 $excluded = @{}
-$exm = [regex]::Match($reg, 'IdeCallbackExcludedTools\s*=\s*new Dictionary<string, string>\(StringComparer\.OrdinalIgnoreCase\)\s*(\{(?<body>[^}]*)\})?\s*;')
+# The initializer's entries are { "name", "reason" + "reason" ... }; // comments are ignored.
+$exm = [regex]::Match($reg, 'IdeCallbackExcludedTools\s*=\s*new Dictionary<string, string>\(StringComparer\.OrdinalIgnoreCase\)\s*(\{(?<body>.*?)\n\s*\})?\s*;', 'Singleline')
 if ($exm.Success) {
-    foreach ($e in [regex]::Matches($exm.Groups['body'].Value, '\{\s*"([^"]+)"\s*,\s*"([^"]*)"\s*\}')) { $excluded[$e.Groups[1].Value] = $e.Groups[2].Value }
+    $exBody = [regex]::Replace($exm.Groups['body'].Value, '//[^\n]*', '')
+    foreach ($e in [regex]::Matches($exBody, '\{\s*"([^"]+)"\s*,\s*(?<r>"[^"]*"(\s*\+\s*"[^"]*")*)\s*\}')) {
+        $excluded[$e.Groups[1].Value] = (([regex]::Matches($e.Groups['r'].Value, '"([^"]*)"') | ForEach-Object { $_.Groups[1].Value }) -join '')
+    }
 }
 Check ($ideOnly.Count -ge 55) "the source declares the IdeOnly tools" "parsed $($ideOnly.Count)"
 Check $exm.Success 'McpToolRegistry declares IdeCallbackExcludedTools (the named exclusions, with reasons)'
@@ -108,11 +124,12 @@ $iBuild = $sb.IndexOf('McpToolRegistry.BuildIdeCallbackRegistry(')
 Check ($start.Success -and $iHooks -ge 0 -and $iBuild -gt $iHooks) 'Start installs the hooks BEFORE building the registry'
 
 # ---- 4: workspace, dispatcher, diff service ----
-Check ($sb -match 'BuildIdeCallbackRegistry\(new EditorService\(\), new ClarionClassParser\(\),\s*new IdeWorkspace\(\), new McpServer\.ControlUiDispatcher\(ui\), new DiffService\(\)\)') `
-    'the registry gets the IDE workspace (path policy roots), the UI dispatcher and a DiffService'
+Check ($sb -match 'BuildIdeCallbackRegistry\(new EditorService\(\), new ClarionClassParser\(\),\s*new IdeWorkspace\(\), new McpServer\.ControlUiDispatcher\(ui\), new DiffService\(\), coord\)' -and
+       $sb -match 'coord = new InstanceCoordinationService\(\)' -and $sb -notmatch 'coord\.Start\(') `
+    'the registry gets the IDE workspace (path policy roots), the UI dispatcher, a DiffService and a READ-ONLY InstanceCoordinationService (L3: never Start()ed)'
 
 # ---- 5: no settings to the server (no external token), the UI budget on its own ----
-Check ($sb -match 'new McpServer\(ui, null\)' -and $sb -match 'UiTimeoutSettingReader\s*=') `
+Check ($sb -match 'new McpServer\(ui, null\)' -and $sb -match 'UiTimeoutSettingReader\s*=\s*McpServer\.ReadUiTimeoutSettingLive') `
     'the callback McpServer has no SettingsService (no external token) and reads the UI budget setting itself'
 Check ($srv -match 'var reader = UiTimeoutSettingReader;' -and $srv -match '_dispatcher\.UiTimeoutSettingReader = reader \?\?') `
     'McpServer hands that reader to its dispatcher (the IDE''s UI timeout decides a forwarded call)'
@@ -134,6 +151,105 @@ if (Test-Path $fwdFile) {
     Check ($fwd.Contains('IdeLiveTextClient.CallToolRaw(')) 'IdeToolForwarder uses the shared IdeLiveTextClient transport'
 }
 else { Check $false 'IdeToolForwarder.cs exists' }
+
+# ---- 8: H1, every path-like argument of an IdeOnly tool is gated, or allow-listed with a reason ----
+# Allow-list: tool.arg -> why it is not a file the tool opens. Anything else path-like must be gated.
+$editorTarget = 'compared LEXICALLY with the active editor''s path (EditorToolRouter.SamePath: Path.GetFullPath, no I/O) so a write to the wrong tab is refused; never opened'
+$allow = @{
+    'dump_object_api.path'        = 'a dot-path through the IDE object graph from the App object, not a file (and the tool is excluded outside the IDE)'
+    'insert_text_at_cursor.file_path' = $editorTarget
+    'replace_text.file_path'      = $editorTarget
+    'replace_range.file_path'     = $editorTarget
+    'delete_range.file_path'      = $editorTarget
+    'undo.file_path'              = $editorTarget
+    'redo.file_path'              = $editorTarget
+    'save_file.file_path'         = $editorTarget
+    'close_file.file_path'        = $editorTarget
+    'toggle_comment.file_path'    = $editorTarget
+}
+foreach ($k in $allow.Keys) { Check ($allow[$k].Length -ge 20) "allow-list entry '$k' gives a reason" }
+$helpers = @{}
+foreach ($h in @('ResolveClarionClTarget')) {
+    $hm = [regex]::Match($reg, 'private \w+ ' + $h + '\((?<sig>[^)]*)\)\s*\{(?<body>.*?)\n        \}', 'Singleline')
+    if ($hm.Success) { $helpers[$h] = $hm.Groups['body'].Value }
+}
+Check ($helpers.ContainsKey('ResolveClarionClTarget')) 'the scan finds ResolveClarionClTarget (build_app / generate_source gate their paths there)'
+$pathLike = '^(path|file|file_path|.+_path|.+_file)$'
+$audited = 0
+foreach ($block in [regex]::Split($reg, 'Register\(new McpTool')) {
+    $nm = [regex]::Match($block, 'Name\s*=\s*"([^"]+)"')
+    if (-not $nm.Success -or $block -notmatch 'IdeOnly\s*=\s*true') { continue }
+    $tool = $nm.Groups[1].Value
+    $hIdx = $block.IndexOf('Handler')
+    $schema = if ($hIdx -gt 0) { $block.Substring(0, $hIdx) } else { $block }
+    $body = if ($hIdx -gt 0) { $block.Substring($hIdx) } else { '' }
+    $targs = @([regex]::Matches($schema, '\{\s*"([a-z_0-9]+)\??"\s*,\s*[A-Za-z"]') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+    $paths = @($targs | Where-Object { $_ -match $pathLike })
+    if ($paths.Count -eq 0) { continue }
+    $code = $body
+    foreach ($h in $helpers.Keys) { if ($body.Contains($h + '(')) { $code = $helpers[$h] + "`n" + $code } }
+    $gates = [regex]::Matches($code, 'McpPathGate\.GatePath\(').Count
+    $need = @($paths | Where-Object { -not $allow.ContainsKey("$tool.$_") })
+    foreach ($a in $paths) {
+        $audited++
+        if ($allow.ContainsKey("$tool.$a")) { continue }
+        Check ($gates -ge $need.Count) "H1: $tool.$a goes through McpPathGate.GatePath ($gates gate call(s) for $($need.Count) path argument(s))"
+    }
+    if ($need.Count -gt 0) {
+        $iGate = $code.IndexOf('McpPathGate.GatePath(')
+        $iIo = $code.IndexOf('File.Exists(')
+        Check ($iGate -ge 0 -and ($iIo -lt 0 -or $iGate -lt $iIo)) "H1: $tool gates its path BEFORE its first File.Exists (a UNC path is never touched)"
+    }
+}
+Check ($audited -ge 20) "H1: the audit saw the IdeOnly tools' path-like arguments" "audited $audited"
+
+# ---- 9: M1 ----
+Check ($excluded.ContainsKey('execute_command') -and $excluded.ContainsKey('dump_object_api')) 'M1: execute_command and dump_object_api are excluded from the call-back endpoint (with reasons)'
+Check ($reg -match 'CallbackInspectCommands = new HashSet<string>\(StringComparer\.OrdinalIgnoreCase\)\s*\{\s*"active_view", "editor_text", "all_windows", "all_pads", "app_details"\s*\}') `
+    'M1: off the IDE, inspect_ide serves only active_view, editor_text, all_windows, all_pads, app_details'
+$insp = [regex]::Match($reg, 'Name = "inspect_ide"(?<b>.*?)switch \(command\.ToLower\(\)\)', 'Singleline').Groups['b'].Value
+Check ($insp -match 'if \(_callbackHost\)' -and $insp -match 'ForwardedRefusal\("inspect_ide", args\)') 'M1: inspect_ide checks the call-back limit BEFORE dispatching any command'
+
+# ---- 10: M3 exemptions ----
+$disp = [System.IO.File]::ReadAllText((Join-Path $Root 'Services\McpDispatcher.cs'))
+$ex = [regex]::Match($disp, 'UiGateExemptTools = new HashSet<string>\(StringComparer\.OrdinalIgnoreCase\)\s*\{(?<b>[^}]*)\}')
+$cbt = [regex]::Match($reg, 'IdeCallbackTools = \{(?<b>[^}]*)\}')
+$exNames = @([regex]::Matches($ex.Groups['b'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+$cbNames = @([regex]::Matches($cbt.Groups['b'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+Check ($ex.Success -and $cbt.Success -and (($exNames -join ',') -eq ($cbNames -join ','))) 'M3: the UI gate exempts exactly the standalone''s call-backs (McpToolRegistry.IdeCallbackTools)' "$($exNames -join ',') vs $($cbNames -join ',')"
+Check ($disp -match 'private static readonly SemaphoreSlim UiGate = new SemaphoreSlim\(1, 1\);') 'M3: ONE static UI gate for every dispatcher in the process'
+
+# ---- 11: write / read-only classification ----
+function SetOf([string]$name) {
+    $m = [regex]::Match($reg, $name + ' = new HashSet<string>\(StringComparer\.OrdinalIgnoreCase\)\s*\{(?<b>[^}]*)\}')
+    return @([regex]::Matches($m.Groups['b'].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+}
+$w = SetOf 'IdeWriteTools'; $ro = SetOf 'ReadOnlyIdeTools'
+$both = @($w | Where-Object { $ro -contains $_ })
+$neither = @($ideOnly | Where-Object { ($w -notcontains $_) -and ($ro -notcontains $_) })
+Check ($w.Count -gt 0 -and $both.Count -eq 0 -and $neither.Count -eq 0) 'every IdeOnly tool is classified once, as a write tool or a read-only one' "both [$($both -join ',')] neither [$($neither -join ',')]"
+
+# ---- 12: the host's hooks ----
+$inst2 = $inst.Groups['body'].Value
+Check ($inst2.Contains('McpDispatcher.ExpectedSolutionGuard = CheckExpectedSolution;') -and $inst2.Contains('McpDispatcher.ForwardedCallObserver = OnForwardedCall;') -and
+       $inst2.Contains('McpDispatcher.ForwardedCallFilter = McpToolRegistry.ForwardedRefusal;')) 'M2/M1: the host installs the solution guard, the forwarded-call filter and the observer'
+Check ($hostSrc -match 'FileIdentity\.SameFile\(open, expected\)' -and $hostSrc -match 'EditorService\.GetOpenSolutionPath\(\)') 'M2: the guard compares the IDE''s LIVE open solution by file identity'
+Check ($hostSrc.Contains('MonacoSpikeLog.Write("[ide-callback] " + tool + " from plugin client");') -and $hostSrc.Contains('McpToolRegistry.IdeWriteTools.Contains(')) 'visibility: a forwarded write tool is logged "[ide-callback] <tool> from plugin client"'
+Check ($hostSrc.Contains('SubscribeSolutionEvent("SolutionLoaded"') -and $hostSrc.Contains('SubscribeSolutionEvent("SolutionClosed"')) 'M2: the solution record is also published on SolutionLoaded / SolutionClosed'
+
+# ---- 13: L2 ----
+$epSrc = [System.IO.File]::ReadAllText((Join-Path $Root 'Services\IdeEndpointRecord.cs'))
+$slnSrc = [System.IO.File]::ReadAllText((Join-Path $Root 'Services\IdeSolutionRecord.cs'))
+$raw = [regex]::Matches($epSrc + $slnSrc, 'GetEnvironmentVariable\((RecordDirEnv|ImageNameEnv|"CA_IDE_RECORD_DIR"|"CA_IDE_IMAGE_NAME")\)').Count
+Check ($raw -eq 0 -and $epSrc -match 'TestHook\(RecordDirEnv\)' -and $epSrc -match 'TestHook\(ImageNameEnv\)' -and
+       $slnSrc -match 'TestHook\("CA_IDE_RECORD_DIR"\)' -and $slnSrc -match 'TestHook\("CA_IDE_IMAGE_NAME"\)' -and
+       ($epSrc + $slnSrc) -match 'GetEnvironmentVariable\("CA_TEST_HOOKS"\) != "1"|GetEnvironmentVariable\(TestHooksEnv\) != "1"') 'L2: the record env hooks are read only through TestHook, which needs CA_TEST_HOOKS=1'
+
+# ---- 14: M2, the forwarder side ----
+if (Test-Path $fwdFile) {
+    $fwd2 = [System.IO.File]::ReadAllText($fwdFile)
+    Check ($fwd2 -match 'McpDispatcher\.ExpectedSolutionMetaKey, sel\.Solution') 'M2: the forwarder sends the matched solution in params._meta'
+}
 
 Write-Host ""
 if ($fail -eq 0) { Write-Host "PASS - $pass checks" -ForegroundColor Green; exit 0 }

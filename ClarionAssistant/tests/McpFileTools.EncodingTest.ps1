@@ -100,6 +100,7 @@ function Invoke-Tool([string]$name, [hashtable]$arguments) {
     # GH #205: write_file / append_to_file first ask every running Clarion IDE whether the file is open in a tab. This
     # harness is about BYTES, so it must not depend on whatever IDEs happen to run on this machine: point the server at
     # an empty IDE-record folder (no IDE), the same override the IDE-record harnesses use.
+    $psi.EnvironmentVariables['CA_TEST_HOOKS'] = '1'   # L2: the record hooks need it
     $psi.EnvironmentVariables['CA_IDE_RECORD_DIR'] = Join-Path $script:work 'no-ide-records'
     $p = [System.Diagnostics.Process]::Start($psi)
     $out = $p.StandardOutput.ReadToEndAsync()
