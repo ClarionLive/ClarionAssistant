@@ -121,14 +121,17 @@ namespace ClarionAssistant.Services
         /// changes the IDE is never sent twice.
         /// </summary>
         internal static Dictionary<string, object> CallToolRaw(IdeEndpointRecord.Endpoint ep, string toolName,
-                                                               Dictionary<string, object> args, Stopwatch sw, int budgetMs)
+                                                               Dictionary<string, object> args, Stopwatch sw, int budgetMs,
+                                                               Dictionary<string, object> meta = null)
         {
             string session = SessionFor(ep, sw, false, budgetMs);
+            var prm = new Dictionary<string, object> { { "name", toolName }, { "arguments", args } };
+            // b8f9431c review M2: params._meta carries the solution this call was matched to; the IDE checks it again.
+            if (meta != null && meta.Count > 0) prm["_meta"] = meta;
             // MaxJsonLength: the default 2 MB cap would throw on a large forwarded write (apply_embed_edits, b8f9431c).
             string body = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object>
             {
-                { "jsonrpc", "2.0" }, { "id", 2 }, { "method", "tools/call" },
-                { "params", new Dictionary<string, object> { { "name", toolName }, { "arguments", args } } }
+                { "jsonrpc", "2.0" }, { "id", 2 }, { "method", "tools/call" }, { "params", prm }
             });
 
             string sessionOut;
@@ -145,8 +148,27 @@ namespace ClarionAssistant.Services
             var env = js.DeserializeObject(reply) as Dictionary<string, object>;
             object r;
             var res = env != null && env.TryGetValue("result", out r) ? r as Dictionary<string, object> : null;
-            if (res == null) throw new IOException("no result in the reply");
+            if (res == null)
+            {
+                // b8f9431c review L4: a JSON-RPC error object (method not found, invalid params, internal error) keeps
+                // its code and message, so the caller can say whether anything ran.
+                object e;
+                var err = env != null && env.TryGetValue("error", out e) ? e as Dictionary<string, object> : null;
+                if (err != null)
+                {
+                    object c, m;
+                    int code = err.TryGetValue("code", out c) && c != null ? SafeInt(c) : 0;
+                    string msg = err.TryGetValue("message", out m) ? m as string : null;
+                    throw new IdeJsonRpcErrorException(code, msg);
+                }
+                throw new IOException("no result in the reply");
+            }
             return res;
+        }
+
+        private static int SafeInt(object o)
+        {
+            try { return Convert.ToInt32(o); } catch { return 0; }
         }
 
         private static string SessionFor(IdeEndpointRecord.Endpoint ep, Stopwatch sw, bool renew, int budgetMs)
@@ -223,5 +245,23 @@ namespace ClarionAssistant.Services
     {
         public readonly int Status;
         public IdeHttpStatusException(int status) : base("HTTP " + status) { Status = status; }
+    }
+
+    /// <summary>b8f9431c review L4: the IDE answered with a JSON-RPC error object instead of a tool result. -32601 (method
+    /// not found), -32602 (invalid params), -32600 (invalid request) and -32700 (parse error) are refusals before any tool
+    /// ran.</summary>
+    public sealed class IdeJsonRpcErrorException : IOException
+    {
+        public readonly int Code;
+        public readonly string RpcMessage;
+        public IdeJsonRpcErrorException(int code, string message)
+            : base("JSON-RPC error " + code + (string.IsNullOrEmpty(message) ? "" : ": " + message))
+        {
+            Code = code;
+            RpcMessage = message;
+        }
+
+        /// <summary>True when the code says the request was rejected before any tool ran.</summary>
+        public bool NothingRan { get { return Code == -32601 || Code == -32602 || Code == -32600 || Code == -32700; } }
     }
 }

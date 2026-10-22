@@ -283,17 +283,82 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// b8f9431c: IdeOnly tools the IDE call-back endpoint does NOT serve, each with the reason. The standalone server
         /// forwards exactly the IdeOnly tools minus these, so a tool named here is neither listed nor forwarded there
-        /// (it stays available in a CA tab). EMPTY BY MEASUREMENT, not by default: every IdeOnly handler was checked for
+        /// (it stays available in a CA tab). None is here for missing state: every IdeOnly handler was checked for
         /// chat-pane-only state. The five registry statics only the chat pane set (AppTreeFactory, IdeProbeFactory,
         /// DiagnosticLog, CaEmbeditorLiveProbe, ActiveEditorCoveredProbe) are now set by IdeCallbackHost at addin start;
         /// the diff tools get their own DiffService there (it is IDE-wide, not the pane's); open_procedure_embed's
-        /// instance-coordination conflict check is null-guarded (with no CA tab there is no registered instance to
-        /// conflict with); build_app / generate_source read only the solution, version and Clarion root, which
-        /// IdeWorkspace answers. tests\IdeProxy.SourceScan.ps1 fails if an IdeOnly tool is missing from the callback
+        /// instance-coordination conflict check gets a read-only InstanceCoordinationService there (never Start()ed: this
+        /// IDE does not register, it only reads which OTHER instance has the procedure open - review L3); build_app /
+        /// generate_source read only the solution, version and Clarion root, which IdeWorkspace answers. The entries are
+        /// excluded for what the tool CAN DO (review M1). tests\IdeProxy.SourceScan.ps1 fails if an IdeOnly tool is missing from the callback
         /// registry without an entry here.
         /// </summary>
         public static readonly Dictionary<string, string> IdeCallbackExcludedTools =
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                // b8f9431c review M1: excluded for what they can do, not for missing state.
+                { "execute_command", "it instantiates ANY loaded type by name and calls its public Run() - arbitrary code in "
+                    + "the IDE process, not an IDE tool; a CA tab keeps it" },
+                { "dump_object_api", "it walks NON-PUBLIC properties and fields from the App object, dumps their values and "
+                    + "INVOKES any no-argument method a path segment names (a mutating one included); a CA tab keeps it" },
+            };
+
+        /// <summary>
+        /// b8f9431c M1: the inspect_ide commands the IDE call-back endpoint serves (read-only, public state). Every other
+        /// command (probe_* native hooks, path:/embed_details/types/assemblies deep dumps) is refused there.
+        /// </summary>
+        public static readonly HashSet<string> CallbackInspectCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "active_view", "editor_text", "all_windows", "all_pads", "app_details" };
+
+        /// <summary>
+        /// b8f9431c: the IdeOnly tools that CHANGE something - an editor buffer, the embeditor, the app or dictionary,
+        /// a file, generated source. When one arrives forwarded from a plugin client (outside the IDE) the IDE logs
+        /// "[ide-callback] &lt;tool&gt; from plugin client" and shows a status-bar note, so a change made from outside is
+        /// visible. tests\IdeProxy.SourceScan.ps1 pins that every IdeOnly tool is either here or in ReadOnlyIdeTools.
+        /// </summary>
+        public static readonly HashSet<string> IdeWriteTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "insert_text_at_cursor", "replace_text", "replace_range", "delete_range", "undo", "redo", "save_file",
+            "close_file", "toggle_comment", "write_embed_content", "apply_embed_edits", "save_and_close_embeditor",
+            "cancel_embeditor", "export_txa", "import_txa", "export_dctx", "import_dctx", "build_app", "generate_source",
+            "execute_command", "editor_tab_sync", "warmup_abc"
+        };
+
+        /// <summary>b8f9431c: the IdeOnly tools that only read or navigate (the complement of <see cref="IdeWriteTools"/>).</summary>
+        public static readonly HashSet<string> ReadOnlyIdeTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "get_active_file", "get_selected_text", "embeditor_get_selection", "get_word_under_cursor", "get_cursor_position",
+            "go_to_line", "select_range", "get_open_files", "get_line_text", "get_lines_range", "find_in_file", "is_modified",
+            "inspect_ide", "get_app_info", "get_app_dictionary", "list_procedures", "get_procedure_details",
+            "open_procedure_embed", "select_procedure", "get_embed_info", "open_embeditor_source", "next_embed", "prev_embed",
+            "next_filled_embed", "prev_filled_embed", "list_embeds", "find_embed", "get_embeditor_source",
+            "search_embeditor_source", "get_embed_content", "dump_object_api", "dump_appmain_api", "open_file",
+            "get_live_text", "show_diff", "get_diff_result", "get_diff_content"
+        };
+
+        /// <summary>True on the registry <see cref="BuildIdeCallbackRegistry"/> built (plugin clients outside the IDE).</summary>
+        private bool _callbackHost;
+
+        /// <summary>
+        /// b8f9431c review M1: the refusal for a call from OUTSIDE the IDE (the call-back registry, or a forwarded call
+        /// that reached the chat pane's server because it holds the endpoint record) of a tool or command that is not
+        /// served there, or null. McpDispatcher.ForwardedCallFilter points here, so the chat pane refuses the same.
+        /// </summary>
+        public static string ForwardedRefusal(string toolName, Dictionary<string, object> args)
+        {
+            string why;
+            if (toolName != null && IdeCallbackExcludedTools.TryGetValue(toolName, out why))
+                return "Error: " + toolName + " is not available to clients outside the Clarion IDE (" + why + "); nothing was run.";
+            if (string.Equals(toolName, "inspect_ide", StringComparison.OrdinalIgnoreCase))
+            {
+                string command = (McpJsonRpc.GetString(args, "command", "active_view") ?? "").Trim();
+                if (!CallbackInspectCommands.Contains(command))
+                    return "Error: inspect_ide '" + command + "' is not available to clients outside the Clarion IDE; "
+                        + "nothing was run. Commands available here: " + string.Join(", ", CallbackInspectCommands.OrderBy(c => c).ToArray())
+                        + ". (A Clarion Assistant tab inside the IDE has every command.)";
+            }
+            return null;
+        }
 
         /// <summary>
         /// GH #205 pipeline run 2: the IDE call-back endpoint's registry, WITH a workspace. editor_tab_sync's check is
@@ -310,13 +375,16 @@ namespace ClarionAssistant.Services
         /// </summary>
         public static McpToolRegistry BuildIdeCallbackRegistry(IEditorService editorService, ClarionClassParser parser,
                                                                IWorkspaceContext workspace, IUiDispatcher ui,
-                                                               IDiffService diffService = null)
+                                                               IDiffService diffService = null,
+                                                               InstanceCoordinationService instanceCoord = null)
         {
             var registry = new McpToolRegistry(editorService, parser, true);   // ideToolsOnly: only the IdeOnly tools register
             foreach (var name in IdeCallbackExcludedTools.Keys) registry._tools.Remove(name);
             registry._workspace = workspace;
             registry._ui = ui;
             registry._diffService = diffService;
+            registry._instanceCoord = instanceCoord;   // L3: read-only use (open_procedure_embed's conflict check)
+            registry._callbackHost = true;
             return registry;
         }
 
@@ -920,6 +988,16 @@ Use this tool to discover IDE APIs and understand what's available for automatio
                 Handler = args =>
                 {
                     string command = McpJsonRpc.GetString(args, "command", "active_view");
+
+                    // b8f9431c M1: the IDE call-back endpoint (plugin clients outside the IDE) serves only the
+                    // read-only inspections. The probe_* spikes install native hooks and inject into menus
+                    // (NativeProbeService: SetWindowsHookEx), and path:/embed_details/types/assemblies dump
+                    // NON-PUBLIC members of whatever they reach. A CA tab still has every command.
+                    if (_callbackHost)
+                    {
+                        string notHere = ForwardedRefusal("inspect_ide", args);
+                        if (notHere != null) return notHere;
+                    }
 
                     switch (command.ToLower())
                     {
@@ -1645,6 +1723,9 @@ IdeOnly = true,
                     string path = McpJsonRpc.GetString(args, "path");
                     if (string.IsNullOrEmpty(path))
                         return "Error: path is required";
+                    // b8f9431c H1: the #266 path policy, as write_file - BEFORE any I/O (a UNC path is never touched).
+                    string refusal = McpPathGate.GatePath("export_txa", path, PathAccess.Write, _workspace, out path);
+                    if (refusal != null) return refusal;
 
                     return _appTree.ExportTxa(path);
                 }
@@ -1668,6 +1749,9 @@ IdeOnly = true,
                     string path = McpJsonRpc.GetString(args, "path");
                     if (string.IsNullOrEmpty(path))
                         return "Error: path is required";
+                    // b8f9431c H1: the #266 path policy, as read_file - BEFORE any I/O (a UNC path is never touched).
+                    string refusal = McpPathGate.GatePath("import_txa", path, PathAccess.Read, _workspace, out path);
+                    if (refusal != null) return refusal;
 
                     string clashMode = McpJsonRpc.GetString(args, "clash_mode");
                     return _appTree.ImportTxa(path, clashMode);
@@ -1743,6 +1827,15 @@ IdeOnly = true,
                 Handler = args =>
                 {
                     string path = McpJsonRpc.GetString(args, "path");
+                    if (string.IsNullOrEmpty(path))
+                        return "Error: path is required";
+                    // b8f9431c H1: the #266 path policy, as read_file (get_active_file then returns the content), BEFORE
+                    // File.Exists: a UNC path is never touched (that would send this user's NTLM credentials to the host).
+                    // The caller's spelling is what is opened, so the tab is the one the developer would get; the check
+                    // judged its real location.
+                    string gatedPath;
+                    string refusal = McpPathGate.GatePath("open_file", path, PathAccess.Read, _workspace, out gatedPath);
+                    if (refusal != null) return refusal;
                     if (!File.Exists(path))
                         return "Error: file not found: " + path;
 
@@ -1784,6 +1877,15 @@ IdeOnly = true,
                 RequiresUiThread = true,
                 Handler = args =>
                 {
+                    // b8f9431c H1: a caller-named path goes through the #266 path policy (as write_file) before anything
+                    // else; the default beside the .dct is gated below once it is known.
+                    string outPath = McpJsonRpc.GetString(args, "path", "");
+                    if (!string.IsNullOrEmpty(outPath))
+                    {
+                        string callerRefusal = McpPathGate.GatePath("export_dctx", outPath, PathAccess.Write, _workspace, out outPath);
+                        if (callerRefusal != null) return callerRefusal;
+                    }
+
                     var dct = FindOpenDictionary();
                     if (dct == null)
                         return "Error: no dictionary is open in the IDE. Use open_dictionary first.";
@@ -1791,12 +1893,15 @@ IdeOnly = true,
                     var fileNameProp = dct.GetType().GetProperty("FileName",
                         System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
                     string dctPath = fileNameProp != null ? fileNameProp.GetValue(dct, null) as string : null;
-                    string outPath = McpJsonRpc.GetString(args, "path", "");
                     if (string.IsNullOrEmpty(outPath))
                     {
                         if (string.IsNullOrEmpty(dctPath))
                             return "Error: could not determine dictionary path and no output path provided";
                         outPath = Path.ChangeExtension(dctPath, ".dctx");
+                        // The default is gated too (a dictionary outside the solution folder is in a read-only root:
+                        // pass a path in the solution then).
+                        string refusal = McpPathGate.GatePath("export_dctx", outPath, PathAccess.Write, _workspace, out outPath);
+                        if (refusal != null) return refusal;
                     }
 
                     // Call ExportToText(string destination, bool quiet, out string errorMessage)
@@ -1830,13 +1935,16 @@ IdeOnly = true,
                 RequiresUiThread = true,
                 Handler = args =>
                 {
-                    var dct = FindOpenDictionary();
-                    if (dct == null)
-                        return "Error: no dictionary is open in the IDE. Use open_dictionary first.";
-
                     string importPath = McpJsonRpc.GetString(args, "path");
                     if (string.IsNullOrEmpty(importPath))
                         return "Error: path is required";
+                    // b8f9431c H1: the #266 path policy, as read_file - first, BEFORE File.Exists (a UNC path is never touched).
+                    string refusal = McpPathGate.GatePath("import_dctx", importPath, PathAccess.Read, _workspace, out importPath);
+                    if (refusal != null) return refusal;
+
+                    var dct = FindOpenDictionary();
+                    if (dct == null)
+                        return "Error: no dictionary is open in the IDE. Use open_dictionary first.";
                     if (!File.Exists(importPath))
                         return "Error: file not found: " + importPath;
 
@@ -3551,6 +3659,19 @@ IdeOnly = true,
 
                     string originalFile = McpJsonRpc.GetString(args, "original_file");
                     string modifiedFile = McpJsonRpc.GetString(args, "modified_file");
+                    // b8f9431c H1: both caller-named files go through the #266 path policy, as read_file, before either is
+                    // read (a UNC path is never touched). get_diff_content returns only what this loaded, so it is covered.
+                    // The active editor's own path (modified_from_active_editor with no original_file) is the developer's.
+                    if (!string.IsNullOrEmpty(originalFile))
+                    {
+                        string refusal = McpPathGate.GatePath("show_diff", originalFile, PathAccess.Read, _workspace, out originalFile);
+                        if (refusal != null) return refusal;
+                    }
+                    if (!string.IsNullOrEmpty(modifiedFile))
+                    {
+                        string refusal = McpPathGate.GatePath("show_diff", modifiedFile, PathAccess.Read, _workspace, out modifiedFile);
+                        if (refusal != null) return refusal;
+                    }
 
                     // modified_from_active_editor — fetch the live editor buffer in-process (same source
                     // get_active_file uses) instead of requiring the caller to round-trip the content
@@ -3931,9 +4052,9 @@ IdeOnly = true,
                 RequiresUiThread = false,
                 Handler = args =>
                 {
-                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+                    int timeout = CapBuildTimeout(McpJsonRpc.GetInt(args, "timeout", 120));
 
-                    var target = ResolveClarionClTarget(args);
+                    var target = ResolveClarionClTarget("build_app", args);
                     if (target.Error != null) return target.Error;
                     string refusal = ClarionClRefusal("build_app", target);
                     if (refusal != null) return refusal;
@@ -3973,9 +4094,13 @@ IdeOnly = true,
                 {
                     string condGen = McpJsonRpc.GetString(args, "conditional_generation", null);
                     string debugGen = McpJsonRpc.GetString(args, "debug_generation", null);
-                    int timeout = McpJsonRpc.GetInt(args, "timeout", 120);
+                    int timeout = CapBuildTimeout(McpJsonRpc.GetInt(args, "timeout", 120));
+                    // b8f9431c L1: these are appended to ClarionCL's command line, so only on/off is accepted (never
+                    // free text: a quote or a further switch would reach the command line as it came).
+                    string onOffError = OnOffArgument("conditional_generation", ref condGen) ?? OnOffArgument("debug_generation", ref debugGen);
+                    if (onOffError != null) return onOffError;
 
-                    var target = ResolveClarionClTarget(args);
+                    var target = ResolveClarionClTarget("generate_source", args);
                     if (target.Error != null) return target.Error;
                     string refusal = ClarionClRefusal("generate_source", target);
                     if (refusal != null) return refusal;
@@ -6335,10 +6460,22 @@ IdeOnly = true,
         /// active app) to the .app ClarionCL generates and the .cwproj that describes the output. Configuration: the
         /// IDE's active one for the followed solution; .red: that solution's, superseded by the project folder's own.
         /// </summary>
-        private ClarionClTarget ResolveClarionClTarget(Dictionary<string, object> args)
+        private ClarionClTarget ResolveClarionClTarget(string toolName, Dictionary<string, object> args)
         {
             string appPath = McpJsonRpc.GetString(args, "app_path", null);
             string projectPath = McpJsonRpc.GetString(args, "project_path", null);
+            // b8f9431c H1: both caller-named paths go through the #266 path policy, as read_file, BEFORE any File.Exists
+            // or parse (a UNC path is never touched). The default (the IDE's active app) is the developer's own.
+            if (!string.IsNullOrEmpty(appPath))
+            {
+                string refusal = McpPathGate.GatePath(toolName, appPath, PathAccess.Read, _workspace, out appPath);
+                if (refusal != null) return new ClarionClTarget { Error = refusal };
+            }
+            if (!string.IsNullOrEmpty(projectPath))
+            {
+                string refusal = McpPathGate.GatePath(toolName, projectPath, PathAccess.Read, _workspace, out projectPath);
+                if (refusal != null) return new ClarionClTarget { Error = refusal };
+            }
             if (string.IsNullOrEmpty(projectPath) && !string.IsNullOrEmpty(appPath)
                 && appPath.EndsWith(".cwproj", StringComparison.OrdinalIgnoreCase))
             {
@@ -6388,6 +6525,28 @@ IdeOnly = true,
                 if (info.Error == null) t.Project = info;
             }
             return t;
+        }
+
+        /// <summary>
+        /// b8f9431c L6: a ClarionCL run's timeout, 1 s to <see cref="McpUiTimeoutPolicy.MaxForwardedSeconds"/> (3600) - the
+        /// longest the plugin's server lets a forwarded call run (it waits that plus its margin), so the IDE never runs on
+        /// after that client has given up on it.
+        /// </summary>
+        internal static int CapBuildTimeout(int seconds)
+        {
+            if (seconds < 1) return 1;
+            return seconds > McpUiTimeoutPolicy.MaxForwardedSeconds ? McpUiTimeoutPolicy.MaxForwardedSeconds : seconds;
+        }
+
+        /// <summary>b8f9431c L1: an optional on/off switch value: null/empty stays null, "on"/"off" (any case) is
+        /// normalised to lower case, anything else is the refusal text.</summary>
+        internal static string OnOffArgument(string name, ref string value)
+        {
+            if (string.IsNullOrEmpty(value)) { value = null; return null; }
+            string v = value.Trim();
+            if (string.Equals(v, "on", StringComparison.OrdinalIgnoreCase)) { value = "on"; return null; }
+            if (string.Equals(v, "off", StringComparison.OrdinalIgnoreCase)) { value = "off"; return null; }
+            return "Error: " + name + " must be 'on' or 'off' (or omitted to use the app's setting); nothing was run.";
         }
 
         /// <summary>GH #204: every .cwproj of <paramref name="slnPath"/>, read for kind and output (empty when the .sln can't be parsed).</summary>

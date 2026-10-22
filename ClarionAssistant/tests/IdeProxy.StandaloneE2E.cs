@@ -8,7 +8,8 @@
 // bearer token, found through the real endpoint and solution records in a temp CA_IDE_RECORD_DIR, with
 // CA_IDE_IMAGE_NAME naming this driver's own image so the record trust rules (pid alive, image, start time) apply.
 //
-//   A  list        tools/list has all 120: the 59 IdeOnly ones with their real schemas and the forwarding note
+//   A  list        tools/list has all 118: the 57 forwarded IdeOnly ones with their real schemas and the forwarding note
+//                  (execute_command and dump_object_api are never listed: review M1)
 //   A2 CA tab      launched with --ide-pid (a CA tab): the 61 own tools only - never listed twice
 //   B  no IDE      no endpoint record                  -> isError, names the solution, "open it in Clarion", 6.2
 //   C  match       the IDE has this solution open      -> the IDE's result VERBATIM (two blocks + isError false),
@@ -23,6 +24,9 @@
 //   I  pid reuse   a record whose start time is not the process's -> not used, deleted, logged
 //   J  no solution a server with no solution           -> isError "no solution to match an IDE to"
 //   T  token       the bearer token appears in no tool output and no log line
+//   M2 meta        every forwarded call carries params._meta["clarionAssistant/expectedSolution"] = this solution
+//   L4 rpc error   a JSON-RPC error from the IDE is an isError with its code and message; -32602 says nothing ran
+//   L5 protocol    an add-in whose record says ideTools=1 but lacks the tool is "newer server", not "older add-in"
 //
 // Args: <standalone exe> <work dir>. Exit 0 pass, 1 fail, 2 could-not-run. "--idle" makes this exe a further
 // stand-in IDE PROCESS (same image name) for F and I.
@@ -51,6 +55,7 @@ static class IdeProxyE2E
     static readonly object _seenLock = new object();
     static readonly List<string> _seen = new List<string>();          // "<tool> <args json>" per tools/call that ARRIVED
     static readonly List<string> _peers = new List<string>();         // "remote|local|host" per request
+    static readonly List<string> _metaSeen = new List<string>();      // params._meta expected solution per tools/call ("(none)")
     static int _requests;
 
     static void StartIde()
@@ -88,6 +93,20 @@ static class IdeProxyE2E
             string name = prm["name"] as string;
             var args = prm["arguments"] as Dictionary<string, object>;
             lock (_seenLock) _seen.Add(name + " " + Js.Serialize(args));
+            object metaObj; object exp = null;
+            var meta = prm.TryGetValue("_meta", out metaObj) ? metaObj as Dictionary<string, object> : null;
+            if (meta != null) meta.TryGetValue("clarionAssistant/expectedSolution", out exp);
+            lock (_seenLock) _metaSeen.Add(exp as string ?? "(none)");
+
+            // L4: JSON-RPC errors, as the IDE's dispatcher would send them.
+            if (name == "get_line_text" || name == "get_lines_range")
+            {
+                int code = name == "get_line_text" ? -32602 : -32603;
+                string msg = name == "get_line_text" ? "Invalid params: line must be a number" : "Internal error: boom";
+                Reply(ctx, 200, Js.Serialize(new Dictionary<string, object> { { "jsonrpc", "2.0" }, { "id", req["id"] },
+                    { "error", new Dictionary<string, object> { { "code", code }, { "message", msg } } } }), null);
+                return;
+            }
 
             Dictionary<string, object> result;
             if (_olderAddin)
@@ -133,16 +152,18 @@ static class IdeProxyE2E
     // ---- the records the standalone discovers through ----
     static string _recDir, _sln, _otherSln;
 
-    static void WriteEndpoint(Process ide, int port, string token, DateTime? startOverride = null)
+    static void WriteEndpoint(Process ide, int port, string token, DateTime? startOverride = null, int ideTools = 0)
     {
         string dir = Path.Combine(_recDir, "ide-endpoint");
         Directory.CreateDirectory(dir);
         var start = (startOverride ?? ide.StartTime).ToUniversalTime();
-        File.WriteAllText(Path.Combine(dir, ide.Id + "-" + port + ".json"), Js.Serialize(new Dictionary<string, object>
+        var rec = new Dictionary<string, object>
         {
             { "pid", ide.Id }, { "port", port }, { "token", token },
             { "startTime", start.ToString("o") }, { "writtenAt", DateTime.UtcNow.ToString("o") }
-        }), new UTF8Encoding(false));
+        };
+        if (ideTools > 0) rec["ideTools"] = ideTools;   // L5: what a 6.2+ add-in writes
+        File.WriteAllText(Path.Combine(dir, ide.Id + "-" + port + ".json"), Js.Serialize(rec), new UTF8Encoding(false));
     }
 
     static void WriteSolution(Process ide, string sln)
@@ -182,6 +203,7 @@ static class IdeProxyE2E
                 StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
                 CreateNoWindow = true, WorkingDirectory = cwd
             };
+            psi.EnvironmentVariables["CA_TEST_HOOKS"] = "1";   // L2: the record hooks need it
             psi.EnvironmentVariables["CA_IDE_RECORD_DIR"] = _recDir;
             psi.EnvironmentVariables["CA_IDE_IMAGE_NAME"] = Process.GetCurrentProcess().ProcessName;   // the stand-in IDE is this process
             psi.EnvironmentVariables.Remove("CLARION_IDE_PID");
@@ -286,9 +308,11 @@ static class IdeProxyE2E
             var tools = srv.Tools();
             var byName = tools.ToDictionary(t => (string)t["name"], t => t);
             Console.WriteLine("A  list      " + tools.Count + " tools");
-            Check(tools.Count == 120, "A: expected 120 tools (61 own + 59 IDE), got " + tools.Count);
+            Check(tools.Count == 118, "A: expected 118 tools (61 own + 57 IDE), got " + tools.Count);
             int noted = tools.Count(t => ((string)t["description"]).Contains("This server forwards the call to that IDE"));
-            Check(noted == 59, "A: expected the 59 IdeOnly tools to carry the forwarding note, got " + noted);
+            Check(noted == 57, "A: expected the 57 forwarded IdeOnly tools to carry the forwarding note, got " + noted);
+            Check(!byName.ContainsKey("execute_command") && !byName.ContainsKey("dump_object_api"),
+                "A: execute_command / dump_object_api must never be listed outside the IDE (review M1)");
             foreach (var want in new[] { "get_app_info", "list_procedures", "open_procedure_embed", "search_embeditor_source",
                                          "write_embed_content", "save_and_close_embeditor", "replace_text", "open_file", "show_diff" })
                 Check(byName.ContainsKey(want), "A: IdeOnly tool '" + want + "' is not listed");
@@ -304,7 +328,7 @@ static class IdeProxyE2E
             Check((srv.Instructions ?? "").Contains("without the developer's explicit approval"),
                 "A: the initialize instructions do not carry the write-approval rule for the IDE tools: " + (srv.Instructions ?? "(none)"));
             string err; lock (srv.Err) err = srv.Err.ToString();
-            Check(err.Contains("IDE tools: 59 listed") && err.Contains("ide-proxy=1"), "A: no 'IDE tools: 59 listed ... ide-proxy=1' line on stderr:\n" + Tail(err));
+            Check(err.Contains("IDE tools: 57 listed") && err.Contains("ide-proxy=1"), "A: no 'IDE tools: 57 listed ... ide-proxy=1' line on stderr:\n" + Tail(err));
 
             // ---------------- B: no IDE at all ----------------
             ClearRecords();
@@ -327,6 +351,20 @@ static class IdeProxyE2E
                   && ((cContent[1] as Dictionary<string, object>)["text"] as string) == "second block \u00e5\u00e9 " + Js.Serialize(callArgs),
                 "C: expected the IDE's two content blocks verbatim (non-ASCII intact) with isError false; got " + Show(rC));
             Check(LastSeen() == "list_procedures " + Js.Serialize(callArgs), "C: the IDE did not receive the arguments as sent: " + LastSeen());
+            string lastMeta; lock (_seenLock) lastMeta = _metaSeen.Count > 0 ? _metaSeen[_metaSeen.Count - 1] : null;
+            Check(lastMeta != null && string.Equals(Path.GetFileName(lastMeta), "e2e.sln", StringComparison.OrdinalIgnoreCase) && Path.IsPathRooted(lastMeta),
+                "M2: the forwarded call must carry params._meta[clarionAssistant/expectedSolution] = this server's solution; got " + (lastMeta ?? "(no call)"));
+
+            // ---------------- L4: JSON-RPC errors from the IDE ----------------
+            var rL4a = srv.Call("get_line_text", new Dictionary<string, object> { { "line", 3 } });
+            Console.WriteLine("L4 -32602    " + FirstText(rL4a));
+            Check(IsErr(rL4a) && (FirstText(rL4a) ?? "").Contains("JSON-RPC error -32602") && (FirstText(rL4a) ?? "").Contains("line must be a number")
+                  && (FirstText(rL4a) ?? "").Contains("Nothing was run."),
+                "L4: a -32602 from the IDE must be an isError with its code, message and 'Nothing was run.'; got " + Show(rL4a));
+            var rL4b = srv.Call("get_lines_range", new Dictionary<string, object> { { "start_line", 1 }, { "end_line", 2 } });
+            Check(IsErr(rL4b) && (FirstText(rL4b) ?? "").Contains("JSON-RPC error -32603") && (FirstText(rL4b) ?? "").Contains("boom")
+                  && (FirstText(rL4b) ?? "").Contains("may or may not have run"),
+                "L4: a -32603 must keep its code and message and NOT claim nothing ran; got " + Show(rL4b));
             var rC2 = srv.Call("save_file", null);
             Check(IsErr(rC2) && FirstText(rC2) == "Error: simulated IDE refusal for save_file",
                 "C: an IDE isError result must come back verbatim as isError; got " + Show(rC2));
@@ -369,6 +407,17 @@ static class IdeProxyE2E
             Check(IsErr(rE) && (FirstText(rE) ?? "").Contains("older Clarion Assistant") && (FirstText(rE) ?? "").Contains("Update Clarion Assistant in that Clarion")
                   && !(FirstText(rE) ?? "").Contains("Error executing tool"),
                 "E: expected the 'update Clarion Assistant in that Clarion' message; got " + Show(rE));
+
+            // ---------------- L5: a forwarding add-in (ideTools=1) that lacks the tool ----------------
+            ClearRecords();
+            WriteEndpoint(me, _port, _token, null, 1); WriteSolution(me, _sln);
+            _olderAddin = true;
+            var rE2 = srv.Call("get_app_info", null);
+            _olderAddin = false;
+            Console.WriteLine("L5 protocol  " + FirstText(rE2));
+            Check(IsErr(rE2) && (FirstText(rE2) ?? "").Contains("serves the IDE tools to other clients, but does not have get_app_info")
+                  && (FirstText(rE2) ?? "").Contains("this server is newer") && !(FirstText(rE2) ?? "").Contains("older Clarion Assistant"),
+                "L5: an add-in whose record says ideTools=1 must be reported as lacking the tool, not as an older add-in; got " + Show(rE2));
 
             // ---------------- F: two IDEs on this solution ----------------
             ClearRecords();

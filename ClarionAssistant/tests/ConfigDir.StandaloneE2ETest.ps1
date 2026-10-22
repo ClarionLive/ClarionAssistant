@@ -95,6 +95,7 @@ function Start-Server([string]$arguments, [hashtable]$envVars) {
     foreach ($k in @('CLARION_CONFIG_DIR', 'CLARION_MCP_LAUNCHER', 'CLARION_ROOTS')) {
         if ($psi.EnvironmentVariables.ContainsKey($k)) { $psi.EnvironmentVariables.Remove($k) }
     }
+    $psi.EnvironmentVariables['CA_TEST_HOOKS'] = '1'   # L2: the record hooks need it
     $psi.EnvironmentVariables['CA_IDE_RECORD_DIR'] = $recs   # never this machine's real IDE records
     if ($envVars) { foreach ($k in $envVars.Keys) { $psi.EnvironmentVariables[$k] = [string]$envVars[$k] } }
     return [System.Diagnostics.Process]::Start($psi)

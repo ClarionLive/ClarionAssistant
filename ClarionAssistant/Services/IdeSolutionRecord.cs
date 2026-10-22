@@ -33,6 +33,18 @@ namespace ClarionAssistant.Services
         /// <summary>Test hook: redirects the record directory. Null in production.</summary>
         internal static string RootOverride { get; set; }
 
+        /// <summary>b8f9431c review L2: a test-only environment hook (CA_IDE_RECORD_DIR, CA_IDE_IMAGE_NAME), honoured only
+        /// with CA_TEST_HOOKS=1 - the same rule as IdeEndpointRecord.TestHook (a copy: this file compiles alone).</summary>
+        private static string TestHook(string name)
+        {
+            try
+            {
+                if (Environment.GetEnvironmentVariable("CA_TEST_HOOKS") != "1") return null;
+                return Environment.GetEnvironmentVariable(name);
+            }
+            catch { return null; }
+        }
+
         private static readonly object _lock = new object();
         private static string _lastPublished;   // what this process last wrote ("" = removed)
         private static string _lastSolution;    // the solution in it, for Republish
@@ -72,7 +84,7 @@ namespace ClarionAssistant.Services
                 // 44a1b10c: a cross-PROCESS test override (RootOverride is in-process only), shared with
                 // IdeEndpointRecord (its RecordDirEnv), so a harness can point a real standalone exe at a temp
                 // directory. A literal here so the files that compile this one alone need nothing new.
-                string env = Environment.GetEnvironmentVariable("CA_IDE_RECORD_DIR");
+                string env = TestHook("CA_IDE_RECORD_DIR");   // L2: only with CA_TEST_HOOKS=1
                 if (!string.IsNullOrEmpty(env)) return Path.Combine(env, "ide-solution");
                 return Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -359,7 +371,7 @@ namespace ClarionAssistant.Services
                 return false;
             }
 
-            string image = Environment.GetEnvironmentVariable("CA_IDE_IMAGE_NAME");
+            string image = TestHook("CA_IDE_IMAGE_NAME");   // L2: only with CA_TEST_HOOKS=1
             if (string.IsNullOrEmpty(image)) image = "Clarion";
             if (liveName == null || !liveName.StartsWith(image, StringComparison.OrdinalIgnoreCase)
                 || (!string.IsNullOrEmpty(recordedName) && !string.Equals(liveName, recordedName, StringComparison.OrdinalIgnoreCase)))

@@ -1,5 +1,7 @@
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Reflection;
 using System.Windows.Forms;
 using ICSharpCode.SharpDevelop.Gui;
 using ClarionAssistant.Services;
@@ -73,6 +75,53 @@ namespace ClarionAssistant
             McpToolRegistry.DiagnosticLog = msg => MonacoSpikeLog.Write(msg);
             McpToolRegistry.CaEmbeditorLiveProbe = () => Terminal.ModernEmbeditorViewContent.HasLiveOverlay;
             McpToolRegistry.ActiveEditorCoveredProbe = () => Terminal.ModernEmbeditorViewContent.ActiveEditorIsCoveredByOverlay();
+            // b8f9431c review M2 + visibility: process-wide, so they also cover the chat pane's server when that one
+            // holds the endpoint record a forwarder finds. Only calls carrying the forwarder's params._meta reach them.
+            McpDispatcher.ExpectedSolutionGuard = CheckExpectedSolution;
+            McpDispatcher.ForwardedCallObserver = OnForwardedCall;
+            McpDispatcher.ForwardedCallFilter = McpToolRegistry.ForwardedRefusal;
+        }
+
+        /// <summary>
+        /// b8f9431c review M2: the forwarded call's expected solution against the solution this IDE has open NOW, by file
+        /// identity. Runs on the UI thread just before the handler. Null = still the same solution.
+        /// </summary>
+        internal static string CheckExpectedSolution(string expected)
+        {
+            string open = null;
+            try { open = EditorService.GetOpenSolutionPath(); } catch { open = null; }
+            if (!string.IsNullOrEmpty(open) && FileIdentity.SameFile(open, expected)) return null;
+            string now = string.IsNullOrEmpty(open) ? "no solution" : SafeName(open);
+            MonacoSpikeLog.Write("[ide-callback] refused a forwarded call: expected " + expected + ", open " + (open ?? "none"));
+            return "Error: Clarion now has " + now + " open, not " + SafeName(expected) + "; nothing was run. "
+                + "Open " + SafeName(expected) + " in that Clarion (or start this client in the solution Clarion has open), then call it again.";
+        }
+
+        private static string SafeName(string path)
+        {
+            try { return Path.GetFileName(path); } catch { return path; }
+        }
+
+        /// <summary>
+        /// b8f9431c (security review M3): a change made from OUTSIDE the IDE is visible in it. A forwarded write tool is
+        /// logged ("[ide-callback] &lt;tool&gt; from plugin client", monaco-spike.log) and shown in the status bar.
+        /// Read-only tools are not logged per call (get_active_file runs constantly).
+        /// </summary>
+        private static void OnForwardedCall(string tool)
+        {
+            if (!McpToolRegistry.IdeWriteTools.Contains(tool ?? "")) return;
+            MonacoSpikeLog.Write("[ide-callback] " + tool + " from plugin client");
+            try
+            {
+                Control ui = WorkbenchSingleton.MainForm;
+                Action show = () =>
+                {
+                    try { ICSharpCode.SharpDevelop.StatusBarService.SetMessage("Clarion Assistant: " + tool + " from a plugin client (outside the IDE)"); }
+                    catch { }
+                };
+                if (ui != null && ui.InvokeRequired) ui.BeginInvoke(show); else show();
+            }
+            catch { }
         }
 
         /// <summary>UI thread, addin start. Never throws.</summary>
@@ -87,13 +136,20 @@ namespace ClarionAssistant
                 Control ui = WorkbenchSingleton.MainForm;
                 try { ModernEmbeditorLauncher.EnsureRedirectionLoaded(); } catch { }   // the .red the policy's roots come from
                 InstallRegistryHooks();   // BEFORE the registry is built: its constructor reads AppTreeFactory/IdeProbeFactory
+                // L3: read-only instance coordination for open_procedure_embed's conflict check (never Start()ed: this
+                // registry does not register the IDE, it only reads which OTHER instance has a procedure open).
+                InstanceCoordinationService coord = null;
+                try { coord = new InstanceCoordinationService(); }
+                catch (Exception ex) { MonacoSpikeLog.Write("[ide-callback] instance coordination unavailable: " + ex.Message); }
                 var registry = McpToolRegistry.BuildIdeCallbackRegistry(new EditorService(), new ClarionClassParser(),
-                    new IdeWorkspace(), new McpServer.ControlUiDispatcher(ui), new DiffService());
-                var settings = new SettingsService();   // read here for the UI budget only; NOT given to the server (external token)
+                    new IdeWorkspace(), new McpServer.ControlUiDispatcher(ui), new DiffService(), coord);
                 var server = new McpServer(ui, null)
                 {
                     ReclaimPreferredPort = false,
-                    UiTimeoutSettingReader = () => settings.Get(McpUiTimeoutPolicy.SettingKey)
+                    // L6: re-read settings.txt per call (as the plugin's forwarder does), so both sides budget a call
+                    // from the SAME value and the client never gives up first after a hand edit. NOT given to the
+                    // server as settings: that would also turn on the external token.
+                    UiTimeoutSettingReader = McpServer.ReadUiTimeoutSettingLive
                 };
                 server.SetToolRegistry(registry);
                 if (!server.Start(PreferredPort))
@@ -113,6 +169,11 @@ namespace ClarionAssistant
                 MonacoSpikeLog.Write("[ide-callback] start failed: " + ex.Message);
             }
 
+            // b8f9431c review M2: also publish on the IDE's own solution events, so the record a forwarder matches by is
+            // current within moments of a switch, not up to 10 s later (the IDE re-checks every call regardless).
+            SubscribeSolutionEvent("SolutionLoaded", "OnSolutionChanged");
+            SubscribeSolutionEvent("SolutionClosed", "OnSolutionClosed");
+
             try
             {
                 PublishSolution();
@@ -121,6 +182,28 @@ namespace ClarionAssistant
                 _solutionTimer.Start();
             }
             catch (Exception ex) { Debug.WriteLine("[IdeCallbackHost] solution poll failed: " + ex.Message); }
+        }
+
+        private static void SubscribeSolutionEvent(string eventName, string handlerName)
+        {
+            try
+            {
+                var asm = Assembly.Load("ICSharpCode.SharpDevelop");
+                var psType = asm == null ? null : asm.GetType("ICSharpCode.SharpDevelop.Project.ProjectService");
+                var evt = psType == null ? null : psType.GetEvent(eventName, BindingFlags.Public | BindingFlags.Static);
+                if (evt == null) { MonacoSpikeLog.Write("[ide-callback] solution event " + eventName + " not found (10 s poll only)"); return; }
+                var m = typeof(IdeCallbackHost).GetMethod(handlerName, BindingFlags.NonPublic | BindingFlags.Static);
+                evt.AddEventHandler(null, Delegate.CreateDelegate(evt.EventHandlerType, m));
+            }
+            catch (Exception ex) { MonacoSpikeLog.Write("[ide-callback] subscribe " + eventName + " failed: " + ex.Message); }
+        }
+
+        private static void OnSolutionChanged(object sender, EventArgs e) { PublishSolution(); }
+
+        private static void OnSolutionClosed(object sender, EventArgs e)
+        {
+            try { IdeSolutionRecord.Publish(null); }   // closed: withdraw the record now (the poll re-publishes if one is open)
+            catch (Exception ex) { Debug.WriteLine("[IdeCallbackHost] solution withdraw failed: " + ex.Message); }
         }
 
         private static void PublishSolution()

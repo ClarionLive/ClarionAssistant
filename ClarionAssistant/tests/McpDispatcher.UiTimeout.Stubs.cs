@@ -18,7 +18,7 @@ namespace ClarionAssistant.Services
 
     public class McpToolRegistry
     {
-        private sealed class Fake { public int SleepMs; public int Declared; public FakeToolMode Mode; }
+        private sealed class Fake { public int SleepMs; public int Declared; public FakeToolMode Mode; public bool Worker; }
 
         private readonly Dictionary<string, Fake> _tools = new Dictionary<string, Fake>(StringComparer.OrdinalIgnoreCase);
 
@@ -26,12 +26,25 @@ namespace ClarionAssistant.Services
         public static readonly ConcurrentDictionary<string, int> Executions = new ConcurrentDictionary<string, int>();
         public static readonly ConcurrentDictionary<string, bool> CommitResults = new ConcurrentDictionary<string, bool>();
 
+        /// <summary>b8f9431c M3: how many fake tools run at this moment, and the most that ever ran at once.</summary>
+        public static int Running, MaxRunning;
+        /// <summary>Completion order ("name" per finished call).</summary>
+        public static readonly ConcurrentQueue<string> Finished = new ConcurrentQueue<string>();
+
+        public static void ResetConcurrency() { Running = 0; MaxRunning = 0; string x; while (Finished.TryDequeue(out x)) { } }
+
         public void Add(string name, int sleepMs, int declaredSeconds, FakeToolMode mode = FakeToolMode.Plain)
         {
             _tools[name] = new Fake { SleepMs = sleepMs, Declared = declaredSeconds, Mode = mode };
         }
 
-        public bool RequiresUiThread(string toolName) { return _tools.ContainsKey(toolName); }
+        /// <summary>b8f9431c M2: a tool that runs OFF the UI thread (RequiresUiThread false), like open_file.</summary>
+        public void AddWorker(string name, int sleepMs)
+        {
+            _tools[name] = new Fake { SleepMs = sleepMs, Worker = true };
+        }
+
+        public bool RequiresUiThread(string toolName) { Fake t; return _tools.TryGetValue(toolName, out t) && !t.Worker; }
 
         public int UiTimeoutSeconds(string toolName)
         {
@@ -44,6 +57,11 @@ namespace ClarionAssistant.Services
             Fake t;
             if (!_tools.TryGetValue(name, out t)) throw new InvalidOperationException("unknown tool " + name);
             Executions.AddOrUpdate(name, 1, (k, v) => v + 1);
+            int now = Interlocked.Increment(ref Running);
+            int seen;
+            while ((seen = MaxRunning) < now && Interlocked.CompareExchange(ref MaxRunning, now, seen) != seen) { }
+            try
+            {
             switch (t.Mode)
             {
                 case FakeToolMode.CommitAtEnd:
@@ -59,6 +77,8 @@ namespace ClarionAssistant.Services
                     Thread.Sleep(t.SleepMs);
                     break;
             }
+            }
+            finally { Interlocked.Decrement(ref Running); Finished.Enqueue(name); }
             return "done:" + name;
         }
 
@@ -83,7 +103,7 @@ namespace ClarionAssistant.Services
         public void BeginInvokeOnUi(Action action)
         {
             int delay = StartDelayMs;
-            var t = new Thread(() => { if (delay > 0) Thread.Sleep(delay); action(); }) { IsBackground = true };
+            var t = new Thread(() => { if (delay > 0) Thread.Sleep(delay); action(); }) { IsBackground = true, Name = "fake-ui" };
             t.Start();
         }
     }
