@@ -133,16 +133,20 @@ if ($parsed.Count -ge 1) {
 
 if ($parsed.Count -ge 2) {
     $toolCount = @($parsed[1].result.tools).Count
-    # b8f9431c: launched the way the plugin does (no --ide-pid), the server ALSO lists the 59 IdeOnly tools, which it
-    # forwards to a running Clarion IDE on its solution (tests\IdeProxy.StandaloneE2ETest.ps1 drives the forwarding).
-    Assert-That ($toolCount -eq 120) "expected 120 tools advertised standalone (61 own + 59 forwarded IDE tools), got $toolCount"
+    # b8f9431c: launched the way the plugin does (no --ide-pid), the server ALSO lists 57 of the 59 IdeOnly tools, which
+    # it forwards to a running Clarion IDE on its solution (tests\IdeProxy.StandaloneE2ETest.ps1 drives the forwarding).
+    # Review M1: execute_command and dump_object_api are never offered outside the IDE.
+    Assert-That ($toolCount -eq 118) "expected 118 tools advertised standalone (61 own + 57 forwarded IDE tools), got $toolCount"
 
     $names = @($parsed[1].result.tools | ForEach-Object { $_.name })
     $ideTools = @($parsed[1].result.tools | Where-Object { $_.description -match 'This server forwards the call to that IDE' })
-    foreach ($ide in @('get_active_file', 'insert_text_at_cursor', 'open_procedure_embed', 'export_dctx', 'execute_command')) {
+    foreach ($ide in @('get_active_file', 'insert_text_at_cursor', 'open_procedure_embed', 'export_dctx')) {
         Assert-That ($names -contains $ide) "IDE tool '$ide' is not listed for forwarding"
     }
-    Assert-That ($ideTools.Count -eq 59) "expected the 59 IDE tools to say they are forwarded to the IDE, got $($ideTools.Count)"
+    foreach ($never in @('execute_command', 'dump_object_api')) {
+        Assert-That (-not ($names -contains $never)) "IDE tool '$never' must not be listed outside the IDE (review M1)"
+    }
+    Assert-That ($ideTools.Count -eq 57) "expected the 57 forwarded IDE tools to say they are forwarded to the IDE, got $($ideTools.Count)"
     # ...and the tools this server runs itself must be present, WITHOUT the forwarding note.
     foreach ($wanted in @('query_docs', 'lsp_find_symbol', 'query_knowledge', 'read_file')) {
         Assert-That ($names -contains $wanted) "expected tool '$wanted' to be advertised"
