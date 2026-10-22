@@ -70,6 +70,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
             "  !end!",
             "  INCLUDE('Both.inc'),ONCE",                     // also INCLUDEd conditionally below: still a gap
             "  INCLUDE('Wrap.inc'),ONCE",                     // an unconditional route found only deeper in the walk
+            "  INCLUDE('OutsideLib.inc'),ONCE",               // outside the solution folder: Pass 2b does not descend
             "  MAP",
             "    INCLUDE('MapProto.inc')",                    // inside the MAP: Pass 1's, must not be stored twice
             "    MODULE('AppMod.clw')",
@@ -86,6 +87,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
             "  INCLUDE('Deep.inc'),ONCE",                     // conditional here, but Wrap.inc INCLUDEs it unconditionally
             "  INCLUDE('Shared.inc'),ONCE",                   // conditional here, but Wrap.inc INCLUDEs it unconditionally
             "  **",
+            "  INCLUDE('GapInMember.inc'),ONCE",              // a real gap; conditional on the global-data route below
             "DoWork PROCEDURE()",
             "  CODE");
 
@@ -118,10 +120,20 @@ static class CodeGraphIndexerIncludeOutcomeTest
             "Phantom2Thing       CLASS,TYPE",
             "                    END");
 
-        // Includes resolve through the project's folder only; no library path holds the fixture's .inc files.
+        // A shared library folder outside the solution: Pass 2b records OutsideLib.inc as skipped_outside_solution
+        // and never reads its INCLUDEs, but Pass 2d reads it as global data and must judge them itself.
+        string outside = Path.Combine(root, "SharedLib");
+        Write(Path.Combine(outside, "OutsideLib.inc"),
+            "  COMPILE('***',_NOT_DEFINED_)",
+            "  INCLUDE('OutsideCondMissing.inc'),ONCE",
+            "  INCLUDE('GapInMember.inc'),ONCE",
+            "  ***",
+            "  INCLUDE('OutsideMissing.inc'),ONCE");
+
+        // Includes resolve through the project's folder and that one library folder; no library path is given.
         Write(Path.Combine(sln, "Clarion110.red"),
             "[Common]",
-            "*.inc = " + app,
+            "*.inc = " + app + ";" + outside,
             "*.clw = " + app);
 
         string slnPath = Path.Combine(sln, "IncludeOutcome.sln");
@@ -138,9 +150,9 @@ static class CodeGraphIndexerIncludeOutcomeTest
         return dt.Rows.Count == 0 || dt.Rows[0][0] == DBNull.Value ? 0 : Convert.ToInt32(dt.Rows[0][0]);
     }
 
-    static string Outcome(CodeGraphDatabase db, string fileName)
+    static string Outcome(CodeGraphDatabase db, string fileName, string pass = "pass2b-include")
     {
-        var dt = db.ExecuteQuery("SELECT outcome FROM indexed_files WHERE pass='pass2b-include' AND file_name='" + fileName + "'");
+        var dt = db.ExecuteQuery("SELECT outcome FROM indexed_files WHERE pass='" + pass + "' AND file_name='" + fileName + "'");
         return dt.Rows.Count == 0 ? "(no row)" : string.Join(",", dt.Rows.Cast<System.Data.DataRow>().Select(r => r[0].ToString()));
     }
 
@@ -184,7 +196,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
 
             Console.WriteLine("-- the warning names the real gaps, and only those");
             Check(!warning.Contains("CondMissing") && !warning.Contains("Nested.inc"), "F7", "conditional targets are not in the warning");
-            Check(warning.StartsWith("6 INCLUDE()d"), "F8", "the warning counts the 6 real gaps: '" + warning + "'");
+            Check(warning.StartsWith("7 INCLUDE()d"), "F8", "the warning counts the 7 real gaps (GapInMember.inc included): '" + warning + "'");
             Check(warning.Contains("Missing.inc (App.clw:5)") && warning.Contains("AfterBlock.inc (App.clw:10)"),
                   "F9", "the warning names each gap and the line that INCLUDEs it");
             Check(log.Any(l => l.Contains("INCLUDE not resolved: CondMissing.inc (App.clw:7)") && l.Contains("conditional")),
@@ -205,6 +217,23 @@ static class CodeGraphIndexerIncludeOutcomeTest
                   "P8", "an INCLUDE inside the PROGRAM's MAP is stored once (Pass 1), not again by the whole-file parse");
             Check(Scalar(db, "SELECT COUNT(*) FROM symbols WHERE type='include' AND name='Missing.inc'") == 1,
                   "P9", "an INCLUDE in the PROGRAM's global data is stored, once");
+
+            Console.WriteLine("-- Pass 2d (global data) records the same outcome as Pass 2b");
+            Check(Outcome(db, "CondMissing.inc", "pass2d-global-data") == "unresolved_conditional", "G1",
+                  "a conditional global-data INCLUDE that does not resolve: CondMissing.inc is " + Outcome(db, "CondMissing.inc", "pass2d-global-data"));
+            Check(Outcome(db, "Nested.inc", "pass2d-global-data") == "unresolved_conditional", "G2",
+                  "INCLUDEd by a conditionally INCLUDEd .inc: Nested.inc is " + Outcome(db, "Nested.inc", "pass2d-global-data"));
+            Check(Outcome(db, "Missing.inc", "pass2d-global-data") == "unresolved", "G3",
+                  "an unconditional one is still unresolved: Missing.inc is " + Outcome(db, "Missing.inc", "pass2d-global-data"));
+            Check(Outcome(db, "OutsideLib.inc") == "skipped_outside_solution", "G4",
+                  "fixture: Pass 2b skips the library .inc outside the solution (" + Outcome(db, "OutsideLib.inc") + ")");
+            Check(Outcome(db, "OutsideCondMissing.inc", "pass2d-global-data") == "unresolved_conditional", "G5",
+                  "conditional inside a library .inc Pass 2b never read: OutsideCondMissing.inc is " + Outcome(db, "OutsideCondMissing.inc", "pass2d-global-data"));
+            Check(Outcome(db, "OutsideMissing.inc", "pass2d-global-data") == "unresolved", "G6",
+                  "unconditional there: OutsideMissing.inc is " + Outcome(db, "OutsideMissing.inc", "pass2d-global-data"));
+            Check(Outcome(db, "GapInMember.inc", "pass2d-global-data") == "unresolved", "G7",
+                  "conditional in global data but a gap through the MEMBER module: GapInMember.inc is " + Outcome(db, "GapInMember.inc", "pass2d-global-data"));
+            Check(warning.StartsWith("7 INCLUDE()d"), "G8", "Pass 2d rows still do not count toward the warning: '" + warning + "'");
 
             Console.WriteLine("-- an incremental run with nothing changed");
             var again = indexer.IndexSolution(slnPath, true, null);

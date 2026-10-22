@@ -324,8 +324,9 @@ namespace ClarionCodeGraph.Graph
             var incScans = new Dictionary<string, IncScan>(StringComparer.OrdinalIgnoreCase);
             // Pass 2c seeds: MODULE/LINK names on classes declared in a project's parsed .clw files.
             var clwModuleSeeds = new Dictionary<int, List<KeyValuePair<string, string>>>();
-            // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project.
-            var globalDataIncludeSeeds = new Dictionary<int, List<string>>();
+            // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project, each with
+            // whether that INCLUDE sits in a conditional COMPILE/OMIT block.
+            var globalDataIncludeSeeds = new Dictionary<int, List<KeyValuePair<string, bool>>>();
             int unresolvedCount = 0;
 
             // Files an earlier run reached OTHER than through the .cwproj (Pass 2b includes, Pass 2c MODULE/LINK
@@ -706,13 +707,13 @@ namespace ClarionCodeGraph.Graph
                                 NoteInclude(discoveredIncludeNames, includeOrigins, proj.Id, sym);
                                 if (sym.InGlobalData)
                                 {
-                                    List<string> gd;
+                                    List<KeyValuePair<string, bool>> gd;
                                     if (!globalDataIncludeSeeds.TryGetValue(proj.Id, out gd))
                                     {
-                                        gd = new List<string>();
+                                        gd = new List<KeyValuePair<string, bool>>();
                                         globalDataIncludeSeeds[proj.Id] = gd;
                                     }
-                                    gd.Add(sym.Name);
+                                    gd.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
                                 }
                             }
 
@@ -1318,7 +1319,7 @@ namespace ClarionCodeGraph.Graph
             List<SolutionProject> projects,
             HashSet<int> changedProjects,
             Dictionary<int, string> projectDirs,
-            Dictionary<int, List<string>> seeds,
+            Dictionary<int, List<KeyValuePair<string, bool>>> seeds,
             List<string> libraryPaths,
             string clarionRoot,
             IndexResult result)
@@ -1327,14 +1328,20 @@ namespace ClarionCodeGraph.Graph
             foreach (var proj in projects)
             {
                 int pid = proj.Id;
-                List<string> seedNames;
+                List<KeyValuePair<string, bool>> seedNames;
                 string projectDir;
                 if (!changedProjects.Contains(pid) || !seeds.TryGetValue(pid, out seedNames) ||
                     !projectDirs.TryGetValue(pid, out projectDir)) continue;
 
-                var queue = new Queue<string>(seedNames);
+                var queue = new Queue<string>();
+                foreach (var seed in seedNames) queue.Enqueue(seed.Key);
                 var namesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var pathsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // For the unresolved_conditional decision after the walk (GH #271), as Pass 2b makes it: the file each
+                // name resolved to, and the INCLUDEs each read file makes, with whether each one is conditional.
+                var nameToPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var includesOf = new Dictionary<string, List<KeyValuePair<string, bool>>>(StringComparer.OrdinalIgnoreCase);
+                var unresolved = new List<string>();
                 const int MaxFiles = 500; // belt-and-braces against a pathological include web
                 while (queue.Count > 0 && pathsSeen.Count < MaxFiles)
                 {
@@ -1349,9 +1356,10 @@ namespace ClarionCodeGraph.Graph
                     string full = ResolveCached(projectDir, name, libraryPaths);
                     if (full == null)
                     {
-                        _db.InsertIndexedFile(pid, name, null, "unresolved", 0, PassGlobalData);
+                        unresolved.Add(name);
                         continue;
                     }
+                    nameToPath[name] = full;
                     if (!pathsSeen.Add(full)) continue;
                     if (IsUnder(full, clarionRoot))
                     {
@@ -1360,12 +1368,18 @@ namespace ClarionCodeGraph.Graph
                     }
 
                     var parsed = _clarionParser.ParseGlobalDataInclude(full, pid);
+                    var children = new List<KeyValuePair<string, bool>>();
+                    includesOf[full] = children;
                     int kept = 0;
                     foreach (var sym in parsed.Symbols)
                     {
                         if (sym.Type == "include")
                         {
-                            if (sym.InGlobalData) queue.Enqueue(sym.Name);
+                            if (sym.InGlobalData)
+                            {
+                                queue.Enqueue(sym.Name);
+                                children.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
+                            }
                             continue;
                         }
                         if (sym.Type != "variable" || sym.Scope != "global") continue;
@@ -1381,8 +1395,47 @@ namespace ClarionCodeGraph.Graph
                     _db.InsertIndexedFile(pid, Path.GetFileName(full), full,
                         kept > 0 ? "resolved_parsed" : "resolved_no_symbols", kept, PassGlobalData);
                 }
+
+                if (unresolved.Count == 0) continue;
+                // Required = some route from the PROGRAM is unconditional all the way. This walk also reads files
+                // Pass 2b does not descend into (outside the solution folder), so it decides for itself; a name Pass
+                // 2b found required through another route (a MEMBER module) stays a gap here too.
+                var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var requiredWork = new Queue<string>();
+                foreach (var seed in seedNames)
+                    if (!seed.Value && required.Add(seed.Key)) requiredWork.Enqueue(seed.Key);
+                while (requiredWork.Count > 0)
+                {
+                    string path;
+                    List<KeyValuePair<string, bool>> children;
+                    if (!nameToPath.TryGetValue(requiredWork.Dequeue(), out path) ||
+                        !includesOf.TryGetValue(path, out children)) continue;
+                    foreach (var child in children)
+                        if (!child.Value && required.Add(child.Key)) requiredWork.Enqueue(child.Key);
+                }
+                var gapsElsewhere = IncludeNamesWithOutcome(pid, "unresolved");
+                foreach (string name in unresolved)
+                    _db.InsertIndexedFile(pid, name, null,
+                        required.Contains(name) || gapsElsewhere.Contains(name) ? "unresolved" : OutcomeUnresolvedConditional,
+                        0, PassGlobalData);
             }
             ReportProgress(string.Format("  Global data: {0} INCLUDEd file(s) read, {1} global variable(s)", files, variables));
+        }
+
+        /// <summary>The INCLUDE() targets Pass 2b recorded with <paramref name="outcome"/> for a project.</summary>
+        private HashSet<string> IncludeNamesWithOutcome(int projectId, string outcome)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var dt = _db.ExecuteQuery(
+                    "SELECT file_name FROM indexed_files WHERE project_id = @pid AND pass = 'pass2b-include' AND outcome = @outcome",
+                    new Dictionary<string, object> { { "@pid", projectId }, { "@outcome", outcome } });
+                foreach (System.Data.DataRow row in dt.Rows)
+                    names.Add(row["file_name"].ToString());
+            }
+            catch { }
+            return names;
         }
 
         /// <summary>indexed_files outcome of a Pass 2b INCLUDE() target that did not resolve and is only ever INCLUDEd
