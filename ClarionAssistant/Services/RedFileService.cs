@@ -146,6 +146,17 @@ namespace ClarionAssistant.Services
             if (!_macros.ContainsKey("REDDIR") && _macros.ContainsKey("reddir"))
                 _macros["REDDIR"] = _macros["reddir"];
 
+            // %REDNAME% is predefined by Clarion, not stored with the version's Macros: it is the version's
+            // redirection file NAME (RedirectionFile/Name, e.g. "Clarion110.red"). A project-local .red
+            // typically chains to the default one with {include %REDDIR%\%REDNAME%}; without it that include
+            // was skipped and every default search path lost. A local .red only loads under that same name,
+            // so the loaded file's own name is the right fallback when no version name was recorded.
+            if (!_macros.ContainsKey("REDNAME"))
+            {
+                string redName = !string.IsNullOrEmpty(VersionRedFileName) ? VersionRedFileName : redFilePath;
+                _macros["REDNAME"] = Path.GetFileName(redName);
+            }
+
             _loadedFiles.Clear();
             _watched.Clear();
             _skippedIncludes.Clear();
