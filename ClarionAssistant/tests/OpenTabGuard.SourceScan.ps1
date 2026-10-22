@@ -289,11 +289,13 @@ Check ($auto.Contains('NativeTabSync.Register()')) 'the addin registers it at st
 # Pipeline run 1, fix 2: the endpoint exists with NO chat pane.
 Check ($auto.Contains('IdeCallbackHost.Start()')) 'the IDE call-back endpoint starts at addin start, not in the chat pane'
 $cbHost = Text 'IdeCallbackHost.cs'
-Check ($src -match 'IdeCallbackTools\s*=\s*\{\s*"get_live_text",\s*"editor_tab_sync"\s*\}' -and $src.Contains('registry.RetainOnly(IdeCallbackTools)') -and
+# b8f9431c: it serves every IdeOnly tool now (tests\IdeProxy.SourceScan.ps1 pins which); the two call-backs are among them.
+Check ($src -match 'IdeCallbackTools\s*=\s*\{\s*"get_live_text",\s*"editor_tab_sync"\s*\}' -and
+       $src -match 'new McpToolRegistry\(editorService, parser, true\)' -and
        $cbHost.Contains('McpToolRegistry.BuildIdeCallbackRegistry(')) `
-    'the call-back endpoint serves exactly get_live_text and editor_tab_sync'
+    'the call-back endpoint serves the IdeOnly tools, get_live_text and editor_tab_sync among them'
 # Pipeline run 2 (HIGH): WITH a workspace, so the #266 read gate on editor_tab_sync check has the solution's roots.
-Check ($cbHost -match 'BuildIdeCallbackRegistry\([^;]*new IdeWorkspace\(\)[^;]*new McpServer\.ControlUiDispatcher\(ui\)\)') `
+Check ($cbHost -match 'BuildIdeCallbackRegistry\([^;]*new IdeWorkspace\(\)[^;]*new McpServer\.ControlUiDispatcher\(ui\)') `
     'the call-back registry gets the IDE''s workspace and a UI dispatcher'
 Check ($src -match 'registry\._workspace = workspace;' -and -not ($src -match 'BuildIdeCallbackRegistry[\s\S]{0,900}?SetWorkspace\(')) `
     'the workspace is set on that registry only (the shared SharedLspBridge providers are not rebound)'

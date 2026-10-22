@@ -133,22 +133,44 @@ if ($parsed.Count -ge 1) {
 
 if ($parsed.Count -ge 2) {
     $toolCount = @($parsed[1].result.tools).Count
-    Assert-That ($toolCount -eq 61) "expected 61 tools advertised standalone, got $toolCount"
+    # b8f9431c: launched the way the plugin does (no --ide-pid), the server ALSO lists the 59 IdeOnly tools, which it
+    # forwards to a running Clarion IDE on its solution (tests\IdeProxy.StandaloneE2ETest.ps1 drives the forwarding).
+    Assert-That ($toolCount -eq 120) "expected 120 tools advertised standalone (61 own + 59 forwarded IDE tools), got $toolCount"
 
-    # The gate must hold on the WIRE, not just in the registry: no IDE-only tool may be listed.
     $names = @($parsed[1].result.tools | ForEach-Object { $_.name })
-    # execute_command is here because it escaped the gate: its dependency is a reflection scan
-    # over loaded assemblies, not a field reference, so no field-based check could see it.
-    foreach ($banned in @('get_active_file', 'insert_text', 'open_procedure', 'export_dctx', 'execute_command')) {
-        Assert-That (-not ($names -contains $banned)) `
-            "IDE-only tool '$banned' was advertised by a server with no IDE"
+    $ideTools = @($parsed[1].result.tools | Where-Object { $_.description -match 'This server forwards the call to that IDE' })
+    foreach ($ide in @('get_active_file', 'insert_text_at_cursor', 'open_procedure_embed', 'export_dctx', 'execute_command')) {
+        Assert-That ($names -contains $ide) "IDE tool '$ide' is not listed for forwarding"
     }
-    # ...and the tools this ticket exists to deliver must be present.
+    Assert-That ($ideTools.Count -eq 59) "expected the 59 IDE tools to say they are forwarded to the IDE, got $($ideTools.Count)"
+    # ...and the tools this server runs itself must be present, WITHOUT the forwarding note.
     foreach ($wanted in @('query_docs', 'lsp_find_symbol', 'query_knowledge', 'read_file')) {
         Assert-That ($names -contains $wanted) "expected tool '$wanted' to be advertised"
+        Assert-That (-not (@($ideTools | ForEach-Object { $_.name }) -contains $wanted)) "own tool '$wanted' is described as forwarded"
     }
-    Report-Block $blockStart "$toolCount tools advertised; IDE-only withheld, agnostic present"
+    Report-Block $blockStart "$toolCount tools advertised; IDE tools listed for forwarding, own tools present"
 }
+
+# ---------------------------------------------------------------- 1b. launched by an IDE (a CA tab)
+# The gate must hold on the WIRE when an IDE launched the server (--ide-pid): that IDE's own pane serves the IdeOnly
+# tools as clarion-assistant, so listing them here too would offer each one twice under two prefixes.
+$blockStart = $failures.Count
+$r1b = Invoke-Server @(
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+    '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+) @('--stdio', '--ide-pid', "$PID")
+$f1b = @($r1b.Stdout -split "`n" | Where-Object { $_.Trim().Length -gt 0 })
+if ($f1b.Count -ge 2) {
+    $tabNames = @(($f1b[1] | ConvertFrom-Json).result.tools | ForEach-Object { $_.name })
+    Assert-That ($tabNames.Count -eq 61) "expected 61 tools from a server an IDE launched, got $($tabNames.Count)"
+    # execute_command is here because it once escaped the gate: its dependency is a reflection scan over loaded
+    # assemblies, not a field reference, so no field-based check could see it.
+    foreach ($banned in @('get_active_file', 'insert_text_at_cursor', 'open_procedure_embed', 'export_dctx', 'execute_command')) {
+        Assert-That (-not ($tabNames -contains $banned)) "IDE-only tool '$banned' was advertised by a server an IDE launched"
+    }
+    Report-Block $blockStart "launched by an IDE: $($tabNames.Count) tools, IDE-only withheld (its pane serves them)"
+}
+else { $failures.Add("expected 2 frames from the --ide-pid run, got $($f1b.Count). stderr: $($r1b.Stderr)") }
 
 # The notification must NOT have been answered — 3 frames for 4 inputs proves it.
 Assert-That ($frames.Count -eq 3) "a notification was answered (would give 4 frames)"

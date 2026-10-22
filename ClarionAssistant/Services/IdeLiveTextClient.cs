@@ -103,8 +103,29 @@ namespace ClarionAssistant.Services
         internal static string CallTool(IdeEndpointRecord.Endpoint ep, string toolName, Dictionary<string, object> args,
                                         Stopwatch sw, int budgetMs)
         {
+            var res = CallToolRaw(ep, toolName, args, sw, budgetMs);
+            object content;
+            var list = res.TryGetValue("content", out content) ? content as object[] : null;
+            var first = list != null && list.Length > 0 ? list[0] as Dictionary<string, object> : null;
+            object textObj;
+            string text = first != null && first.TryGetValue("text", out textObj) ? textObj as string : null;
+            if (text == null) throw new IOException("empty tool result");
+            return text;
+        }
+
+        /// <summary>
+        /// b8f9431c: one tools/call on <paramref name="ep"/>, returning the WHOLE MCP result ({content, isError}) as the
+        /// IDE sent it, for the standalone's forwarded IDE tools. Same transport and budget rules as <see cref="CallTool"/>;
+        /// a non-200 reply throws <see cref="IdeHttpStatusException"/> (its Status says which), a missing result IOException.
+        /// The one retry is on HTTP 400 only - the endpoint rejected the session BEFORE running anything - so a tool that
+        /// changes the IDE is never sent twice.
+        /// </summary>
+        internal static Dictionary<string, object> CallToolRaw(IdeEndpointRecord.Endpoint ep, string toolName,
+                                                               Dictionary<string, object> args, Stopwatch sw, int budgetMs)
+        {
             string session = SessionFor(ep, sw, false, budgetMs);
-            string body = new JavaScriptSerializer().Serialize(new Dictionary<string, object>
+            // MaxJsonLength: the default 2 MB cap would throw on a large forwarded write (apply_embed_edits, b8f9431c).
+            string body = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object>
             {
                 { "jsonrpc", "2.0" }, { "id", 2 }, { "method", "tools/call" },
                 { "params", new Dictionary<string, object> { { "name", toolName }, { "arguments", args } } }
@@ -118,20 +139,14 @@ namespace ClarionAssistant.Services
                 session = SessionFor(ep, sw, true, budgetMs);
                 reply = Post(ep, body, session, sw, budgetMs, out sessionOut, out status);
             }
-            if (status != 200) throw new IOException("HTTP " + status);
+            if (status != 200) throw new IdeHttpStatusException(status);
 
-            var js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            var js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue, RecursionLimit = 1000 };
             var env = js.DeserializeObject(reply) as Dictionary<string, object>;
             object r;
             var res = env != null && env.TryGetValue("result", out r) ? r as Dictionary<string, object> : null;
             if (res == null) throw new IOException("no result in the reply");
-            object content;
-            var list = res.TryGetValue("content", out content) ? content as object[] : null;
-            var first = list != null && list.Length > 0 ? list[0] as Dictionary<string, object> : null;
-            object textObj;
-            string text = first != null && first.TryGetValue("text", out textObj) ? textObj as string : null;
-            if (text == null) throw new IOException("empty tool result");
-            return text;
+            return res;
         }
 
         private static string SessionFor(IdeEndpointRecord.Endpoint ep, Stopwatch sw, bool renew, int budgetMs)
@@ -200,5 +215,13 @@ namespace ClarionAssistant.Services
         }
 
         private static void Write(string line) { if (Log != null) try { Log(line); } catch { } }
+    }
+
+    /// <summary>b8f9431c: the IDE endpoint answered with a non-200 HTTP status. The message stays "HTTP &lt;status&gt;", as the
+    /// IOException it replaces said; the body is never part of it.</summary>
+    public sealed class IdeHttpStatusException : IOException
+    {
+        public readonly int Status;
+        public IdeHttpStatusException(int status) : base("HTTP " + status) { Status = status; }
     }
 }
