@@ -2217,8 +2217,9 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Markdown hover text for a CodeGraph symbol: a fenced signature line (name + params +
-        /// return type) followed by a detail line (type · member-of-parent · source). The source is the
-        /// symbol's project name when set, else <paramref name="sourceLabel"/>. Null when empty.</summary>
+        /// return type) followed by a detail line (type · member-of-parent · source) and the declaration's
+        /// location link, as the index card has. The source is the symbol's project name when set, else
+        /// <paramref name="sourceLabel"/>. Null when empty.</summary>
         private static string CgHoverText(CodeGraphSymbol s, string sourceLabel)
         {
             if (s == null || string.IsNullOrEmpty(s.Name)) return null;
@@ -2237,7 +2238,8 @@ namespace ClarionAssistant.Services
             if (!string.IsNullOrEmpty(s.ParentName)) bits.Add("member of " + s.ParentName);
             bits.Add(!string.IsNullOrEmpty(s.ProjectName) ? s.ProjectName : sourceLabel);
 
-            return "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits);
+            return "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits) +
+                   SymbolIndex.LocationLine(s.FilePath, s.LineNumber);
         }
 
         private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character)

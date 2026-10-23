@@ -238,8 +238,8 @@ static class LocalLayerHandlersTest
                 string call = ModBuffer.Replace("  x# = INV:Qty + GloVar + Clip", "  x# = ~PASSWORD('IN',103) + 1");
 
                 var withDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), o);
-                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable)",
-                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && (bool)withDb["authoritative"], Json(withDb));
+                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable), a FALLBACK for the server's",
+                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && !(bool)withDb["authoritative"] && (bool)withDb["fallback"], Json(withDb));
 
                 LocalLayerHandlers.ProjectDbPath = null;
                 LocalLayerHandlers.ResetPathCache();
@@ -478,9 +478,13 @@ static class LocalLayerHandlersTest
             var hCall = SlotHover(16, "Button", o);
             Check("Button(1) in CODE (a control name is not reserved: a call) -> still the procedure from the index",
                 Kind(hCall) == "index" && Contents(hCall).Contains("pId"), Json(hCall));
+            // A procedure from the index is a FALLBACK: only the server knows which prototype this file sees
+            // (its MAP, and the MAPs its includes declare), and a same-named body elsewhere in the index is not it.
+            Check("...a FALLBACK for the server's card, not authoritative",
+                !(bool)hCall["authoritative"] && (bool)hCall["fallback"], Json(hCall));
             var hPwBare = SlotHover(17, "Password", o);
-            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index",
-                Kind(hPwBare) == "index" && (bool)hPwBare["authoritative"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
+            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index, a FALLBACK",
+                Kind(hPwBare) == "index" && !(bool)hPwBare["authoritative"] && (bool)hPwBare["fallback"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
             var hTextRef = SlotHover(15, "Text", o);
             Check("'Text' in CODE -> the INCLUDED equate (the slot rule is position-specific)",
                 Kind(hTextRef) == "index" && Contents(hTextRef).Contains("seen.inc"), Json(hTextRef));
@@ -507,14 +511,20 @@ static class LocalLayerHandlersTest
             Check("...and its location is a clickable link: [seen.inc:1](file:///C:/src/seen.inc#L1)",
                 Contents(hSeen).Contains("[seen.inc:1](file:///C:/src/seen.inc#L1)"), Json(hSeen));
             Check("LocationLink: an absolute path -> a file: link with the 1-based line as #L<n>",
-                LocalLayerHandlers.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
+                SymbolIndex.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
             Check("LocationLink: a space and a '#' in the path are escaped, and the link keeps one fragment",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3));
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3));
             Check("LocationLink: a relative path, no line, or a malformed path -> plain text, never a broken link",
-                LocalLayerHandlers.LocationLink("x.clw", 1) == "x.clw:1" &&
-                LocalLayerHandlers.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
-                !LocalLayerHandlers.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+                SymbolIndex.LocationLink("x.clw", 1) == "x.clw:1" &&
+                SymbolIndex.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
+                !SymbolIndex.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+            // The closing location line both the index card and the host's CodeGraph card end with: the host's card
+            // answers in the server's place when the server has nothing, so it must not drop the link the index card has.
+            Check("LocationLine: a file -> a blank line, then the link; no file -> nothing",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70) == "\n\n[x.inc:70](file:///D:/lib/win/x.inc#L70)" &&
+                SymbolIndex.LocationLine(null, 70) == "" && SymbolIndex.LocationLine("", 3) == "",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70));
             var hHidden = SlotHover(14, "Hidden", o);
             Check("an EQUATE from a .inc this file never includes -> no card at all",
                 hHidden["contents"] == null && hHidden["kind"] == null, Json(hHidden));

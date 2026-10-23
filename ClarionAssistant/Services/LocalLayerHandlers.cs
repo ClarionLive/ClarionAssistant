@@ -406,8 +406,9 @@ namespace ClarionAssistant.Services
 
             // H4 (Owner decision): a card from the live dictionary or the symbol index is FINAL (authoritative),
             // so the page skips the LSP hover and Monaco shows no "Loading..." tail under it. Keyword cards were
-            // final too until GH #250 (below). Still non-authoritative: an in-buffer local-class member
-            // (LocalScopeIndex decides that; the LSP may know inherited members).
+            // final too until GH #250 (below), and so were procedures from the index (below). Still
+            // non-authoritative: an in-buffer local-class member (LocalScopeIndex decides that; the LSP may know
+            // inherited members).
             var dict = LiveDictionaryIndex.HoverWord(word);
             if (dict != null) { dict.Authoritative = true; return dict; }
 
@@ -449,7 +450,16 @@ namespace ClarionAssistant.Services
                         if (includedFiles != null && SymbolIndex.IsEquateOutside(s, includedFiles))
                             s = idx.FindByName(word, true, includedFiles);
                     }
-                    if (s != null) return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = true, Kind = "index" };
+                    if (s != null)
+                    {
+                        // A procedure is found by name alone, so the row can be a same-named body this file never
+                        // sees (another library's, in a module not built into this app). Only the server knows which
+                        // prototype the file sees (its MAP, and the MAPs its includes declare), so the index card is
+                        // its FALLBACK, as a keyword card is (GH #250).
+                        bool proc = string.Equals(s.Type, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(s.Type, "function", StringComparison.OrdinalIgnoreCase);
+                        return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = !proc, Fallback = proc, Kind = "index" };
+                    }
                 }
             }
             // GH #250: a keyword card is a FALLBACK, never final. The server's card for END / ELSE / ELSIF / OF /
@@ -608,28 +618,7 @@ namespace ClarionAssistant.Services
         {
             string sig = s.Name + (string.IsNullOrEmpty(s.Params) ? "" : " " + s.Params) +
                          (string.IsNullOrEmpty(s.ReturnType) ? "" : " : " + s.ReturnType);
-            string where = string.IsNullOrEmpty(s.FilePath) ? "" : "\n\n" + LocationLink(s.FilePath, s.LineNumber);
-            return "```clarion\n" + sig + "\n```\n" + SymbolIndex.CompletionDetail(s) + where;
-        }
-
-        /// <summary>"File.inc:12" as a markdown link to <c>file:///…/File.inc#L12</c>, which the page's link opener
-        /// (monaco-embeditor.html registerLinkOpener) hands to the IDE, as the language server's hover footers
-        /// do. Plain text when the path is not an absolute path (a relative or malformed index row) or has no line.
-        /// <paramref name="line"/> is the 1-based line the index stores.</summary>
-        internal static string LocationLink(string filePath, int line)
-        {
-            string name;
-            try { name = System.IO.Path.GetFileName(filePath); }
-            catch (ArgumentException) { name = filePath; }   // .NET Framework rejects some characters: one bad row must not abort the card
-            string label = name + (line > 0 ? ":" + line : "");
-            try
-            {
-                if (line <= 0 || !System.IO.Path.IsPathRooted(filePath)) return label;
-                var uri = new Uri(filePath);
-                if (!uri.IsAbsoluteUri || !uri.IsFile) return label;
-                return "[" + label.Replace("[", "\\[").Replace("]", "\\]") + "](" + uri.AbsoluteUri + "#L" + line + ")";
-            }
-            catch (Exception) { return label; }
+            return "```clarion\n" + sig + "\n```\n" + SymbolIndex.CompletionDetail(s) + SymbolIndex.LocationLine(s.FilePath, s.LineNumber);
         }
 
         private static void AddAll(List<LspClient.CompletionItemInfo> into, HashSet<string> seen, List<LspClient.CompletionItemInfo> from)
