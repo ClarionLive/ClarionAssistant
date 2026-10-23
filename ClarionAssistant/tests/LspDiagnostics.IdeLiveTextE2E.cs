@@ -11,7 +11,7 @@
 //   1 buffer        IDE has an unsaved buffer      -> analysed ca-editor-buffer; the fake LSP received the BUFFER
 //   2 embed         IDE has the embeditor document -> embeditor-document, procedure, lineNumber in editor lines
 //   3 not open      IDE answers found:false        -> disk + analysedReason (not an error)
-//   4 no IDE        no endpoint records            -> disk + "no IDE"
+//   4 no IDE        no endpoint records            -> disk + "no Clarion with Clarion Assistant is running"
 //   5 other sln     the only reachable IDE has another solution -> disk + "no IDE has this solution open"
 //   6 ambiguous     two IDEs (neither ours) match  -> disk + "not guessing"
 //
@@ -288,8 +288,8 @@ static class IdeLiveTextE2E
             WriteSolution(me, _sln);
             var r4 = Call(F("noide.clw"), null, out ms, out raw); outputs.AppendLine(raw);
             Console.WriteLine("4 noide    " + Show(r4));
-            Check(S(r4, "analysed") == "disk" && (S(r4, "analysedReason") ?? "").Contains("no IDE"),
-                "4: expected disk with a 'no IDE' reason; got " + Show(r4));
+            Check(S(r4, "analysed") == "disk" && (S(r4, "analysedReason") ?? "").Contains("no Clarion with Clarion Assistant is running"),
+                "4: expected disk with a 'no Clarion with Clarion Assistant is running' reason; got " + Show(r4));
 
             // 5 the only reachable IDE has ANOTHER solution open. Not the launching IDE: since 9e1bd280 the server follows
             // that one's solution, so it cannot have "another" one.
