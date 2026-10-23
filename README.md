@@ -108,6 +108,7 @@ In the CA Editor and CA Embeditor, hovering a parameter, a local variable, a rou
 - **A window labelled `Window`** (`Window  WINDOW('Details'),...`) shows the WINDOW keyword's card on the keyword, not the label's.
 - **When the language server has no answer**, the CodeGraph fallback for hover and Ctrl+Click looks at every row of that name instead of the first one, so another procedure's local no longer hides a global or equate the file can see, and the CodeGraph card links its declaration.
 
+<!-- release-docs: covered=codegraph-header -->
 ### Work With Solution no longer looks like a re-index when nothing changed ([#279](https://github.com/ClarionLive/ClarionAssistant/issues/279))
 
 - **Work With Solution no longer looks like a re-index when nothing changed ([#279](https://github.com/ClarionLive/ClarionAssistant/issues/279)).** Opening a solution runs a quick check for changed files. The header used to show the "Updating..." spinner for that check every time, as if the index were being rebuilt. Now the CODEGRAPH line reads **Checking for changes...** with no spinner. As soon as the check finds changed projects it switches to **Updating...**. When an index made by an older indexer has to be rebuilt, it switches at once to **Rebuilding index...**, because that run takes minutes. When the run finishes, the line says what it did, and keeps saying it:
