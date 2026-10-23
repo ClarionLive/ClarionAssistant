@@ -228,8 +228,7 @@ namespace ClarionCodeGraph.Graph
                 // GH #278: an {include} the .red could not follow (an unexpanded macro, a missing file) drops every
                 // search path of the included file, and surfaced only as thousands of unresolved files far below.
                 // Name the cause where the operator reads first.
-                foreach (string skipped in red.SkippedIncludes)
-                    ReportProgress("WARNING: .red {include} not followed, its search paths are missing: " + skipped);
+                ReportRedSkippedIncludes(red, null);
             _resolver = new SourceResolver(red);
             _resolveCache.Clear();
             if (!string.IsNullOrEmpty(BuildConfiguration))
@@ -333,6 +332,11 @@ namespace ClarionCodeGraph.Graph
             // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project, each with
             // whether that INCLUDE sits in a conditional COMPILE/OMIT block.
             var globalDataIncludeSeeds = new Dictionary<int, List<KeyValuePair<string, bool>>>();
+            // Pass 2b (integ-1023 review D2): the INCLUDEs inside each .inc the .cwproj lists, per project and file name,
+            // from Pass 1's parse. Listing an .inc does not compile it; what it INCLUDEs counts only through the
+            // INCLUDEs that reach it, so the walk follows them from there like any other .inc's.
+            var listedIncIncludes = new Dictionary<int, Dictionary<string, List<ClarionSymbol>>>();
+            var reportedProjectReds = new HashSet<ClarionAssistant.Services.RedFileService>();
             int unresolvedCount = 0;
 
             // Files an earlier run reached OTHER than through the .cwproj (Pass 2b includes, Pass 2c MODULE/LINK
@@ -354,6 +358,11 @@ namespace ClarionCodeGraph.Graph
 
                 string projectDir = Path.GetDirectoryName(proj.CwprojPath);
                 projectDirs[proj.Id] = projectDir;
+                // A project's own version-named .red replaces the solution's for that project: what it could not
+                // {include} is reported the same way, once per file.
+                var projectRed = _resolver.RedFor(projectDir);
+                if (projectRed != null && !ReferenceEquals(projectRed, red) && reportedProjectReds.Add(projectRed))
+                    ReportRedSkippedIncludes(projectRed, proj.Name);
                 var projResult = _projParser.Parse(proj.CwprojPath);
                 var resolved = _resolver.Resolve(projectDir, projResult.SourceFiles, libraryPaths);
                 foreach (var f in resolved)
@@ -508,6 +517,7 @@ namespace ClarionCodeGraph.Graph
                             long symId = _db.InsertSymbol(sym);
                             sym.Id = symId;
                         }
+                        RememberListedIncIncludes(listedIncIncludes, proj.Id, file.FileName, parseResult);
                         RememberIncScan(incScans, file.FullPath, parseResult);
                         result.SymbolCount += parseResult.Symbols.Count;
                         _db.InsertIndexedFile(proj.Id, file.FileName, file.FullPath,
@@ -792,6 +802,31 @@ namespace ClarionCodeGraph.Graph
                     // resolve; their rows are written after it, once every route is known.
                     var includeEdges = new Dictionary<string, List<KeyValuePair<string, bool>>>(StringComparer.OrdinalIgnoreCase);
                     var unresolvedIncludes = new List<string>();
+                    // Record an .inc's own INCLUDE() targets as edges of the walk and queue them.
+                    Action<string, IEnumerable<ClarionSymbol>, int> followIncludesOf = (parentName, syms, parentDepth) =>
+                    {
+                        if (parentDepth >= MaxIncludeDepth) return;
+                        foreach (var sym in syms)
+                        {
+                            if (sym.Type != "include") continue;
+                            List<KeyValuePair<string, bool>> children;
+                            if (!includeEdges.TryGetValue(parentName, out children))
+                            {
+                                children = new List<KeyValuePair<string, bool>>();
+                                includeEdges[parentName] = children;
+                            }
+                            children.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
+                            NoteIncludeOrigin(includeOrigins, projectId, sym, sym.Conditional);
+                            if (!alreadyKnown.Contains(sym.Name))
+                                includeWork.Enqueue(new KeyValuePair<string, int>(sym.Name, parentDepth + 1));
+                        }
+                    };
+                    // D2: an .inc the .cwproj lists was parsed in Pass 1, so it is not parsed again here, but the walk
+                    // still goes through it - once, the first time an INCLUDE reaches it - so what it INCLUDEs is judged
+                    // by the routes to it, exactly as for an .inc only the walk finds.
+                    Dictionary<string, List<ClarionSymbol>> listedHere;
+                    listedIncIncludes.TryGetValue(projectId, out listedHere);
+                    var listedFollowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                     while (includeWork.Count > 0)
                     {
@@ -799,6 +834,12 @@ namespace ClarionCodeGraph.Graph
                         string includeName = workItem.Key;
                         int depth = workItem.Value;
 
+                        List<ClarionSymbol> listedIncludes;
+                        if (listedHere != null && listedHere.TryGetValue(includeName, out listedIncludes))
+                        {
+                            if (listedFollowed.Add(includeName)) followIncludesOf(includeName, listedIncludes, depth);
+                            continue;
+                        }
                         if (alreadyKnown.Contains(includeName)) continue;
                         if (!includeName.EndsWith(".inc", StringComparison.OrdinalIgnoreCase))
                         {
@@ -846,23 +887,7 @@ namespace ClarionCodeGraph.Graph
                         alreadyKnown.Add(includeName); // avoid double-parse if INCLUDE()'d from multiple files
 
                         // Follow THIS file's own INCLUDE() targets
-                        if (depth < MaxIncludeDepth)
-                        {
-                            foreach (var sym in parseResult.Symbols)
-                            {
-                                if (sym.Type != "include") continue;
-                                List<KeyValuePair<string, bool>> children;
-                                if (!includeEdges.TryGetValue(includeName, out children))
-                                {
-                                    children = new List<KeyValuePair<string, bool>>();
-                                    includeEdges[includeName] = children;
-                                }
-                                children.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
-                                NoteIncludeOrigin(includeOrigins, projectId, sym, sym.Conditional);
-                                if (!alreadyKnown.Contains(sym.Name))
-                                    includeWork.Enqueue(new KeyValuePair<string, int>(sym.Name, depth + 1));
-                            }
-                        }
+                        followIncludesOf(includeName, parseResult.Symbols, depth);
                     }
 
                     // A target is required when some route to it is unconditional all the way: an unconditional
@@ -1069,6 +1094,24 @@ namespace ClarionCodeGraph.Graph
                         scan.Modules.Add(new KeyValuePair<string, string>(m, filePath));
             }
             return scan;
+        }
+
+        /// <summary>The INCLUDE symbols of a .cwproj-listed .inc, by its bare file name (how an INCLUDE names it).</summary>
+        private static void RememberListedIncIncludes(Dictionary<int, Dictionary<string, List<ClarionSymbol>>> listed,
+            int projectId, string fileName, ParseResult parsed)
+        {
+            Dictionary<string, List<ClarionSymbol>> byName;
+            if (!listed.TryGetValue(projectId, out byName))
+            {
+                byName = new Dictionary<string, List<ClarionSymbol>>(StringComparer.OrdinalIgnoreCase);
+                listed[projectId] = byName;
+            }
+            string key = Path.GetFileName(fileName ?? "");
+            if (key.Length == 0 || byName.ContainsKey(key)) return;
+            var includes = new List<ClarionSymbol>();
+            foreach (var s in parsed.Symbols)
+                if (s.Type == "include") includes.Add(s);
+            byName[key] = includes;
         }
 
         private static void RememberIncScan(Dictionary<string, IncScan> scans, string filePath, ParseResult parsed)
@@ -1462,6 +1505,39 @@ namespace ClarionCodeGraph.Graph
             // apart from Conditional, which INCLUDEs inside the walked .inc files also clear: an unconditional INCLUDE
             // inside an .inc that is itself only reached conditionally does not make the name a required seed.
             public bool SeedUnconditional;
+        }
+
+        /// <summary>GH #278 / review D5: one log line per .red {include} that was not followed, worded for why.</summary>
+        private void ReportRedSkippedIncludes(ClarionAssistant.Services.RedFileService red, string projectName)
+        {
+            var kinds = red.SkippedIncludeKinds;
+            for (int k = 0; k < red.SkippedIncludes.Count; k++)
+            {
+                var kind = k < kinds.Count ? kinds[k] : ClarionAssistant.Services.RedIncludeSkip.FileNotFound;
+                ReportProgress(RedSkippedIncludeLine(red.SkippedIncludes[k], kind, projectName,
+                    string.IsNullOrEmpty(red.RedFilePath) ? null : Path.GetFileName(red.RedFilePath)));
+            }
+        }
+
+        internal static string RedSkippedIncludeLine(string entry, ClarionAssistant.Services.RedIncludeSkip kind,
+            string projectName, string redFileName)
+        {
+            string whose = projectName == null ? "" : " (project " + projectName + "'s own " + (redFileName ?? ".red") + ")";
+            switch (kind)
+            {
+                case ClarionAssistant.Services.RedIncludeSkip.AlreadyLoaded:
+                    // A .red that includes itself (a local Clarion110.red naming %BIN%\Clarion110.red when %BIN% is the
+                    // local folder): its entries are already in. Harmless - not a warning.
+                    return "  .red {include} skipped" + whose + ", that file is already loaded (harmless, its search paths are in): " + entry;
+                case ClarionAssistant.Services.RedIncludeSkip.FileNotFound:
+                    return "WARNING: .red {include} not followed" + whose + " - the file it names does not exist (an undefined %MACRO%?), so its search paths are missing: " + entry;
+                case ClarionAssistant.Services.RedIncludeSkip.TooDeep:
+                    return "WARNING: .red {include} not followed" + whose + " - nested too deep, so its search paths are missing: " + entry;
+                case ClarionAssistant.Services.RedIncludeSkip.Unreadable:
+                    return "WARNING: .red {include} not followed" + whose + " - the file could not be read, so its search paths are missing: " + entry;
+                default:
+                    return "WARNING: .red {include} not followed" + whose + " - the line could not be read as {include path}, so what it adds is missing: " + entry;
+            }
         }
 
         /// <summary>Remember an include symbol as a Pass 2b seed, and where it came from.</summary>

@@ -527,6 +527,23 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86" }
+            # integ-1023 review D1-D5: the include guard (ABUTIL.INC's OMIT('_EndOfInclude_',_XPresent_)) does not hide
+            # a real gap, a .cwproj-listed .inc is judged by how it is reached, an outer block can end inside an OMIT,
+            # a | in a comment is no continuation, and the .red {include} log line is worded per reason; 15 of 22
+            # checks fail on 3e57b84 (x86 SQLite).
+            @{ Name = "CodeGraphIndexer.IncludeGuard.Test"
+               Sources = @("tests\CodeGraphIndexer.IncludeGuard.Test.cs",
+                           "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
+                           "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs", "CodeGraph\Parsing\SolutionParser.cs",
+                           "CodeGraph\Parsing\ProjectParser.cs", "CodeGraph\Parsing\SourceResolver.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # ef2fd2a9 / cea47717: an incremental index of a database built below the current feature level (or with
             # none recorded) runs FULL and says so; a current database stays incremental and an unchanged one reads
             # "up to date", not a bare 0-symbol success (x86 SQLite).
@@ -589,6 +606,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EndpointRecordSweep.Test"
                Sources = @("tests\EndpointRecordSweep.Test.cs", "Services\IdeEndpointRecord.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # GH #279 follow-up (integ-1023 review D6/D7): the header's CodeGraph line - "Rebuilding index..." for an
+            # incremental request that runs full, the early real-work signal, an error/cancel line that stays until the
+            # database changes, and a queued check for another solution. Does not exist on 3e57b84.
+            @{ Name = "IndexHeaderStatus.Test"
+               Sources = @("tests\IndexHeaderStatus.Test.cs", "Services\IndexHeaderStatus.cs")
+               Refs = @("System.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

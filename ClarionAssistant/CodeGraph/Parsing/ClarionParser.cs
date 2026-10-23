@@ -286,18 +286,20 @@ namespace ClarionCodeGraph.Parsing
                 string line = lines[i];
                 int lineNum = i + 1;
 
-                // Strip line continuation: join lines ending with |
-                while (line.TrimEnd().EndsWith("|") && i + 1 < lines.Length)
-                {
-                    line = line.TrimEnd();
-                    line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
-                }
+                // Strip line continuation: join lines ending with | (a | inside a comment is not one)
+                line = JoinContinuation(lines, ref i);
 
-                bool conditional = conditionals.Advance(line);
+                bool conditional = conditionals.Advance(lines, i, line);
 
                 // OMIT/COMPILE('terminator') — skip block
+                int skipFrom = i;
                 i = SkipConditionalBlock(lines, i, line);
-                if (i > lineNum - 1) { line = lines[i]; lineNum = i + 1; }
+                if (i > skipFrom)
+                {
+                    conditional = conditionals.Skipped(lines, skipFrom + 1, i);
+                    line = lines[i];
+                    lineNum = i + 1;
+                }
 
                 // Detect PROGRAM keyword
                 if (ProgramRegex.IsMatch(line))
@@ -545,18 +547,14 @@ namespace ClarionCodeGraph.Parsing
                 string line = lines[i];
                 int lineNum = i + 1;
 
-                // Strip line continuation
-                while (line.TrimEnd().EndsWith("|") && i + 1 < lines.Length)
-                {
-                    line = line.TrimEnd();
-                    line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
-                }
+                // Strip line continuation (a | inside a comment is not one)
+                line = JoinContinuation(lines, ref i);
 
-                bool conditional = conditionals.Advance(line);
+                bool conditional = conditionals.Advance(lines, i, line);
 
                 // OMIT/COMPILE('terminator') — skip block
                 int newI = SkipConditionalBlock(lines, i, line);
-                if (newI > i) { i = newI; continue; }
+                if (newI > i) { conditionals.Skipped(lines, i + 1, newI); i = newI; continue; }
 
                 // Inside a MAP: consume until its own END, tracking nested MODULE(...)/MAP blocks.
                 // Everything in here is prototype territory — no symbols, no state changes.
@@ -1217,18 +1215,14 @@ namespace ClarionCodeGraph.Parsing
                 string line = lines[i];
                 int lineNum = i + 1;
 
-                // Strip line continuation
-                while (line.TrimEnd().EndsWith("|") && i + 1 < lines.Length)
-                {
-                    line = line.TrimEnd();
-                    line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
-                }
+                // Strip line continuation (a | inside a comment is not one)
+                line = JoinContinuation(lines, ref i);
 
-                bool conditional = conditionals.Advance(line);
+                bool conditional = conditionals.Advance(lines, i, line);
 
                 // OMIT/COMPILE('terminator') — skip block
                 int newI = SkipConditionalBlock(lines, i, line);
-                if (newI > i) { i = newI; continue; }
+                if (newI > i) { conditionals.Skipped(lines, i + 1, newI); i = newI; continue; }
 
                 // Inside CLASS/INTERFACE body: extract method prototypes
                 if (inClassBody)
@@ -1553,26 +1547,96 @@ namespace ClarionCodeGraph.Parsing
         /// their contents as code (CodeGraph cannot evaluate a project's defines); this only remembers that
         /// it was conditional, so an INCLUDE in there that does not resolve is not reported as a gap.
         /// An unconditional OMIT('term') is skipped wholesale and never reaches here; an unconditional
-        /// COMPILE('term') is always compiled, so neither opens a block.
+        /// COMPILE('term') is always compiled, so neither opens a block. Nor does an include guard (see
+        /// <see cref="IsIncludeGuard"/>): its block is the whole file, compiled on the first read.
         /// </summary>
         internal sealed class ConditionalBlocks
         {
             private readonly List<string> _terminators = new List<string>();
 
-            /// <summary>Call once per line, in order. True when the line is inside a conditional block.</summary>
-            public bool Advance(string line)
+            /// <summary>Call once per line, in order; <paramref name="index"/> is the line's (last physical) index in
+            /// <paramref name="lines"/>. True when the line is inside a conditional block.</summary>
+            public bool Advance(string[] lines, int index, string line)
             {
                 var match = OmitCompileRegex.Match(line);
-                if (match.Success && match.Groups[3].Success)
+                if (match.Success && match.Groups[3].Success && !IsIncludeGuard(lines, index, match))
                 {
                     _terminators.Add(match.Groups[2].Value);
                     return true;
                 }
+                return Close(line);
+            }
+
+            /// <summary>
+            /// The lines an unconditional OMIT skipped (<paramref name="from"/>..<paramref name="to"/>, the terminator
+            /// line included) never reach <see cref="Advance"/>, but an outer conditional block can end among them: in a
+            /// build that omits the outer block the compiler stops omitting at the outer terminator, wherever it is.
+            /// Returns what <see cref="Advance"/> would for the last of them.
+            /// </summary>
+            public bool Skipped(string[] lines, int from, int to)
+            {
+                bool inside = _terminators.Count > 0;
+                for (int k = from; k <= to && k < lines.Length; k++)
+                    inside = Close(lines[k]);
+                return inside;
+            }
+
+            private bool Close(string line)
+            {
                 if (_terminators.Count == 0) return false;
                 // The terminator line still belongs to its block (same substring rule as SkipConditionalBlock).
                 _terminators.RemoveAll(t => line.Contains(t));
                 return true;
             }
+        }
+
+        /// <summary>
+        /// Clarion's include guard, which nearly every LibSrc .inc opens with (ABUTIL.INC):
+        /// <code>
+        ///  OMIT('_EndOfInclude_',_UtilitiesPresent_)
+        /// _UtilitiesPresent_ EQUATE(1)
+        ///  ...
+        /// _EndOfInclude_
+        /// </code>
+        /// The OMIT's condition is a symbol its own block defines, so on the first read of the file it is undefined, the
+        /// OMIT is not taken and the whole block compiles; only a second read is omitted. So what is inside is as
+        /// unconditional as the file itself - an INCLUDE in there that does not resolve is a real gap. Recognised as an
+        /// OMIT whose condition is a bare symbol that an EQUATE at column 0 declares before the block's terminator.
+        /// COMPILE is never a guard: an undefined symbol leaves its block out.
+        /// </summary>
+        internal static bool IsIncludeGuard(string[] lines, int index, Match omitCompile)
+        {
+            if (lines == null || !omitCompile.Success || !omitCompile.Groups[3].Success) return false;
+            if (!string.Equals(omitCompile.Groups[1].Value, "OMIT", StringComparison.OrdinalIgnoreCase)) return false;
+            string symbol = omitCompile.Groups[3].Value.Trim();
+            if (!GuardSymbolRegex.IsMatch(symbol)) return false;
+            string terminator = omitCompile.Groups[2].Value;
+            var equate = new Regex("^" + Regex.Escape(symbol) + @"\s+EQUATE\b", RegexOptions.IgnoreCase);
+            for (int k = index + 1; k < lines.Length; k++)
+            {
+                if (lines[k].Contains(terminator)) return false;
+                if (equate.IsMatch(lines[k])) return true;
+            }
+            return false;
+        }
+
+        private static readonly Regex GuardSymbolRegex = new Regex(@"^[A-Za-z_][\w:]*$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// The logical line starting at lines[i]: a line whose CODE ends with | continues on the next one. A | inside a
+        /// comment is not a continuation ("! note |" followed by an INCLUDE must not swallow the INCLUDE), and a comment
+        /// after the | ("X LONG, |  ! why") does not stop one. Leaves <paramref name="i"/> on the last line joined.
+        /// </summary>
+        private string JoinContinuation(string[] lines, ref int i)
+        {
+            string line = lines[i];
+            while (i + 1 < lines.Length)
+            {
+                string code = StripInlineComment(line).TrimEnd();
+                if (!code.EndsWith("|")) break;
+                line = code.Substring(0, code.Length - 1) + " " + lines[++i].TrimStart();
+            }
+            return line;
         }
 
         /// <summary>

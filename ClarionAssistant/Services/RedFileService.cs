@@ -39,6 +39,23 @@ namespace ClarionAssistant.Services
         public string Section { get; set; }   // the .red section the match came from (e.g. "Common")
     }
 
+    /// <summary>Why a .red {include} line was not followed (<see cref="RedFileService.SkippedIncludeKinds"/>).</summary>
+    public enum RedIncludeSkip
+    {
+        /// <summary>The {...} line is not an {include path} command.</summary>
+        NotAnInclude,
+        /// <summary>The path (after macro expansion) is not a valid path.</summary>
+        InvalidPath,
+        /// <summary>The file was already read (it includes itself, or round a loop): its entries are already in, nothing is lost.</summary>
+        AlreadyLoaded,
+        /// <summary>Nested deeper than the include limit.</summary>
+        TooDeep,
+        /// <summary>No file at that path - often an unexpanded %MACRO%.</summary>
+        FileNotFound,
+        /// <summary>The file exists but could not be read.</summary>
+        Unreadable
+    }
+
     /// <summary>
     /// Parses Clarion .red (redirection) files and resolves file paths.
     /// The .red file tells the compiler/IDE where to find source files,
@@ -160,6 +177,7 @@ namespace ClarionAssistant.Services
             _loadedFiles.Clear();
             _watched.Clear();
             _skippedIncludes.Clear();
+            _skippedIncludeKinds.Clear();
             try
             {
                 ParseFile(redFilePath, 0);
@@ -220,6 +238,17 @@ namespace ClarionAssistant.Services
         private readonly List<string> _loadedFiles = new List<string>();
         private readonly List<KeyValuePair<string, DateTime>> _watched = new List<KeyValuePair<string, DateTime>>();
         private readonly List<string> _skippedIncludes = new List<string>();
+        private readonly List<RedIncludeSkip> _skippedIncludeKinds = new List<RedIncludeSkip>();
+
+        /// <summary>Why each <see cref="SkippedIncludes"/> entry was skipped, same order, so a caller can word its
+        /// report per reason: an {include} of a file already loaded loses nothing, a missing one loses its paths.</summary>
+        public IReadOnlyList<RedIncludeSkip> SkippedIncludeKinds => _skippedIncludeKinds;
+
+        private void Skip(string entry, RedIncludeSkip kind)
+        {
+            _skippedIncludes.Add(entry);
+            _skippedIncludeKinds.Add(kind);
+        }
 
         /// <summary>Nesting limit for {include}; Clarion has none, but a cycle it would hang on must not hang us.</summary>
         private const int MaxIncludeDepth = 8;
@@ -498,7 +527,7 @@ namespace ClarionAssistant.Services
                                   @"^\s*include\s+(.+?)\s*$", RegexOptions.IgnoreCase);
             if (!m.Success)
             {
-                _skippedIncludes.Add(line + "  (not an {include} command)");
+                Skip(line + "  (not an {include} command)", RedIncludeSkip.NotAnInclude);
                 return;
             }
 
@@ -511,7 +540,7 @@ namespace ClarionAssistant.Services
             }
             catch
             {
-                _skippedIncludes.Add(line + "  (invalid path: " + target + ")");
+                Skip(line + "  (invalid path: " + target + ")", RedIncludeSkip.InvalidPath);
                 return;
             }
 
@@ -519,23 +548,23 @@ namespace ClarionAssistant.Services
             {
                 // Includes itself, directly or round a loop. A local Clarion110.red with
                 // {include %BIN%\clarion110.red} lands here when %BIN% is the local folder.
-                _skippedIncludes.Add(line + "  (already loaded: " + full + ")");
+                Skip(line + "  (already loaded: " + full + ")", RedIncludeSkip.AlreadyLoaded);
                 return;
             }
             if (depth + 1 > MaxIncludeDepth)
             {
-                _skippedIncludes.Add(line + "  (nested deeper than " + MaxIncludeDepth + ")");
+                Skip(line + "  (nested deeper than " + MaxIncludeDepth + ")", RedIncludeSkip.TooDeep);
                 return;
             }
             if (!File.Exists(full))
             {
-                _skippedIncludes.Add(line + "  (file not found: " + full + ")");
+                Skip(line + "  (file not found: " + full + ")", RedIncludeSkip.FileNotFound);
                 Watch(full, AbsentOrUnread);   // its creation later makes the instance stale
                 return;
             }
 
             try { ParseFile(full, depth + 1); }
-            catch (Exception ex) { _skippedIncludes.Add(line + "  (could not read: " + ex.Message + ")"); }
+            catch (Exception ex) { Skip(line + "  (could not read: " + ex.Message + ")", RedIncludeSkip.Unreadable); }
         }
 
         private string ExpandMacros(string path)

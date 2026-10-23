@@ -83,6 +83,10 @@ namespace ClarionAssistant.Services
 
         public event Action<string> OnProgress;
         public event Action<IndexProgressEvent> OnProgressEvent;
+        /// <summary>Raised once per run, before the first <see cref="OnProgress"/> message, with what the run does: false
+        /// when it runs FULL (asked for, or an incremental request on an older database). Same order in the child and
+        /// in the in-process fallback, so a host can say "Rebuilding index..." the moment it is known (review D6).</summary>
+        public event Action<bool> OnModeDecided;
         /// <summary>Raised on the calling thread once the child is running, for a host or a test that watches it.</summary>
         public event Action<Process> ChildStarted;
         public Func<bool> CancelRequested { get; set; }
@@ -380,6 +384,8 @@ namespace ClarionAssistant.Services
                 case IndexerProtocol.KindMode:
                     childMode = decoded.Incremental;
                     EffectiveIncremental = decoded.Incremental;
+                    var md = OnModeDecided;
+                    if (md != null) md(decoded.Incremental);
                     break;
             }
         }
@@ -527,7 +533,21 @@ namespace ClarionAssistant.Services
                 indexer.RedService = request.Red;
                 indexer.BuildConfiguration = request.BuildConfiguration;
                 indexer.CancelRequested = () => IsCancelRequested();
-                indexer.OnProgress += msg => { var h = OnProgress; if (h != null) h(msg); };
+                var self = indexer;
+                bool modeSent = false;
+                indexer.OnProgress += msg =>
+                {
+                    // As the child's protocol does (indexer\Program.cs): EffectiveIncremental is decided before the
+                    // first progress message, so the mode goes out ahead of it.
+                    if (!modeSent)
+                    {
+                        modeSent = true;
+                        var md = OnModeDecided;
+                        if (md != null) md(self.EffectiveIncremental);
+                    }
+                    var h = OnProgress;
+                    if (h != null) h(msg);
+                };
                 indexer.OnProgressEvent += ev => { var h = OnProgressEvent; if (h != null) h(ev); };
                 return indexer.IndexSolution(request.SlnPath, request.Incremental, request.LibraryPaths);
             }
