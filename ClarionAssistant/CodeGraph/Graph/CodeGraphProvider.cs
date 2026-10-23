@@ -36,6 +36,24 @@ namespace ClarionCodeGraph.Graph
             "FROM symbols s " +
             "LEFT JOIN projects p ON s.project_id = p.id ";
 
+        // Name lookups compare with COLLATE NOCASE, not LOWER(x) = LOWER(@x): the comparison then matches the
+        // NOCASE indexes (idx_sym_name_nocase, idx_sym_parent_nocase) and SQLite seeks instead of scanning every
+        // row. Both fold ASCII case only, so the rows are the same (SymbolIndex.Test.cs, GH #280).
+        internal const string ByNameSql = SymbolSelect + "WHERE s.name = @name COLLATE NOCASE LIMIT 1";
+
+        internal const string AllByNameSql = SymbolSelect +
+            "WHERE s.name = @name COLLATE NOCASE " +
+            "ORDER BY CASE LOWER(COALESCE(s.scope,'')) " +
+            "           WHEN 'global' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 " +
+            "           WHEN 'local' THEN 4 WHEN 'parameter' THEN 5 ELSE 3 END, " +
+            "         s.file_path, s.line_number " +
+            "LIMIT @limit";
+
+        internal const string MembersOfParentSql = SymbolSelect +
+            "WHERE s.parent_name = @parent COLLATE NOCASE " +
+            "AND s.name LIKE @parentDot ESCAPE '\\' " +
+            "ORDER BY s.name LIMIT @limit";
+
         /// <summary>
         /// Open a .codegraph.db read-only. Returns false (no throw) if the file is missing
         /// or can't be opened — callers treat false as "no CodeGraph fallback available".
@@ -118,8 +136,7 @@ namespace ClarionCodeGraph.Graph
             if (_connection == null || string.IsNullOrEmpty(name)) return null;
             try
             {
-                string sql = SymbolSelect + "WHERE LOWER(s.name) = LOWER(@name) LIMIT 1";
-                using (var cmd = new SQLiteCommand(sql, _connection))
+                using (var cmd = new SQLiteCommand(ByNameSql, _connection))
                 {
                     cmd.Parameters.AddWithValue("@name", name);
                     using (var reader = cmd.ExecuteReader())
@@ -144,14 +161,7 @@ namespace ClarionCodeGraph.Graph
             if (_connection == null || string.IsNullOrEmpty(name)) return results;
             try
             {
-                string sql = SymbolSelect +
-                    "WHERE LOWER(s.name) = LOWER(@name) " +
-                    "ORDER BY CASE LOWER(COALESCE(s.scope,'')) " +
-                    "           WHEN 'global' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 " +
-                    "           WHEN 'local' THEN 4 WHEN 'parameter' THEN 5 ELSE 3 END, " +
-                    "         s.file_path, s.line_number " +
-                    "LIMIT @limit";
-                using (var cmd = new SQLiteCommand(sql, _connection))
+                using (var cmd = new SQLiteCommand(AllByNameSql, _connection))
                 {
                     cmd.Parameters.AddWithValue("@name", name);
                     cmd.Parameters.AddWithValue("@limit", limit);
@@ -179,11 +189,7 @@ namespace ClarionCodeGraph.Graph
             if (_connection == null || string.IsNullOrEmpty(parentName)) return results;
             try
             {
-                string sql = SymbolSelect +
-                    "WHERE LOWER(s.parent_name) = LOWER(@parent) " +
-                    "AND s.name LIKE @parentDot ESCAPE '\\' " +
-                    "ORDER BY s.name LIMIT @limit";
-                using (var cmd = new SQLiteCommand(sql, _connection))
+                using (var cmd = new SQLiteCommand(MembersOfParentSql, _connection))
                 {
                     cmd.Parameters.AddWithValue("@parent", parentName);
                     // Escape LIKE wildcards in the class name so e.g. a literal '_' isn't treated as a wildcard.

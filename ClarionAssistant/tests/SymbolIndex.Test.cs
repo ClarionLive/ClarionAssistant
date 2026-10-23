@@ -49,6 +49,7 @@ static class SymbolIndexTest
             BuildOldSchema(old, ProjectRows());
 
             Queries(proj, lib);
+            NocaseLookups(repo);
             Fallback(old);
             IndexerCreatesIndexes();
             AutoIndexBuild();
@@ -319,6 +320,127 @@ static class SymbolIndexTest
         }
 
         Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.21", "a malformed include row is skipped, the rest of the closure is intact");
+    }
+
+    // ------------------------------------------------------------------------------ N.1-N.6 (GH #280)
+
+    /// <summary>Name lookups use = COLLATE NOCASE, not LOWER(x) = LOWER(@x): the same rows, in the same order,
+    /// and the plan SEARCHes the NOCASE index instead of scanning. The LOWER form is rebuilt from each query's
+    /// own text, so the comparison is against exactly what the query did before.</summary>
+    static void NocaseLookups(string repo)
+    {
+        Console.WriteLine("name lookups: COLLATE NOCASE (GH #280)");
+        string db = Path.Combine(_work, "nocase.codegraph.db");
+        string old = Path.Combine(_work, "nocase-old.codegraph.db");
+        var rows = ProjectRows().Concat(new[]
+        {
+            new[] { "glovar", "variable", "module", null, "BYTE" },          // a second GloVar, other case
+            new[] { "ÄrgerVar", "variable", "global", null, "LONG" },    // non-ASCII: neither form folds it
+            new[] { "mybrowse.Extra", "procedure", "global", "mybrowse", "()" },
+            new[] { "Glo%Var", "variable", "global", null, "LONG" },
+        }).ToArray();
+        BuildIndexed(db, rows);
+        BuildOldSchema(old, rows);
+
+        Func<string, string> lowered = sql => sql
+            .Replace("s.name = @name COLLATE NOCASE", "LOWER(s.name) = LOWER(@name)")
+            .Replace("s.parent_name = @parent COLLATE NOCASE", "LOWER(s.parent_name) = LOWER(@parent)");
+        Func<string, string, string, Action<SQLiteCommand>, string> ids = (path, sql, label, bind) =>
+        {
+            var got = new List<string>();
+            using (var cn = new SQLiteConnection("Data Source=" + path + ";Version=3;Read Only=True;"))
+            {
+                cn.Open();
+                using (var cmd = new SQLiteCommand(sql, cn))
+                {
+                    bind(cmd);
+                    using (var r = cmd.ExecuteReader()) while (r.Read()) got.Add(Convert.ToString(r[0]));
+                }
+            }
+            return string.Join(",", got);
+        };
+        var names = new[] { "GloVar", "glovar", "GLOVAR", "ärgervar", "ÄRGERVAR", "ÄrgerVar", "MyBrowse", "Glo%Var", "glo_var", "NoSuch" };
+        var parents = new[] { "MyBrowse", "mybrowse", "MYBROWSE", "BrowseClass", "NoSuch" };
+        var byName = new Dictionary<string, string>
+        {
+            { "CodeGraphProvider.ByNameSql", CodeGraphProvider.ByNameSql },
+            { "CodeGraphProvider.AllByNameSql", CodeGraphProvider.AllByNameSql },
+            { "SymbolIndex.ExactSql", SymbolIndex.ExactSql },
+            { "SymbolIndex.ExactSqlAll", SymbolIndex.ExactSqlAll },
+            { "SymbolIndex.BaseClassSql", SymbolIndex.BaseClassSql },
+        };
+        var byParent = new Dictionary<string, string>
+        {
+            { "CodeGraphProvider.MembersOfParentSql", CodeGraphProvider.MembersOfParentSql },
+            { "SymbolIndex.MembersSql", SymbolIndex.MembersSql },
+        };
+        Action<SQLiteCommand, string> bindName = (cmd, n) => { cmd.Parameters.AddWithValue("@name", n); cmd.Parameters.AddWithValue("@limit", 50); };
+        Action<SQLiteCommand, string> bindParent = (cmd, p) =>
+        {
+            cmd.Parameters.AddWithValue("@parent", p);
+            cmd.Parameters.AddWithValue("@parentDot", p.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + ".%");
+            cmd.Parameters.AddWithValue("@limit", 50);
+        };
+
+        foreach (var path in new[] { db, old })
+        {
+            string which = path == db ? "indexed" : "old schema";
+            var diffs = new List<string>();
+            int nonEmpty = 0;
+            foreach (var q in byName)
+            {
+                if (q.Value.IndexOf("COLLATE NOCASE", StringComparison.Ordinal) < 0) diffs.Add(q.Key + " has no COLLATE NOCASE");
+                foreach (var n in names)
+                {
+                    string a = ids(path, q.Value, q.Key, cmd => bindName(cmd, n)), b = ids(path, lowered(q.Value), q.Key, cmd => bindName(cmd, n));
+                    if (a != b) diffs.Add(q.Key + "(" + n + "): " + a + " vs LOWER " + b);
+                    if (a.Length > 0) nonEmpty++;
+                }
+            }
+            foreach (var q in byParent)
+                foreach (var p in parents)
+                {
+                    string a = ids(path, q.Value, q.Key, cmd => bindParent(cmd, p)), b = ids(path, lowered(q.Value), q.Key, cmd => bindParent(cmd, p));
+                    if (a != b) diffs.Add(q.Key + "(" + p + "): " + a + " vs LOWER " + b);
+                    if (a.Length > 0) nonEmpty++;
+                }
+            Check(diffs.Count == 0 && nonEmpty >= 20, path == db ? "N.1" : "N.2",
+                  which + ": every name/parent lookup returns the same rows, in the same order, as LOWER() = LOWER() (" + nonEmpty + " non-empty answers)" +
+                  (diffs.Count == 0 ? "" : " - " + string.Join("; ", diffs.Take(5))));
+        }
+
+        // The case behaviour the comparison above rests on: ASCII folds, non-ASCII does not (in either form).
+        using (var p = new CodeGraphProvider())
+        {
+            Check(p.Open(db), "N.3a", "the fixture opens in a CodeGraphProvider");
+            var all = p.FindAllSymbolsByName("GLOVAR");
+            Check(all.Count == 2 && all[0].Scope == "global" && all[1].Scope == "module" && p.FindSymbolByName("gLoVaR") != null &&
+                  p.FindSymbolByName("ÄrgerVar") != null && p.FindSymbolByName("ärgervar") == null,
+                  "N.3", "FindAllSymbolsByName GLOVAR -> both rows, global first; ASCII case folds, non-ASCII is matched exactly");
+            var members = p.FindMembersOfParent("MYBROWSE").Select(s => s.Name).ToList();
+            Check(members.SequenceEqual(new[] { "MyBrowse.Custom", "MyBrowse.ResetSort", "mybrowse.Extra" }), "N.3b",
+                  "FindMembersOfParent MYBROWSE -> " + string.Join(", ", members));
+        }
+
+        foreach (var q in byName)
+        {
+            string plan = Plan(db, q.Value, cmd => bindName(cmd, "GloVar"));
+            Check(plan.Contains("USING INDEX " + SymbolIndex.NameIndex) || plan.Contains("USING COVERING INDEX " + SymbolIndex.NameIndex),
+                  "N.4 " + q.Key, "the plan searches " + SymbolIndex.NameIndex + ": " + plan);
+        }
+        foreach (var q in byParent)
+        {
+            string plan = Plan(db, q.Value, cmd => bindParent(cmd, "MyBrowse"));
+            Check(plan.Contains("USING INDEX " + SymbolIndex.ParentIndex), "N.5 " + q.Key, "the plan searches " + SymbolIndex.ParentIndex + ": " + plan);
+        }
+
+        // N.6: no LOWER(column) = LOWER(@param) name lookup is left in either file.
+        foreach (var rel in new[] { @"CodeGraph\Graph\CodeGraphProvider.cs", @"Services\SymbolIndex.cs" })
+        {
+            string src = File.ReadAllText(Path.Combine(repo, rel));
+            var hits = System.Text.RegularExpressions.Regex.Matches(src, @"LOWER\(s\.(name|parent_name)\)").Cast<System.Text.RegularExpressions.Match>().Select(m => m.Value).ToList();
+            Check(hits.Count == 0, "N.6 " + Path.GetFileName(rel), "no LOWER(s.name) / LOWER(s.parent_name) lookup left" + (hits.Count == 0 ? "" : ": " + string.Join(", ", hits)));
+        }
     }
 
     static HashSet<string> Names(IEnumerable<CodeGraphSymbol> syms) { return new HashSet<string>(syms.Select(s => s.Name), StringComparer.Ordinal); }
