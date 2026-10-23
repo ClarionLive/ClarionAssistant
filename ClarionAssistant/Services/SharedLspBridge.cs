@@ -2016,14 +2016,12 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Resolve an exact-name definition from one CodeGraph-schema DB → an LSP location list, or
-        /// null when the DB is missing/unopenable, the symbol isn't found, or the only match is a "variable"
-        /// scoped to a PROCEDURE/ROUTINE elsewhere (see IsUnreachableLocalVariable — never a legitimate hit,
-        /// since the caller only reaches here after the upstream LSP already searched this file's own
-        /// local/routine/module scope and found nothing). Mirrors CgHoverFromDb's guard — that sibling
-        /// already filters this exact shape for hover; this path never got the same check, so a bare word
-        /// genuinely undeclared in scope (LSP correctly returns empty) could still resolve F12 to an
-        /// unrelated procedure's local via CodeGraphProvider.FindSymbolByName's unordered `LIMIT 1`. Never
-        /// throws.</summary>
+        /// null when the DB is missing/unopenable or no same-named row is visible from
+        /// <paramref name="contextFile"/>. Every same-named row is considered (SymbolIndex.FirstVisibleByName):
+        /// a "variable" scoped to a PROCEDURE/ROUTINE elsewhere is skipped (see IsUnreachableLocalVariable —
+        /// never a legitimate hit, since the caller only reaches here after the upstream LSP already searched
+        /// this file's own local/routine/module scope and found nothing), and so is an equate from an include
+        /// file the context file never includes. Mirrors CgHoverFromDb. Never throws.</summary>
         private static Dictionary<string, object> CgDefinitionFromDb(string word, string db,
                                                                      string contextFile = null, string[] closureDbs = null)
         {
@@ -2033,11 +2031,7 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var sym = p.FindSymbolByName(word);
-                    if (sym == null || string.IsNullOrEmpty(sym.FilePath)) return null;
-                    if (IsUnreachableLocalVariable(p, sym)) return null;
-                    // An equate from an include file the context file never includes is not visible there.
-                    sym = SymbolIndex.ScopeEquateToIncludes(sym, word, db, contextFile, closureDbs);
+                    var sym = SymbolIndex.FirstVisibleByName(p, word, contextFile, closureDbs, s => IsUnreachableLocalVariable(p, s));
                     if (sym == null || string.IsNullOrEmpty(sym.FilePath)) return null;
                     return WrapResult(new System.Collections.ArrayList { CgLocation(sym.FilePath, sym.LineNumber) });
                 }
@@ -2178,11 +2172,13 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>Exact-name hover from one CodeGraph-schema DB → an LSP hover dict ({contents}), or null
-        /// when the DB is missing/unopenable, the symbol isn't found, or the only match is a "variable"
-        /// scoped to a PROCEDURE/ROUTINE elsewhere (see IsUnreachableLocalVariable — never a legitimate hit,
+        /// when the DB is missing/unopenable or no same-named row is visible from <paramref name="contextFile"/>.
+        /// Every same-named row is considered (SymbolIndex.FirstVisibleByName): a "variable" scoped to a
+        /// PROCEDURE/ROUTINE elsewhere is skipped (see IsUnreachableLocalVariable — never a legitimate hit,
         /// since the caller already exhausted this file's own local/routine/module scope via
-        /// BufferLocalHover before falling back here). <paramref name="sourceLabel"/> names the DB (e.g.
-        /// "ClarionGraph") for the detail line when the symbol has no project name. Never throws.</summary>
+        /// BufferLocalHover before falling back here), and so is an equate from an include file the context
+        /// file never includes. <paramref name="sourceLabel"/> names the DB (e.g. "ClarionGraph") for the
+        /// detail line when the symbol has no project name. Never throws.</summary>
         private static Dictionary<string, object> CgHoverFromDb(string word, string db, string sourceLabel,
                                                                 string contextFile = null, string[] closureDbs = null)
         {
@@ -2192,11 +2188,7 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var sym = p.FindSymbolByName(word);
-                    if (sym == null) return null;
-                    if (IsUnreachableLocalVariable(p, sym)) return null;
-                    // An equate from an include file the context file never includes is not visible there.
-                    sym = SymbolIndex.ScopeEquateToIncludes(sym, word, db, contextFile, closureDbs);
+                    var sym = SymbolIndex.FirstVisibleByName(p, word, contextFile, closureDbs, s => IsUnreachableLocalVariable(p, s));
                     if (sym == null) return null;
                     string contents = CgHoverText(sym, sourceLabel);
                     if (string.IsNullOrEmpty(contents)) return null;
