@@ -81,6 +81,30 @@ A Claude session outside a CA tab (a MultiTerminal or VS Code terminal with the 
 - **You can see changes made from outside.** Each editing, saving, importing or generating call from a plugin client writes `[ide-callback] <tool> from plugin client` to `monaco-spike.log` and shows a note in Clarion's status bar.
 - **Known limitation: one call at a time per client.** The plugin's server handles one request at a time, so a long IDE call (an embeditor open, a build) holds up that client's next call until it finishes, and cancelling the call in the client does not stop it in Clarion. Serving calls in parallel would let two calls from the same client reach Clarion out of order, so it was left out.
 
+<!-- release-docs: covered=red,index -->
+### A local `.red` that ends `{include %BIN%\%REDNAME%}` keeps the default search paths, by geircodes ([#278](https://github.com/ClarionLive/ClarionAssistant/issues/278), [PR #276](https://github.com/ClarionLive/ClarionAssistant/pull/276))
+
+`%REDNAME%` is a macro Clarion defines itself: the name of the version's redirection file, such as `Clarion100.red`. Clarion Assistant did not define it, so the line the IDE writes at the end of a new solution's `.red` was skipped, and every path of the default `.red` (`libsrc\win`, `Accessory\libsrc\win` and the rest) was missing. CodeGraph then indexed no ABC or third-party class, reported thousands of unresolved files, and `resolve_red_path` could not find `ABUTIL.INC` while `get_red_search_paths` could. The macro is now defined, so both tools and the index follow the include. The index log also names each `{include}` the `.red` could not follow, right after the redirection file it used, instead of leaving the cause in `get_solution_info` alone. Re-index after updating. Thanks to [@msarson](https://github.com/msarson) for the report and [@geircodes](https://github.com/geircodes) for the fix.
+
+<!-- release-docs: covered=codegraph,index -->
+### CodeGraph reads `INCLUDE()` the way the compiler does, by geircodes ([#271](https://github.com/ClarionLive/ClarionAssistant/issues/271), [PR #275](https://github.com/ClarionLive/ClarionAssistant/pull/275), [PR #268](https://github.com/ClarionLive/ClarionAssistant/pull/268))
+
+- **A commented-out INCLUDE is not followed.** `! INCLUDE('Old.inc')` used to count as a real include: a bogus "did not resolve" warning when the file was gone, and code that is never compiled in the index when it was still there.
+- **An INCLUDE inside a `COMPILE('t', expr)` or `OMIT('t', expr)` block is not counted as missing.** When it does not resolve and no unconditional route leads to it, it is recorded as `unresolved_conditional`, listed in the coverage summary and kept out of the warning: it is usually a file only another build of the same shared source has on its paths.
+- **The warning names the files.** `2 INCLUDE()d .inc file(s) did not resolve: Missing.inc (App.clw:5), ...` names up to ten, each with the file and line that INCLUDEs it, and the index log names every one. INCLUDEs in the PROGRAM file's global data are now stored too, so that file can be named.
+- **A data declaration labelled `Itemize`** (`Itemize LONG`, `Itemize EQUATE(3)`) no longer opens an ITEMIZE block that swallowed every declaration after it.
+- **A `.red` search folder that does not exist** (an old `%ROOT%\convsrc` line, for one) reads as harmless in the index log: it never affected the index.
+
+The first index after updating runs a full one by itself. Thanks to [@KevinErskine](https://github.com/KevinErskine) and [@msarson](https://github.com/msarson) for the reports and [@geircodes](https://github.com/geircodes) for the fixes.
+
+<!-- release-docs: covered=hover,lsp-bridge -->
+### Hover asks the language server for parameters, locals, routines and procedures, by geircodes ([PR #273](https://github.com/ClarionLive/ClarionAssistant/pull/273), [PR #277](https://github.com/ClarionLive/ClarionAssistant/pull/277), [PR #274](https://github.com/ClarionLive/ClarionAssistant/pull/274), [PR #272](https://github.com/ClarionLive/ClarionAssistant/pull/272), [PR #269](https://github.com/ClarionLive/ClarionAssistant/pull/269))
+
+In the CA Editor and CA Embeditor, hovering a parameter, a local variable, a routine (`DO RefreshList`) or a procedure call used to show Clarion Assistant's own quick card, which names the file but no line, and the language server was never asked. Those hovers now show the language server's card, which names the owning procedure and links the declaration. The quick card still appears when the server has nothing, is not running, or does not answer within 300 ms. For a procedure call this also fixes a wrong answer: with two libraries that both have a `Log_Write`, the card came from whichever the index found first, not from the prototype the file actually sees.
+
+- **A window labelled `Window`** (`Window  WINDOW('Details'),...`) shows the WINDOW keyword's card on the keyword, not the label's.
+- **When the language server has no answer**, the CodeGraph fallback for hover and Ctrl+Click looks at every row of that name instead of the first one, so another procedure's local no longer hides a global or equate the file can see, and the CodeGraph card links its declaration.
+
 ## What's New in v6.1
 
 6.1 moves CodeGraph indexing out of Clarion into a 64-bit process, so large solutions no longer run Clarion out of memory, and closes the open GitHub issues from the 6.0 cycle: a path policy for every file tool, no more stale native editor tabs after Claude writes a file, recovery of a CA Embeditor save lost when Clarion stops, and CodeGraph coverage of CLASS MODULE/LINK files and INCLUDEd global data. Full notes: **[docs/releases/v6.1.0.md](docs/releases/v6.1.0.md)**.
