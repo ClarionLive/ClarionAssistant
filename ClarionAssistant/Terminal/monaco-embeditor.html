@@ -2102,6 +2102,7 @@
         if (idleSyncTimer) clearTimeout(idleSyncTimer);
         idleSyncTimer = setTimeout(idleSync, IDLE_SYNC_MS);
         if (e && e.changes) markDirtyPieces(e.changes);   // R11b: an edited DATA piece travels as text
+        if (e && e.changes) invalidateLspComplOnEdit(editor && editor.getModel(), e.changes);   // GH #280
     }
     function idleSync() {
         idleSyncTimer = null;
@@ -3580,6 +3581,8 @@
                 // layer has nothing for "g:" yet) shows Monaco's "No suggestions" box, and while that box is up
                 // Monaco calls no provider at this caret again - not the late refresh, not Ctrl+Space (1328 log).
                 // An auto one that comes back empty just closes quietly.
+                // Noted first so the provider serves it from the cache rather than as a Ctrl+Space (GH #280).
+                if (typeof notePageSuggestTrigger === 'function') notePageSuggestTrigger(ed);
                 try { ed.trigger('clarion-colon', 'editor.action.triggerSuggest', { auto: true }); } catch (e) { }
             }, 0);
         });
@@ -5598,7 +5601,7 @@
     // A new document (setSource): cached answers and the miss count belong to the previous procedure. The
     // model id survives a setValue, so the (model.id, line, wordStart) key alone would serve them. (5.9)
     function resetLocalFirstState() {
-        lspComplCache = {}; lspComplMisses = {}; localHoverShared = null;
+        lspComplCache = {}; lspComplMisses = {}; localHoverShared = null; pageSuggestTrigger = null;
         clearSpanMap();
     }
 
@@ -5812,11 +5815,68 @@
     // prefix EXTENDS the cached one. Below 2 chars the host skips its bare-prefix merges (globals, CodeGraph),
     // so a 0-1 char answer is not a superset of a longer prefix's - except in a member/qualifier context
     // (after '.', ':' or '?'), where the server returns the whole member list regardless of what is typed.
-    function lspCacheServes(c, line, wordStart, prefix, qualified) {
+    // GH #280: `lead` is the line's text left of the word (the receiver, e.g. "    SELF."): it stays the same
+    // while one word is typed, so a rewritten receiver at the same column is a new question.
+    function lspCacheServes(c, line, wordStart, prefix, qualified, lead) {
         if (!c || c.line !== line || c.wordStart !== wordStart) return false;
+        if (lead != null && c.lead != null && c.lead !== lead) return false;
         var cp = c.prefix.toUpperCase(), p = prefix.toUpperCase();
         if (p.indexOf(cp) !== 0) return false;
         return p.length === cp.length || cp.length >= 2 || qualified;
+    }
+    // GH #280: an answer that has NOTHING for the typed prefix is not reused - it may be a stale or incomplete
+    // list (the server re-read an .inc since) - but asked again, at most once per LSP_ZERO_MATCH_RETRY_MS of
+    // that answer, so typing on through a word the server does not know does not flood it.
+    var LSP_ZERO_MATCH_RETRY_MS = 500;
+    function lspAnswerHasNothingFor(c, prefix) {
+        if (!c.done || !c.resp) return false;              // still on its way (or deferred): keep waiting for it
+        var items = c.resp.items || [];
+        if (!items.length) return true;
+        if (prefix.length <= c.prefix.length) return false;
+        var P = prefix.toUpperCase();
+        return !items.some(function (it) { return completionMatchesPrefix(it, P); });
+    }
+    // GH #280: an edit outside the word the cached answer was asked for (another line, a line break, the text
+    // before the word) can change what the server would answer: drop that model's entry. Typing inside the
+    // word (same line, at or after its start) keeps it - that is the keystroke path the cache exists for.
+    function invalidateLspComplOnEdit(model, changes) {
+        if (!model || !changes || !changes.length) return;
+        var id = modelKey(model), c = lspComplCache[id];
+        if (!c) return;
+        for (var i = 0; i < changes.length; i++) {
+            var r = changes[i].range, t = String(changes[i].text || '');
+            if (!r || r.startLineNumber !== c.line || r.endLineNumber !== c.line || r.startColumn < c.wordStart ||
+                t.indexOf('\n') >= 0 || t.indexOf('\r') >= 0) {
+                delete lspComplCache[id];
+                return;
+            }
+        }
+    }
+    // Suggest the PAGE opens itself (refreshWhenLspLands, the ':' handler) reaches the provider as an Invoke, the
+    // same kind as Ctrl+Space. It must be served from the cache - that is why it was opened - so it is noted
+    // here and the provider does not count it as the user asking. Consumed by the first query at that caret.
+    var pageSuggestTrigger = null;     // {id, line, column, at}
+    function notePageSuggestTrigger(ed) {
+        try {
+            var m = ed && ed.getModel && ed.getModel(), p = ed && ed.getPosition && ed.getPosition();
+            pageSuggestTrigger = (m && p) ? { id: modelKey(m), line: p.lineNumber, column: p.column, at: rtNow() } : null;
+        } catch (e) { pageSuggestTrigger = null; }
+    }
+    function takePageSuggestTrigger(model, position) {
+        var t = pageSuggestTrigger;
+        if (!t || t.id !== modelKey(model) || t.line !== position.lineNumber || t.column !== position.column ||
+            rtNow() - t.at > 1000) return false;
+        pageSuggestTrigger = null;
+        return true;
+    }
+    // Ctrl+Space (or any Invoke the page did not start itself): the user is asking again. Monaco also sends
+    // Invoke for a quick suggest on a word's first letter and for the re-query after Backspace; asking the
+    // server again there costs one request per suggest session, not one per keystroke.
+    function isExplicitInvoke(model, position, context) {
+        var INVOKE = (monaco.languages.CompletionTriggerKind && monaco.languages.CompletionTriggerKind.Invoke != null)
+            ? monaco.languages.CompletionTriggerKind.Invoke : 0;
+        if (!context || context.triggerKind !== INVOKE) return false;
+        return !takePageSuggestTrigger(model, position);
     }
     // The cached LSP completion that serves this query, or a new request that becomes the cache entry.
     // While the version is being typed and unsynced (R12) - which is EVERY query while typing, since the
@@ -5824,11 +5884,15 @@
     // sent from the idle sync for this position (the cache matches later keystrokes by prefix extension, so
     // the version moving on does not matter), unless a newer entry replaced it meanwhile. The list is
     // local-only until then; the first keystroke after the pause is served the LSP answer. (F3)
-    function lspCompletionFor(model, position, wordStart, prefix, qualified) {
+    // GH #280: `explicit` (Ctrl+Space) always asks and replaces the entry; a served answer with nothing for the
+    // prefix is asked again (rate-limited); `lead` keys the entry on the text left of the word.
+    function lspCompletionFor(model, position, wordStart, prefix, qualified, lead, explicit) {
         var id = modelKey(model);
         var c = lspComplCache[id];
-        if (lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified)) return c;
-        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, done: false, resp: null, sentAt: 0, deferred: false };
+        if (!explicit && lspCacheServes(c, position.lineNumber, wordStart, prefix, qualified, lead) &&
+            !(lspAnswerHasNothingFor(c, prefix) && rtNow() - c.doneAt >= LSP_ZERO_MATCH_RETRY_MS)) return c;
+        c = { line: position.lineNumber, wordStart: wordStart, prefix: prefix, lead: lead == null ? null : lead,
+              done: false, resp: null, sentAt: 0, doneAt: 0, deferred: false };
         // Captured, not re-read at reply time: a late reply from before a setSource must reset the OLD
         // document's miss count, not the new one's (resetLocalFirstState replaces the object).
         var misses = lspComplMisses;
@@ -5851,6 +5915,7 @@
         c.promise = sent
             .then(function (resp) {
                 c.done = true;
+                c.doneAt = rtNow();
                 c.resp = resp;
                 // null = timed out / dropped: no answer to reuse, so the next keystroke must ask again.
                 if (!resp) { if (lspComplCache[id] === c) delete lspComplCache[id]; return null; }
@@ -5891,6 +5956,7 @@
                 if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) { why = 'skip=no-focus'; return; }
                 var p = ed.getPosition();
                 if (!p || p.lineNumber !== line || p.column !== column) { why = 'skip=caret-moved'; return; }
+                notePageSuggestTrigger(ed);                // served from the cache, not a Ctrl+Space (GH #280)
                 ed.trigger('clarion-late-lsp', 'editor.action.triggerSuggest', { auto: true });   // see installColonSuggest
             } catch (e) { why = 'error=' + (e && e.message); }
             finally {
@@ -6289,7 +6355,8 @@
                 // bufferSync ahead of the LSP's.
                 var localP = requestLocal('localCompletion', model, position,
                     context && context.triggerCharacter ? { triggerCharacter: context.triggerCharacter } : null);
-                var lsp = lspCompletionFor(model, position, startCol, prefix, qualified);
+                var lsp = lspCompletionFor(model, position, startCol, prefix, qualified, before.substring(0, startCol - 1),
+                    isExplicitInvoke(model, position, context));
                 return Promise.all([localP, lspWithinBudget(lsp, modelKey(model))])
                     .then(function (r) {
                         // No local answer (timed out / host without the local layer): wait for the LSP as
