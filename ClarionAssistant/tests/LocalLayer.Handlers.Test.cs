@@ -196,7 +196,8 @@ static class LocalLayerHandlersTest
 
             Console.WriteLine("\nlocalHover (v form)");
             var hLocal = At("localHover", 15, 12, o);
-            Check("a local -> its card, authoritative", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") && (bool)hLocal["authoritative"],
+            Check("a local -> its card, a fallback (not authoritative)", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") &&
+                !(bool)hLocal["authoritative"] && (bool)hLocal["fallback"],
                 Json(hLocal));
             // H4: keyword data NOT loaded (a directory that does not exist) -> name + category only, not final.
             ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
@@ -620,7 +621,7 @@ static class LocalLayerHandlersTest
         Check("'obj.' from the slice: the declared class's members from the DBs (the local's type comes from the hashed DATA piece)",
             new[] { "Custom", "ResetSort", "TakeKey", "Open" }.All(x => sMem.Contains(x, StringComparer.OrdinalIgnoreCase)), string.Join(",", sMem));
         var sHover = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(15, 12, header, HashPiece(6, data), window)), o);
-        Check("hover on a local from the slice: its card, authoritative", sHover["contents"] != null && (bool)sHover["authoritative"], Json(sHover));
+        Check("hover on a local from the slice: its card, a fallback", sHover["contents"] != null && (bool)sHover["fallback"], Json(sHover));
         var sKw = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(15, 4, header, HashPiece(6, data), window)), o);
         Check("hover on RETURN from the slice: the keyword card (the caret line comes from the window piece)", sKw["contents"] != null && !(bool)sKw["authoritative"], Json(sKw));
         var sDecl = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(9, 14, header, HashPiece(6, data), window)), o);
