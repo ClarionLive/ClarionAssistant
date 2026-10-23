@@ -1767,6 +1767,7 @@
         var tgRo = document.getElementById('tgRo');
         if (tgRo) tgRo.style.display = fileMode ? 'none' : '';
         currentFilePath = msg.filePath || '';
+        setEmbedDocPath(fileMode ? '' : (msg.docPath || ''));   // H1-a: links to it stay in the CA Embeditor
         breakpointsEnabled = !!msg.breakpointsEnabled;   // overlay: gutter-click toggles a breakpoint (not a bookmark)
         designerEnabled = !!msg.designerEnabled;         // overlay: Ctrl+D designs structures in plain source files
         var sb = document.getElementById('saveBtn');
@@ -6044,7 +6045,7 @@
     // is down, or has not answered by the hover's deadline ({passed, fire}, armed when the hover started). Past
     // the deadline no hover is posted: nobody would read its answer.
     function fallbackHover(model, position, localCard, deadline) {
-        var localHover = { contents: [{ value: localCard }] };
+        var localHover = { contents: [{ value: markDiskSelfLinks(localCard) }] };
         if (deadline.passed) return Promise.resolve(localHover);
         return new Promise(function (resolve) {
             var settled = false;
@@ -6052,9 +6053,62 @@
             deadline.fire = function () { settle(localHover); };
             whenIdleSynced(model, { line: position.lineNumber, column: position.column })
                 .then(function (payload) { return payload && !settled ? requestFromHost('hover', payload) : null; })
-                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: prepareAttributeLinks(resp.contents, model, position) }] } : localHover); })
+                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: prepareServerCard(resp.contents, model, position) }] } : localHover); })
                 .catch(function () { settle(localHover); });
         });
+    }
+
+    // ---- H1-a: location links to the CA Embeditor's own document ----
+    // The language server analyses the embeditor's text under the module's path (docPath, from setSource), so
+    // its card's link to that path is a line of THIS text (the host has already shifted it past the MEMBER
+    // header it prepends for the server), not a line of the .clw on disk. A click on such a link reveals the
+    // line here and never opens the .clw, and its label reads "line N", not "Module.clw:N". A link marked
+    // ?ondisk is a line of the module ON DISK: a card from the solution index (the local card here, the host
+    // for the server path's index fallback), so it opens the .clw as before, as does a link to any other file.
+    // The CA Editor (file mode) has no docPath: there the line IS the file's line.
+    var embedDocPath = '';
+    var SELF_LINK_MD_RX = /\[((?:\\.|[^\]\\\r\n])*)\]\((file:[^)\s?#]*)(\?[^)\s#]*)?#L(\d+)((?:\s+"[^"\r\n]*")?)\)/g;
+    var ONDISK_QUERY_RX = /(?:^\??|&)ondisk(?:=|&|$)/i;
+    function setEmbedDocPath(p) { embedDocPath = String(p || ''); }
+    function normLinkPath(p) { return String(p || '').replace(/\//g, '\\').replace(/^\\+/, '').toLowerCase(); }
+    // "file:///H:/dir/Mod.clw" -> "/H:/dir/Mod.clw", decoded (the server encodes the drive colon: c%3A).
+    function linkHrefPath(href) {
+        var p = String(href || '').replace(/^file:(?:\/\/[^\/]*)?/i, '');
+        try { p = decodeURIComponent(p); } catch (e) { }
+        return p;
+    }
+    function isEmbedSelfHref(href) {
+        return !fileMode && !!embedDocPath && /^file:\/\/\//i.test(href) &&
+            normLinkPath(linkHrefPath(href)) === normLinkPath(embedDocPath);
+    }
+    // A clicked link (a Monaco URI): the embeditor's own document, and not a disk line?
+    function isEmbedSelfUri(uri) {
+        if (fileMode || !embedDocPath || !uri || uri.scheme !== 'file' || uri.authority) return false;
+        if (ONDISK_QUERY_RX.test(String(uri.query || ''))) return false;
+        return normLinkPath(uri.fsPath || uri.path) === normLinkPath(embedDocPath);
+    }
+    // The server's card: its own-document links relabelled "line N" (the target stays in this editor).
+    function prepareSelfLinks(markdown) {
+        var md = String(markdown || '');
+        if (fileMode || !embedDocPath || md.indexOf('](file:') < 0) return md;
+        return md.replace(SELF_LINK_MD_RX, function (all, label, href, query, line, title) {
+            if ((query && ONDISK_QUERY_RX.test(query)) || !isEmbedSelfHref(href)) return all;
+            return '[line ' + line + '](' + href + (query || '') + '#L' + line + title + ')';
+        });
+    }
+    // A local card's links come from the solution index: lines of the files on disk. Own-document ones are
+    // marked ?ondisk so a click opens the .clw at that line instead of revealing a disk line here.
+    function markDiskSelfLinks(markdown) {
+        if (fileMode || !embedDocPath || markdown == null) return markdown;
+        var md = String(markdown);
+        if (md.indexOf('](file:') < 0) return md;
+        return md.replace(SELF_LINK_MD_RX, function (all, label, href, query, line, title) {
+            if (query || !isEmbedSelfHref(href)) return all;
+            return '[' + label + '](' + href + '?ondisk#L' + line + title + ')';
+        });
+    }
+    function prepareServerCard(markdown, model, position) {
+        return prepareSelfLinks(prepareAttributeLinks(markdown, model, position));
     }
 
     // ---- Attribute edit links on a control card (click a chip to add/remove an attribute) ----
@@ -6503,7 +6557,7 @@
                     .then(function (local) {
                         if (!local || !local.contents) return null;
                         if (local.fallback) return null;   // the LSP provider shows it if the server has nothing
-                        return { contents: [{ value: local.contents }] };
+                        return { contents: [{ value: markDiskSelfLinks(local.contents) }] };
                     })
                     .catch(function () { return null; });
             }
@@ -6532,7 +6586,7 @@
                                 if (!resp || !resp.contents) return null;
                                 // Same symbol as the local card already on screen: one card, not two.
                                 if (localSymbol && localSymbol === hoverCardSymbol(resp.contents)) return null;
-                                return { contents: [{ value: prepareAttributeLinks(resp.contents, model, position) }] };
+                                return { contents: [{ value: prepareServerCard(resp.contents, model, position) }] };
                             });
                     })
                     .catch(function () { return null; });
@@ -6553,6 +6607,13 @@
                 if (isAttributeLinkUri(uri)) {
                     var ap = String(uri.path || '');
                     if (ap.indexOf(ATTR_EDIT_LINK_PATH) === 0) applyAttributeEditLink(ap.slice(ATTR_EDIT_LINK_PATH.length));
+                    return true;
+                }
+                // H1-a: a link to the CA Embeditor's own document is a line of THIS text (see prepareSelfLinks):
+                // reveal it here, caret on it, and never open the .clw (whose line it is not).
+                if (isEmbedSelfUri(uri)) {
+                    var sm = /^L?(\d+)/.exec(uri.fragment || '');
+                    revealLineFromHost({ line: sm ? (parseInt(sm[1], 10) || 1) : 1, column: 1 });
                     return true;
                 }
                 // Hover footers only ever emit a bare #L<line> (see HoverFormatter.locationLink on the

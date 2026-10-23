@@ -54,6 +54,49 @@ namespace ClarionAssistant.Services
             return OpensWithModuleHeader(buffer) ? 0 : 1;
         }
 
+        /// <summary>H1-a (2026-10-23): a hover card's location links to the embeditor's OWN document, put in the
+        /// embeditor's terms. The server analyses the embeditor's text under the module's path, so its link to
+        /// that path carries a line of that (wrapped) text: it is shifted back by <paramref name="lineOffset"/>
+        /// (<see cref="LineOffsetFor"/> of the same buffer) to the embeditor line. A card from the solution index
+        /// (<paramref name="diskLines"/>: CodeGraph, which reads the module ON DISK) gets <c>?ondisk</c> on the link
+        /// instead, so the page opens the .clw at that line and never reveals a disk line in the embeditor. Links
+        /// to any other file are left as they are. The page (monaco-embeditor.html) does the rest: a link to its
+        /// own document without <c>?ondisk</c> reveals the line in place, labelled "line N".</summary>
+        public static string ToEmbeditorLinks(string markdown, string docPath, int lineOffset, bool diskLines)
+        {
+            if (string.IsNullOrEmpty(markdown) || string.IsNullOrEmpty(docPath) ||
+                markdown.IndexOf("](file:", StringComparison.OrdinalIgnoreCase) < 0) return markdown;
+            string self = NormalizeLinkPath(docPath);
+            return SelfLinkRx.Replace(markdown, m =>
+            {
+                if (NormalizeLinkPath(LinkUriPath(m.Groups[1].Value)) != self) return m.Value;
+                if (diskLines)
+                    return m.Groups[2].Success ? m.Value : "](" + m.Groups[1].Value + "?ondisk#L" + m.Groups[3].Value;
+                int line;
+                if (!int.TryParse(m.Groups[3].Value, out line)) return m.Value;
+                return "](" + m.Groups[1].Value + m.Groups[2].Value + "#L" + Math.Max(1, line - lineOffset);
+            });
+        }
+
+        // "](file:///<path>[?query]#L<n>" — the uri part of a markdown link with a line fragment.
+        private static readonly System.Text.RegularExpressions.Regex SelfLinkRx = new System.Text.RegularExpressions.Regex(
+            @"\]\((file:[^)\s?#]+)(\?[^)\s#]*)?#L(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        private static string LinkUriPath(string uri)
+        {
+            string p = uri;
+            if (p.StartsWith("file:///", StringComparison.OrdinalIgnoreCase)) p = p.Substring(8);
+            else if (p.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) p = p.Substring(7);
+            else if (p.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) p = p.Substring(5);
+            try { p = Uri.UnescapeDataString(p); } catch { }
+            return p;
+        }
+
+        private static string NormalizeLinkPath(string p)
+        {
+            return (p ?? "").Replace('/', '\\').TrimStart('\\').ToLowerInvariant();
+        }
+
         private EmbedLspContext(string realPath, string headerLine)
         {
             RealPath = realPath;
