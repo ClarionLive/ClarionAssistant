@@ -65,7 +65,7 @@ Do these once after installing this release:
 
 - **Update Clarion Assistant in the Clarion you open your solution in.** The IDE tools below reach only a Clarion running Clarion Assistant 6.2 or later; an older one is named in the error, with the folder to update.
 
-<!-- release-docs: covered=ide-proxy,mcp-server -->
+<!-- release-docs: covered=ide-proxy,mcp-server,ide-tools -->
 ### MultiTerminal, VS Code and other plugin clients can use the IDE tools while Clarion is open
 
 A Claude session outside a CA tab (a MultiTerminal or VS Code terminal with the clarion-assistant plugin, or any other client that loads it) used to get only the tools that work without the IDE: documentation, CodeGraph, LSP, schema, file and search. It now gets the IDE tools too (opening and editing embed points, driving the editor, reading the app tree and dictionary, building), the same ones a CA tab has, whenever Clarion is open on the same solution as the client. The plugin's server sends each call to that Clarion and returns its answer, so these tools behave as they do in a CA tab, inside the same file-access rules.
