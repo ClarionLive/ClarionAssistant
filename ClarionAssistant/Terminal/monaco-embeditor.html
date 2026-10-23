@@ -5948,9 +5948,10 @@
     // Hover (R7): the local card and the LSP card come from two providers, which Monaco renders as they
     // settle. Both share ONE localHover request per (model, version, position). The LSP provider waits for
     // that answer before it asks, and the host decides which of three ways the local card plays:
-    //   authoritative (a local, a parameter, a routine, a module procedure, a dictionary or index card):
+    //   authoritative (a module procedure, a dictionary card, an index card that is not a procedure):
     //       no LSP request at all;
-    //   fallback (a keyword card, GH #250): the local provider shows nothing; the LSP provider asks the
+    //   fallback (a keyword card, GH #250; a DATA label - local, module data, structure; a routine; a
+    //       parameter; a procedure from the index): the local provider shows nothing; the LSP provider asks the
     //       server and shows ITS card, or the local card when the server has nothing, is down, or misses
     //       FALLBACK_LSP_DEADLINE_MS - one card either way;
     //   otherwise: both, and the LSP card is dropped when it names the same symbol as the local card, so

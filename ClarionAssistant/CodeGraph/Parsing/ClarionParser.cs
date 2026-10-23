@@ -95,8 +95,11 @@ namespace ClarionCodeGraph.Parsing
         internal sealed class ItemizeScope
         {
             // "[label] ITEMIZE[(seed)][,PRE[(prefix)]]" — the label is optional (blank-label blocks are indented).
+            // ITEMIZE is only followed by "(", "," or the end of the line. ITEMIZE may itself label
+            // data ("Itemize LONG", "Itemize EQUATE(3)"), and there the next word is the declaration's
+            // own keyword: that line is not an opener.
             private static readonly Regex OpenRegex = new Regex(
-                @"^\s*(?:([A-Za-z_][\w:]*)\s+)?ITEMIZE\b(.*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+                @"^\s*(?:([A-Za-z_][\w:]*)\s+)?ITEMIZE\s*([(,].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             private static readonly Regex PreRegex = new Regex(
                 @",\s*PRE\b(?:\s*\(\s*([A-Za-z_][\w:]*)?\s*\))?", RegexOptions.Compiled | RegexOptions.IgnoreCase);
             private static readonly Regex CloseRegex = new Regex(
@@ -276,6 +279,7 @@ namespace ClarionCodeGraph.Parsing
             bool inModule = false;
             string currentModuleFile = null;
             int mapDepth = 0;
+            var conditionals = new ConditionalBlocks();
 
             for (int i = 0; i < lines.Length; i++)
             {
@@ -288,6 +292,8 @@ namespace ClarionCodeGraph.Parsing
                     line = line.TrimEnd();
                     line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
                 }
+
+                bool conditional = conditionals.Advance(line);
 
                 // OMIT/COMPILE('terminator') — skip block
                 i = SkipConditionalBlock(lines, i, line);
@@ -391,8 +397,8 @@ namespace ClarionCodeGraph.Parsing
                     }
                 }
 
-                // Detect INCLUDE statements in MAP
-                var includeMatch = IncludeRegex.Match(line);
+                // Detect INCLUDE statements in MAP (not in a comment: "! INCLUDE('x.inc')" is not read)
+                var includeMatch = IncludeRegex.Match(StripInlineComment(line));
                 if (includeMatch.Success)
                 {
                     result.Symbols.Add(new ClarionSymbol
@@ -402,7 +408,8 @@ namespace ClarionCodeGraph.Parsing
                         FilePath = filePath,
                         LineNumber = lineNum,
                         ProjectId = projectId,
-                        Scope = "global"
+                        Scope = "global",
+                        Conditional = conditional
                     });
                 }
             }
@@ -531,6 +538,7 @@ namespace ClarionCodeGraph.Parsing
             // exactly that shape, and by nested MODULE(...)...END decrementing the depth early.
             bool inMap = false;
             int mapDepth = 0;
+            var conditionals = new ConditionalBlocks();
 
             for (int i = startLine; i < lines.Length; i++)
             {
@@ -543,6 +551,8 @@ namespace ClarionCodeGraph.Parsing
                     line = line.TrimEnd();
                     line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
                 }
+
+                bool conditional = conditionals.Advance(line);
 
                 // OMIT/COMPILE('terminator') — skip block
                 int newI = SkipConditionalBlock(lines, i, line);
@@ -888,8 +898,8 @@ namespace ClarionCodeGraph.Parsing
                     continue;
                 }
 
-                // Detect INCLUDE
-                var includeMatch = IncludeRegex.Match(line);
+                // Detect INCLUDE (not in a comment: "! INCLUDE('x.inc')" is not read)
+                var includeMatch = IncludeRegex.Match(StripInlineComment(line));
                 if (includeMatch.Success)
                 {
                     result.Symbols.Add(new ClarionSymbol
@@ -900,10 +910,10 @@ namespace ClarionCodeGraph.Parsing
                         LineNumber = lineNum,
                         ProjectId = projectId,
                         // GH #246: an INCLUDE in the PROGRAM's global data section - not in a MAP or CLASS body
-                        // (both consumed above), a procedure, a routine or a GROUP/QUEUE body, and not in a comment.
+                        // (both consumed above), a procedure, a routine or a GROUP/QUEUE body.
                         InGlobalData = isProgramFile && inData && !inCode && currentProcedure == null &&
-                                       currentRoutine == null && dataGroupDepth == 0 &&
-                                       IncludeRegex.IsMatch(StripInlineComment(line))
+                                       currentRoutine == null && dataGroupDepth == 0,
+                        Conditional = conditional
                     });
                 }
 
@@ -1200,6 +1210,7 @@ namespace ClarionCodeGraph.Parsing
             bool inClassBody = false;
             int classEndDepth = 0;
             var itemize = new ItemizeScope();
+            var conditionals = new ConditionalBlocks();
 
             for (int i = 0; i < lines.Length; i++)
             {
@@ -1212,6 +1223,8 @@ namespace ClarionCodeGraph.Parsing
                     line = line.TrimEnd();
                     line = line.Substring(0, line.Length - 1) + " " + lines[++i].TrimStart();
                 }
+
+                bool conditional = conditionals.Advance(line);
 
                 // OMIT/COMPILE('terminator') — skip block
                 int newI = SkipConditionalBlock(lines, i, line);
@@ -1517,7 +1530,7 @@ namespace ClarionCodeGraph.Parsing
                     continue;
                 }
 
-                var includeMatch = IncludeRegex.Match(line);
+                var includeMatch = IncludeRegex.Match(StripInlineComment(line));
                 if (includeMatch.Success)
                 {
                     result.Symbols.Add(new ClarionSymbol
@@ -1526,12 +1539,40 @@ namespace ClarionCodeGraph.Parsing
                         Type = "include",
                         FilePath = filePath,
                         LineNumber = lineNum,
-                        ProjectId = projectId
+                        ProjectId = projectId,
+                        Conditional = conditional
                     });
                 }
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// The COMPILE('term', expr) / OMIT('term', expr) blocks a line sits in. SkipConditionalBlock parses
+        /// their contents as code (CodeGraph cannot evaluate a project's defines); this only remembers that
+        /// it was conditional, so an INCLUDE in there that does not resolve is not reported as a gap.
+        /// An unconditional OMIT('term') is skipped wholesale and never reaches here; an unconditional
+        /// COMPILE('term') is always compiled, so neither opens a block.
+        /// </summary>
+        internal sealed class ConditionalBlocks
+        {
+            private readonly List<string> _terminators = new List<string>();
+
+            /// <summary>Call once per line, in order. True when the line is inside a conditional block.</summary>
+            public bool Advance(string line)
+            {
+                var match = OmitCompileRegex.Match(line);
+                if (match.Success && match.Groups[3].Success)
+                {
+                    _terminators.Add(match.Groups[2].Value);
+                    return true;
+                }
+                if (_terminators.Count == 0) return false;
+                // The terminator line still belongs to its block (same substring rule as SkipConditionalBlock).
+                _terminators.RemoveAll(t => line.Contains(t));
+                return true;
+            }
         }
 
         /// <summary>

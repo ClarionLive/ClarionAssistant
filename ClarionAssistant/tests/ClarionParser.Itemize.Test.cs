@@ -150,6 +150,44 @@ static class ClarionParserItemizeTest
             Check(equNames.Count == Expected.Length, "equ.count", "exactly " + Expected.Length + " equates - got " + equNames.Count + " (" + string.Join(", ", equNames.Keys) + ")");
             Check(parserVersion == "5", "equ.ver", "the library DB is stamped parser_version 5 (older caches rebuild) - got " + (parserVersion ?? "null"));
             SQLiteConnection.ClearAllPools();
+
+            // 4) ITEMIZE may label data (not a PROCEDURE). A data declaration labelled Itemize is
+            //    followed by its own keyword, never by "(", "," or the end of the line, so it does
+            //    not open a block - before the fix it did, and every line up to the next lone END
+            //    was swallowed: the declaration itself, and here a whole CLASS.
+            string inc2 = Path.Combine(dir, "Probe.inc");
+            Write(inc2,
+                "Itemize           EQUATE(3)                    ! an EQUATE labelled Itemize",   // 1
+                "AfterLabel        CLASS,TYPE",                                                 // 2
+                "Run                 PROCEDURE()",                                              // 3
+                "                  END",                                                        // 4
+                "Limit             EQUATE(5)",                                                  // 5
+                "                  ITEMIZE,PRE(Px)",                                            // 6
+                "Lone                EQUATE",                                                   // 7
+                "                  END");                                                       // 8
+            foreach (bool lib in new[] { false, true })
+            {
+                string id = lib ? "lbl-lib" : "lbl-prj";
+                var syms = new ClarionParser { LibraryMode = lib }.ParseIncFile(inc2, 1).Symbols;
+                Check(syms.Any(s => s.Name == "Itemize" && s.Params == "EQUATE"), id + ".1", "the EQUATE labelled Itemize is indexed");
+                Check(syms.Any(s => s.Name == "AfterLabel" && s.Type == "class"), id + ".2", "the CLASS after it is indexed");
+                Check(syms.Any(s => s.Name == "Limit" && s.Params == "EQUATE"), id + ".3", "the EQUATE after the CLASS is indexed under its own name");
+                Check(syms.Any(s => s.Name == "Px:Lone"), id + ".4", "a real ITEMIZE after them still prefixes its members (Px:Lone)");
+            }
+
+            // 5) ParseMemberFile DATA: a variable labelled Itemize, and the declarations after it.
+            string clw2 = Path.Combine(dir, "Probe.clw");
+            Write(clw2,
+                "  MEMBER('Main.clw')",                                       // 1
+                "Itemize           LONG",                                     // 2
+                "Counter           LONG",                                     // 3
+                "UseProbe PROCEDURE()",                                       // 4
+                "Local             LONG",                                     // 5
+                "  CODE",                                                     // 6
+                "  Local = Itemize + Counter");                               // 7
+            var p2 = new ClarionParser().ParseMemberFile(clw2, 1, new HashSet<string>(StringComparer.OrdinalIgnoreCase)).Symbols;
+            Check(p2.Any(s => s.Name == "Itemize" && s.Type == "variable" && s.Scope == "module"), "lbl-clw.1", "the module variable labelled Itemize is indexed");
+            Check(p2.Any(s => s.Name == "Counter" && s.Type == "variable" && s.Scope == "module"), "lbl-clw.2", "the declaration after it is indexed");
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
 

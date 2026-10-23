@@ -212,16 +212,19 @@ static class LocalScopeIndexTest
         Console.WriteLine("hover");
         const string codeLine = "LOC:Count = pId + ModCounter";
         var h17 = HoverOn(_two, codeLine, "LOC:Count");
-        Check(h17 != null && h17.Authoritative && h17.Markdown.Contains("LONG") && h17.Markdown.Contains("LOC:Count"), "1.17", "LOC:Count -> LONG, authoritative: " + Md(h17));
+        Check(h17 != null && !h17.Authoritative && h17.Fallback && h17.Markdown.Contains("LONG") && h17.Markdown.Contains("LOC:Count"), "1.17",
+              "LOC:Count -> LONG, a fallback (the server's card links the declaration): " + Md(h17));
 
         string c18 = WithLine(_two, "Loc", "  x = pName");
         var h18 = HoverOn(c18, "x = pName", "pName");
-        Check(h18 != null && h18.Authoritative && h18.Markdown.Contains("*STRING"), "1.18", "pName -> *STRING, authoritative: " + Md(h18));
+        Check(h18 != null && !h18.Authoritative && h18.Fallback && h18.Markdown.Contains("*STRING"), "1.18",
+              "pName -> *STRING, a fallback for the server's card (procedure name, PROCEDURE line link): " + Md(h18));
 
         var h19 = HoverOn(_two, "DO RtnB", "RtnB");
         string c19 = WithLine(_two, "Loc", "  DO RtnA");
         var h19a = HoverOn(c19, "DO RtnA", "RtnA");
-        Check(h19 != null && h19.Authoritative && h19a != null && h19a.Authoritative, "1.19", "routines RtnB / RtnA -> authoritative: " + Md(h19a));
+        Check(h19 != null && !h19.Authoritative && h19.Fallback && h19a != null && !h19a.Authoritative && h19a.Fallback &&
+              h19a.Markdown.Contains("RtnA ROUTINE"), "1.19", "routines RtnB / RtnA -> a fallback (the server's card links the ROUTINE line): " + Md(h19a));
 
         var h20 = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "LocalHelper");
         Check(h20 != null && h20.Authoritative, "1.20", "LocalHelper (MAP) -> authoritative: " + Md(h20));
@@ -236,10 +239,10 @@ static class LocalScopeIndexTest
         string c310 = InsertAfter(_two, "LOC:Count            LONG                          ! the row count", "Clip                 LONG");
         c310 = WithLine(c310, "Loc", "  x = Clip");
         var h310 = HoverOn(c310, "x = Clip", "Clip");
-        Check(h310 != null && h310.Authoritative && h310.Kind == "local", "3.10a", "a local named Clip wins, authoritative");
+        Check(h310 != null && h310.Fallback && h310.Kind == "local", "3.10a", "a local named Clip wins (its card, as a fallback)");
 
         // Module data and structures: the buffer's card is a FALLBACK for the server's richer one (scope, field
-        // count, declaration link); a plain procedure local stays authoritative (1.17).
+        // count, declaration link), as a plain procedure local's is (1.17).
         var hMod = HoverOn(_two, codeLine, "ModCounter");
         Check(hMod != null && !hMod.Authoritative && hMod.Fallback && hMod.Markdown.Contains("LONG"), "1.fb1",
               "ModCounter (module LONG) -> fallback, not authoritative: " + Md(hMod));
@@ -251,7 +254,17 @@ static class LocalScopeIndexTest
         var hCls = HoverOn(cCls, "x = ThisWindow", "ThisWindow");
         Check(hCls != null && !hCls.Authoritative && hCls.Fallback, "1.fb3",
               "ThisWindow (local CLASS) -> fallback, not authoritative: " + Md(hCls));
-        Check(h17 != null && !h17.Fallback, "1.fb4", "LOC:Count (plain local) -> not a fallback: " + Md(h17));
+        var h20b = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "LocalHelper");
+        Check(h20b != null && !h20b.Fallback, "1.fb4", "LocalHelper (MAP procedure) -> still not a fallback: " + Md(h20b));
+        // Parameters: the server's card names the procedure and links its PROCEDURE line - a method's own
+        // parameter, and the owning procedure's parameter seen from a local class method, both fall back.
+        var hOwn = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
+        Check(hOwn != null && !hOwn.Authoritative && hOwn.Fallback && hOwn.Markdown.Contains("BYTE"), "1.fb5",
+              "pMode (ThisWindow.Init's parameter) -> fallback: " + Md(hOwn));
+        string cOwner = WithLine(_two, "pM", "  x = pId");
+        var hOwner = HoverOn(cOwner, "x = pId", "pId");
+        Check(hOwner != null && !hOwner.Authoritative && hOwner.Fallback && hOwner.Markdown.Contains("LONG"), "1.fb6",
+              "pId (ProcA's parameter, seen from ThisWindow.Init) -> fallback: " + Md(hOwner));
 
         // Local class member access (SELF.Init inside ThisWindow.Init): non-authoritative member hover.
         string cm = WithLine(_two, "SELF.", "  SELF.Kill()");

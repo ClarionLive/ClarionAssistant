@@ -511,6 +511,22 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86" }
+            # GH #271: Pass 2b reads INCLUDE() as the compiler does - a commented-out INCLUDE is not followed, one that
+            # does not resolve inside a conditional COMPILE/OMIT block is unresolved_conditional (not a gap), and the
+            # warning names each real gap with its includer; the feature checks fail on 6.1.0 (x86 SQLite).
+            @{ Name = "CodeGraphIndexer.IncludeOutcome.Test"
+               Sources = @("tests\CodeGraphIndexer.IncludeOutcome.Test.cs",
+                           "CodeGraph\Graph\CodeGraphIndexer.cs", "CodeGraph\Graph\CodeGraphDatabase.cs", "CodeGraph\Graph\IndexProgress.cs",
+                           "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs", "CodeGraph\Parsing\SolutionParser.cs",
+                           "CodeGraph\Parsing\ProjectParser.cs", "CodeGraph\Parsing\SourceResolver.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "CodeGraph\Parsing\Models\SolutionProject.cs",
+                           "Services\RedFileService.cs", "Services\RedResolution.cs", "Services\ClarionConfigDirectory.cs",
+                           "Services\ClarionVersionService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # ef2fd2a9 / cea47717: an incremental index of a database built below the current feature level (or with
             # none recorded) runs FULL and says so; a current database stays incremental and an unchanged one reads
             # "up to date", not a bare 0-symbol success (x86 SQLite).

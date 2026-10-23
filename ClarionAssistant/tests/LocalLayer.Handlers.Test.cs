@@ -196,7 +196,8 @@ static class LocalLayerHandlersTest
 
             Console.WriteLine("\nlocalHover (v form)");
             var hLocal = At("localHover", 15, 12, o);
-            Check("a local -> its card, authoritative", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") && (bool)hLocal["authoritative"],
+            Check("a local -> its card, a fallback (not authoritative)", hLocal["contents"] != null && ((string)hLocal["contents"]).Contains("loTotal") &&
+                !(bool)hLocal["authoritative"] && (bool)hLocal["fallback"],
                 Json(hLocal));
             // H4: keyword data NOT loaded (a directory that does not exist) -> name + category only, not final.
             ClarionKeywordIndex.DataDirOverride = System.IO.Path.Combine(work, "no-keyword-data");
@@ -238,8 +239,8 @@ static class LocalLayerHandlersTest
                 string call = ModBuffer.Replace("  x# = INV:Qty + GloVar + Clip", "  x# = ~PASSWORD('IN',103) + 1");
 
                 var withDb = LocalLayerHandlers.Handle("localHover", call, Req("{\"line\":16,\"column\":10}"), o);
-                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable)",
-                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && (bool)withDb["authoritative"], Json(withDb));
+                Check("L3 PASSWORD( with a DB procedure -> the PROCEDURE card (not the attribute, not the same-named variable), a FALLBACK for the server's",
+                    withDb["contents"] != null && ((string)withDb["contents"]).Contains("pLevel") && !(bool)withDb["authoritative"] && (bool)withDb["fallback"], Json(withDb));
 
                 LocalLayerHandlers.ProjectDbPath = null;
                 LocalLayerHandlers.ResetPathCache();
@@ -441,6 +442,29 @@ static class LocalLayerHandlersTest
             var hWin = SlotHover(6, "WINDOW", o);
             Check("Win  WINDOW(...) (after a label) -> the keyword card, not the index's 'Window' variable",
                 Kind(hWin) == "keyword", Json(hWin));
+            // A procedure's own WINDOW labelled 'Window': Clarion is case-insensitive, so the keyword after the label
+            // is the same word as the label. In the slot it is the structure keyword, never the variable, so the
+            // buffer's (authoritative) card for the label must not answer it - the server's header card must.
+            string[] ownWin = {
+                "  MEMBER('app')",                              // 1
+                "TestProc PROCEDURE",                           // 2
+                "Window  WINDOW('x'),AT(0,0,100,100)",          // 3
+                "       BUTTON('Ok'),AT(1,20),USE(?Ok)",        // 4
+                "     END",                                     // 5
+                "  CODE",                                       // 6
+                "  OPEN(Window)" };                             // 7
+            Func<int, string, int, Dictionary<string, object>> ownHover = (ln, w, from) =>
+                LocalLayerHandlers.Handle("localHover", string.Join("\r\n", ownWin),
+                    Req("{\"line\":" + ln + ",\"column\":" + (ownWin[ln - 1].IndexOf(w, from, StringComparison.Ordinal) + 2) + "}"), o);
+            var hOwnSlot = ownHover(3, "WINDOW", 0);
+            Check("Window  WINDOW(...) in a procedure's DATA -> the keyword card for WINDOW (a fallback), not the label's local card",
+                Kind(hOwnSlot) == "keyword" && (bool)hOwnSlot["fallback"] && !(bool)hOwnSlot["authoritative"], Json(hOwnSlot));
+            var hOwnLabel = ownHover(3, "Window", 0);
+            Check("...the label itself (column 1) still gets the buffer's card",
+                Kind(hOwnLabel) == "local", Json(hOwnLabel));
+            var hOwnUse = ownHover(7, "Window", 0);
+            Check("...and OPEN(Window) in CODE is the variable: the buffer's card",
+                Kind(hOwnUse) == "local", Json(hOwnUse));
             var hRef = SlotHover(11, "WINDOW", o);
             Check("w  &WINDOW (a reserved type behind '&') -> the keyword card",
                 Kind(hRef) == "keyword", Json(hRef));
@@ -455,9 +479,13 @@ static class LocalLayerHandlersTest
             var hCall = SlotHover(16, "Button", o);
             Check("Button(1) in CODE (a control name is not reserved: a call) -> still the procedure from the index",
                 Kind(hCall) == "index" && Contents(hCall).Contains("pId"), Json(hCall));
+            // A procedure from the index is a FALLBACK: only the server knows which prototype this file sees
+            // (its MAP, and the MAPs its includes declare), and a same-named body elsewhere in the index is not it.
+            Check("...a FALLBACK for the server's card, not authoritative",
+                !(bool)hCall["authoritative"] && (bool)hCall["fallback"], Json(hCall));
             var hPwBare = SlotHover(17, "Password", o);
-            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index",
-                Kind(hPwBare) == "index" && (bool)hPwBare["authoritative"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
+            Check("a bare '  Password' call (an attribute name, not a declaration keyword) -> the procedure from the index, a FALLBACK",
+                Kind(hPwBare) == "index" && !(bool)hPwBare["authoritative"] && (bool)hPwBare["fallback"] && Contents(hPwBare).Contains("pX"), Json(hPwBare));
             var hTextRef = SlotHover(15, "Text", o);
             Check("'Text' in CODE -> the INCLUDED equate (the slot rule is position-specific)",
                 Kind(hTextRef) == "index" && Contents(hTextRef).Contains("seen.inc"), Json(hTextRef));
@@ -484,14 +512,20 @@ static class LocalLayerHandlersTest
             Check("...and its location is a clickable link: [seen.inc:1](file:///C:/src/seen.inc#L1)",
                 Contents(hSeen).Contains("[seen.inc:1](file:///C:/src/seen.inc#L1)"), Json(hSeen));
             Check("LocationLink: an absolute path -> a file: link with the 1-based line as #L<n>",
-                LocalLayerHandlers.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
+                SymbolIndex.LocationLink(@"D:\lib\win\x.inc", 70) == "[x.inc:70](file:///D:/lib/win/x.inc#L70)");
             Check("LocationLink: a space and a '#' in the path are escaped, and the link keeps one fragment",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
-                LocalLayerHandlers.LocationLink(@"D:\my lib\c#\x.inc", 3));
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3) == "[x.inc:3](file:///D:/my%20lib/c%23/x.inc#L3)",
+                SymbolIndex.LocationLink(@"D:\my lib\c#\x.inc", 3));
             Check("LocationLink: a relative path, no line, or a malformed path -> plain text, never a broken link",
-                LocalLayerHandlers.LocationLink("x.clw", 1) == "x.clw:1" &&
-                LocalLayerHandlers.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
-                !LocalLayerHandlers.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+                SymbolIndex.LocationLink("x.clw", 1) == "x.clw:1" &&
+                SymbolIndex.LocationLink(@"D:\lib\x.inc", 0) == "x.inc" &&
+                !SymbolIndex.LocationLink("D:\\lib\\a|b.inc", 5).Contains("]("));
+            // The closing location line both the index card and the host's CodeGraph card end with: the host's card
+            // answers in the server's place when the server has nothing, so it must not drop the link the index card has.
+            Check("LocationLine: a file -> a blank line, then the link; no file -> nothing",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70) == "\n\n[x.inc:70](file:///D:/lib/win/x.inc#L70)" &&
+                SymbolIndex.LocationLine(null, 70) == "" && SymbolIndex.LocationLine("", 3) == "",
+                SymbolIndex.LocationLine(@"D:\lib\win\x.inc", 70));
             var hHidden = SlotHover(14, "Hidden", o);
             Check("an EQUATE from a .inc this file never includes -> no card at all",
                 hHidden["contents"] == null && hHidden["kind"] == null, Json(hHidden));
@@ -587,7 +621,7 @@ static class LocalLayerHandlersTest
         Check("'obj.' from the slice: the declared class's members from the DBs (the local's type comes from the hashed DATA piece)",
             new[] { "Custom", "ResetSort", "TakeKey", "Open" }.All(x => sMem.Contains(x, StringComparer.OrdinalIgnoreCase)), string.Join(",", sMem));
         var sHover = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(15, 12, header, HashPiece(6, data), window)), o);
-        Check("hover on a local from the slice: its card, authoritative", sHover["contents"] != null && (bool)sHover["authoritative"], Json(sHover));
+        Check("hover on a local from the slice: its card, a fallback", sHover["contents"] != null && (bool)sHover["fallback"], Json(sHover));
         var sKw = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(15, 4, header, HashPiece(6, data), window)), o);
         Check("hover on RETURN from the slice: the keyword card (the caret line comes from the window piece)", sKw["contents"] != null && !(bool)sKw["authoritative"], Json(sKw));
         var sDecl = LocalLayerHandlers.Handle("localHover", null, Req(SliceReq(9, 14, header, HashPiece(6, data), window)), o);

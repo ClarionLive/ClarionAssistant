@@ -208,10 +208,11 @@ static class OutOfProcessIndexerTest
             SlnPath = "C:\\x y\\S.sln", ProjectCount = 3, FileCount = 44, SymbolCount = 555, RelationshipCount = 6666, DurationMs = 7777,
             ProjectsResolved = 2, ProjectsUnresolved = 1, CwprojFilesListed = 40, CwprojFilesUnresolved = 3,
             FilesParsed = 41, FilesUnresolved = 2, FilesSkipped = 1, ModuleFilesIndexed = 5, ModuleTargetsUnresolved = 2,
-            ModuleTargetsSkipped = 9, IncludeTargetsUnresolved = 4, GlobalDataFilesRead = 6, IndexerVersion = "9.8.7.6",
+            ModuleTargetsSkipped = 9, IncludeTargetsUnresolved = 4, IncludeTargetsConditional = 3, GlobalDataFilesRead = 6, IndexerVersion = "9.8.7.6",
             FeatureLevel = 2, RequestedIncremental = true, Incremental = false, UpgradedFromFeatureLevel = 1, UpToDate = false
         };
         r.UnresolvedProjectNames.Add("Gone \"App\"");
+        r.UnresolvedIncludeNames.Add("Gone.inc (App.clw:5)");
         var o = IndexerProtocol.ParseOutcome("noise before\n" + IndexerProtocol.ResultToJson(r, "C:\\x y\\S.codegraph.db", 123) + "\n");
         var back = o != null ? o.Result : null;
         Check(back != null && o.Success && o.EffectiveIncremental == false, "P6", "the result JSON parses as a successful full run");
@@ -220,9 +221,10 @@ static class OutOfProcessIndexerTest
             && back.RelationshipCount == 6666 && back.DurationMs == 7777 && back.ProjectsResolved == 2 && back.ProjectsUnresolved == 1
             && back.CwprojFilesListed == 40 && back.CwprojFilesUnresolved == 3 && back.FilesParsed == 41 && back.FilesUnresolved == 2
             && back.FilesSkipped == 1 && back.ModuleFilesIndexed == 5 && back.ModuleTargetsUnresolved == 2 && back.ModuleTargetsSkipped == 9
-            && back.IncludeTargetsUnresolved == 4 && back.GlobalDataFilesRead == 6 && back.IndexerVersion == "9.8.7.6"
+            && back.IncludeTargetsUnresolved == 4 && back.IncludeTargetsConditional == 3 && back.GlobalDataFilesRead == 6 && back.IndexerVersion == "9.8.7.6"
             && back.FeatureLevel == 2 && back.RequestedIncremental && !back.Incremental && back.UpgradedFromFeatureLevel == 1 && !back.UpToDate
-            && back.UnresolvedProjectNames.Count == 1 && back.UnresolvedProjectNames[0] == "Gone \"App\"";
+            && back.UnresolvedProjectNames.Count == 1 && back.UnresolvedProjectNames[0] == "Gone \"App\""
+            && back.UnresolvedIncludeNames.Count == 1 && back.UnresolvedIncludeNames[0] == "Gone.inc (App.clw:5)";
         Check(same, "P7", "every IndexResult field survives the round trip");
         Check(back.Headline == r.Headline && back.ModeText == r.ModeText && back.CoverageText() == r.CoverageText()
               && back.Status == r.Status && back.Warnings.SequenceEqual(r.Warnings),

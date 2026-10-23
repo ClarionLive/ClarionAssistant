@@ -46,6 +46,14 @@ static class RedFileServiceIncludeTest
         };
     }
 
+    // The version-level .red loaded on its own, as the Active fallback for a project folder.
+    static RedFileService VersionLevel(ClarionVersionConfig cfg)
+    {
+        var global = new RedFileService();
+        global.Load(cfg);
+        return global;
+    }
+
     static void Write(string path, string text)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path));
@@ -168,6 +176,39 @@ static class RedFileServiceIncludeTest
                dotted.SkippedIncludes.Count == 1 && dotted.Sections.ContainsKey("Common")
                && dotted.Sections["Common"].Entries.Count(e => e.Pattern == "*.self") == 1,
                Show(dotted.SkippedIncludes));
+
+            // ---- %REDNAME%: the local .red chains with {include %REDDIR%\%REDNAME%} ----
+            // REDNAME is predefined by Clarion (the version's redirection file name); it is not among the
+            // version's stored Macros, so it was left unexpanded and the include skipped as "file not found".
+            string sln3 = Path.Combine(root, "ChainsByName");
+            Write(Path.Combine(sln3, "Clarion110.red"),
+                  "[Common]\r\n*.clw = .\\$$;.\\;" + lib + "\r\n{include %REDDIR%\\%REDNAME%}\r\n");
+            var nameCfg = Config(clarion);
+            nameCfg.Macros["reddir"] = Path.Combine(clarion, "bin");
+            var byName = new RedFileService();
+            bool byNameOk = byName.LoadForProject(sln3, nameCfg);
+            Ok("%REDNAME% expands to the version's .red name", byName.Macros.ContainsKey("REDNAME")
+               && byName.Macros["REDNAME"] == "Clarion110.red",
+               byName.Macros.ContainsKey("REDNAME") ? byName.Macros["REDNAME"] : "(undefined)");
+            Ok("{include %REDDIR%\\%REDNAME%} is followed, nothing skipped",
+               byNameOk && byName.LoadedFiles.Count == 2 && byName.SkippedIncludes.Count == 0, Show(byName.SkippedIncludes));
+            Ok("...so the default .red's search paths come after the local ones",
+               byName.GetSearchPaths(".clw").SequenceEqual(new[] { ".\\$$", ".\\", lib, ".\\clw", ".\\libsrc",
+                   Path.Combine(clarion, "libsrc", "win") }, StringComparer.OrdinalIgnoreCase), Show(byName.GetSearchPaths(".clw")));
+
+            var perProject = RedFileService.ForProjectDirectory(sln3, VersionLevel(nameCfg));
+            Ok("ForProjectDirectory follows it too", perProject != null && perProject.LoadedFiles.Count == 2
+               && perProject.SkippedIncludes.Count == 0, perProject == null ? "null" : Show(perProject.SkippedIncludes));
+
+            var bare = new RedFileService();
+            bare.Load(Path.Combine(clarion, "bin", "Clarion110.red"), null);
+            Ok("without a version config, %REDNAME% is the loaded file's own name",
+               bare.Macros.ContainsKey("REDNAME") && bare.Macros["REDNAME"] == "Clarion110.red");
+
+            var preset = new RedFileService();
+            preset.Load(Path.Combine(clarion, "bin", "Clarion110.red"),
+                        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "REDNAME", "Custom.red" } });
+            Ok("a REDNAME the caller defines is kept", preset.Macros["REDNAME"] == "Custom.red");
         }
         catch (Exception ex)
         {
