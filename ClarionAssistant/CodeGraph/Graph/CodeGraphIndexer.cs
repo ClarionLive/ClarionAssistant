@@ -222,6 +222,12 @@ namespace ClarionCodeGraph.Graph
                 red = TryLoadRedFile(slnDir);
             if (red == null)
                 ReportProgress("No redirection file in effect — resolution limited to .\\source, project root, and explicit search paths.");
+            else
+                // GH #278: an {include} the .red could not follow (an unexpanded macro, a missing file) drops every
+                // search path of the included file, and surfaced only as thousands of unresolved files far below.
+                // Name the cause where the operator reads first.
+                foreach (string skipped in red.SkippedIncludes)
+                    ReportProgress("WARNING: .red {include} not followed, its search paths are missing: " + skipped);
             _resolver = new SourceResolver(red);
             _resolveCache.Clear();
             if (!string.IsNullOrEmpty(BuildConfiguration))
