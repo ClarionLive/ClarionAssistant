@@ -81,6 +81,19 @@ A Claude session outside a CA tab (a MultiTerminal or VS Code terminal with the 
 - **You can see changes made from outside.** Each editing, saving, importing or generating call from a plugin client writes `[ide-callback] <tool> from plugin client` to `monaco-spike.log` and shows a note in Clarion's status bar.
 - **Known limitation: one call at a time per client.** The plugin's server handles one request at a time, so a long IDE call (an embeditor open, a build) holds up that client's next call until it finishes, and cancelling the call in the client does not stop it in Clarion. Serving calls in parallel would let two calls from the same client reach Clarion out of order, so it was left out.
 
+### CodeGraph
+
+- **Work With Solution no longer looks like a re-index when nothing changed ([#279](https://github.com/ClarionLive/ClarionAssistant/issues/279)).** Opening a solution runs a quick check for changed files. The header used to show the "Updating..." spinner for that check every time, as if the index were being rebuilt. Now the CODEGRAPH line reads **Checking for changes...** with no spinner. It switches to **Updating...** only when files have changed, or when an index made by an older indexer has to be rebuilt. When the run finishes, the line says what it did, and keeps saying it:
+  - **Up to date (checked *time*)** means nothing had changed and nothing was re-parsed.
+  - **Updated: *time*** means changed files were re-indexed.
+  - **Rebuilt (index upgrade): *time*** means the index was rebuilt for the new indexer.
+
+  The index window never opens for this automatic check. It still opens if the run fails, and **Reindex** and **Update** in the header show it as before.
+
+### Thanks
+
+- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
+
 ## What's New in v6.1
 
 6.1 moves CodeGraph indexing out of Clarion into a 64-bit process, so large solutions no longer run Clarion out of memory, and closes the open GitHub issues from the 6.0 cycle: a path policy for every file tool, no more stale native editor tabs after Claude writes a file, recovery of a CA Embeditor save lost when Clarion stops, and CodeGraph coverage of CLASS MODULE/LINK files and INCLUDEd global data. Full notes: **[docs/releases/v6.1.0.md](docs/releases/v6.1.0.md)**.
