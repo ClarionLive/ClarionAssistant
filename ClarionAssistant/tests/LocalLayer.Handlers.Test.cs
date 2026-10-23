@@ -441,6 +441,29 @@ static class LocalLayerHandlersTest
             var hWin = SlotHover(6, "WINDOW", o);
             Check("Win  WINDOW(...) (after a label) -> the keyword card, not the index's 'Window' variable",
                 Kind(hWin) == "keyword", Json(hWin));
+            // A procedure's own WINDOW labelled 'Window': Clarion is case-insensitive, so the keyword after the label
+            // is the same word as the label. In the slot it is the structure keyword, never the variable, so the
+            // buffer's (authoritative) card for the label must not answer it - the server's header card must.
+            string[] ownWin = {
+                "  MEMBER('app')",                              // 1
+                "TestProc PROCEDURE",                           // 2
+                "Window  WINDOW('x'),AT(0,0,100,100)",          // 3
+                "       BUTTON('Ok'),AT(1,20),USE(?Ok)",        // 4
+                "     END",                                     // 5
+                "  CODE",                                       // 6
+                "  OPEN(Window)" };                             // 7
+            Func<int, string, int, Dictionary<string, object>> ownHover = (ln, w, from) =>
+                LocalLayerHandlers.Handle("localHover", string.Join("\r\n", ownWin),
+                    Req("{\"line\":" + ln + ",\"column\":" + (ownWin[ln - 1].IndexOf(w, from, StringComparison.Ordinal) + 2) + "}"), o);
+            var hOwnSlot = ownHover(3, "WINDOW", 0);
+            Check("Window  WINDOW(...) in a procedure's DATA -> the keyword card for WINDOW (a fallback), not the label's local card",
+                Kind(hOwnSlot) == "keyword" && (bool)hOwnSlot["fallback"] && !(bool)hOwnSlot["authoritative"], Json(hOwnSlot));
+            var hOwnLabel = ownHover(3, "Window", 0);
+            Check("...the label itself (column 1) still gets the buffer's card",
+                Kind(hOwnLabel) == "local", Json(hOwnLabel));
+            var hOwnUse = ownHover(7, "Window", 0);
+            Check("...and OPEN(Window) in CODE is the variable: the buffer's card",
+                Kind(hOwnUse) == "local", Json(hOwnUse));
             var hRef = SlotHover(11, "WINDOW", o);
             Check("w  &WINDOW (a reserved type behind '&') -> the keyword card",
                 Kind(hRef) == "keyword", Json(hRef));
