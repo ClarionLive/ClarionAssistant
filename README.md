@@ -114,8 +114,19 @@ In the CA Editor and CA Embeditor, hovering a parameter, a local variable, a rou
 
   The index window never opens for this automatic check. It still opens if the run fails, and **Reindex** and **Update** in the header show it as before.
 
+<!-- release-docs: covered=completion,codegraph -->
+### Completion no longer keeps showing a stale list, and Ctrl+Space asks again ([#280](https://github.com/ClarionLive/ClarionAssistant/issues/280), reported by geircodes)
+
+In the CA Editor and CA Embeditor, completion keeps the language server's answer for a word and filters it as you type the rest of that word, so each keystroke does not ask the server again. That answer was kept by line and column alone. A list that was incomplete or out of date (for example after the server re-read an `.inc`) was shown at that spot until the caret moved somewhere else: typing `SELF.` and then `I` showed nothing, deleting the `I` and typing it again still showed nothing, and Ctrl+Space answered "No suggestions" without asking the server. Now:
+
+- **Ctrl+Space always asks the language server again**, and its answer replaces the one that was kept. `monaco-spike.log` shows a new `[lsp-timing] action=completion` line for it.
+- **A change to the text before the word asks again.** Replacing `SELF.` with another name of the same length, or editing another line, gets a new answer. Typing on through the same word is still answered from the list already received, with no new request.
+- **A kept list with nothing for what you typed is not reused.** It asks the server again, at most once every half second, so typing a name the server does not know does not flood it.
+- **CodeGraph name lookups use the index.** The hover and Ctrl+Click fallbacks that look a symbol up by name compared `LOWER(name)`, which the case-insensitive index cannot serve, so each lookup read the whole symbol table. They now compare `COLLATE NOCASE` and get the same rows. On a 463,000-symbol database a lookup went from about 130 ms to under 0.1 ms.
+
 ### Thanks
 
+- **[@geircodes](https://github.com/geircodes)** &mdash; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280): the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
 
 ## What's New in v6.1
