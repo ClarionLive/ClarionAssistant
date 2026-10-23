@@ -63,23 +63,22 @@ namespace ClarionAssistant.Services
         internal const string MembersSql = CodeGraphProvider.SymbolSelect +
             "WHERE s.parent_name = @parent COLLATE NOCASE AND s.name LIKE @parentDot ESCAPE '\\' ORDER BY s.name LIMIT @limit";
 
-        internal const string MembersSqlNoIndex = CodeGraphProvider.SymbolSelect +
-            "WHERE LOWER(s.parent_name) = LOWER(@parent) AND s.name LIKE @parentDot ESCAPE '\\' ORDER BY s.name LIMIT @limit";
+        // The NoIndex exact lookups are the same text as the indexed ones: = COLLATE NOCASE gives the rows that
+        // LOWER(x) = LOWER(@x) gave, and on an old DB that has ONE of the two NOCASE indexes it still uses that one
+        // (GH #280). They keep their own names because NoIndex also decides fastOnly (no keystroke-time scan).
+        internal const string MembersSqlNoIndex = MembersSql;
 
         /// <summary>A class's base class: its own row's parent_name.</summary>
         internal const string BaseClassSql =
             "SELECT s.parent_name FROM symbols s WHERE s.name = @name COLLATE NOCASE AND LOWER(s.type) IN ('class', 'interface') " +
             "AND s.parent_name IS NOT NULL AND s.parent_name <> '' LIMIT 1";
 
-        internal const string BaseClassSqlNoIndex =
-            "SELECT s.parent_name FROM symbols s WHERE LOWER(s.name) = LOWER(@name) AND LOWER(s.type) IN ('class', 'interface') " +
-            "AND s.parent_name IS NOT NULL AND s.parent_name <> '' LIMIT 1";
+        internal const string BaseClassSqlNoIndex = BaseClassSql;
 
         internal const string ExactSql = CodeGraphProvider.SymbolSelect +
             "WHERE s.name = @name COLLATE NOCASE AND " + ReachableScope + "LIMIT 1";
 
-        internal const string ExactSqlNoIndex = CodeGraphProvider.SymbolSelect +
-            "WHERE LOWER(s.name) = LOWER(@name) AND " + ReachableScope + "LIMIT 1";
+        internal const string ExactSqlNoIndex = ExactSql;
 
         // Every same-named candidate, for a lookup that filters out-of-scope equates after the query. Bounded
         // generously: one exact name rarely has more than a handful of rows, but a common one ("Text") is
@@ -87,8 +86,7 @@ namespace ClarionAssistant.Services
         internal const string ExactSqlAll = CodeGraphProvider.SymbolSelect +
             "WHERE s.name = @name COLLATE NOCASE AND " + ReachableScope + "LIMIT 500";
 
-        internal const string ExactSqlAllNoIndex = CodeGraphProvider.SymbolSelect +
-            "WHERE LOWER(s.name) = LOWER(@name) AND " + ReachableScope + "LIMIT 500";
+        internal const string ExactSqlAllNoIndex = ExactSqlAll;
 
         // ================================================================== registry and test hooks
 

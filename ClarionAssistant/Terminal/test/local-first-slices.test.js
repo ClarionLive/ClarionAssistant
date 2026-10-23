@@ -50,9 +50,17 @@ function setup(opts) {
     return e;
 }
 // A keystroke on `line`: the new text, then the content-change event Monaco raises (pre-edit range).
+// The change is reported the way Monaco does: the replaced columns of the OLD line and the inserted text
+// (GH #280: the completion cache keeps its entry only for an edit inside the word being typed).
 function type(e, line, text) {
+    const old = e.model.getLineContent(line);
+    let pre = 0;
+    while (pre < old.length && pre < text.length && old[pre] === text[pre]) pre++;
+    let suf = 0;
+    while (suf < old.length - pre && suf < text.length - pre && old[old.length - 1 - suf] === text[text.length - 1 - suf]) suf++;
     e.model.setLine(line, text);
-    e.api.noteBufferEdit({ changes: [{ range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 } }] });
+    e.api.noteBufferEdit({ changes: [{ range: { startLineNumber: line, startColumn: pre + 1, endLineNumber: line, endColumn: old.length - suf + 1 },
+        text: text.slice(pre, text.length - suf) }] });
 }
 // The idle-sync timers (the local requests' own 400 ms give-up timers share the duration, so pick by callback).
 const idleTimers = (e) => e.timers.filter(t => t.fn.name === 'idleSync');

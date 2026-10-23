@@ -10,6 +10,8 @@
 //   * 3 consecutive race misses on a model skip the race; a fast LSP reply (raced or not) ends skip mode
 //   * case-insensitive dedupe with the local item winning; overloads survive; the sortText tiers hold
 //   * setSource empties the cache; nothing ever re-triggers the suggest widget
+//   * GH #280: Ctrl+Space (an Invoke the page did not start) asks again and replaces the entry; the text left
+//     of the word and edits outside it invalidate it; a zero-match answer is asked again (rate-limited)
 
 const { html, PROVIDERS_SRC, load, makeModel, track, flush, check, section, finish } = require('./local-first-loader');
 
@@ -377,6 +379,169 @@ async function main() {
         k.reply('localCompletion', { items: [] }); k.reply('localCompletion', { items: [] }); k.fire(BUDGET); await flush();
         k.clock += 1000; k.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
         check('5.21 two askers on one request re-open only once', k.triggers.length === 1, JSON.stringify(k.triggers));
+    }
+
+    section('GH #280: a stale cached answer is refreshed - Ctrl+Space, the text left of the word, zero matches');
+    {
+        const INVOKE = { triggerKind: 0 }, DOT = { triggerKind: 1, triggerCharacter: '.' }, RETYPE = { triggerKind: 2 };
+        // An edit as Monaco reports it (old-line columns + inserted text), through the page's own content-change hook.
+        const edit = (e, line, text) => {
+            const old = e.model.getLineContent(line);
+            let pre = 0;
+            while (pre < old.length && pre < text.length && old[pre] === text[pre]) pre++;
+            let suf = 0;
+            while (suf < old.length - pre && suf < text.length - pre && old[old.length - 1 - suf] === text[text.length - 1 - suf]) suf++;
+            e.model.setLine(line, text);
+            e.api.noteBufferEdit({ changes: [{ range: { startLineNumber: line, startColumn: pre + 1, endLineNumber: line, endColumn: old.length - suf + 1 },
+                text: text.slice(pre, text.length - suf) }] });
+        };
+        const editAndAsk = (e, line, text, ctx) => { edit(e, line, text); return ask(e, line, text.length + 1, ctx); };
+        const idle = (e) => { for (const t of e.timers) if (t.fn.name === 'idleSync' && !t.cleared && !t.fired) { t.fired = true; t.fn(); } };
+        // "SELF." answered by the server with `lspItems`, the answer landing late (it is cached, not raced).
+        const memberList = async (e, lspItems) => {
+            const q = typeAndAsk(e, 2, '    SELF.', DOT);
+            e.reply('localCompletion', { items: [] }); e.fire(BUDGET); await flush();
+            e.clock += 1000; e.reply('completion', { items: lspItems }); await flush();
+            return q;
+        };
+        const Init = item('Init', 'PROCEDURE', { kind: 2 }), Kill = item('Kill', 'PROCEDURE', { kind: 2 }), Ask = item('Ask', 'PROCEDURE', { kind: 2 });
+
+        // (d) the cheap path: typing on through the member name is served from the one answer.
+        {
+            const e = load({ lines: ['  CODE', '    '] });
+            await memberList(e, [Init, Kill, Ask]);
+            const n = e.requests('completion').length;
+            const q1 = editAndAsk(e, 2, '    SELF.I', RETYPE);
+            e.reply('localCompletion', { items: [] }); await flush();
+            const q2 = editAndAsk(e, 2, '    SELF.In', RETYPE);
+            e.reply('localCompletion', { items: [] }); await flush();
+            idle(e); await flush();
+            check('#280(d) typing I, n after SELF. posts NO new completion (not even at the idle sync)', e.requests('completion').length === n,
+                'completion posts ' + n + ' -> ' + e.requests('completion').length);
+            check('#280(d) ...and shows the cached Init, filtered', q1.done && q2.done && labels(q1.value).includes('Init') &&
+                !labels(q1.value).includes('Kill') && labels(q2.value).includes('Init'), JSON.stringify([q1.value && labels(q1.value), q2.value && labels(q2.value)]));
+        }
+
+        // (a) Ctrl+Space at a cached position asks the server again, and its answer replaces the entry.
+        {
+            const e = load({ lines: ['  CODE', '    '] });
+            await memberList(e, [Kill]);                          // the incomplete list of the issue
+            const n = e.requests('completion').length;
+            const q = ask(e, 2, 10, INVOKE);                      // Ctrl+Space on "SELF."
+            check('#280(a) Ctrl+Space at the cached position posts a new completion', e.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + e.requests('completion').length);
+            e.reply('localCompletion', { items: [] });
+            e.clock += 20; e.reply('completion', { items: [Init, Kill] }); await flush();
+            check('#280(a) ...and shows the new answer', q.done && labels(q.value).includes('Init'), JSON.stringify(q.value && labels(q.value)));
+            const q2 = editAndAsk(e, 2, '    SELF.I', RETYPE);
+            e.reply('localCompletion', { items: [] }); await flush(); idle(e); await flush();
+            check('#280(a) ...which replaced the cache entry: the next keystroke is served Init without a request',
+                q2.done && labels(q2.value).includes('Init') && e.requests('completion').length === n + 1,
+                JSON.stringify(q2.value && labels(q2.value)) + ' posts ' + e.requests('completion').length);
+            const q3 = ask(e, 2, 11, INVOKE);                     // Ctrl+Space again, on "SELF.I"
+            check('#280(a) a second Ctrl+Space asks again too (no rate limit on an explicit invoke)', e.requests('completion').length === n + 2);
+            e.reply('localCompletion', { items: [] }); e.fire(BUDGET); await flush();
+            e.clock += 1000; e.reply('completion', { items: [Init] }); await flush();
+            check('#280(a) (that query settled)', q3.done);
+
+            // The page's OWN re-open (refreshWhenLspLands, the ':' handler) is an Invoke too, but must be served
+            // from the cache - that is why it was opened.
+            const g = load({ lines: ['  CODE', '    glo:'] });
+            g.editor.getPosition = () => ({ lineNumber: 2, column: 9 });
+            ask(g, 2, 9, { triggerKind: 1, triggerCharacter: ':' });
+            g.reply('localCompletion', { items: [] }); g.fire(BUDGET); await flush();
+            g.clock += 1000; g.reply('completion', { items: [item('Glo:Svc', 'LONG')] }); await flush();
+            const m = g.requests('completion').length;
+            const qg = ask(g, 2, 9, INVOKE);                     // what the late refresh's triggerSuggest sends
+            g.reply('localCompletion', { items: [] }); await flush();
+            check('#280(a) the page\'s own re-open (an Invoke) is served from the cache, no new request',
+                g.triggers.length === 1 && qg.done && labels(qg.value).includes('Glo:Svc') && g.requests('completion').length === m,
+                'triggers ' + g.triggers.length + ' posts ' + m + ' -> ' + g.requests('completion').length);
+            const qg2 = ask(g, 2, 9, INVOKE);                    // ...and the NEXT Invoke there is the user's
+            check('#280(a) ...the note is used once: a Ctrl+Space after it asks again', g.requests('completion').length === m + 1);
+            g.reply('localCompletion', { items: [] }); g.fire(BUDGET); await flush();
+            g.clock += 1000; g.reply('completion', { items: [] }); await flush();
+            check('#280(a) (that query settled)', qg2.done);
+        }
+
+        // (b) a change to the text left of the word, or an edit elsewhere, is a new question.
+        {
+            const e = load({ lines: ['  CODE', '    '] });
+            await memberList(e, [Init, Kill]);
+            let n = e.requests('completion').length;
+            const q = typeAndAsk(e, 2, '    THIS.', DOT);         // the receiver rewritten, same length, same column
+            check('#280(b) a rewritten receiver at the same column posts a new completion', e.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + e.requests('completion').length);
+            e.reply('localCompletion', { items: [] }); e.fire(BUDGET); await flush();
+            check('#280(b) ...and does not show SELF\'s members', q.done && !labels(q.value).includes('Init'), JSON.stringify(q.value && labels(q.value)));
+            e.clock += 1000; e.reply('completion', { items: [Ask] }); await flush();
+
+            const f = load({ lines: ['  CODE', '    ', '  x = 1'] });
+            await memberList(f, [Init, Kill]);
+            n = f.requests('completion').length;
+            edit(f, 3, '  x = 12');                               // an edit on ANOTHER line
+            const qf = editAndAsk(f, 2, '    SELF.I', RETYPE);
+            f.reply('localCompletion', { items: [] }); await flush();
+            idle(f); await flush();
+            check('#280(b) after an edit on another line, the next keystroke asks the server again', f.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + f.requests('completion').length);
+            f.clock += 20; f.reply('completion', { items: [Init] }); await flush();
+            check('#280(b) (that query settled)', qf.done);
+
+            // A line break typed elsewhere on the line's neighbours moves text: also a new question.
+            const h = load({ lines: ['  CODE', '    '] });
+            await memberList(h, [Init, Kill]);
+            n = h.requests('completion').length;
+            h.api.noteBufferEdit({ changes: [{ range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 1 }, text: '\r\n' }] });
+            h.model._v++;
+            const qh = editAndAsk(h, 2, '    SELF.I', RETYPE);
+            h.reply('localCompletion', { items: [] }); await flush(); idle(h); await flush();
+            check('#280(b) a line break inserted on the cached line drops the entry', h.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + h.requests('completion').length);
+            h.clock += 20; h.reply('completion', { items: [Init] }); await flush();
+            check('#280(b) (that query settled)', qh.done);
+        }
+
+        // (c) a cached answer with nothing for the typed prefix is not reused: asked again, rate-limited.
+        {
+            const e = load({ lines: ['  CODE', '    '] });
+            await memberList(e, [Kill]);                          // the server's incomplete list: no I... member
+            e.clock += 600;                                       // past the retry interval
+            let n = e.requests('completion').length;
+            const q = editAndAsk(e, 2, '    SELF.I', RETYPE);
+            e.reply('localCompletion', { items: [] }); await flush(); idle(e); await flush();
+            check('#280(c) "I" has no match in the cached list: a new completion is posted', e.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + e.requests('completion').length);
+            e.clock += 20; e.reply('completion', { items: [Init, Kill] }); await flush();
+            check('#280(c) (that query settled)', q.done);
+            const q2 = editAndAsk(e, 2, '    SELF.In', RETYPE);
+            e.reply('localCompletion', { items: [] }); await flush(); idle(e); await flush();
+            check('#280(c) ...and the new answer serves the next keystroke', q2.done && labels(q2.value).includes('Init') &&
+                e.requests('completion').length === n + 1, JSON.stringify(q2.value && labels(q2.value)));
+
+            // Rate limit: a zero-match answer younger than the retry interval is served (nothing), not re-asked.
+            const r = load({ lines: ['  CODE', '    '] });
+            await memberList(r, [Kill]);
+            n = r.requests('completion').length;
+            editAndAsk(r, 2, '    SELF.I', RETYPE);
+            r.reply('localCompletion', { items: [] }); await flush(); idle(r); await flush();
+            check('#280(c) inside the retry interval no new completion is posted', r.requests('completion').length === n,
+                'completion posts ' + n + ' -> ' + r.requests('completion').length);
+            r.clock += 600;
+            editAndAsk(r, 2, '    SELF.IX', RETYPE);
+            r.reply('localCompletion', { items: [] }); await flush(); idle(r); await flush();
+            check('#280(c) ...past it, the next keystroke asks again', r.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + r.requests('completion').length);
+
+            // An EMPTY answer is a zero-match answer too.
+            const z = load();
+            await missOnce(z, 2, '    lo', []);
+            z.clock += 600;
+            n = z.requests('completion').length;
+            typeAndAsk(z, 2, '    loc');
+            check('#280(c) an empty cached answer is not reused: a new completion is posted', z.requests('completion').length === n + 1,
+                'completion posts ' + n + ' -> ' + z.requests('completion').length);
+        }
     }
 
     finish();
