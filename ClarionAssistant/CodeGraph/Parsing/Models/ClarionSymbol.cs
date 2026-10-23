@@ -29,5 +29,10 @@ namespace ClarionCodeGraph.Parsing.Models
         // section (or in a file INCLUDEd there), so the data the included file declares is program-global
         // (GH #246). False everywhere else: a MAP, a CLASS body, a procedure's or routine's data, a MEMBER module.
         public bool InGlobalData { get; set; }
+
+        // NOT persisted. On an include symbol: true when the INCLUDE sits in a COMPILE('t', expr) or
+        // OMIT('t', expr) block, so whether the compiler reads it depends on a project's defines. Pass 2b
+        // records such a target that does not resolve as unresolved_conditional, not as a gap.
+        public bool Conditional { get; set; }
     }
 }

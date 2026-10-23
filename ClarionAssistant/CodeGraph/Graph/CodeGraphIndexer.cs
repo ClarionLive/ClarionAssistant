@@ -53,11 +53,13 @@ namespace ClarionCodeGraph.Graph
         /// <summary>
         /// What this indexer can put in a database, as a number that only goes up. 1 (or no index_metadata row) =
         /// before GH #245/#246; 2 = CLASS MODULE()/LINK() files (pass2c-module) and global data from INCLUDEd files
-        /// (pass2d-global-data). Bump it, and add to <see cref="Features"/>, whenever a change means an older
+        /// (pass2d-global-data); 3 = INCLUDE() read as the compiler does (include-outcome, GH #271): no include
+        /// followed from a comment, the PROGRAM file's INCLUDEs outside its MAP indexed, unresolved_conditional.
+        /// Bump it, and add to <see cref="Features"/>, whenever a change means an older
         /// database is missing code a re-index would add.
         /// </summary>
-        public const int FeatureLevel = 2;
-        public const string Features = "pass2c-module,pass2d-global-data";
+        public const int FeatureLevel = 3;
+        public const string Features = "pass2c-module,pass2d-global-data,include-outcome";
 
         public const string MetaIndexerVersion = "indexer_version";
         public const string MetaFeatureLevel = "indexer_feature_level";
@@ -320,6 +322,7 @@ namespace ClarionCodeGraph.Graph
             var changedProjects = new HashSet<int>(); // projects that need re-parsing
             var projectDirs = new Dictionary<int, string>();
             var discoveredIncludeNames = new Dictionary<int, HashSet<string>>();
+            var includeOrigins = new Dictionary<int, Dictionary<string, IncludeOrigin>>(); // Pass 2b audit/log
             var allResolved = new Dictionary<int, List<ResolvedFile>>(); // per-file outcome audit
             var mainMapSymCount = new Dictionary<int, int>(); // Pass 1 MAP symbol count per main file
             // Pass 2c (GH #245): what each .inc INCLUDEs and which .clw its classes name in MODULE/LINK, by full
@@ -327,8 +330,9 @@ namespace ClarionCodeGraph.Graph
             var incScans = new Dictionary<string, IncScan>(StringComparer.OrdinalIgnoreCase);
             // Pass 2c seeds: MODULE/LINK names on classes declared in a project's parsed .clw files.
             var clwModuleSeeds = new Dictionary<int, List<KeyValuePair<string, string>>>();
-            // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project.
-            var globalDataIncludeSeeds = new Dictionary<int, List<string>>();
+            // Pass 2d seeds (GH #246): files the PROGRAM INCLUDEs in its global data section, per project, each with
+            // whether that INCLUDE sits in a conditional COMPILE/OMIT block.
+            var globalDataIncludeSeeds = new Dictionary<int, List<KeyValuePair<string, bool>>>();
             int unresolvedCount = 0;
 
             // Files an earlier run reached OTHER than through the .cwproj (Pass 2b includes, Pass 2c MODULE/LINK
@@ -482,13 +486,7 @@ namespace ClarionCodeGraph.Graph
 
                         if (sym.Type == "include")
                         {
-                            HashSet<string> names;
-                            if (!discoveredIncludeNames.TryGetValue(projectId, out names))
-                            {
-                                names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                discoveredIncludeNames[projectId] = names;
-                            }
-                            names.Add(sym.Name);
+                            NoteInclude(discoveredIncludeNames, includeOrigins, projectId, sym);
                         }
                     }
                     result.SymbolCount += parseResult.Symbols.Count;
@@ -681,13 +679,7 @@ namespace ClarionCodeGraph.Graph
 
                             if (sym.Type == "include")
                             {
-                                HashSet<string> names;
-                                if (!discoveredIncludeNames.TryGetValue(proj.Id, out names))
-                                {
-                                    names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                    discoveredIncludeNames[proj.Id] = names;
-                                }
-                                names.Add(sym.Name);
+                                NoteInclude(discoveredIncludeNames, includeOrigins, proj.Id, sym);
                             }
                         }
                         result.SymbolCount += parseResult.Symbols.Count;
@@ -703,10 +695,10 @@ namespace ClarionCodeGraph.Graph
                     // opens the DATA machinery over the declaration section, capturing the app's
                     // GLOBAL data as scope='global' symbols — previously that entire section
                     // (~6,000 lines in a large app main) was never scanned and every global was
-                    // invisible (ticket d1a0aea6). The MAP block is depth-skipped, so Pass 1's
-                    // procedure declarations don't repeat; INCLUDE symbols DO repeat (Pass 1
-                    // already captured them for this same file), so they're filtered here —
-                    // they still feed discoveredIncludeNames, which is a set.
+                    // invisible (ticket d1a0aea6). The MAP block is skipped wholesale, so neither
+                    // Pass 1's procedure declarations nor its INCLUDEs (Pass 1 only reads the MAP)
+                    // repeat here: every include symbol this parse finds is outside the MAP and is
+                    // inserted, so the Pass 2b warning can name the PROGRAM file as an includer.
                     string tailMainPath;
                     if (mainFiles.TryGetValue(proj.Id, out tailMainPath))
                     {
@@ -718,24 +710,17 @@ namespace ClarionCodeGraph.Graph
                         {
                             if (sym.Type == "include")
                             {
-                                HashSet<string> names;
-                                if (!discoveredIncludeNames.TryGetValue(proj.Id, out names))
-                                {
-                                    names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                                    discoveredIncludeNames[proj.Id] = names;
-                                }
-                                names.Add(sym.Name);
+                                NoteInclude(discoveredIncludeNames, includeOrigins, proj.Id, sym);
                                 if (sym.InGlobalData)
                                 {
-                                    List<string> gd;
+                                    List<KeyValuePair<string, bool>> gd;
                                     if (!globalDataIncludeSeeds.TryGetValue(proj.Id, out gd))
                                     {
-                                        gd = new List<string>();
+                                        gd = new List<KeyValuePair<string, bool>>();
                                         globalDataIncludeSeeds[proj.Id] = gd;
                                     }
-                                    gd.Add(sym.Name);
+                                    gd.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
                                 }
-                                continue; // Pass 1 already inserted this file's include symbols
                             }
 
                             long symId = _db.InsertSymbol(sym);
@@ -799,6 +784,12 @@ namespace ClarionCodeGraph.Graph
                     var includeWork = new Queue<KeyValuePair<string, int>>();
                     foreach (string seedName in kvp.Value)
                         includeWork.Enqueue(new KeyValuePair<string, int>(seedName, 0));
+                    // GH #271: whether a target that does not resolve is a real gap depends on EVERY route to it,
+                    // and an unconditional route can turn up deeper in the walk than a conditional one. So the
+                    // walk records the INCLUDE edges between the .inc files it parses and the targets it cannot
+                    // resolve; their rows are written after it, once every route is known.
+                    var includeEdges = new Dictionary<string, List<KeyValuePair<string, bool>>>(StringComparer.OrdinalIgnoreCase);
+                    var unresolvedIncludes = new List<string>();
 
                     while (includeWork.Count > 0)
                     {
@@ -821,8 +812,8 @@ namespace ClarionCodeGraph.Graph
                         var resolved = resolvedList.Count > 0 ? resolvedList[0] : null;
                         if (resolved == null || !resolved.Found)
                         {
-                            // Unresolvable — leave alone, but leave a trace (audit, d1a0aea6)
-                            _db.InsertIndexedFile(projectId, includeName, null, "unresolved", 0, "pass2b-include");
+                            // Unresolvable — leave alone, but leave a trace (audit, d1a0aea6), written after the walk
+                            unresolvedIncludes.Add(includeName);
                             alreadyKnown.Add(includeName); // one audit row per name, not per referencing file
                             continue;
                         }
@@ -857,10 +848,51 @@ namespace ClarionCodeGraph.Graph
                         {
                             foreach (var sym in parseResult.Symbols)
                             {
-                                if (sym.Type == "include" && !alreadyKnown.Contains(sym.Name))
+                                if (sym.Type != "include") continue;
+                                List<KeyValuePair<string, bool>> children;
+                                if (!includeEdges.TryGetValue(includeName, out children))
+                                {
+                                    children = new List<KeyValuePair<string, bool>>();
+                                    includeEdges[includeName] = children;
+                                }
+                                children.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
+                                NoteIncludeOrigin(includeOrigins, projectId, sym, sym.Conditional);
+                                if (!alreadyKnown.Contains(sym.Name))
                                     includeWork.Enqueue(new KeyValuePair<string, int>(sym.Name, depth + 1));
                             }
                         }
+                    }
+
+                    // A target is required when some route to it is unconditional all the way: an unconditional
+                    // INCLUDE in a parsed source file, then only unconditional INCLUDEs in the .inc files between.
+                    // Every other target that does not resolve is one the project's defines may well leave out,
+                    // so it gets its own outcome and does not count as a gap (GH #271).
+                    var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var requiredWork = new Queue<string>();
+                    foreach (string seedName in kvp.Value)
+                    {
+                        IncludeOrigin seedOrigin = OriginOf(includeOrigins, projectId, seedName);
+                        if ((seedOrigin == null || !seedOrigin.Conditional) && required.Add(seedName))
+                            requiredWork.Enqueue(seedName);
+                    }
+                    while (requiredWork.Count > 0)
+                    {
+                        List<KeyValuePair<string, bool>> children;
+                        if (!includeEdges.TryGetValue(requiredWork.Dequeue(), out children)) continue;
+                        foreach (var child in children)
+                            if (!child.Value && required.Add(child.Key))
+                                requiredWork.Enqueue(child.Key);
+                    }
+                    foreach (string includeName in unresolvedIncludes)
+                    {
+                        bool conditional = !required.Contains(includeName);
+                        IncludeOrigin origin = OriginOf(includeOrigins, projectId, includeName);
+                        _db.InsertIndexedFile(projectId, includeName, null,
+                            conditional ? OutcomeUnresolvedConditional : "unresolved", 0, "pass2b-include");
+                        ReportProgress(string.Format(conditional
+                                ? "  INCLUDE not resolved: {0} ({1}) - inside a conditional COMPILE/OMIT block, not counted"
+                                : "  INCLUDE not resolved: {0} ({1})",
+                            includeName, origin != null ? Path.GetFileName(origin.File) + ":" + origin.Line : "?"));
                     }
                 }
 
@@ -1293,7 +1325,7 @@ namespace ClarionCodeGraph.Graph
             List<SolutionProject> projects,
             HashSet<int> changedProjects,
             Dictionary<int, string> projectDirs,
-            Dictionary<int, List<string>> seeds,
+            Dictionary<int, List<KeyValuePair<string, bool>>> seeds,
             List<string> libraryPaths,
             string clarionRoot,
             IndexResult result)
@@ -1302,14 +1334,20 @@ namespace ClarionCodeGraph.Graph
             foreach (var proj in projects)
             {
                 int pid = proj.Id;
-                List<string> seedNames;
+                List<KeyValuePair<string, bool>> seedNames;
                 string projectDir;
                 if (!changedProjects.Contains(pid) || !seeds.TryGetValue(pid, out seedNames) ||
                     !projectDirs.TryGetValue(pid, out projectDir)) continue;
 
-                var queue = new Queue<string>(seedNames);
+                var queue = new Queue<string>();
+                foreach (var seed in seedNames) queue.Enqueue(seed.Key);
                 var namesSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var pathsSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // For the unresolved_conditional decision after the walk (GH #271), as Pass 2b makes it: the file each
+                // name resolved to, and the INCLUDEs each read file makes, with whether each one is conditional.
+                var nameToPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var includesOf = new Dictionary<string, List<KeyValuePair<string, bool>>>(StringComparer.OrdinalIgnoreCase);
+                var unresolved = new List<string>();
                 const int MaxFiles = 500; // belt-and-braces against a pathological include web
                 while (queue.Count > 0 && pathsSeen.Count < MaxFiles)
                 {
@@ -1324,9 +1362,10 @@ namespace ClarionCodeGraph.Graph
                     string full = ResolveCached(projectDir, name, libraryPaths);
                     if (full == null)
                     {
-                        _db.InsertIndexedFile(pid, name, null, "unresolved", 0, PassGlobalData);
+                        unresolved.Add(name);
                         continue;
                     }
+                    nameToPath[name] = full;
                     if (!pathsSeen.Add(full)) continue;
                     if (IsUnder(full, clarionRoot))
                     {
@@ -1335,12 +1374,18 @@ namespace ClarionCodeGraph.Graph
                     }
 
                     var parsed = _clarionParser.ParseGlobalDataInclude(full, pid);
+                    var children = new List<KeyValuePair<string, bool>>();
+                    includesOf[full] = children;
                     int kept = 0;
                     foreach (var sym in parsed.Symbols)
                     {
                         if (sym.Type == "include")
                         {
-                            if (sym.InGlobalData) queue.Enqueue(sym.Name);
+                            if (sym.InGlobalData)
+                            {
+                                queue.Enqueue(sym.Name);
+                                children.Add(new KeyValuePair<string, bool>(sym.Name, sym.Conditional));
+                            }
                             continue;
                         }
                         if (sym.Type != "variable" || sym.Scope != "global") continue;
@@ -1356,8 +1401,103 @@ namespace ClarionCodeGraph.Graph
                     _db.InsertIndexedFile(pid, Path.GetFileName(full), full,
                         kept > 0 ? "resolved_parsed" : "resolved_no_symbols", kept, PassGlobalData);
                 }
+
+                if (unresolved.Count == 0) continue;
+                // Required = some route from the PROGRAM is unconditional all the way. This walk also reads files
+                // Pass 2b does not descend into (outside the solution folder), so it decides for itself; a name Pass
+                // 2b found required through another route (a MEMBER module) stays a gap here too.
+                var required = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var requiredWork = new Queue<string>();
+                foreach (var seed in seedNames)
+                    if (!seed.Value && required.Add(seed.Key)) requiredWork.Enqueue(seed.Key);
+                while (requiredWork.Count > 0)
+                {
+                    string path;
+                    List<KeyValuePair<string, bool>> children;
+                    if (!nameToPath.TryGetValue(requiredWork.Dequeue(), out path) ||
+                        !includesOf.TryGetValue(path, out children)) continue;
+                    foreach (var child in children)
+                        if (!child.Value && required.Add(child.Key)) requiredWork.Enqueue(child.Key);
+                }
+                var gapsElsewhere = IncludeNamesWithOutcome(pid, "unresolved");
+                foreach (string name in unresolved)
+                    _db.InsertIndexedFile(pid, name, null,
+                        required.Contains(name) || gapsElsewhere.Contains(name) ? "unresolved" : OutcomeUnresolvedConditional,
+                        0, PassGlobalData);
             }
             ReportProgress(string.Format("  Global data: {0} INCLUDEd file(s) read, {1} global variable(s)", files, variables));
+        }
+
+        /// <summary>The INCLUDE() targets Pass 2b recorded with <paramref name="outcome"/> for a project.</summary>
+        private HashSet<string> IncludeNamesWithOutcome(int projectId, string outcome)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var dt = _db.ExecuteQuery(
+                    "SELECT file_name FROM indexed_files WHERE project_id = @pid AND pass = 'pass2b-include' AND outcome = @outcome",
+                    new Dictionary<string, object> { { "@pid", projectId }, { "@outcome", outcome } });
+                foreach (System.Data.DataRow row in dt.Rows)
+                    names.Add(row["file_name"].ToString());
+            }
+            catch { }
+            return names;
+        }
+
+        /// <summary>indexed_files outcome of a Pass 2b INCLUDE() target that did not resolve and is only ever INCLUDEd
+        /// inside a conditional COMPILE('t', expr) / OMIT('t', expr) block (GH #271).</summary>
+        internal const string OutcomeUnresolvedConditional = "unresolved_conditional";
+
+        /// <summary>Where an INCLUDE() target was seen, for the Pass 2b log line. Conditional stays true only while
+        /// every INCLUDE of the name seen so far sits in a conditional COMPILE/OMIT block; whether a target is
+        /// required at all is decided over every route after the Pass 2b walk.</summary>
+        private sealed class IncludeOrigin
+        {
+            public string File;
+            public int Line;
+            public bool Conditional;
+        }
+
+        /// <summary>Remember an include symbol as a Pass 2b seed, and where it came from.</summary>
+        private static void NoteInclude(Dictionary<int, HashSet<string>> names,
+            Dictionary<int, Dictionary<string, IncludeOrigin>> origins, int projectId, ClarionSymbol sym)
+        {
+            HashSet<string> set;
+            if (!names.TryGetValue(projectId, out set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                names[projectId] = set;
+            }
+            set.Add(sym.Name);
+            NoteIncludeOrigin(origins, projectId, sym, sym.Conditional);
+        }
+
+        private static void NoteIncludeOrigin(Dictionary<int, Dictionary<string, IncludeOrigin>> origins,
+            int projectId, ClarionSymbol sym, bool conditional)
+        {
+            Dictionary<string, IncludeOrigin> byName;
+            if (!origins.TryGetValue(projectId, out byName))
+            {
+                byName = new Dictionary<string, IncludeOrigin>(StringComparer.OrdinalIgnoreCase);
+                origins[projectId] = byName;
+            }
+            IncludeOrigin o;
+            if (!byName.TryGetValue(sym.Name, out o))
+                byName[sym.Name] = new IncludeOrigin { File = sym.FilePath, Line = sym.LineNumber, Conditional = conditional };
+            else if (o.Conditional && !conditional)
+            {
+                // One unconditional INCLUDE makes the file required; point the log at that one.
+                o.File = sym.FilePath;
+                o.Line = sym.LineNumber;
+                o.Conditional = false;
+            }
+        }
+
+        private static IncludeOrigin OriginOf(Dictionary<int, Dictionary<string, IncludeOrigin>> origins, int projectId, string name)
+        {
+            Dictionary<string, IncludeOrigin> byName;
+            IncludeOrigin o;
+            return origins.TryGetValue(projectId, out byName) && byName.TryGetValue(name, out o) ? o : null;
         }
 
         /// <summary>
@@ -1392,11 +1532,37 @@ namespace ClarionCodeGraph.Graph
                         if (module) result.ModuleTargetsUnresolved += n;
                         if (pass == "pass2b-include") result.IncludeTargetsUnresolved += n;
                     }
+                    else if (outcome == OutcomeUnresolvedConditional)
+                    {
+                        result.FilesSkipped += n;
+                        result.IncludeTargetsConditional += n;
+                    }
                     else if (outcome.StartsWith("skipped", StringComparison.Ordinal))
                     {
                         result.FilesSkipped += n;
                         if (module) result.ModuleTargetsSkipped += n;
                     }
+                }
+            }
+            catch { }
+            try
+            {
+                // Name each unresolved INCLUDE and a file that INCLUDEs it (its include symbol), so the warning
+                // answers "which file, from where" without a query (GH #271). That is the first such INCLUDE
+                // indexed, not necessarily the one that makes the file required; the Pass 2b log names that one.
+                const string firstInclude = "FROM symbols s WHERE s.type = 'include' AND s.project_id = f.project_id " +
+                    "AND s.name = f.file_name COLLATE NOCASE ORDER BY s.id LIMIT 1";
+                var dt = _db.ExecuteQuery(string.Format(
+                    "SELECT f.file_name AS name, (SELECT s.file_path " + firstInclude + ") AS origin_file, " +
+                    "(SELECT s.line_number " + firstInclude + ") AS origin_line FROM indexed_files f " +
+                    "WHERE f.outcome = 'unresolved' AND f.pass = 'pass2b-include' ORDER BY f.file_name LIMIT {0}",
+                    IndexResult.MaxNamedIncludes));
+                foreach (System.Data.DataRow row in dt.Rows)
+                {
+                    string originFile = row["origin_file"] != DBNull.Value ? row["origin_file"].ToString() : null;
+                    result.UnresolvedIncludeNames.Add(string.IsNullOrEmpty(originFile)
+                        ? row["name"].ToString()
+                        : string.Format("{0} ({1}:{2})", row["name"], Path.GetFileName(originFile), row["origin_line"]));
                 }
             }
             catch { }
@@ -3631,6 +3797,14 @@ namespace ClarionCodeGraph.Graph
         /// <summary>INCLUDE() targets (Pass 2b) that did not resolve.</summary>
         public int IncludeTargetsUnresolved { get; set; }
 
+        /// <summary>The first <see cref="MaxNamedIncludes"/> of them, as "Name.inc (Includer.clw:line)".</summary>
+        public List<string> UnresolvedIncludeNames { get; } = new List<string>();
+        public const int MaxNamedIncludes = 10;
+
+        /// <summary>INCLUDE() targets (Pass 2b) that did not resolve, all inside a conditional COMPILE/OMIT block:
+        /// not counted as a gap (GH #271).</summary>
+        public int IncludeTargetsConditional { get; set; }
+
         /// <summary>Files INCLUDEd into a PROGRAM's global data whose declarations were indexed as globals (Pass 2d).</summary>
         public int GlobalDataFilesRead { get; set; }
 
@@ -3709,8 +3883,13 @@ namespace ClarionCodeGraph.Graph
                 if (ModuleTargetsUnresolved * 2 > moduleTotal) partial = true;
             }
             if (IncludeTargetsUnresolved > 0)
-                Warnings.Add(string.Format("{0} INCLUDE()d .inc file(s) did not resolve - SELECT * FROM indexed_files WHERE outcome='unresolved' AND pass='pass2b-include'",
-                    IncludeTargetsUnresolved));
+            {
+                string named = UnresolvedIncludeNames.Count == 0 ? "" : ": " + string.Join(", ", UnresolvedIncludeNames) +
+                    (IncludeTargetsUnresolved > UnresolvedIncludeNames.Count
+                        ? string.Format(" and {0} more", IncludeTargetsUnresolved - UnresolvedIncludeNames.Count) : "");
+                Warnings.Add(string.Format("{0} INCLUDE()d .inc file(s) did not resolve{1} - SELECT * FROM indexed_files WHERE outcome='unresolved' AND pass='pass2b-include'",
+                    IncludeTargetsUnresolved, named));
+            }
             Status = partial ? StatusPartial : (Warnings.Count > 0 ? StatusWarning : StatusOk);
         }
 
@@ -3736,6 +3915,9 @@ namespace ClarionCodeGraph.Graph
             sb.AppendFormat("  CLASS MODULE/LINK files: {0} indexed, {1} unresolved, {2} skipped (Clarion install)\n",
                 ModuleFilesIndexed, ModuleTargetsUnresolved, ModuleTargetsSkipped);
             sb.AppendFormat("  Global data INCLUDE files read: {0}\n", GlobalDataFilesRead);
+            if (IncludeTargetsConditional > 0)
+                sb.AppendFormat("  INCLUDE()d files inside a conditional COMPILE/OMIT block, not found and not counted: {0} (outcome='{1}')\n",
+                    IncludeTargetsConditional, CodeGraphIndexer.OutcomeUnresolvedConditional);
             if (!string.IsNullOrEmpty(IndexerVersion))
                 sb.AppendFormat("  Indexer: {0} (feature level {1})\n", IndexerVersion, FeatureLevel);
             foreach (string w in Warnings)
