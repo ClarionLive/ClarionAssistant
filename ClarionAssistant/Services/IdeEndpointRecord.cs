@@ -166,7 +166,7 @@ namespace ClarionAssistant.Services
 
             if (matches.Count == 0)
             {
-                reason = records == 0 ? "no IDE has a Clarion Assistant pane running" : "no IDE has this solution open";
+                reason = records == 0 ? "no Clarion with Clarion Assistant is running" : "no IDE has this solution open";
                 return null;
             }
             if (preferredPid.HasValue)
@@ -242,7 +242,7 @@ namespace ClarionAssistant.Services
             }
             catch (Exception ex) { reason = "the IDE endpoint records could not be read: " + ex.Message; return new List<Endpoint>(); }
             if (all.Count == 0)
-                reason = records == 0 ? "no IDE has a Clarion Assistant pane running" : "no running IDE could be verified";
+                reason = records == 0 ? "no Clarion with Clarion Assistant is running" : "no running IDE could be verified";
             return all;
         }
 

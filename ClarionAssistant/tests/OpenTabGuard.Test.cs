@@ -159,11 +159,11 @@ static class OpenTabGuardTest
 
             Console.WriteLine("-- no IDE can be asked");
             Reset();
-            Script(() => new List<TabProbe> { Unreachable("no IDE has a Clarion Assistant pane running", null) }, null);
+            Script(() => new List<TabProbe> { Unreachable("no Clarion with Clarion Assistant is running", null) }, null);
             r = OpenTabGuard.Run(file, false, Write);
             Ok("written as before", !Unchanged() && Calls() == "check,write", Calls());
             Ok("one line says the tabs could not be checked, and why",
-               r == "File written: " + file + "\nNote: open native Clarion editor tabs could not be checked (no IDE has a Clarion Assistant pane running).", r);
+               r == "File written: " + file + "\nNote: open native Clarion editor tabs could not be checked (no Clarion with Clarion Assistant is running).", r);
             Reset();
             Script(null, null);
             r = OpenTabGuard.Run(file, false, Write);
