@@ -1553,11 +1553,50 @@ namespace ClarionAssistant
             catch { }
         }
 
+        // GH #279: what the last successful run in this IDE did, for the solution it ran on: "Up to date",
+        // "Updated" or "Rebuilt". Kept so the header goes on telling a no-op check from real work after
+        // the run, including when the header re-shows the same solution.
+        private string _lastIndexOutcome;
+        private string _lastIndexOutcomeSln;
+
+        /// <summary>
+        /// GH #279: an AUTOMATIC incremental run (Work With Solution, the IDE opening a solution) starts as a
+        /// quiet check: header text, no spinner, no window. A manual Reindex/Update, an MCP run and an
+        /// automatic FULL run (no database yet - certain to be real work) say "Indexing..."/"Updating..." at once.
+        /// </summary>
+        internal static bool IsQuietIndexCheck(bool showsWindow, bool incremental)
+        {
+            return !showsWindow && incremental;
+        }
+
+        /// <summary>
+        /// GH #279: the header's line for a finished run, so an up-to-date check reads differently from a run
+        /// that changed something. Null for no result (the header falls back to the database's time).
+        /// </summary>
+        internal static string IndexOutcomeText(ClarionCodeGraph.Graph.IndexResult result, DateTime when)
+        {
+            if (result == null) return null;
+            string at = when.ToString("MMM d HH:mm");
+            if (result.Incremental && result.UpToDate)
+                return "Up to date (checked " + at + ")";
+            if (result.Incremental)
+                return "Updated: " + at;
+            if (result.RequestedIncremental && result.UpgradedFromFeatureLevel > 0)
+                return "Rebuilt (index upgrade): " + at;
+            return "Indexed: " + at;
+        }
+
         private void UpdateIndexStatus()
         {
             if (!_header.IsReady) return;
             string dbPath = CurrentDbPath;
-            if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath))
+            if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath)
+                && !string.IsNullOrEmpty(_lastIndexOutcome)
+                && string.Equals(_lastIndexOutcomeSln, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _header.SetIndexStatus(_lastIndexOutcome);
+            }
+            else if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath))
             {
                 var fi = new FileInfo(dbPath);
                 _header.SetIndexStatus("Indexed: " + fi.LastWriteTime.ToString("MMM d HH:mm"));
@@ -2460,7 +2499,17 @@ namespace ClarionAssistant
             }
 
             _header.SetIndexButtonsEnabled(false);
-            _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
+            // GH #279: an AUTOMATIC incremental run starts as a quiet check. Work With Solution runs one on
+            // every open, and on an up-to-date solution it finds nothing to do - but a spinner reading
+            // "Updating..." told the developer the index was being rebuilt every time. The spinner appears
+            // only once the indexer reports real work (its first structured progress event, see
+            // ProgressChanged below), which an up-to-date check never sends.
+            bool quietCheck = IsQuietIndexCheck(showProgressWindow, incremental);
+            bool realWorkSeen = false;
+            if (quietCheck)
+                _header.SetIndexStatus("Checking for changes...", "");
+            else
+                _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
 
             string slnPath = _currentSlnPath;
 
@@ -2510,28 +2559,42 @@ namespace ClarionAssistant
             // Which Clarion version (and which source chose it) this run's .red and libraries come from.
             if (_versionSelection != null) runLog.WriteLine(_versionSelection.Describe());
 
-            // Built for every run, SHOWN only when asked (ticket 7f1c67b2). Constructing it
-            // unconditionally is deliberate: it keeps one completion path instead of
-            // null-guarding a dozen call sites, and it means a silent run that FAILS can
-            // simply show the window it already has, fully populated with what went wrong.
-            var progressForm = new Dialogs.IndexProgressForm(
-                Path.GetFileNameWithoutExtension(slnPath), runLog.LogPath, lastRunMs);
-            try
-            {
-                // Full project inventory up front (cheap .sln text parse) so every app is
-                // visible as Pending before the first file parses.
-                var slnProjects = new ClarionCodeGraph.Parsing.SolutionParser().Parse(slnPath);
-                var projectNames = new List<string>();
-                foreach (var p in slnProjects) projectNames.Add(p.Name);
-                progressForm.SetProjects(projectNames);
-            }
-            catch { }
-
             // Cooperative cancel: the form's Cancel sets the flag; the indexer polls it at
             // file boundaries. Interlocked because the poll happens on the worker thread.
             int cancelFlag = 0;
-            progressForm.CancelClicked += () => System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
-            if (showProgressWindow) ShowIndexProgress(progressForm);
+
+            // The progress window. A manual run (and an MCP run) builds and shows it now, as always.
+            // An AUTOMATIC run never shows it except on failure (ticket 7f1c67b2), and since GH #279
+            // does not even BUILD it until that failure: an up-to-date check on Work With Solution
+            // constructs no window at all. Its progress events are kept meanwhile, so a window that
+            // has to appear for a failure is replayed to the state the run reached before failing.
+            Dialogs.IndexProgressForm progressForm = null;
+            var deferredEvents = showProgressWindow ? null : new List<ClarionCodeGraph.Graph.IndexProgressEvent>();
+            Func<Dialogs.IndexProgressForm> ensureProgressForm = () =>
+            {
+                if (progressForm != null) return progressForm;
+                progressForm = new Dialogs.IndexProgressForm(
+                    Path.GetFileNameWithoutExtension(slnPath), runLog.LogPath, lastRunMs);
+                try
+                {
+                    // Full project inventory up front (cheap .sln text parse) so every app is
+                    // visible as Pending before the first file parses.
+                    var slnProjects = new ClarionCodeGraph.Parsing.SolutionParser().Parse(slnPath);
+                    var projectNames = new List<string>();
+                    foreach (var p in slnProjects) projectNames.Add(p.Name);
+                    progressForm.SetProjects(projectNames);
+                }
+                catch { }
+                progressForm.CancelClicked += () => System.Threading.Interlocked.Exchange(ref cancelFlag, 1);
+                if (deferredEvents != null)
+                {
+                    foreach (var dev in deferredEvents)
+                        try { progressForm.OnEvent(dev); } catch { }
+                    deferredEvents.Clear();
+                }
+                return progressForm;
+            };
+            if (showProgressWindow) ShowIndexProgress(ensureProgressForm());
 
             var worker = new BackgroundWorker();
             worker.WorkerReportsProgress = true;
@@ -2613,9 +2676,33 @@ namespace ClarionAssistant
                 var ev = e.UserState as ClarionCodeGraph.Graph.IndexProgressEvent;
                 if (ev != null)
                 {
+                    // GH #279: the indexer sends no structured event before it starts parsing, and an
+                    // up-to-date incremental run returns before that. So the first one means real work
+                    // (changed projects, or an upgrade to full): only now does a quiet check say so.
+                    if (quietCheck && !realWorkSeen)
+                    {
+                        realWorkSeen = true;
+                        _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
+                    }
                     // The window is closable once a cancel is in flight — late posts from the
                     // still-unwinding worker must not touch a disposed form.
-                    if (!progressForm.IsDisposed)
+                    if (progressForm == null)
+                    {
+                        // Kept coalesced: the window's state is the last event per phase and project, so
+                        // an event replaces the previous one of the same phase and project. That holds the
+                        // buffer to about one entry per project, not one per file, inside a 32-bit IDE.
+                        if (deferredEvents != null)
+                        {
+                            int last = deferredEvents.Count - 1;
+                            if (last >= 0
+                                && string.Equals(deferredEvents[last].Phase, ev.Phase, StringComparison.Ordinal)
+                                && string.Equals(deferredEvents[last].ProjectName, ev.ProjectName, StringComparison.OrdinalIgnoreCase))
+                                deferredEvents[last] = ev;
+                            else
+                                deferredEvents.Add(ev);
+                        }
+                    }
+                    else if (!progressForm.IsDisposed)
                         progressForm.OnEvent(ev);
                     if (externalProgress != null)
                         try { externalProgress(ev); } catch { }
@@ -2635,7 +2722,11 @@ namespace ClarionAssistant
                 try
                 {
                     _header.SetIndexButtonsEnabled(true);
-                    bool formAlive = !progressForm.IsDisposed;
+                    // An automatic run has no window until it needs one (GH #279): null here is normal.
+                    bool formAlive = progressForm != null && !progressForm.IsDisposed;
+
+                    if (e.Error != null || wasCancelled)
+                        _lastIndexOutcome = null;   // GH #279: a failed or cancelled run must not keep "Up to date"
 
                     if (e.Error != null)
                     {
@@ -2644,14 +2735,21 @@ namespace ClarionAssistant
                         externalSummary = ClarionAssistant.Services.OutOfProcessIndexer.McpFailureReply(e.Error, runLog.LogPath);
                         runLog.WriteLine("FAILED: " + e.Error.Message);
                         runLog.Dispose();
+                        // An automatic run stayed hidden while it was working; a FAILED one
+                        // must not (ticket 7f1c67b2). Removing the window removed the only
+                        // place errors were shown, and a background index that quietly stops
+                        // updating is worse than the popup this change exists to suppress —
+                        // every later query would answer from a stale graph, silently.
+                        // Since GH #279 an automatic run builds its window only here, replayed
+                        // to where the run got before it failed.
+                        if (!showProgressWindow && progressForm == null)
+                        {
+                            try { ensureProgressForm(); } catch { }
+                            formAlive = progressForm != null && !progressForm.IsDisposed;
+                        }
                         if (formAlive)
                         {
                             progressForm.RunFailed(e.Error.Message);
-                            // An automatic run stayed hidden while it was working; a FAILED one
-                            // must not (ticket 7f1c67b2). Removing the window removed the only
-                            // place errors were shown, and a background index that quietly stops
-                            // updating is worse than the popup this change exists to suppress —
-                            // every later query would answer from a stale graph, silently.
                             if (!showProgressWindow && !progressForm.Visible)
                             {
                                 ShowIndexProgress(progressForm);
@@ -2711,6 +2809,10 @@ namespace ClarionAssistant
                             // leave the window ticking forever in its running state.
                             progressForm.RunFailed("Index returned no result.");
                     }
+                    // GH #279: the header says what the run DID, and keeps saying it for this solution,
+                    // so an up-to-date check reads differently from an update or an upgrade to full.
+                    _lastIndexOutcomeSln = slnPath;
+                    _lastIndexOutcome = IndexOutcomeText(result, DateTime.Now);
                     UpdateIndexStatus();
                 }
                 finally
@@ -2726,7 +2828,7 @@ namespace ClarionAssistant
                     // (ticket 7f1c67b2). Deliberately checks Visible rather than the flag:
                     // the failure branch above SHOWS the window on purpose, and that one is
                     // the developer's to close.
-                    if (!showProgressWindow && !progressForm.IsDisposed && !progressForm.Visible)
+                    if (!showProgressWindow && progressForm != null && !progressForm.IsDisposed && !progressForm.Visible)
                     {
                         try { progressForm.Dispose(); } catch { }
                     }
@@ -2755,7 +2857,7 @@ namespace ClarionAssistant
                 runLog.WriteLine("REFUSED: " + indexHolder + " holds " + dbPath);
                 runLog.Dispose();
                 _header.SetIndexButtonsEnabled(true);
-                if (!progressForm.IsDisposed)
+                if (progressForm != null && !progressForm.IsDisposed)
                     progressForm.RunFailed("An index of this solution's database is already in progress.");
                 if (externalCompleted != null)
                     try { externalCompleted(held); } catch { }
@@ -2766,8 +2868,11 @@ namespace ClarionAssistant
                 // This is the dialog 7f1c67b2 was reported for. A refusal is not a failure — the
                 // indexing the developer needs is already underway. Dispose the window nobody
                 // ever saw, or an automatic run leaks a hidden form on every refusal.
-                if (!showProgressWindow && !progressForm.IsDisposed && !progressForm.Visible)
+                // (Since GH #279 an automatic run has not built one yet, so there is normally none.)
+                if (!showProgressWindow && progressForm != null && !progressForm.IsDisposed && !progressForm.Visible)
                     try { progressForm.Dispose(); } catch { }
+                // A quiet check that never ran must not leave "Checking for changes..." in the header.
+                if (quietCheck) UpdateIndexStatus();
                 return;
             }
             _indexRunInProgress = true;
