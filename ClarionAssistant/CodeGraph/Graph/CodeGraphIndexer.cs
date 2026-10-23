@@ -585,7 +585,9 @@ namespace ClarionCodeGraph.Graph
                         {
                             if (!Directory.Exists(libDir))
                             {
-                                ReportProgress(string.Format("  Library path not found: {0}", libDir));
+                                // GH #271: a folder the .red lists that is not on disk (an old %ROOT%\convsrc entry, for one)
+                                // has nothing to index and does not change the status; say so, so it does not read as a fault.
+                                ReportProgress(string.Format("  Library path not found, skipped (a .red search folder that does not exist; does not affect the index): {0}", libDir));
                                 continue;
                             }
 
