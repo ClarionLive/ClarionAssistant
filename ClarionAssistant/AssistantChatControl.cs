@@ -1553,11 +1553,22 @@ namespace ClarionAssistant
             catch { }
         }
 
-        // GH #279: what the last successful run in this IDE did, for the solution it ran on: "Up to date",
-        // "Updated" or "Rebuilt". Kept so the header goes on telling a no-op check from real work after
-        // the run, including when the header re-shows the same solution.
-        private string _lastIndexOutcome;
-        private string _lastIndexOutcomeSln;
+        // GH #279: what the last run in this IDE did, for the solution it ran on: "Up to date", "Updated",
+        // "Rebuilt" - or, since review D7a, "Error: ..." / "Index cancelled", which stay until the next run instead
+        // of being painted over at once. Kept with the database's stamp (D7d): once something else writes the
+        // database (index_codegraph, the standalone server) the line no longer describes it and is dropped.
+        private readonly Services.IndexOutcomeMemo _indexOutcome = new Services.IndexOutcomeMemo();
+        // Review D7e: an automatic check for ANOTHER solution asked for while a run is in flight runs after it.
+        private readonly Services.IndexFollowUp _indexFollowUp = new Services.IndexFollowUp();
+        // The solution the in-flight run indexes (null when none).
+        private string _indexRunSlnPath;
+
+        /// <summary>Review D6: OutOfProcessIndexer.OnModeDecided, carried through BackgroundWorker.ReportProgress.</summary>
+        private sealed class IndexModeNotice
+        {
+            public readonly bool Incremental;
+            public IndexModeNotice(bool incremental) { Incremental = incremental; }
+        }
 
         /// <summary>
         /// GH #279: an AUTOMATIC incremental run (Work With Solution, the IDE opening a solution) starts as a
@@ -1590,11 +1601,10 @@ namespace ClarionAssistant
         {
             if (!_header.IsReady) return;
             string dbPath = CurrentDbPath;
-            if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath)
-                && !string.IsNullOrEmpty(_lastIndexOutcome)
-                && string.Equals(_lastIndexOutcomeSln, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
+            string outcomeText, outcomeStyle;
+            if (_indexOutcome.TryGet(_currentSlnPath, Services.IndexOutcomeMemo.StampOf(dbPath), out outcomeText, out outcomeStyle))
             {
-                _header.SetIndexStatus(_lastIndexOutcome);
+                _header.SetIndexStatus(outcomeText, outcomeStyle);
             }
             else if (!string.IsNullOrEmpty(dbPath) && File.Exists(dbPath))
             {
@@ -2491,8 +2501,14 @@ namespace ClarionAssistant
                     return;
                 }
                 // Automatic run, and another is already running: the work is in hand. Saying so
-                // out loud is exactly the error 7f1c67b2 exists to remove.
-                if (!showProgressWindow) return;
+                // out loud is exactly the error 7f1c67b2 exists to remove. But only when it is the SAME
+                // solution (review D7e): Work With Solution on A and then quickly on B must still check B,
+                // so B's check is queued and runs when A's run ends.
+                if (!showProgressWindow)
+                {
+                    _indexFollowUp.Queue(_indexRunSlnPath, _currentSlnPath);
+                    return;
+                }
                 MessageBox.Show("An index run is already in progress.", "Index",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -2502,16 +2518,26 @@ namespace ClarionAssistant
             // GH #279: an AUTOMATIC incremental run starts as a quiet check. Work With Solution runs one on
             // every open, and on an up-to-date solution it finds nothing to do - but a spinner reading
             // "Updating..." told the developer the index was being rebuilt every time. The spinner appears
-            // only once the indexer reports real work (its first structured progress event, see
-            // ProgressChanged below), which an up-to-date check never sends.
+            // only once the run is known to be real work (see showRealWork below), which an up-to-date check
+            // never is.
             bool quietCheck = IsQuietIndexCheck(showProgressWindow, incremental);
             bool realWorkSeen = false;
+            bool? effectiveIncremental = null;   // what the indexer says it runs, once it says (review D6)
             if (quietCheck)
-                _header.SetIndexStatus("Checking for changes...", "");
+                _header.SetIndexStatus(Services.IndexHeaderText.Checking, "");
             else
-                _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
+                _header.SetIndexStatus(Services.IndexHeaderText.WorkText(incremental, null), "active");
 
             string slnPath = _currentSlnPath;
+            // Review D6 / D7b: the spinner for a run known to do real work, worded for what it runs ("Rebuilding
+            // index..." for an incremental request that runs full). Painted only while the header still shows THIS
+            // run's solution: a run for A must not put its spinner on B's header after the developer switched.
+            Action showRealWork = () =>
+            {
+                realWorkSeen = true;
+                if (string.Equals(slnPath, _currentSlnPath, StringComparison.OrdinalIgnoreCase))
+                    _header.SetIndexStatus(Services.IndexHeaderText.WorkText(incremental, effectiveIncremental), "active");
+            };
 
             // Index against the IDE's CURRENT Build > Set Clarion Version (16d140e9): re-check it now rather
             // than trust the .red loaded at the last solution change.
@@ -2624,6 +2650,8 @@ namespace ClarionAssistant
                     // UserState type below, and a fake number invites someone to read it.
                     ((BackgroundWorker)s).ReportProgress(0, ev);
                 };
+                // Review D6: what the run does, before its first message (child and in-process fallback alike).
+                indexer.OnModeDecided += inc => ((BackgroundWorker)s).ReportProgress(0, new IndexModeNotice(inc));
                 runLog.WriteLine("Indexer process: " + (indexer.ExePath ?? "(addin folder unknown)"));
                 try
                 {
@@ -2673,17 +2701,23 @@ namespace ClarionAssistant
             };
             worker.ProgressChanged += (s, e) =>
             {
+                // Review D6: the first moment a run is known to be real work. An incremental request the indexer
+                // runs FULL (the first Work With Solution after an update that raised the feature level) is a
+                // rebuild of minutes - say so at once, not at Pass 2, and say "Rebuilding index...".
+                var mode = e.UserState as IndexModeNotice;
+                if (mode != null)
+                {
+                    effectiveIncremental = mode.Incremental;
+                    if (incremental && !mode.Incremental) showRealWork();
+                    return;
+                }
                 var ev = e.UserState as ClarionCodeGraph.Graph.IndexProgressEvent;
                 if (ev != null)
                 {
                     // GH #279: the indexer sends no structured event before it starts parsing, and an
                     // up-to-date incremental run returns before that. So the first one means real work
-                    // (changed projects, or an upgrade to full): only now does a quiet check say so.
-                    if (quietCheck && !realWorkSeen)
-                    {
-                        realWorkSeen = true;
-                        _header.SetIndexStatus(incremental ? "Updating..." : "Indexing...", "active");
-                    }
+                    // (changed projects, or an upgrade to full) - a backstop for the signals above.
+                    if (quietCheck && !realWorkSeen) showRealWork();
                     // The window is closable once a cancel is in flight — late posts from the
                     // still-unwinding worker must not touch a disposed form.
                     if (progressForm == null)
@@ -2710,7 +2744,11 @@ namespace ClarionAssistant
                 }
                 string msg = e.UserState as string;
                 if (msg != null)
+                {
+                    // Review D6: "N of M projects have changes" with N > 0 comes before any parsing.
+                    if (quietCheck && !realWorkSeen && Services.IndexHeaderText.MessageSignalsWork(msg)) showRealWork();
                     _header.AppendIndexLog(msg);
+                }
             };
             worker.RunWorkerCompleted += (s, e) =>
             {
@@ -2726,7 +2764,7 @@ namespace ClarionAssistant
                     bool formAlive = progressForm != null && !progressForm.IsDisposed;
 
                     if (e.Error != null || wasCancelled)
-                        _lastIndexOutcome = null;   // GH #279: a failed or cancelled run must not keep "Up to date"
+                        _indexOutcome.Clear();   // GH #279: a failed or cancelled run must not keep "Up to date"
 
                     if (e.Error != null)
                     {
@@ -2759,7 +2797,10 @@ namespace ClarionAssistant
                         // the window and the log show all of it, the one-line header only the first.
                         string headline = e.Error.Message ?? "";
                         int nl = headline.IndexOfAny(new[] { '\r', '\n' });
-                        _header.SetIndexStatus("Error: " + (nl >= 0 ? headline.Substring(0, nl) : headline), "error");
+                        // Review D7a: the error IS the header's line until the next run (UpdateIndexStatus used to
+                        // paint over it at once), and it is this run's solution's line, not whichever is shown now.
+                        _indexOutcome.Record(slnPath, "Error: " + (nl >= 0 ? headline.Substring(0, nl) : headline), "error",
+                            Services.IndexOutcomeMemo.StampOf(dbPath));
                         UpdateIndexStatus();
                         return;
                     }
@@ -2775,7 +2816,7 @@ namespace ClarionAssistant
                         runLog.WriteLine("CANCELLED. " + disposition);
                         runLog.Dispose();
                         if (formAlive) progressForm.RunCancelled(disposition);
-                        _header.SetIndexStatus("Index cancelled", "error");
+                        _indexOutcome.Record(slnPath, "Index cancelled", "error", Services.IndexOutcomeMemo.StampOf(dbPath));
                         UpdateIndexStatus();
                         return;
                     }
@@ -2811,14 +2852,25 @@ namespace ClarionAssistant
                     }
                     // GH #279: the header says what the run DID, and keeps saying it for this solution,
                     // so an up-to-date check reads differently from an update or an upgrade to full.
-                    _lastIndexOutcomeSln = slnPath;
-                    _lastIndexOutcome = IndexOutcomeText(result, DateTime.Now);
+                    string outcome = IndexOutcomeText(result, DateTime.Now);
+                    if (outcome != null)
+                        _indexOutcome.Record(slnPath, outcome, "", Services.IndexOutcomeMemo.StampOf(dbPath));
+                    else
+                        _indexOutcome.Clear();
                     UpdateIndexStatus();
                 }
                 finally
                 {
                     _indexRunInProgress = false;
+                    _indexRunSlnPath = null;
                     ClarionAssistant.Services.IndexRunGate.Exit(dbPath);
+                    // Review D7e: the automatic check another solution asked for while this run was in flight -
+                    // run it now if that solution is still the one shown. Posted, so it starts after this handler.
+                    if (_indexFollowUp.Take(_currentSlnPath) != null)
+                    {
+                        try { BeginInvoke(new Action(() => RunIndexAutomatic(File.Exists(CurrentDbPath ?? "")))); }
+                        catch { }
+                    }
                     // Idempotent — the branches dispose on their normal paths; this catches
                     // a UI throw that would otherwise leak the per-solution log handle for
                     // the process lifetime (pipeline debugger, run 2).
@@ -2871,11 +2923,13 @@ namespace ClarionAssistant
                 // (Since GH #279 an automatic run has not built one yet, so there is normally none.)
                 if (!showProgressWindow && progressForm != null && !progressForm.IsDisposed && !progressForm.Visible)
                     try { progressForm.Dispose(); } catch { }
-                // A quiet check that never ran must not leave "Checking for changes..." in the header.
-                if (quietCheck) UpdateIndexStatus();
+                // A run that never ran must not leave "Checking for changes..." or a spinner in the header -
+                // a refused manual or MCP run no more than a quiet check (review D7c).
+                UpdateIndexStatus();
                 return;
             }
             _indexRunInProgress = true;
+            _indexRunSlnPath = slnPath;
             try
             {
                 worker.RunWorkerAsync();
@@ -2883,7 +2937,9 @@ namespace ClarionAssistant
             catch
             {
                 _indexRunInProgress = false;
+                _indexRunSlnPath = null;
                 ClarionAssistant.Services.IndexRunGate.Exit(dbPath);
+                UpdateIndexStatus();
                 throw;
             }
 

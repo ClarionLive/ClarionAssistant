@@ -410,17 +410,27 @@ static class OutOfProcessIndexerTest
                 try { db.ExecuteQuery("DELETE FROM index_metadata WHERE key IN ('indexer_version','indexer_feature_level','indexer_features')"); db.SetMetadata(CodeGraphIndexer.MetaFeatureLevel, "1"); }
                 finally { db.Close(); }
                 var up = new OutOfProcessIndexer { ExePath = exe };
+                var upSeq = new List<string>();
+                up.OnProgress += x => upSeq.Add("msg");
+                up.OnModeDecided += x => upSeq.Add("mode:" + x);
                 IndexResult ur = null;
                 try { ur = up.Run(new IndexRunRequest { SlnPath = sln, DbPath = dbOut, Incremental = true, Red = red, BuildConfiguration = config, LibraryPaths = libs }); }
                 catch (Exception ex) { Check(false, "U1", "threw: " + ex.Message); }
                 Check(ur != null && !ur.Incremental && ur.RequestedIncremental && ur.UpgradedFromFeatureLevel == 1 && !up.EffectiveIncremental
                       && ur.ModeText.StartsWith("full (upgraded from feature level 1"),
                     "U1", "incremental on a level-1 database ran full, upgraded, and EffectiveIncremental=false (" + (ur != null ? ur.ModeText : "no result") + ")");
+                // Review D6: the host hears the mode BEFORE the first message, so a header can say "Rebuilding index..." at once.
+                Check(upSeq.Count > 1 && upSeq[0] == "mode:False" && upSeq.Count(x => x.StartsWith("mode:")) == 1,
+                    "M1", "child: OnModeDecided(False) once, before any message, for the upgrade-to-full run (" + string.Join(",", upSeq.Take(3)) + ")");
                 var inc = new OutOfProcessIndexer { ExePath = exe };
+                var incSeq = new List<string>();
+                inc.OnProgress += x => incSeq.Add("msg");
+                inc.OnModeDecided += x => incSeq.Add("mode:" + x);
                 IndexResult nr = null;
                 try { nr = inc.Run(new IndexRunRequest { SlnPath = sln, DbPath = dbOut, Incremental = true, Red = red, BuildConfiguration = config, LibraryPaths = libs }); }
                 catch (Exception ex) { Check(false, "U2", "threw: " + ex.Message); }
                 Check(nr != null && nr.Incremental && nr.UpToDate && inc.EffectiveIncremental, "U2", "a current database stays incremental and up to date");
+                Check(incSeq.Count > 1 && incSeq[0] == "mode:True", "M2", "child: OnModeDecided(True) first for an incremental run (" + string.Join(",", incSeq.Take(3)) + ")");
             }
 
             // ---- C: cancel ----
@@ -630,12 +640,20 @@ static class OutOfProcessIndexerTest
                 var g = new OutOfProcessIndexer { ExePath = Path.Combine(root, "missing", "clarion-indexer.exe") };
                 var gm = new List<string>();
                 g.OnProgress += x => gm.Add(x);
+                var gSeq = new List<string>();
+                g.OnProgress += x => gSeq.Add("msg");
+                g.OnModeDecided += inc => gSeq.Add("mode:" + inc);
                 IndexResult gr = null;
                 try { gr = g.Run(new IndexRunRequest { SlnPath = sln, DbPath = Path.Combine(root, "fallback.db"), Red = red, BuildConfiguration = config, LibraryPaths = libs }); }
                 catch (Exception ex) { Check(false, "F4", "the fallback threw: " + ex.Message); }
                 Check(gr != null && g.RanInProcess && g.FallbackWarning != null && g.FallbackWarning.Contains("clarion-indexer.exe was not found")
                       && gm.Count > 0 && gm[0] == g.FallbackWarning && gr.SymbolCount == inRes.SymbolCount,
                     "F4", "a missing exe runs in-process with a warning first on the progress channel, same result");
+                // Review D6: the fallback reports the mode as the child does - once, before the indexer's first message
+                // (the fallback warning itself is the host's own line, ahead of the run).
+                Check(gSeq.Count > 2 && gSeq[0] == "msg" && gSeq[1] == "mode:False" && gSeq.Count(x => x.StartsWith("mode:")) == 1,
+                    "M3", "in-process fallback: OnModeDecided(False) once, right after the fallback warning and before the indexer's first message (" +
+                          string.Join(",", gSeq.Take(3)) + ")");
 
                 // Review D2: an exe that is THERE but will not start (error 193: not a valid Win32 application) is the
                 // missing-exe case - an in-process run with a WARNING naming the reason - not a hard failure.

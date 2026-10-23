@@ -606,6 +606,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "EndpointRecordSweep.Test"
                Sources = @("tests\EndpointRecordSweep.Test.cs", "Services\IdeEndpointRecord.cs", "Services\IdeSolutionRecord.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll") }
+            # GH #279 follow-up (integ-1023 review D6/D7): the header's CodeGraph line - "Rebuilding index..." for an
+            # incremental request that runs full, the early real-work signal, an error/cancel line that stays until the
+            # database changes, and a queued check for another solution. Does not exist on 3e57b84.
+            @{ Name = "IndexHeaderStatus.Test"
+               Sources = @("tests\IndexHeaderStatus.Test.cs", "Services\IndexHeaderStatus.cs")
+               Refs = @("System.dll") }
         )
         if ($Probe) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"

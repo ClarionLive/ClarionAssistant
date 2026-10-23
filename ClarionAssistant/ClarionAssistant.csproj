@@ -106,6 +106,7 @@
     <Compile Include="Services\IDiffService.cs" />
     <Compile Include="Services\IIdeProbeService.cs" />
     <Compile Include="Services\IdeProbeService.cs" />
+    <Compile Include="Services\IndexHeaderStatus.cs" />
     <Compile Include="Services\IndexRunGate.cs" />
     <Compile Include="Services\IndexRunLog.cs" />
     <Compile Include="Services\OutOfProcessIndexer.cs" />
