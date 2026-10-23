@@ -216,7 +216,8 @@ static class LocalScopeIndexTest
 
         string c18 = WithLine(_two, "Loc", "  x = pName");
         var h18 = HoverOn(c18, "x = pName", "pName");
-        Check(h18 != null && h18.Authoritative && h18.Markdown.Contains("*STRING"), "1.18", "pName -> *STRING, authoritative: " + Md(h18));
+        Check(h18 != null && !h18.Authoritative && h18.Fallback && h18.Markdown.Contains("*STRING"), "1.18",
+              "pName -> *STRING, a fallback for the server's card (procedure name, PROCEDURE line link): " + Md(h18));
 
         var h19 = HoverOn(_two, "DO RtnB", "RtnB");
         string c19 = WithLine(_two, "Loc", "  DO RtnA");
@@ -252,6 +253,15 @@ static class LocalScopeIndexTest
         Check(hCls != null && !hCls.Authoritative && hCls.Fallback, "1.fb3",
               "ThisWindow (local CLASS) -> fallback, not authoritative: " + Md(hCls));
         Check(h17 != null && !h17.Fallback, "1.fb4", "LOC:Count (plain local) -> not a fallback: " + Md(h17));
+        // Parameters: the server's card names the procedure and links its PROCEDURE line - a method's own
+        // parameter, and the owning procedure's parameter seen from a local class method, both fall back.
+        var hOwn = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
+        Check(hOwn != null && !hOwn.Authoritative && hOwn.Fallback && hOwn.Markdown.Contains("BYTE"), "1.fb5",
+              "pMode (ThisWindow.Init's parameter) -> fallback: " + Md(hOwn));
+        string cOwner = WithLine(_two, "pM", "  x = pId");
+        var hOwner = HoverOn(cOwner, "x = pId", "pId");
+        Check(hOwner != null && !hOwner.Authoritative && hOwner.Fallback && hOwner.Markdown.Contains("LONG"), "1.fb6",
+              "pId (ProcA's parameter, seen from ThisWindow.Init) -> fallback: " + Md(hOwner));
 
         // Local class member access (SELF.Init inside ThisWindow.Init): non-authoritative member hover.
         string cm = WithLine(_two, "SELF.", "  SELF.Kill()");
