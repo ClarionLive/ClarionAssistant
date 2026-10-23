@@ -4358,8 +4358,14 @@ namespace ClarionAssistant.Terminal
                         // Sync happens INSIDE GetHover on the bundled client and not at all on the shared
                         // addin (it answers from the last synced text), so requestMs includes any sync.
                         var reqSw = System.Diagnostics.Stopwatch.StartNew();
-                        var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer));
+                        bool fromIndex;
+                        var resp = SharedLspBridge.GetHover(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1), LspBuffer(buffer), out fromIndex);
                         contents = ExtractHoverString(resp);
+                        // H1-a: a link to this embeditor's own module carries a line of the text the server was
+                        // sent (or, from the index, of the module on disk): put it in the embeditor's terms.
+                        if (!_fileMode && contents != null)
+                            contents = EmbedLspContext.ToEmbeditorLinks(contents, _lspFileName,
+                                (_lspContext != null) ? _lspContext.LineOffsetFor(buffer) : 0, fromIndex);
                         timing.Add("sync", "inline").Add("requestMs", reqSw.ElapsedMilliseconds);
                     }
                 }
@@ -5103,6 +5109,9 @@ namespace ClarionAssistant.Terminal
                     // omits the flag; the page treats a missing one as on, and the overlay does run them.)
                     "\"slotChecks\":" + (!_fileMode ? "true" : "false") + "," +
                     "\"filePath\":" + JsonString(_filePath ?? "") + "," +
+                    // H1-a: the document the CA Embeditor stands for (the module path the server analyses its
+                    // text under). A location link to it stays in the embeditor instead of opening the .clw.
+                    "\"docPath\":" + JsonString(_fileMode ? "" : (_lspFileName ?? "")) + "," +
                     "\"saveEnabled\":" + (_saveEnabled ? "true" : "false") + "," +
                     "\"findUiMode\":\"" + Services.CaFindSettings.FindUiModeForPage + "\"," +   // Pad vs in-editor Overlay (#66 phase 2)
                     "\"liveLinked\":" + (_liveLinked ? "true" : "false") + "," +   // live mode: relabel Save → "Save and Exit" (a5bbf005)

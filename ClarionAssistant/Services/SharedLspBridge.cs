@@ -142,6 +142,17 @@ namespace ClarionAssistant.Services
         /// nothing — ticket 6e8f2439 item 6, so hovering an ABC/library symbol shows its signature.</summary>
         public static Dictionary<string, object> GetHover(string filePath, int line, int character, string bufferText = null)
         {
+            bool fromIndex;
+            return GetHover(filePath, line, character, bufferText, out fromIndex);
+        }
+
+        /// <summary><see cref="GetHover(string,int,int,string)"/>, saying whether the card came from the solution /
+        /// library index (<paramref name="fromIndex"/>: its location lines are lines of the files ON DISK) rather
+        /// than from the language server (lines of the text it was sent). The CA Embeditor needs the difference
+        /// for links to its own module (H1-a, EmbedLspContext.ToEmbeditorLinks).</summary>
+        public static Dictionary<string, object> GetHover(string filePath, int line, int character, string bufferText, out bool fromIndex)
+        {
+            fromIndex = false;
             // Library/ABC member access ("oInstance.Member") → PREEMPT the LSP with our precise member hover.
             // The LSP can't resolve libsrc member access (it returns the containing class at best), so ours is
             // strictly more useful here. Project-local member access is left to the LSP (returns null below).
@@ -150,7 +161,10 @@ namespace ClarionAssistant.Services
             {
                 string mc = CgHoverText(lm, "ClarionGraph");
                 if (!string.IsNullOrEmpty(mc))
+                {
+                    fromIndex = true;
                     return WrapResult(new Dictionary<string, object> { { "contents", mc } });
+                }
             }
 
             var c = Shared;
@@ -158,7 +172,9 @@ namespace ClarionAssistant.Services
                 ? (LspClient.Active != null ? LspClient.Active.GetHover(filePath, line, character, bufferText) : null)
                 : SharedGetHover(c, filePath, line, character);
             if (!IsHoverEmpty(primary)) return primary;
-            return CodeGraphHover(filePath, line, character, bufferText) ?? primary;
+            var cg = CodeGraphHover(filePath, line, character, bufferText);
+            if (cg != null) { fromIndex = true; return cg; }
+            return primary;
         }
 
         /// <summary>A member-access symbol ("oInstance.Member") resolved from the ClarionGraph LIBRARY DB,

@@ -221,6 +221,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.LineMapping.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # H1-a: the CA Embeditor's hover links to its own module, put in embeditor lines (server card)
+            # or marked ?ondisk (index card, disk lines); links to other files untouched.
+            @{ Name = "EmbedLspContext.SelfLinks"
+               Sources = @("tests\EmbedLspContext.SelfLinks.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
+                           "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # 16d140e9: the CA Explorer header's APP/VERSION/ROOT values and the path check in front of
             # the "open in Windows Explorer" clicks. Existence probes injected; touches no real path.
             @{ Name = "ExplorerHeader.Test"
