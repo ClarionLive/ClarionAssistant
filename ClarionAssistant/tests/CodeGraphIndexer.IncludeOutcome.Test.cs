@@ -63,6 +63,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
             "  COMPILE('***',_NOT_DEFINED_)",
             "  INCLUDE('CondMissing.inc'),ONCE",              // conditional: not a gap
             "  INCLUDE('CondParent.inc'),ONCE",               // conditional, exists; what IT includes is conditional too
+            "  INCLUDE('CondTwice.inc'),ONCE",                // conditional here AND (unconditionally) inside CondParent.inc
             "  ***",
             "  INCLUDE('AfterBlock.inc'),ONCE",               // after the terminator: unconditional again
             "  COMPILE('!end!')",
@@ -98,6 +99,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
             "                    END");
         Write(Path.Combine(app, "CondParent.inc"),
             "  INCLUDE('Nested.inc'),ONCE",
+            "  INCLUDE('CondTwice.inc'),ONCE",
             "CondThing           CLASS,TYPE",
             "                    END");
         Write(Path.Combine(app, "Wrap.inc"),
@@ -134,7 +136,8 @@ static class CodeGraphIndexerIncludeOutcomeTest
         Write(Path.Combine(sln, "Clarion110.red"),
             "[Common]",
             "*.inc = " + app + ";" + outside,
-            "*.clw = " + app);
+            "*.clw = " + app,
+            "{include %UNDEFINED_MACRO%\\Gone.red}");   // GH #278: an {include} the .red cannot follow
 
         string slnPath = Path.Combine(sln, "IncludeOutcome.sln");
         File.WriteAllText(slnPath,
@@ -189,6 +192,8 @@ static class CodeGraphIndexerIncludeOutcomeTest
             Check(Outcome(db, "CondMissing.inc") == "unresolved_conditional", "F4", "COMPILE('t', expr) block: CondMissing.inc is " + Outcome(db, "CondMissing.inc"));
             Check(Outcome(db, "CondMissing2.inc") == "unresolved_conditional", "F5", "OMIT('t', expr) block in a MEMBER: CondMissing2.inc is " + Outcome(db, "CondMissing2.inc"));
             Check(Outcome(db, "Nested.inc") == "unresolved_conditional", "F6", "INCLUDEd by a conditionally INCLUDEd .inc: Nested.inc is " + Outcome(db, "Nested.inc"));
+            Check(Outcome(db, "CondTwice.inc") == "unresolved_conditional", "F6d",
+                  "conditional in the PROGRAM, unconditional only inside the conditionally INCLUDEd CondParent.inc: CondTwice.inc is " + Outcome(db, "CondTwice.inc"));
             Check(Outcome(db, "Deep.inc") == "unresolved", "F6b",
                   "conditional in a MEMBER, unconditional through Wrap.inc (found later in the walk): Deep.inc is " + Outcome(db, "Deep.inc"));
             Check(Outcome(db, "SharedMissing.inc") == "unresolved", "F6c",
@@ -197,7 +202,7 @@ static class CodeGraphIndexerIncludeOutcomeTest
             Console.WriteLine("-- the warning names the real gaps, and only those");
             Check(!warning.Contains("CondMissing") && !warning.Contains("Nested.inc"), "F7", "conditional targets are not in the warning");
             Check(warning.StartsWith("7 INCLUDE()d"), "F8", "the warning counts the 7 real gaps (GapInMember.inc included): '" + warning + "'");
-            Check(warning.Contains("Missing.inc (App.clw:5)") && warning.Contains("AfterBlock.inc (App.clw:10)"),
+            Check(warning.Contains("Missing.inc (App.clw:5)") && warning.Contains("AfterBlock.inc (App.clw:11)"),
                   "F9", "the warning names each gap and the line that INCLUDEs it");
             Check(log.Any(l => l.Contains("INCLUDE not resolved: CondMissing.inc (App.clw:7)") && l.Contains("conditional")),
                   "F10", "the log names a conditional target and where it is INCLUDEd");
@@ -234,6 +239,10 @@ static class CodeGraphIndexerIncludeOutcomeTest
             Check(Outcome(db, "GapInMember.inc", "pass2d-global-data") == "unresolved", "G7",
                   "conditional in global data but a gap through the MEMBER module: GapInMember.inc is " + Outcome(db, "GapInMember.inc", "pass2d-global-data"));
             Check(warning.StartsWith("7 INCLUDE()d"), "G8", "Pass 2d rows still do not count toward the warning: '" + warning + "'");
+
+            Console.WriteLine("-- GH #278: the log names a .red {include} that was not followed");
+            Check(log.Any(l => l.StartsWith("WARNING: .red {include} not followed") && l.Contains("%UNDEFINED_MACRO%\\Gone.red")),
+                  "R1", "the skipped {include} is in the index log");
 
             Console.WriteLine("-- an incremental run with nothing changed");
             var again = indexer.IndexSolution(slnPath, true, null);

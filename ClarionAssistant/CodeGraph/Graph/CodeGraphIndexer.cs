@@ -872,7 +872,7 @@ namespace ClarionCodeGraph.Graph
                     foreach (string seedName in kvp.Value)
                     {
                         IncludeOrigin seedOrigin = OriginOf(includeOrigins, projectId, seedName);
-                        if ((seedOrigin == null || !seedOrigin.Conditional) && required.Add(seedName))
+                        if ((seedOrigin == null || seedOrigin.SeedUnconditional) && required.Add(seedName))
                             requiredWork.Enqueue(seedName);
                     }
                     while (requiredWork.Count > 0)
@@ -1456,6 +1456,10 @@ namespace ClarionCodeGraph.Graph
             public string File;
             public int Line;
             public bool Conditional;
+            // True once a parsed SOURCE file (a seed of the walk) INCLUDEs the name outside a conditional block. Kept
+            // apart from Conditional, which INCLUDEs inside the walked .inc files also clear: an unconditional INCLUDE
+            // inside an .inc that is itself only reached conditionally does not make the name a required seed.
+            public bool SeedUnconditional;
         }
 
         /// <summary>Remember an include symbol as a Pass 2b seed, and where it came from.</summary>
@@ -1470,6 +1474,7 @@ namespace ClarionCodeGraph.Graph
             }
             set.Add(sym.Name);
             NoteIncludeOrigin(origins, projectId, sym, sym.Conditional);
+            if (!sym.Conditional) origins[projectId][sym.Name].SeedUnconditional = true;
         }
 
         private static void NoteIncludeOrigin(Dictionary<int, Dictionary<string, IncludeOrigin>> origins,
