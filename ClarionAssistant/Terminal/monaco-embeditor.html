@@ -4911,16 +4911,26 @@
     // Host-driven navigation (debugger / breakpoint-list click): reveal + position an ALREADY-open editor.
     // Gated on `ready` — a nav that arrives before Monaco finishes loading is parked and flushed on ready,
     // so the first click after opening a cold file still lands. 1-based line/column (Monaco-native).
+    // H1-b: a hover link's navigation starts at the HOVERED position, not the caret. msg.from carries it for a
+    // link revealed in place (the CA Embeditor's own document); for the CA Editor's link to its own file the
+    // host answers openLocation with a plain revealLine, which picks up pendingHoverOrigin (set by the link
+    // opener) when it lands on the clicked line within HOVER_ORIGIN_TTL_MS. Consumed once either way.
+    var pendingHoverOrigin = null;   // {from: {line, column}, line, at}
     function revealLineFromHost(msg) {
         if (!ready) { pendingReveal = msg; return; }
         var ln = parseInt(msg && msg.line, 10);
         if (!ln || ln < 1) return;
         var col = Math.max(1, parseInt(msg && msg.column, 10) || 1);
         var ed = activeEd();
+        var from = msg && msg.from;
+        var po = pendingHoverOrigin;
+        pendingHoverOrigin = null;
+        if (!from && po && po.line === ln && Date.now() - po.at <= HOVER_ORIGIN_TTL_MS) from = po.from;
         ln = clampLine(ln);
         // Host-driven jump (debugger / breakpoint list / search results) = explicit navigation:
         // record origin + target (pinned) so Back retraces it. See recordNavAt.
-        var p = ed.getPosition();
+        var p = from ? { lineNumber: clampLine(parseInt(from.line, 10) || 1), column: Math.max(1, parseInt(from.column, 10) || 1) }
+                     : ed.getPosition();
         if (p) recordNavAt(p.lineNumber, p.column);
         ed.setPosition({ lineNumber: ln, column: col });
         ed.revealLineInCenter(ln);
@@ -6111,6 +6121,64 @@
         return prepareSelfLinks(prepareAttributeLinks(markdown, model, position));
     }
 
+    // ---- H1-b: Back from a hover link returns to the HOVERED position, not the caret ----
+    // A hover is shown for the mouse position, which is usually NOT the caret: hover "DO PrepareProcedure"
+    // with the caret elsewhere, click the card's "line N" link, and Back must return to the DO line. So the
+    // hover providers remember the position each card was produced for (the hover's anchor), and a link
+    // click uses it as the history "from" when the clicked link is one of THAT card's links: whatever card is
+    // on screen was produced for the newest hover request, and a link from any other card (or a card that
+    // never came from these providers) falls back to the caret, as before. Monaco asks both providers for
+    // the same position in one go, so requests at one position in the same tick are ONE request (reqId).
+    // Ctrl+Click / F12 do not come through here: they start at the caret, which is where they were invoked.
+    var hoverRequestAt = null;      // {id, model, line, column}: the newest position Monaco asked a hover for
+    var hoverAnchor = null;         // {id, model, line, column, cards: [markdown]}: the cards produced for it
+    var _hoverReqSeq = 0, _hoverReqOpen = false;
+    var HOVER_LINK_HREF_RX = /\]\((file:[^)\s?#]*)(?:\?[^)\s#]*)?#L?(\d+)/g;
+    function noteHoverRequest(model, position) {
+        var rq = hoverRequestAt;
+        if (!(_hoverReqOpen && rq && rq.model === model && rq.line === position.lineNumber && rq.column === position.column)) {
+            hoverRequestAt = { id: ++_hoverReqSeq, model: model, line: position.lineNumber, column: position.column };
+            _hoverReqOpen = true;
+            Promise.resolve().then(function () { _hoverReqOpen = false; });
+        }
+        return hoverRequestAt.id;
+    }
+    // A provider's answer for request reqId: a card for the NEWEST request becomes (part of) the anchor.
+    function noteHoverCard(reqId, hover) {
+        var v = hover && hover.contents && hover.contents[0] && hover.contents[0].value;
+        var rq = hoverRequestAt;
+        if (v == null || !rq || rq.id !== reqId) return hover;
+        if (!hoverAnchor || hoverAnchor.id !== reqId)
+            hoverAnchor = { id: reqId, model: rq.model, line: rq.line, column: rq.column, cards: [] };
+        hoverAnchor.cards.push(String(v));
+        return hover;
+    }
+    // The history "from" for a click on uri inside a hover card: the hover's anchor, or null (use the caret).
+    function hoverLinkOrigin(uri) {
+        var a = hoverAnchor;
+        if (!a || !uri) return null;
+        var ed = activeEd();
+        if (ed && ed.getModel && ed.getModel() !== a.model) return null;
+        var want = normLinkPath(uri.fsPath || uri.path);
+        var wm = /^L?(\d+)/.exec(uri.fragment || '');
+        var wantLine = wm ? wm[1] : '';
+        for (var i = 0; i < a.cards.length; i++) {
+            var m, rx = new RegExp(HOVER_LINK_HREF_RX.source, 'g');
+            while ((m = rx.exec(a.cards[i])) !== null) {
+                if (m[2] === wantLine && normLinkPath(linkHrefPath(m[1])) === want) return { line: a.line, column: a.column };
+            }
+        }
+        return null;
+    }
+    // The CA Editor (file mode): a link to this same file goes to the host (openLocation), which positions
+    // this editor with a revealLine. That reveal takes the hover's anchor as its "from" (see
+    // revealLineFromHost) when it lands on the clicked line within HOVER_ORIGIN_TTL_MS.
+    var HOVER_ORIGIN_TTL_MS = 5000;
+    function isCurrentFileUri(uri) {
+        return fileMode && !!currentFilePath && typeof currentFilePath === 'string' && uri && uri.scheme === 'file' &&
+            !uri.authority && normLinkPath(uri.fsPath || uri.path) === normLinkPath(currentFilePath);
+    }
+
     // ---- Attribute edit links on a control card (click a chip to add/remove an attribute) ----
     // The language server puts them there because LspClient announces
     // capabilities.experimental.clarionAttributeEditLinks. A control card hovered on its declaration
@@ -6552,6 +6620,7 @@
         // decided only once the local answer is in (see sharedLocalHover).
         monaco.languages.registerHoverProvider('clarion', {
             provideHover: function (model, position) {
+                var hoverReq = noteHoverRequest(model, position);   // H1-b: the card's anchor
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
                 return sharedLocalHover(model, position)
                     .then(function (local) {
@@ -6559,6 +6628,7 @@
                         if (local.fallback) return null;   // the LSP provider shows it if the server has nothing
                         return { contents: [{ value: markDiskSelfLinks(local.contents) }] };
                     })
+                    .then(function (h) { return noteHoverCard(hoverReq, h); })
                     .catch(function () { return null; });
             }
         });
@@ -6568,6 +6638,7 @@
                 // keyword-looking word like 'End' in a '! ...' comment must be ignored. position.column
                 // is 1-based, so pass column-1 as the 0-based index. Guarding here (not host-side) avoids
                 // a wasted round-trip and needs no C# change. (task 37e2079f)
+                var hoverReq = noteHoverRequest(model, position);   // H1-b: the card's anchor
                 if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return null;
                 // GH #250: the fallback deadline runs from the hover's start, so the local answer and an idle-sync
                 // wait while typing both count against it.
@@ -6589,6 +6660,7 @@
                                 return { contents: [{ value: prepareServerCard(resp.contents, model, position) }] };
                             });
                     })
+                    .then(function (h) { return noteHoverCard(hoverReq, h); })
                     .catch(function () { return null; });
             }
         });
@@ -6611,15 +6683,23 @@
                 }
                 // H1-a: a link to the CA Embeditor's own document is a line of THIS text (see prepareSelfLinks):
                 // reveal it here, caret on it, and never open the .clw (whose line it is not).
+                // H1-b: Back history starts at the HOVERED position (the card's anchor), not the caret.
                 if (isEmbedSelfUri(uri)) {
                     var sm = /^L?(\d+)/.exec(uri.fragment || '');
-                    revealLineFromHost({ line: sm ? (parseInt(sm[1], 10) || 1) : 1, column: 1 });
+                    revealLineFromHost({ line: sm ? (parseInt(sm[1], 10) || 1) : 1, column: 1, from: hoverLinkOrigin(uri) });
                     return true;
                 }
                 // Hover footers only ever emit a bare #L<line> (see HoverFormatter.locationLink on the
                 // language-server side) — no column — matching what the host's navigation (EditorService.
                 // NavigateToFileAndLine, same as the open_file MCP tool) accepts.
                 var m = /^L?(\d+)/.exec(uri.fragment || '');
+                // H1-b: the CA Editor's link to its own file comes back as a revealLine from the host; that
+                // reveal records the hover's anchor as its "from" (see revealLineFromHost).
+                pendingHoverOrigin = null;
+                if (isCurrentFileUri(uri)) {
+                    var hfrom = hoverLinkOrigin(uri);
+                    if (hfrom) pendingHoverOrigin = { from: hfrom, line: m ? (parseInt(m[1], 10) || 1) : 1, at: Date.now() };
+                }
                 postToHost({
                     action: 'openLocation',
                     path: uri.fsPath,
