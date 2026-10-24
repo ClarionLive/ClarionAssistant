@@ -130,8 +130,29 @@ In the CA Editor and CA Embeditor, completion keeps the language server's answer
 - **A kept list with nothing for what you typed is not reused.** It asks the server again, at most once every half second, so typing a name the server does not know does not flood it.
 - **CodeGraph name lookups use the index.** The hover and Ctrl+Click fallbacks that look a symbol up by name compared `LOWER(name)`, which the case-insensitive index cannot serve, so each lookup read the whole symbol table. They now compare `COLLATE NOCASE` and get the same rows. On a 463,000-symbol database a lookup went from about 130 ms to under 0.1 ms.
 
+<!-- release-docs: covered=lsp,lsp-pin,hover,completion -->
+### The bundled language server is now v1.0.9, and attribute chips reach WINDOW headers and FILE declarations, by msarson and geircodes ([#281](https://github.com/ClarionLive/ClarionAssistant/issues/281))
+
+Re-pinned from v1.0.8 to [msarson/Clarion-Extension 1.0.9](https://github.com/msarson/Clarion-Extension/blob/master/CHANGELOG.md), released 2026-10-24. Its fifty changes reach the CA Editor and CA Embeditor, apart from five that only concern VS Code's solution opening and settings. Among them:
+
+- **Hover cards** for controls, WINDOW / APPLICATION / REPORT headers and FILE, KEY, INDEX, MEMO and BLOB declarations list the attributes they set and flag the ones the compiler rejects. IF, LOOP, CASE, EXECUTE, BEGIN and ACCEPT show what closes them, and a parameter's data type has a card.
+- **Completion** after a comma on a control or a header offers only the attributes it accepts. An attribute that takes a value, such as `TIP` or `FONT`, is inserted with its brackets and the value selected; Tab moves to the next value.
+- **Diagnostics** flag attributes a declaration does not accept, using compiler-checked lists, and drop false "discarded return value" and "indistinguishable overload" warnings.
+- **Includes resolve in more solutions**: redirection files named by full path, quoted paths, masks such as `rf*.inc`, and `SELF.InterfaceName`.
+
+What changed in Clarion Assistant for it:
+
+- **The attribute chips use the link form 1.0.9 sends.** The chips added in 6.1 ([#263](https://github.com/ClarionLive/ClarionAssistant/issues/263)) were built against a draft link form, and 1.0.9 sends the form that was agreed for [msarson/Clarion-Extension#731](https://github.com/msarson/Clarion-Extension/issues/731). Without this update the chips would have disappeared after the re-pin. They now appear on controls, on WINDOW, APPLICATION and REPORT headers, and on FILE, KEY, INDEX, MEMO and BLOB declarations. An attribute that takes a value (TIP, AT, MSG, OWNER...) is a chip too: clicking it inserts the attribute with its value selected, ready to type over. The safety checks are unchanged. An edit applies only if the lines still match the card, it is one undo step, and the card refreshes. Read-only files, text outside an embed point and the generated modules of an open app show plain names instead of chips.
+- **`lsp_debug_status` names the running server** (`serverVersion: "1.0.9"`, with its build date). Deploy and the installer now copy the server's `package.json` next to it, which is where it reads its version from.
+
+#### Upgrade notes
+
+- **The first start after updating is slower once.** 1.0.9 changed the stamp on its saved resolution caches, so the first start rebuilds them. After that they are warm again.
+
 ### Thanks
 
+- **[@msarson](https://github.com/msarson)** &mdash; [#281](https://github.com/ClarionLive/ClarionAssistant/issues/281): language server 1.0.9, the spec for the new attribute-edit links, and the reference client they were checked against.
+- **[@geircodes](https://github.com/geircodes)** &mdash; the attribute cards for WINDOW, APPLICATION and REPORT headers and for FILE declarations in 1.0.9 ([msarson/Clarion-Extension#745](https://github.com/msarson/Clarion-Extension/pull/745), [#746](https://github.com/msarson/Clarion-Extension/issues/746)), and the link form agreed with Mark in [#731](https://github.com/msarson/Clarion-Extension/issues/731).
 - **[@geircodes](https://github.com/geircodes)** &mdash; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280): the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
 

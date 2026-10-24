@@ -868,6 +868,22 @@ foreach ($ver in $TargetVersions) {
                 Write-Host "  SKIP  lsp-server (ClarionLSP build output not found)" -ForegroundColor DarkGray
             }
 
+            # The server's own package.json, metadata only (GH #281). The server answers
+            # clarion/getServerVersion from the package.json three levels above out\server\src\server.js,
+            # i.e. lsp-server\package.json; without it the version reads "unknown" and lsp_debug_status
+            # cannot say which server runs. It has no "type" field, so node still loads server.js as CommonJS.
+            if (Test-Path "$LspSourceDir\package.json") {
+                try {
+                    New-Item -Path $LspDestDir -ItemType Directory -Force | Out-Null
+                    Copy-Item "$LspSourceDir\package.json" (Join-Path $LspDestDir "package.json") -Force
+                    Write-Host "  OK    lsp-server\package.json" -ForegroundColor Green
+                    $copied++
+                } catch {
+                    Write-Host "  FAIL  lsp-server\package.json - $($_.Exception.Message)" -ForegroundColor Red
+                    $failed++
+                }
+            }
+
             # Copy bundled node.exe (so end users don't need Node.js installed).
             # Resolve portably (GitHub #30): explicit $env:CLARIONLSP_NODE, else node on PATH,
             # else the legacy default install location.
