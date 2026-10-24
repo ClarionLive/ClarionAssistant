@@ -769,10 +769,17 @@
        Monaco puts under a problem hover (View Problem / Quick Fix) — its background, a rule above it,
        12px text on a 22px line, the links 16px apart. Monaco renders every entry of one hover result as a
        .markdown-hover in the same row, and the page's cards are a single entry, so the last of two or
-       more is always a footer. */
+       more is always a footer.
+       Sticky (geircodes, GH #270 follow-up): a tall card (a routine card with the first lines of its
+       body) is taller than the hover, and the bar sits inside the same scroll area, so without this it
+       shows only once scrolled to the end. Sticky to the bottom, the card scrolls behind it. A short card
+       looks the same either way. */
     .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child {
         background-color: var(--vscode-editorHoverWidget-statusBarBackground);
         border-top: 1px solid var(--vscode-editorHoverWidget-border);
+        position: sticky;
+        bottom: 0;
+        z-index: 1;
     }
     .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child > .hover-contents {
         padding-top: 0;
@@ -6177,13 +6184,16 @@
         return hoverRequestAt.id;
     }
     // A provider's answer for request reqId: a card for the NEWEST request becomes (part of) the anchor.
+    // Every entry of the answer counts: the card AND its footer row (GH #270), where the card's location
+    // links now sit.
     function noteHoverCard(reqId, hover) {
-        var v = hover && hover.contents && hover.contents[0] && hover.contents[0].value;
+        var list = hover && hover.contents, vals = [];
+        if (list && list.length) for (var i = 0; i < list.length; i++) if (list[i] && list[i].value != null) vals.push(String(list[i].value));
         var rq = hoverRequestAt;
-        if (v == null || !rq || rq.id !== reqId) return hover;
+        if (!vals.length || !rq || rq.id !== reqId) return hover;
         if (!hoverAnchor || hoverAnchor.id !== reqId)
             hoverAnchor = { id: reqId, model: rq.model, line: rq.line, column: rq.column, cards: [] };
-        hoverAnchor.cards.push(String(v));
+        hoverAnchor.cards.push(vals.join('\n'));
         return hover;
     }
     // The history "from" for a click on uri inside a hover card: the hover's anchor, or null (use the caret).
@@ -6546,16 +6556,30 @@
     //     Structure Designer command (Ctrl+D by default) run on the hovered line, offered only where that
     //     command would run. It designs the WINDOW or REPORT around the line, whichever control it is on.
     var STRUCTURE_DESIGNER_COMMAND = 'clarion.openStructureDesigner';
-    var LOCATION_LINK_SRC = '\\[[^\\]\\r\\n]+\\]\\(file:\\/\\/[^)\\s]*#L\\d+\\)';
-    var LOCATION_LINE_RX = new RegExp('^\\s*(?:📍\\s*)?' + LOCATION_LINK_SRC + '(?:\\s*→\\s*' + LOCATION_LINK_SRC + ')*\\s*$');
-    // The server's control card lists the control's attributes; its WINDOW/REPORT header card opens with
-    // "**Label WINDOW**".
-    var CONTROL_CARD_RX = /^\*\*(?:Attributes|Available|With value):\*\*/m;
+    // A label may hold escaped characters ([Foo\_Bar.clw:3]); the link may carry a "title" (H1-a keeps it),
+    // and a ?ondisk query (H1-a, a line of the module on disk) before its #L<line>.
+    var LOCATION_LINK_SRC = '\\[(?:\\\\.|[^\\]\\\\\\r\\n])+\\]\\(file:\\/\\/[^)\\s#]*#L\\d+(?:\\s+"[^"\\r\\n]*")?\\)';
+    var LOCATION_LINE_RX = new RegExp('^\\s*(?:📍\\s*)?' + LOCATION_LINK_SRC + '(?:\\s*(?:→\\s*)?' + LOCATION_LINK_SRC + ')*\\s*$');
+    // A WINDOW/REPORT header card opens with "**Label WINDOW**". A control card opens with the bare control
+    // keyword ("**BUTTON** — Declares a pushbutton...", no label) AND lists the control's attributes
+    // (**Attributes:** / **Available:** / **With value:**, v1.0.9, on the control's own declaration). The
+    // attribute sections alone are not enough: the FILE, KEY, MEMO and APPLICATION cards list them too
+    // ("**Customer FILE** — ..."), and the designer lookup takes only a WINDOW or REPORT.
+    var CONTROL_ATTRS_RX = /^\*\*(?:Attributes|Available|With value):\*\*/m;
+    var CONTROL_HEAD_RX = /^\*\*(BOX|BUTTON|CHECK|COMBO|CUSTOM|ELLIPSE|ENTRY|GROUP|IMAGE|ITEM|LINE|LIST|MENU|MENUBAR|OLE|OPTION|PANEL|PROGRESS|PROMPT|RADIO|REGION|SHEET|SLIDER|SPIN|STRING|TAB|TEXT|TOOLBAR|DETAIL|HEADER|FOOTER|FORM|BREAK)\*\*(?:\s|$)/;
     var STRUCTURE_HEADER_CARD_RX = /^\*\*[A-Za-z_][\w:]* (?:WINDOW|REPORT)\*\*/;
     var designerCardTarget = null;   // { model, line, column } — where the card last offering the designer was hovered
 
+    // Is this the server's control card or a WINDOW/REPORT header card (the cards that offer the designer)?
+    function isDesignerCard(md) {
+        md = String(md || '');
+        return STRUCTURE_HEADER_CARD_RX.test(md) || (CONTROL_HEAD_RX.test(md) && CONTROL_ATTRS_RX.test(md));
+    }
+
     // A hover's content list: the card (a markdown string or a content object), then the footer row when
-    // there is anything to put in it.
+    // there is anything to put in it. The card arrives already prepared (H1-a's "line N" / ?ondisk links,
+    // #281's chip trust): the links move into the footer as they are, so the link opener and the H1-b
+    // anchor (noteHoverCard records every entry) see the same hrefs.
     function hoverContentsWithFooter(card, model, position) {
         var content = typeof card === 'string' ? { value: card } : (card || { value: '' });
         var lines = String(content.value || '').split('\n'), kept = [], parts = [], inFence = false;
@@ -6564,6 +6588,9 @@
             if (!inFence && LOCATION_LINE_RX.test(lines[i])) parts.push(lines[i].trim().replace(/^📍\s*/, ''));
             else kept.push(lines[i]);
         }
+        // A card that is nothing but its links keeps them: Monaco skips an empty entry, so the footer would
+        // be the row's only entry and draw as a card anyway.
+        if (parts.length && !/\S/.test(kept.join(''))) { kept = lines; parts = []; }
         var designer = designerActionFor(content.value, model, position);
         if (designer) parts.push(designer);
         if (!parts.length) return [content];
@@ -6579,7 +6606,7 @@
     function designerActionFor(md, model, position) {
         md = String(md || '');
         if (!model || !position) return '';
-        if (!STRUCTURE_HEADER_CARD_RX.test(md) && !CONTROL_CARD_RX.test(md)) return '';
+        if (!isDesignerCard(md)) return '';
         if ((fileMode && !designerEnabled) || designerSession) return '';
         var key = '';
         try { var entry = keyEntryById('structureDesigner'); key = (entry && effectiveChord(entry)) || ''; } catch (e) { key = ''; }
@@ -6589,7 +6616,9 @@
     }
 
     // The footer's designer action was clicked: put the cursor where the card was hovered and run the
-    // Structure Designer command, as its key would there. Returns true when it ran the command.
+    // Structure Designer command, as its key would there: the key table's own entry (EDITOR_COMMANDS,
+    // whose run the key dispatcher calls), so the click and the key are one code path. Returns true when
+    // it ran the command.
     function openDesignerFromCard() {
         var t = designerCardTarget;
         try {
@@ -6599,7 +6628,8 @@
             hideHoverCard(ed);
             ed.setPosition({ lineNumber: t.line, column: t.column });
             ed.focus();
-            cmdStructureDesigner();
+            var entry = keyEntryById('structureDesigner');
+            if (entry && typeof entry.run === 'function') entry.run(); else cmdStructureDesigner();
             return true;
         } catch (e) { return false; }
     }

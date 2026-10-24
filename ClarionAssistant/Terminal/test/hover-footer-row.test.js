@@ -202,7 +202,94 @@ async function main() {
         check('fallback path: the server card gets the footer', out && out.contents.length === 2 && /Open Structure Designer/.test(out.contents[1].value), JSON.stringify(out));
     }
 
+    // ---- integration on top of the patch (GH #270) ----
+    section('cards that list attributes but are not designed: FILE, KEY, MEMO, APPLICATION');
+    {
+        const chip = '[PRE](command:clarion.applyAttributeEdit?%5B%5D "Remove PRE")';
+        for (const [what, md] of [
+            ['a FILE card', '**Customer FILE** — Declares a data file\n\n**Attributes:** `DRIVER` ' + chip],
+            ['a KEY card', '**KeyId KEY** — Declares a key\n\n**Attributes:** [NOCASE](command:clarion.applyAttributeEdit?%5B%5D "Remove NOCASE")'],
+            ['a MEMO card', '**Notes MEMO** — Declares a variable-length text field\n\n**Available:** [BINARY](command:clarion.applyAttributeEdit?%5B%5D "Add BINARY")'],
+            ['an APPLICATION header card with chips', '**Main APPLICATION**\n\n**Attributes:** [MDI](command:clarion.applyAttributeEdit?%5B%5D "Remove MDI")'],
+            ['a keyword card that names a control but lists no attributes', '**BUTTON** — Declares a pushbutton control'],
+        ]) {
+            const e = load({ lines: LINES }); rig(e);
+            const c = await lspHover(e, md);
+            check(what + ': no designer action', c && c.length === 1, JSON.stringify(c));
+        }
+    }
+
+    section('link shapes the footer takes, and the one it leaves');
+    {
+        const titled = '[Main.clw:233](file:///d%3A/src/Main.clw#L233 "Go to the declaration")';
+        let c = await lspHover(load({ lines: LINES }), '**MyVar** — `LONG`\n\n' + titled);
+        check('a link with a "title" moves', c && c.length === 2 && c[1].value === titled, JSON.stringify(c));
+        const esc = '[My\\_Mod.clw:7](file:///d%3A/src/My_Mod.clw#L7)';
+        c = await lspHover(load({ lines: LINES }), '**X**\n\n' + esc);
+        check('a label with an escaped character moves', c && c.length === 2 && c[1].value === esc, JSON.stringify(c));
+        c = await lspHover(load({ lines: LINES }), LINK);
+        check('a card that is nothing but its link keeps it (one entry: Monaco would skip an empty card)', c && c.length === 1 && c[0].value === LINK, JSON.stringify(c));
+    }
+
+    section('the footer row is sticky: a tall card scrolls behind it (geircodes, #270 follow-up)');
+    {
+        const html = require('fs').readFileSync(process.argv[2] || require('path').join(__dirname, '..', 'monaco-embeditor.html'), 'utf8');
+        const m = /\.monaco-editor \.monaco-hover \.hover-row-contents > \.markdown-hover:not\(:first-child\):last-child \{([^}]*)\}/.exec(html);
+        const rule = m ? m[1] : '';
+        check('the footer rule draws the status-bar background under a rule',
+            /background-color:\s*var\(--vscode-editorHoverWidget-statusBarBackground\)/.test(rule) && /border-top:\s*1px solid var\(--vscode-editorHoverWidget-border\)/.test(rule), rule);
+        check('...and is position: sticky; bottom: 0, above the card (z-index)',
+            /position:\s*sticky/.test(rule) && /bottom:\s*0/.test(rule) && /z-index:\s*[1-9]/.test(rule), rule);
+    }
+
+    section('the label and the click follow the REAL key table (EDITOR_COMMANDS + KEY_PROFILES)');
+    {
+        const km = loadKeymap();
+        check('the key section loads', !!km.api, km.error);
+        if (km.api) {
+            const run = (e) => { e.keyEntryById = km.api.keyEntryById; e.effectiveChord = km.api.effectiveChord; };
+            for (const [profile, key] of [['clarion', 'Ctrl+D'], ['vscode', 'Ctrl+Shift+D'], ['vs', 'Ctrl+Shift+D'], ['npp', 'Ctrl+Shift+D']]) {
+                km.api.setKeyProfile(profile);
+                const e = load({ lines: LINES }); rig(e); run(e);
+                const c = await lspHover(e, CONTROL_CARD);
+                check(profile + ' profile: "Open Structure Designer (' + key + ')"', c && c.length === 2 && c[1].value.indexOf('[Open Structure Designer (' + key + ')](') === 0, c && c[1] && c[1].value);
+                check(profile + ' profile: that key dispatches the same command entry', km.api.chordMap()[key] === km.api.keyEntryById('structureDesigner'));
+            }
+            km.api.setKeyProfile('vscode');
+            const e = load({ lines: LINES }); const log = rig(e); run(e);
+            await lspHover(e, CONTROL_CARD);
+            const before = km.calls.structureDesigner;
+            click(e);
+            check('the click runs the key table entry\'s own run (what the key runs), once', km.calls.structureDesigner === before + 1 && log.designer === 0,
+                'entry runs ' + (km.calls.structureDesigner - before) + ', direct cmdStructureDesigner ' + log.designer);
+            km.api.setKeyProfile('clarion');
+        }
+    }
+
     finish();
+}
+
+// The page's key command section (EDITOR_COMMANDS, KEY_PROFILES, chord resolution), sliced out as
+// keymap-profiles.test.js does; every run: function is a stub that counts its calls.
+function loadKeymap() {
+    const fs = require('fs'), path = require('path');
+    const html = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', 'monaco-embeditor.html'), 'utf8');
+    const cut = (a, b) => { const i = html.indexOf(a); const j = html.indexOf(b, i); if (i < 0 || j < 0) throw new Error('slice ' + a); return html.slice(i, j); };
+    const calls = { structureDesigner: 0 };
+    try {
+        const commandsSrc = cut('    var keyBindings = {};', '    // Map a keydown to a canonical chord');
+        const formatSrc = cut('    function registerFormatAction(ed) {', '    // ----- Debugger "Run to Cursor"');
+        const names = new Set(['navEmbed', 'openSnippetPicker']);
+        const re = /run:\s*([A-Za-z_$][\w$]*)/g; let m;
+        while ((m = re.exec(commandsSrc))) if (m[1] !== 'function') names.add(m[1]);
+        const list = Array.from(names);
+        const stubs = list.map(n => n === 'cmdStructureDesigner' ? function () { calls.structureDesigner++; } : function () { });
+        const api = new Function(...list, 'document', commandsSrc + '\n' + formatSrc +
+            '\nreturn { keyEntryById: keyEntryById, effectiveChord: effectiveChord, setKeyProfile: setKeyProfile, chordMap: function () { return chordToCmd; } };')(
+            ...stubs, { querySelectorAll: () => [] });
+        api.setKeyProfile('clarion');
+        return { api, calls };
+    } catch (err) { return { api: null, error: String(err && err.stack || err), calls }; }
 }
 
 main().catch(err => { console.log('HARNESS ERROR: ' + (err && err.stack || err)); process.exit(1); });
