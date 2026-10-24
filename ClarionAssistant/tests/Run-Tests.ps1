@@ -122,6 +122,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeMdDeployer.Test.cs", "Services\ClaudeMdDeployer.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # GH #214: one --plugin-dir resolver - shared marketplace, active profile (CLAUDE_CONFIG_DIR), newest
+            # cached version (not "1.0.0", ticket 7c36dd75). Gets the project dir to check all three callers use it.
+            @{ Name = "ClaudePluginLocator.Test"
+               Sources = @("tests\ClaudePluginLocator.Test.cs", "Services\ClaudePluginLocator.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             # 6a4b4d71: closing a tab that was not the active one never repainted the custom-painted strip,
             # so the closed tab stayed drawn and the other tabs' X buttons seemed dead until a refresh.
             @{ Name = "TabManager.Close.Test"

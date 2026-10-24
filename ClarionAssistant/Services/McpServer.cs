@@ -665,20 +665,13 @@ namespace ClarionAssistant.Services
         /// what would make the change look correct, test clean, and only misbehave the day a second
         /// plugin is added. Flagged by Alice, who owns the MultiTerminal side (ticket c9285d2a).
         /// </summary>
+        ///
+        /// GH #214: resolved by ClaudePluginLocator, which keeps both rules above (manifest gate, the
+        /// plugin folder itself) and adds a shared marketplace root beside Clarion Assistant's, the
+        /// active profile (CLAUDE_CONFIG_DIR), and the newest cached version.
         public static string GetMultiTerminalPluginPath()
         {
-            try
-            {
-                string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                if (string.IsNullOrEmpty(userProfile)) return null;
-
-                string pluginRoot = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
-                    "multiterminal-marketplace", "plugins", "multiterminal");
-                if (File.Exists(Path.Combine(pluginRoot, ".claude-plugin", "plugin.json")))
-                    return pluginRoot;
-            }
-            catch { }
-            return null;
+            return ClaudePluginLocator.FindMultiTerminalPlugin();
         }
 
         public string WriteMcpConfigFile()

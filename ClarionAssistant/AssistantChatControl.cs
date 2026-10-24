@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -5057,19 +5057,12 @@ namespace ClarionAssistant
             return null;
         }
 
+        // GH #214: shared marketplace, then the active profile, then the newest cached version.
         private static string GetClarionAssistantPluginPath()
         {
-            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            string marketplacePath = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
-                "clarionassistant-marketplace", "plugins", "clarion-assistant");
-            if (Directory.Exists(marketplacePath))
-                return marketplacePath;
-            string cachePath = Path.Combine(userProfile, ".claude", "plugins", "cache",
-                "clarionassistant-marketplace", "clarion-assistant", "1.0.0");
-            if (Directory.Exists(cachePath))
-                return cachePath;
-            return null;
+            return ClaudePluginLocator.FindClarionAssistantPlugin();
         }
+
 
         private void UpdateStatus(string text)
         {
