@@ -50,9 +50,29 @@ claude plugin install clarion-assistant@clarionassistant-marketplace --scope use
 Claude Code git-clones the marketplace to
 `%USERPROFILE%\.claude\plugins\marketplaces\clarionassistant-marketplace\plugins\clarion-assistant`
 — the exact path the ClarionAssistant runtime reads
-(`AssistantChatControl.cs`, `ClaudeProcessManager.cs`). So GitHub-sourced install
+(`Services\ClaudePluginLocator.cs`). So GitHub-sourced install
 lands in the same place the old bundled copy did, just as a real git-backed,
 updatable marketplace.
+
+### Shared plugin location (GH #214)
+
+Setup's **Plugin Location** page can instead keep ONE clone outside every Claude
+profile (default
+`%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace`).
+`configure.ps1 -InstallPlugin -PluginLocation Shared -SharedPluginPath <folder>`
+clones (or fast-forwards) it there, records it in
+`HKCU\Software\ClarionAssistant\PluginMarketplacePath`, and for each Claude profile
+(`%USERPROFILE%\.claude`, `%USERPROFILE%\.claude-*`, `CLAUDE_CONFIG_DIR`, `-ProfileDirs`)
+runs, with `CLAUDE_CONFIG_DIR` set to that profile (unset for the default one):
+
+```
+claude plugin marketplace add <folder>
+claude plugin install clarion-assistant@clarionassistant-marketplace --scope user
+```
+
+The runtime lookup (`Services\ClaudePluginLocator.cs`) tries that folder first, then
+the active profile's marketplace and newest cached version. With a shared folder set,
+`installer\sync-marketplace-to-profile.ps1` mirrors into it instead of the profile.
 
 ### Why GitHub-sourced (vs the old bundled copy)
 

@@ -130,9 +130,21 @@ In the CA Editor and CA Embeditor, completion keeps the language server's answer
 - **A kept list with nothing for what you typed is not reused.** It asks the server again, at most once every half second, so typing a name the server does not know does not flood it.
 - **CodeGraph name lookups use the index.** The hover and Ctrl+Click fallbacks that look a symbol up by name compared `LOWER(name)`, which the case-insensitive index cannot serve, so each lookup read the whole symbol table. They now compare `COLLATE NOCASE` and get the same rows. On a 463,000-symbol database a lookup went from about 130 ms to under 0.1 ms.
 
+<!-- release-docs: covered=installer,plugin -->
+### One copy of the Claude Code plugin for every Claude profile, by Mike Hanson ([#214](https://github.com/ClarionLive/ClarionAssistant/issues/214))
+
+If you keep more than one Claude Code profile (`CLAUDE_CONFIG_DIR`, e.g. `%USERPROFILE%\.claude-work`), the installer used to put the clarion-assistant plugin in `%USERPROFILE%\.claude` only. The installer now has a **Plugin Location** page:
+
+- **Default Claude profile** works as before, and stays the default.
+- **Shared folder** (suggested: `%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace`) clones the marketplace there **once**, outside every profile. Setup then registers that folder as a local marketplace in `%USERPROFILE%\.claude`, in every `%USERPROFILE%\.claude-*` profile it finds (one with a `settings.json` or `plugins` folder), in `CLAUDE_CONFIG_DIR`, and in any other profile folders you list. Plain `claude` sessions in those profiles load the plugin too. Updating the shared folder (re-running setup, or `git pull` in it) updates every profile. Uninstalling removes the registration from each of those profiles, and deletes the folder if setup created it.
+
+Clarion Assistant's own terminals find the plugin in this order: the shared folder, then the active profile (`CLAUDE_CONFIG_DIR`, else `%USERPROFILE%\.claude`), then `%USERPROFILE%\.claude`. In each profile it looks at the marketplace first and then the plugin cache. In the cache it now takes the newest installed version, rather than looking only for a `1.0.0` folder that recent plugin versions never create. The MultiTerminal plugin is looked up the same way, and is also found in a `multiterminal-marketplace` folder next to the shared one. The chosen folder is kept in `HKCU\Software\ClarionAssistant`, value `PluginMarketplacePath`. `installer\sync-marketplace-to-profile.ps1` copies to that folder when it is set.
+
+An upgrade keeps a shared install shared: the page starts on the choice you made last time, and choosing the default profile on a machine whose default profile uses the shared folder leaves the shared folder in place rather than moving the plugin back without asking.
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280): the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix.
+- **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#214](https://github.com/ClarionLive/ClarionAssistant/issues/214): the request for a shared plugin location, with the three duplicated lookups, the install paths that must not move, and the uninstall rules already worked out.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
 
 ## What's New in v6.1
@@ -304,6 +316,17 @@ In a module with nothing named `text` declared, `x LONG(text)` hovered as *Text 
 
 The IDE's MCP server listens on port 19372, the one MultiTerminal sessions and Claude Desktop are configured with. When a new Clarion started while the previous one was still shutting down and holding that port, the new server took 19373 and stayed there, so those clients could no longer connect, even after 19372 was free again, until you restarted Clarion or edited their config. Sessions the IDE launches itself were never affected. The server now retries 19372 every 10 seconds and, once it is free, answers on both ports. The status bar shows it as `MCP: port 19373 + 19372`, and the Settings dialog's external endpoint shows the stable port. Thanks to [Jesper Z. Laugesen](https://github.com/Aarhusdk) for the diagnosis and the patch.
 
+<!-- release-docs: covered=installer,plugin -->
+### One copy of the Claude Code plugin for every Claude profile, by Mike Hanson ([#214](https://github.com/ClarionLive/ClarionAssistant/issues/214))
+
+If you keep more than one Claude Code profile (`CLAUDE_CONFIG_DIR`, e.g. `%USERPROFILE%\.claude-work`), the installer used to put the clarion-assistant plugin in `%USERPROFILE%\.claude` only. The installer now has a **Plugin Location** page:
+
+- **Default Claude profile** works as before, and stays the default.
+- **Shared folder** (suggested: `%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace`) clones the marketplace there **once**, outside every profile. Setup then registers that folder as a local marketplace in `%USERPROFILE%\.claude`, in every `%USERPROFILE%\.claude-*` profile it finds (one with a `settings.json` or `plugins` folder), in `CLAUDE_CONFIG_DIR`, and in any other profile folders you list. Plain `claude` sessions in those profiles load the plugin too. Updating the shared folder (re-running setup, or `git pull` in it) updates every profile. Uninstalling removes the registration from each of those profiles, and deletes the folder if setup created it.
+
+Clarion Assistant's own terminals find the plugin in this order: the shared folder, then the active profile (`CLAUDE_CONFIG_DIR`, else `%USERPROFILE%\.claude`), then `%USERPROFILE%\.claude`. In each profile it looks at the marketplace first and then the plugin cache. In the cache it now takes the newest installed version, rather than looking only for a `1.0.0` folder that recent plugin versions never create. The MultiTerminal plugin is looked up the same way, and is also found in a `multiterminal-marketplace` folder next to the shared one. The chosen folder is kept in `HKCU\Software\ClarionAssistant`, value `PluginMarketplacePath`. `installer\sync-marketplace-to-profile.ps1` copies to that folder when it is set.
+
+An upgrade keeps a shared install shared: the page starts on the choice you made last time, and choosing the default profile on a machine whose default profile uses the shared folder leaves the shared folder in place rather than moving the plugin back without asking.
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; the clickable hover chips ([#263](https://github.com/ClarionLive/ClarionAssistant/issues/263)), the client side of his [msarson/Clarion-Extension#731](https://github.com/msarson/Clarion-Extension/issues/731) proposal; two merged PRs, [#257](https://github.com/ClarionLive/ClarionAssistant/pull/257) (hover and Ctrl+Click fallbacks scoped to the file's includes) and [#258](https://github.com/ClarionLive/ClarionAssistant/pull/258) (`ITEMIZE` members under their real names); and [#262](https://github.com/ClarionLive/ClarionAssistant/issues/262), the range tools' missing column rules.
@@ -824,6 +847,7 @@ documentation from a URL, GitHub operations, and the marketplace browser.
 
 **More than one installation of the same version?** That's supported &mdash; press the **`+`** button on that version's row and pick the extra folder. Each extra gets a copy of that row's addin once the install finishes, and the list is remembered for next time. Handy if you keep, say, two Clarion 12 trees side by side.
 
+**More than one Claude Code profile?** On the **Plugin Location** page choose **Shared folder**. Setup keeps one copy of the plugin marketplace outside every profile (by default `%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace`) and registers it in each Claude profile it finds: `%USERPROFILE%\.claude`, every `%USERPROFILE%\.claude-*` that has a `settings.json` or `plugins` folder, and `CLAUDE_CONFIG_DIR`. Profiles kept elsewhere can be listed on the same page. The default, **Default Claude profile**, installs into `%USERPROFILE%\.claude` as before. Setup needs `git` for the shared folder; without it, or offline, it installs into the default profile instead and says so.
 > One trap worth knowing: never leave a spare or backup copy of the addin folder anywhere *inside* an `accessory\addins` tree. Clarion scans subfolders, and a duplicate makes startup fail with *"Identity name used by multiple addins."* Keep backups outside.
 
 ### What Gets Installed
@@ -834,7 +858,7 @@ documentation from a URL, GitHub operations, and the marketplace browser.
 | COM for Clarion addin | `{Clarion}\accessory\addins\ComForClarion\` | COM browser addin |
 | UltimateCOM template | `{Clarion}\accessory\template\win\` | .tpl, .inc, .clw, and template DLLs |
 | Documentation | `{Clarion}\accessory\resources\ComForClarionDocumentation\` | COM for Clarion docs |
-| Claude Code plugin | `%USERPROFILE%\.claude\plugins\...\clarion-assistant\` | 25 Clarion skills, a session viewer, hooks, and docs |
+| Claude Code plugin | `%USERPROFILE%\.claude\plugins\...\clarion-assistant\`, or the shared folder you chose (see below) | 25 Clarion skills, a session viewer, hooks, and docs |
 | Code quality agents | `%USERPROFILE%\.claude\agents\` | 6 agents (won't overwrite existing) |
 | ClarionCOM tooling | `%APPDATA%\ClarionCOM\` | Project templates and scripts |
 | DocGraph database | `%APPDATA%\ClarionAssistant\` | Pre-loaded Clarion 12 documentation index |

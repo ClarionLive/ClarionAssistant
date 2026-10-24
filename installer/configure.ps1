@@ -8,10 +8,279 @@ param(
     # `runasoriginaluser` flag, so plugin install runs as the ORIGINAL (non-elevated)
     # user -- landing in THEIR profile (where ClarionAssistant reads), not the elevated
     # admin's, and never exec'ing a user-writable CLI from the elevated installer.
-    [switch]$InstallPlugin
+    [switch]$InstallPlugin,
+
+    # GH #214 "Plugin location". 'Profile' (the default) = the behaviour above: Claude Code clones the
+    # GitHub marketplace into %USERPROFILE%\.claude. 'Shared' = clone it ONCE into -SharedPluginPath,
+    # outside every Claude profile, and register that folder as a local marketplace in each profile.
+    [ValidateSet('Profile', 'Shared')]
+    [string]$PluginLocation = 'Profile',
+    [string]$SharedPluginPath = '%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace',
+    # Extra Claude profile folders to register the shared marketplace in, ';'-separated. Added to the
+    # ones found automatically (%USERPROFILE%\.claude, %USERPROFILE%\.claude-* that hold a settings.json
+    # or plugins folder, and CLAUDE_CONFIG_DIR).
+    [string]$ProfileDirs = '',
+
+    # Uninstall: de-register the shared marketplace from every profile it was registered in, and delete
+    # the shared folder if this installer created it. Does nothing in 'Profile' mode installs.
+    [switch]$UninstallPlugin,
+
+    # Test hooks (installer\tests\Configure.SharedPluginTest.ps1). Never passed by the installer.
+    [string]$MarketplaceRepoUrl = 'https://github.com/ClarionLive/clarionassistant-marketplace.git',
+    [string]$RegistryKey = 'HKCU:\Software\ClarionAssistant'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------------------------------------------
+# GH #214: shared, profile-independent marketplace.
+#
+# WHERE THE CHOICE IS REMEMBERED: HKCU\Software\ClarionAssistant, value PluginMarketplacePath. The add-in
+# (Services\ClaudePluginLocator.cs) reads it to build --plugin-dir, so every CA-launched session uses the
+# shared copy whatever profile it runs under. HKCU because the plugin is per user, and because this step
+# runs as the ORIGINAL user (runasoriginaluser), so it lands in the hive the add-in reads - unlike the
+# elevated half of setup. Beside it: PluginMarketplaceProfiles (where it was registered, for uninstall)
+# and PluginMarketplaceCreated (1 = this installer cloned the folder, so uninstall may delete it).
+#
+# HOW OTHER PROFILES SEE IT: `claude plugin marketplace add <folder>` run with CLAUDE_CONFIG_DIR set to
+# that profile - the documented way to add a local-directory marketplace - then `claude plugin install
+# --scope user`. Plain `claude` sessions in that profile then load the plugin too. We never hand-edit a
+# profile's plugin files; Claude Code owns those.
+#
+# The DEFAULT profile is registered with CLAUDE_CONFIG_DIR REMOVED, not set to %USERPROFILE%\.claude:
+# with the variable set, Claude Code also moves its global .claude.json into that folder, so pointing it
+# at the default folder explicitly is not the same as leaving it unset.
+# ---------------------------------------------------------------------------------------------------
+$script:MarketplaceName = 'clarionassistant-marketplace'
+$script:PluginRef       = "clarion-assistant@$($script:MarketplaceName)"
+
+function Expand-CaPath([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $p = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"').Trim())
+    if (-not [System.IO.Path]::IsPathRooted($p)) { return $null }
+    $p = [System.IO.Path]::GetFullPath($p)
+    if ($p.Length -gt 3) { $p = $p.TrimEnd('\', '/') }
+    return $p
+}
+
+function Test-SamePath([string]$A, [string]$B) {
+    $a1 = Expand-CaPath $A; $b1 = Expand-CaPath $B
+    return ($null -ne $a1 -and $null -ne $b1 -and [string]::Equals($a1, $b1, [StringComparison]::OrdinalIgnoreCase))
+}
+
+# True when the path is, or is inside, a Claude profile folder (a ".claude" or ".claude-*" segment). The
+# shared copy must live OUTSIDE every profile - otherwise it is just another per-profile clone.
+function Test-InsideClaudeProfile([string]$Path) {
+    $p = Expand-CaPath $Path
+    if (-not $p) { return $false }
+    foreach ($seg in $p.Split('\')) {
+        if ($seg -ieq '.claude' -or $seg -like '.claude-*') { return $true }
+    }
+    return $false
+}
+
+# The Claude profile folders on this machine: the default one first, then CLAUDE_CONFIG_DIR, then any
+# %USERPROFILE%\.claude-* folder that looks like a profile (holds settings.json or a plugins folder), then
+# the -ProfileDirs the developer named. Deduplicated, case-insensitively.
+function Get-ClaudeProfiles([string]$Extra) {
+    $list = New-Object System.Collections.ArrayList
+    $add = {
+        param($p)
+        $x = Expand-CaPath $p
+        if (-not $x) { return }
+        foreach ($have in $list) { if ([string]::Equals($have, $x, [StringComparison]::OrdinalIgnoreCase)) { return } }
+        [void]$list.Add($x)
+    }
+    & $add (Join-Path $env:USERPROFILE '.claude')
+    if ($env:CLAUDE_CONFIG_DIR) { & $add $env:CLAUDE_CONFIG_DIR }
+    Get-ChildItem -LiteralPath $env:USERPROFILE -Directory -Force -Filter '.claude-*' -ErrorAction SilentlyContinue |
+        Sort-Object Name |
+        Where-Object { (Test-Path (Join-Path $_.FullName 'settings.json')) -or (Test-Path (Join-Path $_.FullName 'plugins')) } |
+        ForEach-Object { & $add $_.FullName }
+    if ($Extra) { foreach ($e in $Extra.Split(';')) { if ($e.Trim()) { & $add $e } } }
+    return ,@($list)
+}
+
+function Test-IsDefaultProfile([string]$ProfileDir) {
+    return (Test-SamePath $ProfileDir (Join-Path $env:USERPROFILE '.claude'))
+}
+
+# Where <ProfileDir> currently gets our marketplace from: $null (not registered), or the folder/URL its
+# known_marketplaces.json names. Read-only, and fail-soft: an unreadable file reads as "unknown".
+function Get-ProfileMarketplaceSource([string]$ProfileDir) {
+    $known = Join-Path $ProfileDir 'plugins\known_marketplaces.json'
+    if (-not (Test-Path $known)) { return $null }
+    try {
+        $j = [System.IO.File]::ReadAllText($known) | ConvertFrom-Json
+        $entry = $j.PSObject.Properties[$script:MarketplaceName]
+        if (-not $entry) { return $null }
+        $v = $entry.Value
+        if ($v.source -and $v.source.path) { return [string]$v.source.path }
+        if ($v.source -and $v.source.repo) { return [string]$v.source.repo }
+        if ($v.source -and $v.source.url)  { return [string]$v.source.url }
+        if ($v.installLocation)            { return [string]$v.installLocation }
+        return '(unknown)'
+    } catch { return '(unreadable)' }
+}
+
+# Run the Claude CLI against ONE profile. The default profile runs with CLAUDE_CONFIG_DIR removed (see
+# the header); any other with it set. The caller's environment is restored either way.
+function Invoke-ClaudeForProfile([string]$Claude, [string]$ProfileDir, [string[]]$CliArgs) {
+    $saved = $env:CLAUDE_CONFIG_DIR
+    try {
+        if (Test-IsDefaultProfile $ProfileDir) { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+        else { $env:CLAUDE_CONFIG_DIR = $ProfileDir }
+        & $Claude @CliArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+        return $LASTEXITCODE
+    } finally {
+        if ($null -eq $saved) { Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+        else { $env:CLAUDE_CONFIG_DIR = $saved }
+    }
+}
+
+# Clone the marketplace into $Dest, or fast-forward an existing clone. Returns $true when $Dest ends up
+# holding a marketplace (fresh, updated, or an existing copy we could not update - which is kept, never
+# deleted: the upgrade-safety rule of the profile path applies here too).
+function Sync-SharedMarketplace([string]$Dest, [string]$RepoUrl) {
+    $manifest = Join-Path $Dest '.claude-plugin\marketplace.json'
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (Test-Path (Join-Path $Dest '.git')) {
+        if ($git) {
+            Write-Host "  Updating shared marketplace: $Dest"
+            & git -C $Dest pull --ff-only 2>&1 | ForEach-Object { Write-Host "    $_" }
+            if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: could not update it (exit $LASTEXITCODE) - keeping the existing copy." }
+        } else {
+            Write-Host "  WARNING: git not found - keeping the existing shared copy without updating it."
+        }
+    } elseif (Test-Path $manifest) {
+        # A marketplace that is not a clone (e.g. kept current by sync-marketplace-to-profile.ps1): ours
+        # to use, not ours to replace.
+        Write-Host "  Using the existing (non-git) shared marketplace at $Dest"
+    } else {
+        if (-not $git) {
+            Write-Host "  WARNING: git not found - cannot clone the shared marketplace."
+            return $false
+        }
+        if ((Test-Path $Dest) -and @(Get-ChildItem -LiteralPath $Dest -Force -ErrorAction SilentlyContinue).Count -gt 0) {
+            Write-Host "  WARNING: $Dest exists, is not empty and is not a marketplace - refusing to clone over it."
+            return $false
+        }
+        $parent = Split-Path -Parent $Dest
+        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Write-Host "  Cloning $RepoUrl -> $Dest"
+        & git clone --quiet $RepoUrl $Dest 2>&1 | ForEach-Object { Write-Host "    $_" }
+        if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: clone failed (exit $LASTEXITCODE)."; return $false }
+        Set-CaRegistryValue 'PluginMarketplaceCreated' '1'
+    }
+    return (Test-Path $manifest)
+}
+
+function Get-CaRegistryValue([string]$Name) {
+    try { return (Get-ItemProperty -Path $RegistryKey -Name $Name -ErrorAction Stop).$Name } catch { return $null }
+}
+
+function Set-CaRegistryValue([string]$Name, [string]$Value) {
+    if (-not (Test-Path $RegistryKey)) { New-Item -Path $RegistryKey -Force | Out-Null }
+    New-ItemProperty -Path $RegistryKey -Name $Name -Value $Value -PropertyType String -Force | Out-Null
+}
+
+function Remove-CaRegistryValue([string]$Name) {
+    Remove-ItemProperty -Path $RegistryKey -Name $Name -ErrorAction SilentlyContinue
+}
+
+# Register $Shared in ONE profile and install the plugin from it. Idempotent: a profile already pointing
+# at $Shared is not removed and re-added. A profile pointing anywhere else (the GitHub clone an earlier
+# install made) is switched over - safe only because the caller has already proved $Shared holds a
+# marketplace. Returns $true on success.
+function Register-SharedInProfile([string]$Claude, [string]$ProfileDir, [string]$Shared) {
+    Write-Host "  Profile: $ProfileDir"
+    $current = Get-ProfileMarketplaceSource $ProfileDir
+    if ($current -and (Test-SamePath $current $Shared)) {
+        Write-Host "    already registered to the shared folder"
+    } else {
+        if ($current) {
+            Write-Host "    switching from $current to the shared folder"
+            [void](Invoke-ClaudeForProfile $Claude $ProfileDir @('plugin', 'marketplace', 'remove', $script:MarketplaceName))
+        }
+        $rc = Invoke-ClaudeForProfile $Claude $ProfileDir @('plugin', 'marketplace', 'add', $Shared)
+        if ($rc -ne 0) { Write-Host "    WARNING: marketplace add failed (exit $rc)"; return $false }
+    }
+    $rc = Invoke-ClaudeForProfile $Claude $ProfileDir @('plugin', 'install', $script:PluginRef, '--scope', 'user')
+    if ($rc -ne 0) { Write-Host "    WARNING: plugin install failed (exit $rc)"; return $false }
+    return $true
+}
+
+# Shared mode end to end. Returns $true when the shared folder is in place and recorded; $false means
+# the caller should fall back to the profile path (nothing was changed in any profile).
+function Install-SharedMarketplace([string]$Claude, [string]$SharedPath, [string]$ExtraProfiles, [string]$RepoUrl) {
+    $shared = Expand-CaPath $SharedPath
+    if (-not $shared) {
+        Write-Host "WARNING: shared plugin location '$SharedPath' is not an absolute path - using the default profile instead."
+        return $false
+    }
+    if (Test-InsideClaudeProfile $shared) {
+        Write-Host "WARNING: shared plugin location $shared is inside a Claude profile folder - using the default profile instead."
+        return $false
+    }
+    Write-Host "Plugin location: SHARED ($shared)"
+    if (-not (Sync-SharedMarketplace $shared $RepoUrl)) {
+        Write-Host "WARNING: no marketplace at $shared - using the default profile instead."
+        return $false
+    }
+    # Recorded BEFORE the profiles: even if every CLI call below fails, CA-launched sessions can use it.
+    Set-CaRegistryValue 'PluginMarketplacePath' $shared
+
+    $done = New-Object System.Collections.ArrayList
+    $prior = Get-CaRegistryValue 'PluginMarketplaceProfiles'
+    if ($prior) { foreach ($p in $prior.Split(';')) { if ($p.Trim()) { [void]$done.Add($p.Trim()) } } }
+    if ($Claude) {
+        foreach ($profileDir in (Get-ClaudeProfiles $ExtraProfiles)) {
+            if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Path $profileDir -Force | Out-Null }
+            if (Register-SharedInProfile $Claude $profileDir $shared) {
+                $known = $false
+                foreach ($d in $done) { if (Test-SamePath $d $profileDir) { $known = $true } }
+                if (-not $known) { [void]$done.Add($profileDir) }
+            }
+        }
+    } else {
+        Write-Host "WARNING: Claude Code CLI not found - the shared folder is in place for Clarion Assistant, but no"
+        Write-Host "  profile was registered. Re-run setup once Claude Code is installed."
+    }
+    Set-CaRegistryValue 'PluginMarketplaceProfiles' (($done | ForEach-Object { $_ }) -join ';')
+    Write-Host "Shared marketplace registered in $($done.Count) profile(s)."
+    return $true
+}
+
+# Uninstall: undo Install-SharedMarketplace. Only touches profiles WE registered and a folder WE cloned.
+function Uninstall-SharedMarketplace([string]$Claude) {
+    $shared = Get-CaRegistryValue 'PluginMarketplacePath'
+    if (-not $shared) { Write-Host "No shared plugin location recorded - nothing to undo."; return }
+    $profiles = Get-CaRegistryValue 'PluginMarketplaceProfiles'
+    if ($Claude -and $profiles) {
+        foreach ($p in $profiles.Split(';')) {
+            $p = $p.Trim()
+            if (-not $p) { continue }
+            $current = Get-ProfileMarketplaceSource $p
+            if ($current -and -not (Test-SamePath $current $shared)) {
+                Write-Host "  $p now uses $current - leaving it alone"
+                continue
+            }
+            Write-Host "  De-registering from $p"
+            [void](Invoke-ClaudeForProfile $Claude $p @('plugin', 'uninstall', $script:PluginRef, '--scope', 'user'))
+            [void](Invoke-ClaudeForProfile $Claude $p @('plugin', 'marketplace', 'remove', $script:MarketplaceName))
+        }
+    }
+    if ((Get-CaRegistryValue 'PluginMarketplaceCreated') -eq '1') {
+        $sharedFull = Expand-CaPath $shared
+        if ($sharedFull -and (Test-Path (Join-Path $sharedFull '.claude-plugin\marketplace.json'))) {
+            Write-Host "  Deleting the shared folder this installer created: $sharedFull"
+            Remove-Item -LiteralPath $sharedFull -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    # PluginMarketplaceExtraProfiles is the wizard's remembered "other profile folders" box.
+    foreach ($n in 'PluginMarketplacePath', 'PluginMarketplaceProfiles', 'PluginMarketplaceCreated', 'PluginMarketplaceExtraProfiles') { Remove-CaRegistryValue $n }
+    Write-Host "Shared plugin location removed."
+}
 
 function Find-ClaudeCli {
     $candidates = @(
@@ -23,6 +292,26 @@ function Find-ClaudeCli {
     $cmd = Get-Command claude -ErrorAction SilentlyContinue                 # anything on PATH
     if ($cmd) { return $cmd.Source }
     return $null
+}
+
+if ($UninstallPlugin) {
+    $ErrorActionPreference = 'Continue'
+    try { Uninstall-SharedMarketplace (Find-ClaudeCli) }
+    catch { Write-Host "WARNING: could not undo the shared plugin location: $_" }
+    return
+}
+
+if ($InstallPlugin -and $PluginLocation -eq 'Shared') {
+    $ErrorActionPreference = 'Continue'   # same native-stderr reason as the profile path below
+    $sharedOk = $false
+    try { $sharedOk = Install-SharedMarketplace (Find-ClaudeCli) $SharedPluginPath $ProfileDirs $MarketplaceRepoUrl }
+    catch { Write-Host "WARNING: shared plugin location failed: $_" }
+    if ($sharedOk) {
+        Write-Host "`nClarion Assistant plugin registration complete."
+        return
+    }
+    # Fall through to the default-profile install, so a failed shared setup still leaves a working plugin.
+    $ErrorActionPreference = 'Stop'
 }
 
 if ($InstallPlugin) {
@@ -48,6 +337,22 @@ if ($InstallPlugin) {
         $ErrorActionPreference = 'Continue'
 
         $claude = Find-ClaudeCli
+
+        # GH #214: 'Profile' chosen after an earlier 'Shared' install. If the default profile is still
+        # registered to the shared folder, removing that registration here could take the folder (and
+        # every other profile's plugin) with it, so leave everything as it is and say how to switch.
+        # Otherwise forget the shared path, so the add-in stops preferring a copy nothing maintains.
+        $priorShared = Get-CaRegistryValue 'PluginMarketplacePath'
+        $defaultSource = Get-ProfileMarketplaceSource (Join-Path $env:USERPROFILE '.claude')
+        if ($priorShared -and $defaultSource -and (Test-SamePath $defaultSource $priorShared)) {
+            Write-Host "Plugin location: the default profile still uses the SHARED marketplace at $priorShared - left unchanged."
+            Write-Host "  To move back to a per-profile copy, uninstall Clarion Assistant (which de-registers the shared"
+            Write-Host "  folder) and install again choosing the default profile."
+            Write-Host "`nClarion Assistant plugin registration complete."
+            return
+        }
+        if ($priorShared) { Remove-CaRegistryValue 'PluginMarketplacePath' }
+
         if (-not $claude) {
             Write-Host "WARNING: Claude Code CLI not found; skipping plugin registration."
             Write-Host "  Once Claude Code is installed, finish setup with:`n$manualSteps"
