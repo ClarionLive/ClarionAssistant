@@ -737,11 +737,11 @@
     .monaco-editor .monaco-hover .hover-contents:not(.html-hover-contents) {
         padding-right: 20px;
     }
-    /* Attribute edit links on a control card (applyAttributeEditLink) drawn as chips. Monaco tags every
+    /* Attribute edit links on a hover card (applyAttributeEditLink) drawn as chips. Monaco tags every
        hover link with its target (data-href) and title, so these rules reach only the
-       file:///clarion-attr/edit/... links: a set attribute ("Remove ..." title) is a filled chip, an
-       available one ("Add ...") an outlined chip. Theme colours, so light and dark themes both work. */
-    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"] {
+       command:clarion.applyAttributeEdit?... links: a set attribute ("Remove ..." title) is a filled chip,
+       an available one ("Add ...") an outlined chip. Theme colours, so light and dark themes both work. */
+    .monaco-editor .monaco-hover a[data-href^="command:clarion.applyAttributeEdit"] {
         display: inline-block;
         padding: 0 6px;
         margin: 1px 0;
@@ -753,15 +753,15 @@
         text-decoration: none !important;
         cursor: pointer;
     }
-    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"][title^="Add "] {
+    .monaco-editor .monaco-hover a[data-href^="command:clarion.applyAttributeEdit"][title^="Add "] {
         background: transparent;
         color: var(--vscode-textLink-foreground, #3794ff) !important;
     }
-    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"][title^="Remove "] {
+    .monaco-editor .monaco-hover a[data-href^="command:clarion.applyAttributeEdit"][title^="Remove "] {
         background: var(--vscode-textLink-foreground, #3794ff);
         color: var(--vscode-editorHoverWidget-background, #fff) !important;
     }
-    .monaco-editor .monaco-hover a[data-href*="/clarion-attr/"]:hover {
+    .monaco-editor .monaco-hover a[data-href^="command:clarion.applyAttributeEdit"]:hover {
         box-shadow: 0 0 0 1px var(--vscode-textLink-foreground, #3794ff);
         filter: brightness(1.15);
     }
@@ -2159,13 +2159,20 @@
         // '' is a MEANINGFUL insertText ("nothing left to insert"), so test for absence, not falsiness.
         var text = (it.insertText != null) ? it.insertText : it.label;
         var r = range;
+        // GH #281: from server v1.0.9 an attribute that takes a value comes as a snippet (insertTextFormat 2,
+        // "TIP('${1:text}')"): insert it as one, so the value is selected and Tab moves on. Only the
+        // server's own insertText is a snippet; the label (below) never is.
+        var snippet = it.insertTextFormat === 2 && it.insertText != null;
         if (colonRun && colonRun.indexOf(':') !== -1 &&
             label.toUpperCase().indexOf(colonRun.toUpperCase()) === 0) {
             text = label;
+            snippet = false;
             r = new monaco.Range(range.endLineNumber, range.endColumn - colonRun.length,
                                  range.endLineNumber, range.endColumn);
         }
+        var rules = monaco.languages.CompletionItemInsertTextRule;
         return {
+            insertTextRules: snippet ? (rules && rules.InsertAsSnippet != null ? rules.InsertAsSnippet : 4) : undefined,
             label: it.label,
             kind: lspKindToMonaco(it.kind),
             detail: it.detail || undefined,
@@ -6063,7 +6070,7 @@
             deadline.fire = function () { settle(localHover); };
             whenIdleSynced(model, { line: position.lineNumber, column: position.column })
                 .then(function (payload) { return payload && !settled ? requestFromHost('hover', payload) : null; })
-                .then(function (resp) { settle(resp && resp.contents ? { contents: [{ value: prepareServerCard(resp.contents, model, position) }] } : localHover); })
+                .then(function (resp) { settle(resp && resp.contents ? { contents: [serverCardContent(resp.contents, model, position)] } : localHover); })
                 .catch(function () { settle(localHover); });
         });
     }
@@ -6179,53 +6186,89 @@
             !uri.authority && normLinkPath(uri.fsPath || uri.path) === normLinkPath(currentFilePath);
     }
 
-    // ---- Attribute edit links on a control card (click a chip to add/remove an attribute) ----
+    // ---- Attribute edit links on a hover card (click a chip to add/remove an attribute) ----
     // The language server puts them there because LspClient announces
-    // capabilities.experimental.clarionAttributeEditLinks. A control card hovered on its declaration
-    // keyword ends with
-    //   **Attributes:** `AT` `USE` [VSCROLL](file:///clarion-attr/edit/<payload> "Remove VSCROLL — ...")
-    //   **Available:** [BOXED](file:///clarion-attr/edit/<payload> "Add BOXED — ...") ...
-    // The payload (base64url JSON) is the complete edit: { e: [{ l, c, el, ec, t, o }] } — lines relative
-    // to the hovered line, 0-based columns, the new text, and the ORIGINAL text of lines l..el. All the
-    // Clarion knowledge (commas, | continuations, comments, mutually exclusive groups) is the server's
-    // and tested there; this page only checks the original text and applies the edit as one undo step.
-    // file: links because hover markdown is untrusted (no command: links) and file: is the link kind
-    // the opener below already receives. The chips are drawn by the CSS (a[data-href*="/clarion-attr/"]).
+    // capabilities.experimental.clarionAttributeEditLinks. From v1.0.9 a card for a control, a WINDOW /
+    // APPLICATION / REPORT header, or a FILE / KEY / INDEX / MEMO / BLOB declaration, hovered on its own
+    // declaration, lists its attributes as links (GH #281, msarson/Clarion-Extension#731/#745/#746):
+    //   **Attributes:** [AT](command:clarion.applyAttributeEdit?<q> "Remove AT(...) — ...")
+    //   **Available:** [BOXED](command:clarion.applyAttributeEdit?<q> "Add BOXED — ...") ...
+    // where <q> = encodeURIComponent(JSON.stringify([payload])) and payload = { e: [{ l, c, el, ec, t, o, s? }] }:
+    // lines relative to the hovered line, 0-based columns, the new text, the ORIGINAL text of lines l..el,
+    // and s: true when `t` is a snippet such as ,TIP('${1:text}') (msarson/Clarion-Extension#743; a
+    // snippet edit always comes alone). All the Clarion knowledge (commas, | continuations, comments,
+    // clashing attributes) is the server's and tested there; this page only checks the original text and
+    // applies the edit as one undo step. Reference client: msarson/Clarion-Extension
+    // client/src/hover/attributeEditLinks.ts (planAttributeEdit). The chips are drawn by the CSS
+    // (a[data-href^="command:clarion.applyAttributeEdit"]).
     //
-    // The payload is UNTRUSTED (GH #263): it comes from the language server, and a file: link can also
-    // reach the opener from a ctrl+click on link-shaped text in the buffer itself. So a click applies
-    // only when ALL of this holds, and otherwise changes nothing and throws nothing:
+    // Monaco drops every command: link from UNTRUSTED markdown, so a card that keeps live links is handed
+    // to Monaco as trusted for this ONE command only (serverCardContent: isTrusted.enabledCommands). The
+    // link opener below takes every command: link first and runs none of them as a command: Monaco's
+    // command opener never sees one.
+    //
+    // The payload is UNTRUSTED (GH #263): it comes from the language server. So a click applies only when
+    // ALL of this holds, and otherwise changes nothing and throws nothing:
     //   * the payload is one the card on screen carried (attrCardTarget.payloads), not any link-shaped text;
     //   * it decodes to a well-formed edit list: integer positions, `o` holding the original text of EVERY
-    //     line l..el, columns inside those lines, string `t`, edits that do not overlap;
+    //     line l..el, columns inside those lines, string `t`, boolean `s`, edits that do not overlap, and a
+    //     snippet edit alone;
     //   * every line it touches still reads as `o` says, and is editable (lineIsEditable);
     //   * the edits go to the card's own model, in the editor showing it.
-    var ATTR_LINK_ROOT = '/clarion-attr/';            // every link under it is ours: never navigation, never open-file
-    var ATTR_EDIT_LINK_PATH = '/clarion-attr/edit/';
+    //
+    // The first draft of #731 used file:///clarion-attr/edit/<base64url> links. No released server ever
+    // sent them (1.0.8 has no edit links, 1.0.9 sends the command: form), so they are no longer applied;
+    // the opener still swallows every file:///clarion-attr/ link so none can reach the open-file path.
+    var ATTR_EDIT_COMMAND = 'clarion.applyAttributeEdit';
+    var ATTR_LEGACY_LINK_ROOT = '/clarion-attr/';     // the retired draft form: swallowed, never applied, never navigation
     var ATTR_EDIT_MAX_PAYLOAD = 16384;                // a real one is a few hundred characters
     var ATTR_EDIT_MAX_EDITS = 32;
-    // Any markdown link to file:///clarion-attr/... (titled or not) and the edit payloads in a card.
-    var ATTR_LINK_MD_RX = /\[([^\]\r\n]*)\]\(file:\/\/\/clarion-attr\/[^)\s]*(?:\s+"[^"\r\n]*")?\)/g;
-    var ATTR_EDIT_PAYLOAD_RX = /\(file:\/\/\/clarion-attr\/edit\/([A-Za-z0-9_-]+)/g;
+    // A markdown link to the edit command, titled or not (the server escapes ( and ) in the query, and a
+    // title may hold \" escapes); and any OTHER command: link, which a card never needs.
+    var ATTR_LINK_MD_RX = /\[([^\]\r\n]*)\]\(command:clarion\.applyAttributeEdit\?([^\s"]*)(?:\s+"(?:[^"\\\r\n]|\\.)*")?\)/g;
+    // (The scheme in any case, as Monaco matches it; the edit command only in its exact spelling.)
+    var OTHER_COMMAND_LINK_MD_RX = /\[([^\]\r\n]*)\]\([Cc][Oo][Mm][Mm][Aa][Nn][Dd]:(?!clarion\.applyAttributeEdit\?)[^\s)]*(?:\s+"(?:[^"\\\r\n]|\\.)*")?\)/g;
+    var ANY_COMMAND_LINK_RX = /\(command:/i;
     var attrCardTarget = null;   // { model, line, column, payloads } — the hovered keyword of the card last
-                                 // shown with live links, and the payloads that card carried
+                                 // shown with live links, and the payloads that card carried (canonical JSON)
+
+    function flattenLinks(md, rx) {
+        return md.replace(rx, function (all, name) { return '`' + name.replace(/`/g, '') + '`'; });
+    }
 
     // Card markdown on its way to the screen: remember where it was hovered, so a click knows its
     // anchor. Where the declaration cannot be edited (read-only, outside the embed points of the CA
     // Embeditor, a GENERATED module opened as a plain file) the links become plain names: the card
-    // still lists them, but offers no edit.
+    // still lists them, but offers no edit. The server leaves the links off in a generated module
+    // itself (1.0.9); generatedSource is the second safeguard.
     function prepareAttributeLinks(markdown, model, position) {
         var md = String(markdown || '');
-        if (md.indexOf('file://' + ATTR_LINK_ROOT) < 0) return md;
+        if (!ANY_COMMAND_LINK_RX.test(md)) return md;
+        md = flattenLinks(md, OTHER_COMMAND_LINK_MD_RX);
+        if (md.indexOf('(command:' + ATTR_EDIT_COMMAND + '?') < 0) return md;
         if (!model || !position || !lineIsEditable(position.lineNumber)) {
             attrCardTarget = null;
-            return md.replace(ATTR_LINK_MD_RX, function (all, name) { return '`' + name.replace(/`/g, '') + '`'; });
+            return flattenLinks(md, ATTR_LINK_MD_RX);
         }
-        var payloads = {}, m;
-        ATTR_EDIT_PAYLOAD_RX.lastIndex = 0;
-        while ((m = ATTR_EDIT_PAYLOAD_RX.exec(md)) !== null) payloads[m[1]] = true;
-        attrCardTarget = { model: model, line: position.lineNumber, column: position.column, payloads: payloads };
+        var payloads = {}, any = false;
+        md = md.replace(ATTR_LINK_MD_RX, function (all, name, query) {
+            var key = attributeEditKey(decodeAttributeEditQuery(query));
+            if (!key) return '`' + name.replace(/`/g, '') + '`';   // not a payload we could ever apply: a plain name
+            payloads[key] = true; any = true;
+            return all;
+        });
+        attrCardTarget = any ? { model: model, line: position.lineNumber, column: position.column, payloads: payloads } : null;
         return md;
+    }
+
+    // The hover contents for a server card: trusted for the edit command only, and only when the card
+    // still carries a live edit link (else Monaco would drop it, as it drops every untrusted command: link).
+    function serverCardContent(markdown, model, position) {
+        var md = prepareServerCard(markdown, model, position);
+        var c = { value: md };
+        if (typeof md === 'string' && md.indexOf('(command:' + ATTR_EDIT_COMMAND + '?') >= 0)
+            c.isTrusted = { enabledCommands: [ATTR_EDIT_COMMAND] };
+        return c;
     }
 
     // Can a chip edit this line? Not when the page is read-only, not outside the editable ranges (the
@@ -6248,36 +6291,92 @@
 
     function isWholeNumber(v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v; }
 
-    // payload → the validated edit list, or null for anything malformed (never throws).
+    // The link's query (still URI-encoded, as in the markdown) → the payload object, or null. The
+    // query is a JSON array of ONE payload: JSON.parse(decodeURIComponent(query))[0].
+    function decodeAttributeEditQuery(query) {
+        if (typeof query !== 'string' || !query || query.length > ATTR_EDIT_MAX_PAYLOAD) return null;
+        try { return payloadOfArgs(JSON.parse(decodeURIComponent(query))); } catch (e) { return null; }
+    }
+    function payloadOfArgs(args) {
+        return Array.isArray(args) && args.length === 1 && args[0] && typeof args[0] === 'object' ? args[0] : null;
+    }
+    // The key a payload is remembered and looked up by: its canonical JSON, so the card's encoded query
+    // and the opener's decoded one compare equal however each was escaped on the way.
+    function attributeEditKey(payload) {
+        if (!payload) return null;
+        try { return JSON.stringify(payload); } catch (e) { return null; }
+    }
+
+    // payload object → the validated edit list, or null for anything malformed (never throws).
     function decodeAttributeEdits(payload) {
-        if (typeof payload !== 'string' || !payload || payload.length > ATTR_EDIT_MAX_PAYLOAD ||
-            !/^[A-Za-z0-9_-]+$/.test(payload)) return null;
         try {
-            var b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-            while (b64.length % 4) b64 += '=';
-            var bin = atob(b64), bytes = new Uint8Array(bin.length);
-            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            var obj = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-            var edits = obj && obj.e;
+            var edits = payload && payload.e;
             if (!Array.isArray(edits) || !edits.length || edits.length > ATTR_EDIT_MAX_EDITS) return null;
             for (var k = 0; k < edits.length; k++) {
                 var x = edits[k];
                 if (!x || typeof x !== 'object') return null;
                 if (!isWholeNumber(x.l) || !isWholeNumber(x.el) || !isWholeNumber(x.c) || !isWholeNumber(x.ec)) return null;
                 if (x.el < x.l || x.c < 0 || x.ec < 0 || typeof x.t !== 'string') return null;
+                if (x.s !== undefined && typeof x.s !== 'boolean') return null;
                 // `o` must prove EVERY line the edit spans, or a line it changes would go unchecked.
                 if (!Array.isArray(x.o) || x.o.length !== x.el - x.l + 1) return null;
                 for (var j = 0; j < x.o.length; j++) if (typeof x.o[j] !== 'string') return null;
                 if (x.c > x.o[0].length || x.ec > x.o[x.o.length - 1].length) return null;
                 if (x.l === x.el && x.ec < x.c) return null;
             }
+            // A snippet is inserted on its own: other edits would move the place it goes (#743).
+            if (edits.length > 1 && edits.some(function (x) { return x.s === true; })) return null;
             return edits;
         } catch (e) { return null; }
     }
 
-    // Is this file: URI one of ours (any case, any host)? The opener keeps every such link away from navigation.
+    // A snippet's plain text: each placeholder's default (${1:text} → text, ${1|a,b|} → a), bare tab
+    // stops ($1, ${1}, $0) dropped, \$ \} \\ unescaped. Used when the editor's snippet support is not
+    // there or does not take it; the issue allows inserting TIP('text') then.
+    function snippetToPlainText(s) {
+        var i = 0, n = s.length;
+        function body(stopAtBrace) {
+            var out = '';
+            while (i < n) {
+                var ch = s.charAt(i);
+                if (ch === '\\' && i + 1 < n && '$}\\,|'.indexOf(s.charAt(i + 1)) >= 0) { out += s.charAt(i + 1); i += 2; continue; }
+                if (stopAtBrace && ch === '}') return out;
+                if (ch === '$') {
+                    var m = /^\$(\d+)/.exec(s.slice(i));
+                    if (m) { i += m[0].length; continue; }
+                    m = /^\$\{(\d+)(:|\||\})/.exec(s.slice(i));
+                    if (m) {
+                        i += m[0].length;
+                        if (m[2] === '}') continue;
+                        if (m[2] === ':') { out += body(true); i++; continue; }
+                        var close = s.indexOf('|}', i), choices = close >= 0 ? s.slice(i, close) : '';
+                        out += choices.split(',')[0];
+                        i = close >= 0 ? close + 2 : n;
+                        continue;
+                    }
+                }
+                out += ch; i++;
+            }
+            return out;
+        }
+        return body(false);
+    }
+
+    // Is this URI one of ours to swallow? Every command: link (none ever runs as a command), and the
+    // retired draft form's file:///clarion-attr/... links (any case, any host).
     function isAttributeLinkUri(uri) {
-        return !!uri && uri.scheme === 'file' && String(uri.path || '').toLowerCase().indexOf(ATTR_LINK_ROOT) === 0;
+        if (!uri) return false;
+        if (uri.scheme === 'command') return true;
+        return uri.scheme === 'file' && String(uri.path || '').toLowerCase().indexOf(ATTR_LEGACY_LINK_ROOT) === 0;
+    }
+    // The payload of a clicked edit link, from the URI the opener gets (Monaco's URI.parse has already
+    // percent-decoded the query), or null when it is not the edit command.
+    function attributeEditPayloadOfUri(uri) {
+        if (!uri || uri.scheme !== 'command' || uri.path !== ATTR_EDIT_COMMAND) return null;
+        var q = String(uri.query || '');
+        if (!q || q.length > ATTR_EDIT_MAX_PAYLOAD) return null;
+        try { return payloadOfArgs(JSON.parse(q)); } catch (e) { /* still encoded? */ }
+        try { return payloadOfArgs(JSON.parse(decodeURIComponent(q))); } catch (e) { return null; }
     }
 
     // The editor (main pane or split pane) that shows `model`, or null.
@@ -6290,15 +6389,38 @@
         return null;
     }
 
+    // Insert a snippet edit at `range`: through Monaco's snippet controller, so the tab stop works and the
+    // value is selected for typing; else, or when the controller left the text unchanged (its insert
+    // swallows its own errors), the plain text as one executeEdits. Either way one undo step.
+    function applySnippetEdit(ed, model, range, snippet) {
+        var sc = null;
+        try { sc = typeof ed.getContribution === 'function' ? ed.getContribution('snippetController2') : null; } catch (e) { sc = null; }
+        if (sc && typeof sc.insert === 'function' && typeof ed.setSelection === 'function') {
+            var before = model.getVersionId();
+            try {
+                ed.focus();
+                ed.setSelection(range);
+                sc.insert(snippet, { overwriteBefore: 0, overwriteAfter: 0, undoStopBefore: true, undoStopAfter: true, adjustWhitespace: false });
+            } catch (e) { /* fall back below */ }
+            if (model.getVersionId() !== before) return true;
+        }
+        if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+        ed.executeEdits('clarion-attr', [{ range: range, text: snippetToPlainText(snippet) }]);
+        if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+        ed.focus();
+        return true;
+    }
+
     // A chip was clicked: check the lines the edits touch still read as they did when the card was
     // made, apply all edits as one undo step, then refresh the card. If the text has moved on, nothing
     // is applied — the card is just shown again, freshly computed from the current text. A payload
     // that is not the card's, or not well formed, does nothing at all. Returns true when it edited.
     function applyAttributeEditLink(payload) {
-        var t = attrCardTarget, ed = null, applied = false;
+        var t = attrCardTarget, ed = null, applied = false, snippet = false;
         try {
-            if (!t || !t.model || t.model.isDisposed() || !t.payloads ||
-                !Object.prototype.hasOwnProperty.call(t.payloads, payload)) return false;
+            var key = attributeEditKey(payload);
+            if (!key || !t || !t.model || t.model.isDisposed() || !t.payloads ||
+                !Object.prototype.hasOwnProperty.call(t.payloads, key)) return false;
             ed = editorShowingModel(t.model);
             if (!ed) return false;
             var edits = decodeAttributeEdits(payload);
@@ -6312,6 +6434,7 @@
                 }
                 spans.push({ sl: first, sc: x.c, el: last, ec: x.ec });
                 ops.push({ range: new monaco.Range(first, x.c + 1, last, x.ec + 1), text: x.t });
+                if (x.s === true) snippet = true;
             }
             // Overlapping edits are malformed (executeEdits would throw on them): apply none.
             spans.sort(function (a, b) { return a.sl - b.sl || a.sc - b.sc; });
@@ -6320,21 +6443,26 @@
                 if (q.sl < p.el || (q.sl === p.el && q.sc < p.ec)) return false;
             }
             if (current && ops.length) {
-                // One undo step of its own: executeEdits pushes no undo stop, so without these the
-                // edit could merge with the typing before or after it.
-                if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
-                ed.executeEdits('clarion-attr', ops);
-                if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
-                ed.focus();
-                applied = true;
+                if (snippet) {
+                    applied = applySnippetEdit(ed, t.model, ops[0].range, ops[0].text);
+                } else {
+                    // One undo step of its own: executeEdits pushes no undo stop, so without these the
+                    // edit could merge with the typing before or after it.
+                    if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+                    ed.executeEdits('clarion-attr', ops);
+                    if (typeof ed.pushUndoStop === 'function') ed.pushUndoStop();
+                    ed.focus();
+                    applied = true;
+                }
             }
         } catch (e) { return applied; }
         // Refresh the card: post the edited buffer NOW instead of after the IDLE_SYNC_MS typing pause
         // (the server card must arrive within FALLBACK_LSP_DEADLINE_MS, or the plain keyword card wins),
-        // then show the hover again on the same keyword — the new card moves the name across.
+        // then show the hover again on the same keyword — the new card moves the name across. After a
+        // snippet the caret sits on the value to type: the card may come back, but the caret must not move.
         try {
             if (idleSyncTimer) { clearTimeout(idleSyncTimer); idleSync(); }
-            reshowHover(ed, t.line, t.column);
+            reshowHover(ed, t.line, t.column, applied && snippet);
         } catch (e) { /* the refresh is a nicety; the edit (if any) stands */ }
         return applied;
     }
@@ -6348,7 +6476,9 @@
     // Monaco (ticket af046356) must re-check the contribution id, showContentHover's signature and the
     // private _hideWidgets. Both methods are feature-detected; if either is missing the public action
     // below is used, so an upgrade degrades to "the cursor moves to the keyword", not to an error.
-    function reshowHover(ed, line, column) {
+    // keepCaret (after a snippet edit, whose value is selected for typing): no fallback, since moving the
+    // cursor would end the snippet; the card just is not re-shown.
+    function reshowHover(ed, line, column, keepCaret) {
         if (!ed) return;
         try {
             var c = typeof ed.getContribution === 'function' ? ed.getContribution('editor.contrib.contentHover') : null;
@@ -6363,6 +6493,7 @@
                 return;
             }
         } catch (e) { /* fall back below */ }
+        if (keepCaret) return;
         try {
             ed.setPosition({ lineNumber: line, column: column });
             ed.trigger('clarion-attr', 'editor.action.showHover', {});
@@ -6657,7 +6788,7 @@
                                 if (!resp || !resp.contents) return null;
                                 // Same symbol as the local card already on screen: one card, not two.
                                 if (localSymbol && localSymbol === hoverCardSymbol(resp.contents)) return null;
-                                return { contents: [{ value: prepareServerCard(resp.contents, model, position) }] };
+                                return { contents: [serverCardContent(resp.contents, model, position)] };
                             });
                     })
                     .then(function (h) { return noteHoverCard(hoverReq, h); })
@@ -6669,18 +6800,19 @@
         // selection itself, but then hands the file: URI to its DEFAULT opener, which treats it as an
         // external link (window.open) — useless for a Clarion source file. Intercept and let the IDE
         // navigate. Registered here (once, with the other providers) though link openers are global, not
-        // per-language; non-file schemes fall through to the default opener untouched.
+        // per-language; other non-file schemes fall through to the default opener untouched.
         monaco.editor.registerLinkOpener({
             open: function (uri) {
-                if (!uri || uri.scheme !== 'file') return false;
-                // Attribute edit links on a control card (see applyAttributeEditLink). EVERY link under
-                // /clarion-attr/ is swallowed here, whatever follows it and whether or not it applies, so
-                // none of them ever reaches openLocation (the host's navigation/open-file path).
+                // Attribute edit links on a hover card (see applyAttributeEditLink). EVERY command: link
+                // is swallowed here, whether or not it applies, so none ever runs as a Monaco command, and
+                // so is every file:///clarion-attr/ link (the retired draft form), so none of them ever
+                // reaches openLocation (the host's navigation/open-file path).
                 if (isAttributeLinkUri(uri)) {
-                    var ap = String(uri.path || '');
-                    if (ap.indexOf(ATTR_EDIT_LINK_PATH) === 0) applyAttributeEditLink(ap.slice(ATTR_EDIT_LINK_PATH.length));
+                    var payload = attributeEditPayloadOfUri(uri);
+                    if (payload) applyAttributeEditLink(payload);
                     return true;
                 }
+                if (!uri || uri.scheme !== 'file') return false;
                 // H1-a: a link to the CA Embeditor's own document is a line of THIS text (see prepareSelfLinks):
                 // reveal it here, caret on it, and never open the .clw (whose line it is not).
                 // H1-b: Back history starts at the HOVERED position (the card's anchor), not the caret.

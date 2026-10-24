@@ -88,7 +88,14 @@ checkout is built only with `-TrustNonGitTree`.
 Then check that the new release adds no runtime package that `$LspNodeModules` in `deploy.ps1` and the
 installer's hand list do not copy. Start the server from a tree that holds only those files, not
 from `.lsp-build` (which has every devDependency and hides a missing module). That is how the
-v1.0.0 pin nearly shipped without `iconv-lite` (#77).
+v1.0.0 pin nearly shipped without `iconv-lite` (#77). Stage that tree OUTSIDE `C:\Users` (for example
+`.lsp-build\_stage-probe`, which git ignores): a `node_modules` folder in any parent folder, such as
+the user profile's, supplies modules the bundle does not ship and hides the gap. Run the probe once
+with a shipped module left out, to see it fail. The v1.0.9 re-pin (#281) checked out clean with the
+same ten modules.
+
+Since #281 deploy and the installer also ship the tag's root `package.json` to `lsp-server\`. The
+server reads its version from there for `clarion/getServerVersion`, and `lsp_debug_status` reports it.
 
 ## One-time hardening (optional, recommended)
 

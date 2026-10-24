@@ -176,6 +176,7 @@ namespace ClarionAssistant.Services
             _stopRequested = false;
             // A new server session: status support is re-detected from its script below, else its traffic (see Stop).
             _serverSendsDiagnosticsStatus = false;
+            _serverVersion = null;
             // ... and it holds no documents yet. Stop clears these too, but a thread that passed IsRunning before Stop
             // can still record a document after Stop cleared them; the new server never received it.
             ForgetDocuments();
@@ -300,8 +301,9 @@ namespace ClarionAssistant.Services
                 {
                     { "processId", Process.GetCurrentProcess().Id },
                     // experimental.clarionAttributeEditLinks: the Monaco page applies the attribute edit
-                    // links the server puts on a control card (file:///clarion-attr/edit/..., see
-                    // monaco-embeditor.html applyAttributeEditLink). A server that does not know it ignores it.
+                    // links the server puts on a hover card (command:clarion.applyAttributeEdit?..., server
+                    // 1.0.9+, GH #281; see monaco-embeditor.html applyAttributeEditLink). A server that does
+                    // not know it ignores it.
                     { "capabilities", new Dictionary<string, object>
                         {
                             { "experimental", new Dictionary<string, object> { { "clarionAttributeEditLinks", true } } }
@@ -558,6 +560,7 @@ namespace ClarionAssistant.Services
             // happens onto a server that does not send the status, a stale true here would turn every
             // lsp_diagnostics call into a full-budget pending:true. Start resets it too.
             _serverSendsDiagnosticsStatus = false;
+            _serverVersion = null;
 
             // The same guard for document sync: a reused instance must not believe a fresh server already holds its
             // documents. With incremental sync it matters more than it did: a ranged change against a text the new
@@ -813,6 +816,9 @@ namespace ClarionAssistant.Services
                 if (d.ContainsKey("kind")) { try { ci.Kind = Convert.ToInt32(d["kind"]); } catch { } }
                 if (d.ContainsKey("detail")) ci.Detail = Cap(d["detail"] as string, MaxTextLen);
                 if (d.ContainsKey("insertText")) ci.InsertText = Cap(d["insertText"] as string, MaxTextLen);
+                // GH #281: from v1.0.9 an attribute that takes a value comes as a snippet (insertTextFormat 2,
+                // "TIP('${1:text}')") although we announce no snippetSupport. The page inserts it as one.
+                if (d.ContainsKey("insertTextFormat")) { try { ci.InsertTextFormat = Convert.ToInt32(d["insertTextFormat"]); } catch { } }
                 if (d.ContainsKey("documentation"))
                 {
                     var docVal = d["documentation"];
@@ -901,6 +907,31 @@ namespace ClarionAssistant.Services
         /// Pulls the JSON-RPC "result" payload out of a SendRequest response. Returns null if the
         /// response is null, carried an "error", or had no "result".
         /// </summary>
+        // GH #281: which server build this session runs, from the server itself. Cached per session (Start and
+        // Stop reset it): a server does not change version while it runs.
+        private Dictionary<string, object> _serverVersion;
+
+        /// <summary>
+        /// clarion/getServerVersion (server 1.0.8+): { version, buildDate }, sent as a JSON string. The version
+        /// comes from the package.json beside the server's out\ folder, which deploy.ps1 and the installer ship
+        /// from 1.0.9 on; without it the server answers "unknown". Null when the server does not answer.
+        /// </summary>
+        public Dictionary<string, object> GetServerVersion()
+        {
+            var cached = _serverVersion;
+            if (cached != null) return cached.Count > 0 ? cached : null;
+            var r = ExtractResultObject(SendRequest("clarion/getServerVersion", new Dictionary<string, object>(), 2000));
+            Dictionary<string, object> info = r as Dictionary<string, object>;
+            var json = r as string;
+            if (info == null && json != null)
+            {
+                try { info = _serializer.Deserialize<Dictionary<string, object>>(json); } catch { info = null; }
+            }
+            // A server that does not answer is asked once per session, not on every lsp_debug_status (2 s each).
+            _serverVersion = info ?? new Dictionary<string, object>();
+            return info;
+        }
+
         private static object ExtractResultObject(Dictionary<string, object> response)
         {
             if (response == null) return null;
@@ -1023,7 +1054,7 @@ namespace ClarionAssistant.Services
         /// cannot be read: wire detection then switches it on as before.
         ///
         /// Deliberately NOT a version gate (do not "simplify" it into one): the server's initialize result carries
-        /// no serverInfo (v1.0.8 returns capabilities only), and only the bundled server has a pinned version
+        /// no serverInfo (v1.0.8 and v1.0.9 return capabilities only), and only the bundled server has a pinned version
         /// (lsp-snapshot.json). The other two paths LspService starts, Lsp.ServerPath (manual) and the VS Code
         /// extension fallback, have no version, or only a folder name. The scan tests the exact property on
         /// whichever script actually runs.
@@ -1069,6 +1100,16 @@ namespace ClarionAssistant.Services
             var result = new Dictionary<string, object>();
             result["isRunning"] = IsRunning;
             result["processId"] = _process != null && !_process.HasExited ? _process.Id : -1;
+            // GH #281: the running server's own version ("1.0.9"), so a re-pin can be confirmed live.
+            if (IsRunning)
+            {
+                Dictionary<string, object> ver = null;
+                try { ver = GetServerVersion(); } catch { ver = null; }
+                object v = null, d = null;
+                if (ver != null) { ver.TryGetValue("version", out v); ver.TryGetValue("buildDate", out d); }
+                result["serverVersion"] = ver == null ? "(no answer to clarion/getServerVersion)" : (v as string ?? "unknown");
+                if (d != null) result["serverBuildDate"] = d;
+            }
 
             lock (_debugLock)
             {
@@ -2409,6 +2450,8 @@ namespace ClarionAssistant.Services
             public string Detail;
             public string Documentation;
             public string InsertText;
+            /// <summary>LSP InsertTextFormat: 2 = InsertText is a snippet (tab stops), else plain text.</summary>
+            public int InsertTextFormat;
         }
 
         /// <summary>

@@ -636,7 +636,8 @@ namespace ClarionAssistant.Services
                 items.Add(new Dictionary<string, object>
                 {
                     { "label", c.Label }, { "kind", c.Kind }, { "detail", c.Detail },
-                    { "documentation", c.Documentation }, { "insertText", c.InsertText }
+                    { "documentation", c.Documentation }, { "insertText", c.InsertText },
+                    { "insertTextFormat", c.InsertTextFormat }
                 });
             return items;
         }

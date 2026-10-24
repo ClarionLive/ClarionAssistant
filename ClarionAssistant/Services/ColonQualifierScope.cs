@@ -34,6 +34,7 @@ namespace ClarionAssistant.Services
                 if (it.Label.StartsWith(qualifier, StringComparison.OrdinalIgnoreCase)) continue;
                 if (!string.Equals(it.Detail, qualifier + it.Label, StringComparison.OrdinalIgnoreCase)) continue;
                 it.InsertText = it.Label;
+                it.InsertTextFormat = 0;   // the label is plain text, whatever the server's insertText was
                 it.Label = it.Detail;
             }
         }
