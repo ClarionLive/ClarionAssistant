@@ -125,6 +125,7 @@ function load(opts) {
     const exportsList = ['registerClarionProviders', 'resetLocalFirstState', 'resetBufferSync', 'applySpanMap', 'noteBufferEdit',
         'withBuffer', 'buildSlice', 'refreshDiagnostics', 'resetDiagnosticsForNewSource', 'deliverHostReply',
         'prepareAttributeLinks', 'applyAttributeEditLink', 'decodeAttributeEdits', 'isAttributeLinkUri', 'applyGeneratedSourceFlag',
+        'serverCardContent', 'snippetToPlainText', 'decodeAttributeEditQuery', 'attributeEditPayloadOfUri',   // GH #281
         'setEmbedDocPath', 'prepareSelfLinks', 'markDiskSelfLinks',   // H1-a: hover-self-links.test.js
         'revealLineFromHost', 'cmdNavBack', 'cmdNavForward'];        // H1-b: with load({ nav: true })
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';

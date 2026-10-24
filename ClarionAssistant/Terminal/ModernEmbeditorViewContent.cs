@@ -4134,7 +4134,8 @@ namespace ClarionAssistant.Terminal
                                     { "kind", c.Kind },
                                     { "detail", c.Detail },
                                     { "documentation", c.Documentation },
-                                    { "insertText", c.InsertText }
+                                    { "insertText", c.InsertText },
+                                    { "insertTextFormat", c.InsertTextFormat }
                                 });
                         // LastCompletionDiagnostic is bundled-only; surface it on the local path, else "ok".
                         var local = LspClient.Active;

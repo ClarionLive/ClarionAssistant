@@ -544,6 +544,23 @@ async function main() {
         }
     }
 
+    section('GH #281: a server snippet item (insertTextFormat 2, v1.0.9 value attributes) is inserted as a snippet');
+    {
+        const e = load();
+        const q = typeAndAsk(e, 2, '    lo');
+        e.clock = 50;
+        e.reply('completion', { items: [item('LocTip', 'attribute', { insertText: "LocTip('${1:text}')", insertTextFormat: 2 }),
+            item('LocPlain', 'attribute', { insertText: 'LocPlain' }), item('LocDollar', 'lsp', { insertText: 'Loc${1}', insertTextFormat: 1 })] });
+        e.reply('localCompletion', { items: [], source: 'local', ms: 2 });
+        await flush();
+        const byLabel = (l) => (q.value && q.value.suggestions || []).find(s => s.label === l);
+        const tip = byLabel('LocTip'), plain = byLabel('LocPlain'), dollar = byLabel('LocDollar');
+        check('the snippet item keeps its template and is marked InsertAsSnippet (4)', !!tip && tip.insertText === "LocTip('${1:text}')" && tip.insertTextRules === 4,
+            JSON.stringify(tip));
+        check('a plain item, and a plain-format item that merely holds ${1}, are NOT snippets', !!plain && plain.insertTextRules === undefined &&
+            !!dollar && dollar.insertTextRules === undefined, JSON.stringify([plain && plain.insertTextRules, dollar && dollar.insertTextRules]));
+    }
+
     finish();
 }
 
