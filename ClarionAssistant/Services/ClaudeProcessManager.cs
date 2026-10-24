@@ -465,26 +465,12 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// Finds the Clarion Assistant plugin directory.
-        /// Checks marketplace source first, then cache.
+        /// Finds the Clarion Assistant plugin directory: shared marketplace, then the active profile's
+        /// marketplace, then its newest cached version. See ClaudePluginLocator (GH #214).
         /// </summary>
         private static string GetClarionAssistantPluginPath()
         {
-            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-
-            // Check marketplace source
-            string marketplacePath = Path.Combine(userProfile, ".claude", "plugins", "marketplaces",
-                "clarionassistant-marketplace", "plugins", "clarion-assistant");
-            if (Directory.Exists(marketplacePath))
-                return marketplacePath;
-
-            // Check cache
-            string cachePath = Path.Combine(userProfile, ".claude", "plugins", "cache",
-                "clarionassistant-marketplace", "clarion-assistant", "1.0.0");
-            if (Directory.Exists(cachePath))
-                return cachePath;
-
-            return null;
+            return ClaudePluginLocator.FindClarionAssistantPlugin();
         }
 
         private static string EscapeArgument(string arg)

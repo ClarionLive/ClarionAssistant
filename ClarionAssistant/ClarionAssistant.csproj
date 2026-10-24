@@ -272,6 +272,7 @@
     <Compile Include="Services\UnifiedDiffGenerator.cs" />
     <Compile Include="Services\EncodingHelper.cs" />
     <Compile Include="Services\ClaudeMdDeployer.cs" />
+    <Compile Include="Services\ClaudePluginLocator.cs" />
     <Compile Include="Services\DocGraphService.cs" />
     <Compile Include="Services\InstanceCoordinationService.cs" />
     <Compile Include="Services\ClarionTraceService.cs" />

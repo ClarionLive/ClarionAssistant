@@ -660,8 +660,10 @@ Filename: "powershell.exe"; \
 ;    runasoriginaluser => `claude plugin install --scope user` lands in the actual
 ;    user's profile (where ClarionAssistant reads it), not the elevated admin's, and
 ;    we never exec a user-writable `claude` binary from the elevated installer context.
+;    GH #214: {code:GetPluginLocationArgs} adds -PluginLocation Shared -SharedPluginPath ... when the
+;    "Plugin Location" page chose a shared folder; empty for the default profile.
 Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -InstallPlugin"; \
+  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -InstallPlugin{code:GetPluginLocationArgs}"; \
   Components: plugin; \
   StatusMsg: "Installing Clarion Assistant plugin from GitHub..."; \
   Flags: runasoriginaluser runhidden waituntilterminated
@@ -685,6 +687,16 @@ Filename: "{app}\ClarionAssistant-Guide.html"; \
   Description: "View the User Guide"; \
   Components: docs; \
   Flags: nowait postinstall skipifsilent shellexec unchecked
+
+[UninstallRun]
+; GH #214: a SHARED plugin location is de-registered from every profile setup registered it in, and its
+; folder deleted if setup cloned it. A no-op for default-profile installs (nothing is recorded). Runs
+; before {app} is removed, so configure.ps1 is still there. [UninstallRun] has no runasoriginaluser, so
+; it acts on the uninstalling account's HKCU - the same account in the usual (non over-the-shoulder) case.
+Filename: "powershell.exe"; \
+  Parameters: "-ExecutionPolicy Bypass -File ""{app}\configure.ps1"" -UninstallPlugin"; \
+  RunOnceId: "UnregisterSharedPlugin"; \
+  Flags: runhidden waituntilterminated
 
 [UninstallDelete]
 ; Clean up generated files per version
@@ -712,6 +724,10 @@ var
   // freezing is load-bearing and not merely an optimisation.
   MarkdownDecided: array[0..3] of Boolean;
   MarkdownVerdict: array[0..3] of Boolean;
+  // GH #214 "Plugin Location": default profile (option 0) or a shared folder (option 1), and the
+  // shared folder + extra profile folders when option 1 is chosen.
+  PluginLocPage: TInputOptionWizardPage;
+  PluginPathPage: TInputQueryWizardPage;
 
 function GetC10Path(Param: string): string; begin Result := C10Path; end;
 function GetC11Path(Param: string): string; begin Result := C11Path; end;
@@ -1312,6 +1328,131 @@ procedure AddBtn1Click(Sender: TObject); begin AddFolderForRow(1); end;
 procedure AddBtn2Click(Sender: TObject); begin AddFolderForRow(2); end;
 procedure AddBtn3Click(Sender: TObject); begin AddFolderForRow(3); end;
 
+// ============================================================
+// GH #214: Plugin Location
+// ============================================================
+// (a) the default Claude profile - what every earlier release did, and still the default; or
+// (b) a SHARED folder outside every profile: configure.ps1 clones the marketplace there once, records it
+//     in HKCU\Software\ClarionAssistant\PluginMarketplacePath (read by the add-in for --plugin-dir), and
+//     registers it as a local marketplace in each Claude profile it finds plus any listed here.
+// The choice is pre-filled from that registry value, so an upgrade keeps a shared install shared.
+const
+  PluginRegKey = 'Software\ClarionAssistant';
+
+function DefaultSharedPluginPath: string;
+begin
+  // Left unexpanded on purpose: configure.ps1 expands it as the ORIGINAL user (runasoriginaluser), which
+  // is the right %LOCALAPPDATA% even when setup itself was elevated to another account.
+  Result := '%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace';
+end;
+
+procedure CreatePluginLocationPages;
+var
+  Saved, SavedExtra: string;
+begin
+  PluginLocPage := CreateInputOptionPage(ClarionPathPage.ID,
+    'Plugin Location',
+    'Where should the Clarion Assistant Claude Code plugin live?',
+    'Claude Code keeps plugins per profile. If you use more than one Claude profile (CLAUDE_CONFIG_DIR), ' +
+    'a shared folder holds ONE copy of the plugin marketplace that every profile uses, and updating it ' +
+    'once updates them all.',
+    True, False);
+  PluginLocPage.Add('Default Claude profile (%USERPROFILE%\.claude) - recommended for one profile');
+  PluginLocPage.Add('Shared folder, used by every Claude profile');
+
+  PluginPathPage := CreateInputQueryPage(PluginLocPage.ID,
+    'Shared Plugin Folder',
+    'Where should the shared plugin marketplace be kept?',
+    'The folder must be outside every Claude profile folder (.claude, .claude-*). Setup registers it in ' +
+    '%USERPROFILE%\.claude, in every %USERPROFILE%\.claude-* profile it finds, and in CLAUDE_CONFIG_DIR. ' +
+    'Profiles kept anywhere else can be listed below, separated by semicolons.');
+  PluginPathPage.Add('Shared marketplace folder:', False);
+  PluginPathPage.Add('Other Claude profile folders (optional, ; separated):', False);
+
+  if RegQueryStringValue(HKCU, PluginRegKey, 'PluginMarketplacePath', Saved) and (Saved <> '') then
+  begin
+    PluginLocPage.SelectedValueIndex := 1;
+    PluginPathPage.Values[0] := Saved;
+  end
+  else
+  begin
+    PluginLocPage.SelectedValueIndex := 0;
+    PluginPathPage.Values[0] := DefaultSharedPluginPath;
+  end;
+  if RegQueryStringValue(HKCU, PluginRegKey, 'PluginMarketplaceExtraProfiles', SavedExtra) then
+    PluginPathPage.Values[1] := SavedExtra;
+end;
+
+function UseSharedPlugin: Boolean;
+begin
+  Result := (PluginLocPage <> nil) and (PluginLocPage.SelectedValueIndex = 1);
+end;
+
+// A path is passed to configure.ps1 inside double quotes, so a trailing backslash would escape the
+// closing quote under powershell.exe's argument parsing; strip it. Quotes cannot occur in a path.
+function PluginArgPath(S: string): string;
+begin
+  Result := RemoveBackslashUnlessRoot(Trim(S));
+end;
+
+// Appended to the configure.ps1 -InstallPlugin command line ([Run]). Empty = default profile.
+function GetPluginLocationArgs(Param: string): string;
+var
+  Extra: string;
+begin
+  Result := '';
+  if not UseSharedPlugin then Exit;
+  Result := ' -PluginLocation Shared -SharedPluginPath "' + PluginArgPath(PluginPathPage.Values[0]) + '"';
+  Extra := Trim(PluginPathPage.Values[1]);
+  if Extra <> '' then
+    Result := Result + ' -ProfileDirs "' + PluginArgPath(Extra) + '"';
+end;
+
+function IsInsideClaudeProfile(Path: string): Boolean;
+var
+  P: string;
+begin
+  P := '\' + Lowercase(AddBackslash(Path));
+  Result := (Pos('\.claude\', P) > 0) or (Pos('\.claude-', P) > 0);
+end;
+
+function ValidatePluginPathPage: Boolean;
+var
+  P: string;
+begin
+  Result := True;
+  P := PluginArgPath(PluginPathPage.Values[0]);
+  PluginPathPage.Values[0] := P;
+  if (Length(P) < 3) or not ((Copy(P, 2, 2) = ':\') or (Copy(P, 1, 2) = '\\') or (Copy(P, 1, 1) = '%')) then
+  begin
+    MsgBox('Please enter a full path for the shared plugin folder, e.g.' + #13#10 + DefaultSharedPluginPath, mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+  if IsInsideClaudeProfile(P) then
+  begin
+    MsgBox('The shared plugin folder must be OUTSIDE every Claude profile folder (.claude, .claude-*):' + #13#10 + P,
+           mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if (PluginPathPage <> nil) and (PageID = PluginPathPage.ID) then
+    Result := not UseSharedPlugin;
+end;
+
+// Remembered at ssPostInstall with the Clarion paths. configure.ps1 owns PluginMarketplacePath itself
+// (it runs as the original user and writes it only once the folder exists); only the extra profile list,
+// which is purely a wizard convenience, is kept here.
+procedure SavePluginLocationChoice;
+begin
+  if UseSharedPlugin then
+    RegWriteStringValue(HKCU, PluginRegKey, 'PluginMarketplaceExtraProfiles', Trim(PluginPathPage.Values[1]));
+end;
+
 procedure InitializeWizard;
 var
   DetectedMsg: string;
@@ -1396,6 +1537,8 @@ begin
   ClarionPathPage.Values[1] := ComposeField(C111Path, C111Extra);
   ClarionPathPage.Values[2] := ComposeField(C11Path, C11Extra);
   ClarionPathPage.Values[3] := ComposeField(C10Path, C10Extra);
+
+  CreatePluginLocationPages;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -1454,6 +1597,15 @@ begin
     begin
       MsgBox('At least one Clarion version path is required.' + #13#10 +
              'Please enter the path to your Clarion installation.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+
+  if (PluginPathPage <> nil) and (CurPageID = PluginPathPage.ID) then
+  begin
+    if not ValidatePluginPathPage then
+    begin
       Result := False;
       Exit;
     end;
@@ -1756,5 +1908,6 @@ begin
     MirrorExtras(2, 'clarion11');
     MirrorExtras(3, 'clarion10');
     SaveClarionPaths;
+    SavePluginLocationChoice;
   end;
 end;

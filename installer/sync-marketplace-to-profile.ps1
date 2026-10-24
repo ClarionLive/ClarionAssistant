@@ -3,16 +3,34 @@
 # the repo so your local Claude Code picks them up. See marketplace/README.md.
 #
 # Usage:  pwsh installer\sync-marketplace-to-profile.ps1 [-WhatIf]
+#
+# GH #214: when setup was told to keep the marketplace in a SHARED folder (registry
+# HKCU\Software\ClarionAssistant\PluginMarketplacePath), that folder is the default -Dest, because it is
+# what the add-in and every registered profile read. Otherwise the default profile's marketplace folder,
+# as before. Pass -Dest to override either.
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     # Repo marketplace folder (source). Defaults to ..\marketplace relative to this script.
     [string]$Source = (Join-Path (Split-Path $PSScriptRoot -Parent) 'marketplace'),
-    # Live profile marketplace folder (destination = what Claude Code reads).
-    [string]$Dest = (Join-Path $env:USERPROFILE '.claude\plugins\marketplaces\clarionassistant-marketplace')
+    # Live marketplace folder (destination = what Claude Code reads). Default: see the header.
+    [string]$Dest = '',
+    # Test hook: the registry key holding PluginMarketplacePath.
+    [string]$RegistryKey = 'HKCU:\Software\ClarionAssistant'
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $Dest) {
+    $shared = $null
+    try { $shared = (Get-ItemProperty -Path $RegistryKey -Name 'PluginMarketplacePath' -ErrorAction Stop).PluginMarketplacePath } catch { }
+    if ($shared) {
+        $Dest = [Environment]::ExpandEnvironmentVariables($shared)
+        Write-Host "Using the shared plugin location from the registry." -ForegroundColor DarkGray
+    } else {
+        $Dest = Join-Path $env:USERPROFILE '.claude\plugins\marketplaces\clarionassistant-marketplace'
+    }
+}
 
 if (-not (Test-Path (Join-Path $Source '.claude-plugin\marketplace.json'))) {
     throw "Source does not look like the marketplace folder: $Source"
