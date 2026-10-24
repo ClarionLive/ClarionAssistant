@@ -161,12 +161,23 @@ Clarion Assistant's own terminals find the plugin in this order: the shared fold
 
 An upgrade keeps a shared install shared: the page starts on the choice you made last time, and choosing the default profile on a machine whose default profile uses the shared folder leaves the shared folder in place rather than moving the plugin back without asking.
 
+<!-- release-docs: covered=hover -->
+### Hover cards end in a bar with their location links and Open Structure Designer, by geircodes ([#270](https://github.com/ClarionLive/ClarionAssistant/issues/270))
+
+In the CA Editor and CA Embeditor, a hover card now ends in a bar like the one Monaco draws under a problem hover (View Problem / Quick Fix): the status-bar background under a thin rule.
+
+- **The card's location links move into the bar**, so they are always in the same place. That is every line outside a code block that holds only `File.clw:12` links: a declaration → implementation pair, a 📍 line, or two link lines together. A link with other text on its line stays in the card, and a card with no such line looks as before. In the CA Embeditor a link to the procedure's own module still reads *line N* and stays in the embeditor, and Back after clicking it still returns to where you hovered.
+- **Control cards and WINDOW / REPORT header cards offer Open Structure Designer.** The label shows the key the Structure Designer command is on under your key profile (Ctrl+D, or Ctrl+Shift+D under the VS Code, Visual Studio and Notepad++ profiles). A click puts the cursor where you hovered, closes the card and does what that key does. It is not offered in a plain file without the designer overlay, while a designer is open, or on FILE, KEY, MEMO and APPLICATION cards.
+- **The bar stays visible on tall cards.** A routine card that shows the first lines of its body scrolls behind the bar.
+- **Attribute chips stay in the card** and work as before.
+
 ### Thanks
 
 - **[@msarson](https://github.com/msarson)** &mdash; [#281](https://github.com/ClarionLive/ClarionAssistant/issues/281): language server 1.0.9, the spec for the new attribute-edit links, and the reference client they were checked against.
 - **[@geircodes](https://github.com/geircodes)** &mdash; the attribute cards for WINDOW, APPLICATION and REPORT headers and for FILE declarations in 1.0.9 ([msarson/Clarion-Extension#745](https://github.com/msarson/Clarion-Extension/pull/745), [#746](https://github.com/msarson/Clarion-Extension/issues/746)), and the link form agreed with Mark in [#731](https://github.com/msarson/Clarion-Extension/issues/731).
 - **[@geircodes](https://github.com/geircodes)** &mdash; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280): the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix.
 - **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#214](https://github.com/ClarionLive/ClarionAssistant/issues/214): the request for a shared plugin location, with the three duplicated lookups, the install paths that must not move, and the uninstall rules already worked out.
+- **[@geircodes](https://github.com/geircodes)** &mdash; [#270](https://github.com/ClarionLive/ClarionAssistant/issues/270): the hover footer bar, its patch and tests, and the sticky fix for tall cards.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
 
 ## What's New in v6.1

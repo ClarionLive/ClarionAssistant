@@ -326,6 +326,52 @@ async function main() {
         }
     }
 
+    // GH #270: the hover footer row. With the designer available, the control and WINDOW cards end in a
+    // footer row (Open Structure Designer); the chips stay in the card, live and trusted as before, and the
+    // FILE, KEY and MEMO cards (which list attributes too) get no designer action.
+    section('GH #270: the footer row leaves every chip in the card (the REAL v1.0.9 cards, designer available)');
+    {
+        const posOf = (name) => ({ lineNumber: FX.cards[name].line, column: FX.cards[name].column });
+        const designerPage = (e) => {
+            e.fileMode = false; e.designerEnabled = false; e.designerSession = null;
+            e.keyEntryById = (id) => id === 'structureDesigner' ? { id, def: 'Ctrl+D', run() { } } : null;
+            e.effectiveChord = () => 'Ctrl+D';
+        };
+        const showAll = async (e, md, pos) => {
+            let out;
+            e.providers.hover[1].provideHover(e.model, pos).then(v => { out = v; });
+            e.reply('localHover', { contents: null });
+            await flush();
+            e.reply('hover', { contents: md });
+            await flush();
+            return (out && out.contents) || [];
+        };
+        for (const name of ['button', 'window', 'file', 'key', 'memo']) {
+            const e = load({ lines: FX.lines }); rig(e); designerPage(e);
+            const raw = FX.cards[name].markdown;
+            const c = await showAll(e, raw, posOf(name));
+            const want = linksOf(raw).length;
+            const designer = name === 'button' || name === 'window';
+            check(name + ' card: ' + (designer ? 'the card, then a footer row with the designer action' : 'one entry, no designer action'),
+                designer ? c.length === 2 && /^\[Open Structure Designer \(Ctrl\+D\)\]\(command:clarion\.openStructureDesigner /.test(c[1].value) : c.length === 1,
+                JSON.stringify(c.map(x => x.value.slice(0, 60))));
+            check(name + ' card: all ' + want + ' chips stay in the card, live, trusted for the edit command only',
+                !!c[0] && linksOf(c[0].value).length === want && trustedForEditOnly(c[0]), c[0] && linksOf(c[0].value).length);
+            if (designer) check(name + ' card: the footer row holds no chip and is trusted for the designer only',
+                !!c[1] && linksOf(c[1].value).length === 0 && !!c[1].isTrusted && c[1].isTrusted.enabledCommands.join() === 'clarion.openStructureDesigner',
+                JSON.stringify(c[1] && c[1].isTrusted));
+        }
+        {
+            const e = load({ lines: FX.lines }); const log = rig(e); designerPage(e);
+            const c = await showAll(e, FX.cards.button.markdown, posOf('button'));
+            const lk = linksOf((c[0] && c[0].value) || '').find(x => x.name === 'DEFAULT');
+            const ln = FX.cards.button.line, before = e.model.getLineContent(ln);
+            if (lk) click(e, lk.href);
+            check('button: with the footer row shown, the DEFAULT chip still edits the declaration line',
+                c.length === 2 && !!lk && e.model.getLineContent(ln) === before + ',DEFAULT' && log.edits.length === 1, e.model.getLineContent(ln));
+        }
+    }
+
     section('refusal: plain names where the line cannot be edited (control, WINDOW and FILE cards)');
     {
         const cases = [

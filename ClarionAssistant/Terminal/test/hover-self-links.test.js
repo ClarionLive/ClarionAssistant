@@ -46,6 +46,9 @@ function rig(opts) {
 const click = (e, href) => e.linkOpeners[0].open(uriOf(href));
 const opened = (e) => e.requests('openLocation');
 
+// Every entry of a hover answer, joined: the card, then (GH #270) the footer row its location links moved to.
+const cardText = (h) => h && h.contents && h.contents.length ? h.contents.map(c => c && c.value).filter(v => v != null).join('\n') : undefined;
+
 // The server's card through the REAL LSP hover provider (no local card).
 async function serverCard(e, md) {
     let out;
@@ -54,7 +57,7 @@ async function serverCard(e, md) {
     await flush();
     e.reply('hover', { contents: md });
     await flush();
-    return out && out.contents && out.contents[0] && out.contents[0].value;
+    return cardText(out);
 }
 // A local (index) card through the REAL local hover provider.
 async function localCard(e, md) {
@@ -62,7 +65,7 @@ async function localCard(e, md) {
     e.providers.hover[0].provideHover(e.model, POS).then(v => { out = v; });
     e.reply('localHover', { contents: md, authoritative: true });
     await flush();
-    return out && out.contents && out.contents[0] && out.contents[0].value;
+    return cardText(out);
 }
 
 // H1-b: a rig whose navigation history runs for real (load({ nav: true })): a 500-line text, the caret on
@@ -96,7 +99,7 @@ async function hoverAt(e, pos, md) {
     e.reply('hover', { contents: md });
     await flush();
     const v = out[1] || out[0];
-    return v && v.contents && v.contents[0] && v.contents[0].value;
+    return cardText(v);
 }
 
 const ROUTINE_CARD ='```clarion\nPrepareProcedure ROUTINE\n```\n\n[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)';
@@ -154,7 +157,8 @@ async function main() {
         for (const [what, opts] of [['file mode', { fileMode: true }], ['no docPath', { docPath: '' }]]) {
             const e = rig(opts);
             const md = await serverCard(e, ROUTINE_CARD);
-            check(what + ': label unchanged', md === ROUTINE_CARD, md);
+            // GH #270: the link line moves to the footer row (cardText joins the card and the footer with one \n).
+            check(what + ': label unchanged', md === ROUTINE_CARD.replace('\n\n[', '\n['), md);
             click(e, 'file:///H:/Demo/demoleg018.clw#L474');
             const nav = opened(e);
             check(what + ': the click opens the file (openLocation, line 474)', nav.length === 1 && nav[0].line === 474 && e.reveals.length === 0, JSON.stringify(nav));
@@ -178,6 +182,58 @@ async function main() {
             e.ed.pos.lineNumber === 65 && e.ed.pos.column === 8, JSON.stringify(e.ed.pos));
         e.api.cmdNavForward();
         check('...and Forward to 473', e.ed.pos.lineNumber === 473, JSON.stringify(e.ed.pos));
+    }
+
+    // ---- GH #270: the card's location links sit in the footer row, its second content entry ----
+    section('GH #270 + H1-a/H1-b: the self link in the FOOTER row stays in the embeditor, and Back still works');
+    {
+        const e = navRig();
+        let out = [];
+        e.providers.hover[0].provideHover(e.model, HOVER_POS).then(v => { out[0] = v; });
+        e.providers.hover[1].provideHover(e.model, HOVER_POS).then(v => { out[1] = v; });
+        e.reply('localHover', { contents: null });
+        await flush();
+        e.reply('hover', { contents: '```clarion\nPrepareProcedure ROUTINE\n```\n\n[demoleg018.clw:473](file:///H:/Demo/demoleg018.clw#L473)' });
+        await flush();
+        const c = out[1] && out[1].contents;
+        check('two entries: the card, then the footer row', !!c && c.length === 2, JSON.stringify(c));
+        check('the footer row holds the relabelled self link "line 473"', !!c && c[1] && c[1].value === '[line 473](file:///H:/Demo/demoleg018.clw#L473)', c && c[1] && c[1].value);
+        check('...and the card no longer does', !!c && c[0] && c[0].value.indexOf('](file:') < 0, c && c[0] && c[0].value);
+        click(e, 'file:///H:/Demo/demoleg018.clw#L473');
+        check('click: revealed here (caret on 473), NO openLocation', e.ed.pos.lineNumber === 473 && opened(e).length === 0, JSON.stringify(e.ed.pos));
+        e.api.cmdNavBack();
+        check('Back (from a footer link) returns to the HOVERED line 65 (col 8)',
+            e.ed.pos.lineNumber === 65 && e.ed.pos.column === 8, JSON.stringify(e.ed.pos));
+    }
+    {
+        const e = rig();
+        let out;
+        e.providers.hover[0].provideHover(e.model, POS).then(v => { out = v; });
+        e.reply('localHover', { contents: '```clarion\nOtherProc PROCEDURE\n```\n\n[demoleg018.clw:88](file:///H:/Demo/demoleg018.clw#L88)', authoritative: true });
+        await flush();
+        const c = out && out.contents;
+        check('a local card\'s ?ondisk link moves to the footer row, label kept',
+            !!c && c.length === 2 && c[1].value === '[demoleg018.clw:88](file:///H:/Demo/demoleg018.clw?ondisk#L88)', JSON.stringify(c));
+        click(e, 'file:///H:/Demo/demoleg018.clw?ondisk#L88');
+        const nav = opened(e);
+        check('...its click opens the .clw (openLocation 88), nothing revealed here', nav.length === 1 && nav[0].line === 88 && e.reveals.length === 0, JSON.stringify(nav));
+    }
+    {
+        const e = navRig({ fileMode: true });
+        let out = [];
+        e.providers.hover[0].provideHover(e.model, HOVER_POS).then(v => { out[0] = v; });
+        e.providers.hover[1].provideHover(e.model, HOVER_POS).then(v => { out[1] = v; });
+        e.reply('localHover', { contents: null });
+        await flush();
+        e.reply('hover', { contents: ROUTINE_CARD });
+        await flush();
+        const c = out[1] && out[1].contents;
+        check('file mode: the link sits in the footer row, label unchanged', !!c && c.length === 2 && c[1].value === '[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)', JSON.stringify(c));
+        click(e, 'file:///H:/Demo/demoleg018.clw#L474');
+        e.api.revealLineFromHost({ line: 474, column: 1 });
+        e.api.cmdNavBack();
+        check('file mode: Back (from a footer link) returns to the HOVERED line 65 (col 8)',
+            e.ed.pos.lineNumber === 65 && e.ed.pos.column === 8, JSON.stringify(e.ed.pos));
     }
 
     section('H1-b unchanged: a host reveal that is not a hover link starts at the caret');
