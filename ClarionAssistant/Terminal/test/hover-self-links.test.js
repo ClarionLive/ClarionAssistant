@@ -13,6 +13,9 @@
 //   * a ?ondisk link from the host (the server path's index fallback) opens the .clw too
 //   * the CA Editor (file mode) and an embeditor without docPath behave as before
 //   * applySource hands msg.docPath to the link code in embed mode only
+//   * H1-b (2026-10-24): Back after a hover link returns to the HOVERED position (the card's anchor), not the
+//     caret, in the CA Embeditor (revealed in place) and the CA Editor (same file, revealed by the host); a
+//     link not on the newest card, a late card for an older hover, and a non-hover reveal start at the caret
 
 const { load, flush, check, section, finish, html } = require('./local-first-loader');
 
@@ -62,7 +65,41 @@ async function localCard(e, md) {
     return out && out.contents && out.contents[0] && out.contents[0].value;
 }
 
-const ROUTINE_CARD = '```clarion\nPrepareProcedure ROUTINE\n```\n\n[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)';
+// H1-b: a rig whose navigation history runs for real (load({ nav: true })): a 500-line text, the caret on
+// line 10, and an editor fake that the page's revealLineFromHost / cmdNavBack move.
+const HOVER_POS = { lineNumber: 65, column: 8 };
+function navRig(opts) {
+    opts = opts || {};
+    const lines = [];
+    for (let i = 1; i <= 500; i++) lines.push(i === 65 ? '  DO PrepareProcedure' : i === 474 ? 'PrepareProcedure ROUTINE' : '  x = ' + i);
+    const e = load({ lines, nav: true });
+    e.ready = true;
+    e.ed = {
+        pos: { lineNumber: 10, column: 3 },
+        getPosition() { return { lineNumber: this.pos.lineNumber, column: this.pos.column }; },
+        setPosition(p) { this.pos = { lineNumber: p.lineNumber, column: p.column }; },
+        revealLineInCenter() { }, focus() { }, getModel: () => e.model,
+    };
+    e.activeEd = () => e.ed;
+    e.fileMode = !!opts.fileMode;
+    e.currentFilePath = opts.fileMode ? DOC : '';
+    e.api.setEmbedDocPath(opts.fileMode ? '' : DOC);
+    return e;
+}
+// Monaco asks BOTH hover providers for the position; the server answers the card.
+async function hoverAt(e, pos, md) {
+    let out = [];
+    e.providers.hover[0].provideHover(e.model, pos).then(v => { out[0] = v; });
+    e.providers.hover[1].provideHover(e.model, pos).then(v => { out[1] = v; });
+    e.reply('localHover', { contents: null });
+    await flush();
+    e.reply('hover', { contents: md });
+    await flush();
+    const v = out[1] || out[0];
+    return v && v.contents && v.contents[0] && v.contents[0].value;
+}
+
+const ROUTINE_CARD ='```clarion\nPrepareProcedure ROUTINE\n```\n\n[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)';
 
 async function main() {
     section('embed mode: the server card\'s link to the embeditor\'s own document');
@@ -127,6 +164,106 @@ async function main() {
     section('applySource hands docPath to the link code (embed mode only)');
     check('applySource calls setEmbedDocPath(fileMode ? \'\' : msg.docPath)',
         /function applySource\(msg\)[\s\S]{0,2500}setEmbedDocPath\(fileMode \? '' : \(msg\.docPath \|\| ''\)\)/.test(html));
+
+    // ---- H1-b: Back from a hover link returns to the HOVERED position, not the caret ----
+    section('H1-b embed mode: caret on line 10, hover line 65, click the self link to 473, Back');
+    {
+        const e = navRig();
+        const md = await hoverAt(e, HOVER_POS, '```clarion\nPrepareProcedure ROUTINE\n```\n\n[demoleg018.clw:473](file:///H:/Demo/demoleg018.clw#L473)');
+        check('the card offers the self link "line 473"', md && md.indexOf('[line 473](') >= 0, md);
+        check('click: handled', click(e, 'file:///H:/Demo/demoleg018.clw#L473') === true);
+        check('...the caret is on the ROUTINE line (473)', e.ed.pos.lineNumber === 473, JSON.stringify(e.ed.pos));
+        e.api.cmdNavBack();
+        check('Back returns to the HOVERED line 65 (col 8), not the caret line 10',
+            e.ed.pos.lineNumber === 65 && e.ed.pos.column === 8, JSON.stringify(e.ed.pos));
+        e.api.cmdNavForward();
+        check('...and Forward to 473', e.ed.pos.lineNumber === 473, JSON.stringify(e.ed.pos));
+    }
+
+    section('H1-b unchanged: a host reveal that is not a hover link starts at the caret');
+    {
+        const e = navRig();
+        await hoverAt(e, HOVER_POS, ROUTINE_CARD);      // a card was shown, but the jump is not its link
+        e.api.revealLineFromHost({ line: 473, column: 1 });
+        e.api.cmdNavBack();
+        check('Back returns to the caret line 10', e.ed.pos.lineNumber === 10, JSON.stringify(e.ed.pos));
+    }
+
+    section('H1-b: a link that is not on the newest card falls back to the caret');
+    {
+        const e = navRig();
+        await hoverAt(e, HOVER_POS, ROUTINE_CARD);
+        await hoverAt(e, { lineNumber: 200, column: 5 }, '[demoleg018.clw:300](file:///H:/Demo/demoleg018.clw#L300)');
+        click(e, 'file:///H:/Demo/demoleg018.clw#L474');   // the line-65 card's link: not the card on screen
+        e.api.cmdNavBack();
+        check('Back returns to the caret line 10', e.ed.pos.lineNumber === 10, JSON.stringify(e.ed.pos));
+        const e2 = navRig();
+        await hoverAt(e2, HOVER_POS, ROUTINE_CARD);
+        await hoverAt(e2, { lineNumber: 200, column: 5 }, '[demoleg018.clw:300](file:///H:/Demo/demoleg018.clw#L300)');
+        click(e2, 'file:///H:/Demo/demoleg018.clw#L300');
+        e2.api.cmdNavBack();
+        check('...while the newest card\'s link goes Back to ITS anchor (200, col 5)',
+            e2.ed.pos.lineNumber === 200 && e2.ed.pos.column === 5, JSON.stringify(e2.ed.pos));
+    }
+
+    section('H1-b: a late card for an older hover does not take over the anchor');
+    {
+        const e = navRig();
+        // Hover 65 (its server answer is slow), then 200; 200's card arrives first, 65's after it.
+        e.providers.hover[0].provideHover(e.model, HOVER_POS);
+        e.providers.hover[1].provideHover(e.model, HOVER_POS);
+        e.reply('localHover', { contents: null });
+        await flush();
+        const slow = e.pending('hover')[0];
+        const p200 = { lineNumber: 200, column: 5 };
+        e.providers.hover[0].provideHover(e.model, p200);
+        e.providers.hover[1].provideHover(e.model, p200);
+        e.reply('localHover', { contents: null });
+        await flush();
+        e.reply('hover', { contents: '[demoleg018.clw:300](file:///H:/Demo/demoleg018.clw#L300)' });
+        await flush();
+        e.reply(slow, { contents: ROUTINE_CARD });              // Monaco discards it: the mouse moved on
+        await flush();
+        click(e, 'file:///H:/Demo/demoleg018.clw#L300');
+        e.api.cmdNavBack();
+        check('Back from the card on screen returns to ITS anchor (200, col 5)',
+            e.ed.pos.lineNumber === 200 && e.ed.pos.column === 5, JSON.stringify(e.ed.pos));
+    }
+
+    section('H1-b the CA Editor (file mode): a link to the same file, revealed by the host');
+    {
+        const e = navRig({ fileMode: true });
+        await hoverAt(e, HOVER_POS, ROUTINE_CARD);
+        click(e, 'file:///H:/Demo/demoleg018.clw#L474');
+        const nav = opened(e);
+        check('the click still posts openLocation (line 474), nothing moved yet',
+            nav.length === 1 && nav[0].line === 474 && e.ed.pos.lineNumber === 10, JSON.stringify(nav));
+        e.api.revealLineFromHost({ line: 474, column: 1 });   // the host's answer (MonacoSourceNavigator)
+        check('...the host\'s revealLine puts the caret on 474', e.ed.pos.lineNumber === 474);
+        e.api.cmdNavBack();
+        check('Back returns to the HOVERED line 65 (col 8), not the caret line 10',
+            e.ed.pos.lineNumber === 65 && e.ed.pos.column === 8, JSON.stringify(e.ed.pos));
+    }
+    {
+        const e = navRig({ fileMode: true });
+        await hoverAt(e, HOVER_POS, ROUTINE_CARD);
+        click(e, 'file:///H:/Demo/demoleg018.clw#L474');
+        e.api.revealLineFromHost({ line: 90, column: 1 });     // some other reveal (not the clicked line)
+        e.api.cmdNavBack();
+        check('file mode: a reveal to another line starts at the caret (10)', e.ed.pos.lineNumber === 10, JSON.stringify(e.ed.pos));
+        // Back left the caret on 10; a later reveal to the clicked line must not reuse the consumed origin (65).
+        e.api.revealLineFromHost({ line: 474, column: 1 });
+        e.api.cmdNavBack();
+        check('...and the hover origin is used at most once (Back = the caret line 10)', e.ed.pos.lineNumber === 10, JSON.stringify(e.ed.pos));
+    }
+    {
+        const e = navRig({ fileMode: true });
+        await hoverAt(e, HOVER_POS, '[demoleg.inc:3](file:///H:/Demo/demoleg.inc#L3)');
+        click(e, 'file:///H:/Demo/demoleg.inc#L3');             // another file: its own editor, not this one
+        e.api.revealLineFromHost({ line: 3, column: 1 });
+        e.api.cmdNavBack();
+        check('file mode: a link to another file leaves this editor\'s reveals at the caret', e.ed.pos.lineNumber === 10, JSON.stringify(e.ed.pos));
+    }
 
     finish();
 }
