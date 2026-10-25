@@ -66,9 +66,9 @@ polQ.Insurer = CLIP(LEFT(POl:Insurer))
 
 This is especially critical when JSON keys must match between different parts of the output (e.g., category ID in records must match category ID keys in a lookup object).
 
-### 4. BLOB / MEMO Fields Require FromBlob / ToBlob
+### 4. BLOB Fields Require FromBlob / ToBlob
 
-If the source/target is a Clarion BLOB or MEMO field, never use `st.SetValue(File:Blob)` / `File:Blob = st.GetValue()` — those only touch StringTheory's internal buffer and silently no-op against blob storage. Use `st.FromBlob(File:Blob)` to load and `st.ToBlob(File:Blob)` to save. See the `stringtheory` skill for the full BLOB/MEMO pairing reference.
+If the source/target is a Clarion BLOB field, never use `st.SetValue(File:Blob)` / `File:Blob = st.GetValue()`: a BLOB can't be assigned as a whole. Use `st.FromBlob(File:Blob)` to load and `st.ToBlob(File:Blob)` to save. A MEMO is assigned like a STRING: `st.SetValue(File:Memo, st:Clip)`. See the `stringtheory` skill for the full BLOB/MEMO reference.
 
 ### 5. Date Formatting
 
