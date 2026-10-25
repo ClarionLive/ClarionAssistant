@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/ClarionLive/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2011.1%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 11.1 | 12">
-  <img src="https://img.shields.io/badge/version-6.1-blue?style=for-the-badge" alt="v6.1">
+  <img src="https://img.shields.io/badge/version-6.2-blue?style=for-the-badge" alt="v6.2">
 </p>
 
 <p align="center">
@@ -55,9 +55,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New (Unreleased)
+## What's New in v6.2
 
-<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+6.2 lets MultiTerminal, VS Code and any other client that loads the clarion-assistant plugin use the Clarion IDE tools (embeds, the editor, the app tree) while Clarion is open on the same solution, moves the bundled language server to v1.0.9 with clickable attribute chips on controls, window headers and FILE declarations, ends hover cards in a bar with their location links and Open Structure Designer, and fixes CodeGraph's `.red` `{include %REDNAME%}` and `INCLUDE()` handling. It also adds a shared plugin location for people with several Claude profiles. Full notes: **[docs/releases/v6.2.0.md](docs/releases/v6.2.0.md)**.
 
 ### Upgrade notes
 
