@@ -184,8 +184,5 @@
     "",
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": {
-    "1b1bd5d": "Unscoped subject (583abdec). Documented by the README entry 'Reindex runs outside Clarion, so large solutions no longer run it out of memory' (covered=codegraph,index-ui).",
-    "b8b6ebe": "Unscoped subject (583abdec review fixes). Documented by the same entry: one writer per database, AnyCPU child with in-process fallback, index_codegraph sln_path gated by the #266 path policy."
-  }
+  "acknowledgedCommits": {}
 }

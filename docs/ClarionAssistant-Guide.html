@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.10 &middot; for Clarion.Assistant 6.1</div>
+  <div class="version-badge">User Guide &middot; v1.11 &middot; for Clarion.Assistant 6.2</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-62" class="sub">v6.2</a>
     <a href="#whats-new-61" class="sub">v6.1</a>
     <a href="#whats-new-60" class="sub">v6.0</a>
     <a href="#whats-new-59" class="sub">v5.9</a>
@@ -457,6 +458,7 @@
     <a href="#getting-started">Overview</a>
     <a href="#getting-started-requirements" class="sub">System Requirements</a>
     <a href="#getting-started-installation" class="sub">Installation</a>
+    <a href="#getting-started-plugin-location" class="sub">Plugin Location</a>
     <a href="#getting-started-first-launch" class="sub">First Launch</a>
     <a href="#getting-started-first-conversation" class="sub">Your First Conversation</a>
 
@@ -499,6 +501,7 @@
 
     <h3>Reference</h3>
     <a href="#mcp-tools">MCP Tools Reference</a>
+    <a href="#tools-outside-ide" class="sub">IDE Tools from MultiTerminal &amp; VS Code</a>
     <a href="#tools-ide-context" class="sub">IDE Context</a>
     <a href="#tools-editor-operations" class="sub">Editor Operations</a>
     <a href="#tools-app-tree" class="sub">Application Tree</a>
@@ -533,6 +536,56 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-62">v6.2 &mdash; IDE Tools from MultiTerminal and VS Code, Language Server v1.0.9, a Shared Plugin Location</h3>
+
+  <p>
+    A Claude session in MultiTerminal, VS Code or any other client that loads the clarion-assistant
+    plugin now gets the <a href="#tools-outside-ide">IDE tools</a> too &mdash; opening and editing
+    embed points, driving the editor, reading the app tree and dictionary, generating &mdash; whenever
+    Clarion is open on the same solution. The plugin's server sends each call to that Clarion, under
+    the same file-access rules as a CA tab. Editing and saving through the tools are now refused, in a
+    CA tab too, when the file in the editor is one the tools may not write (for example a template
+    under the Clarion root, <code>CLAUDE.md</code> or <code>.vscode\tasks.json</code>).
+  </p>
+
+  <p>
+    The bundled language server is now <strong>v1.0.9</strong>. Hover cards in the CA Editor and CA
+    Embeditor end in a <a href="#ca-hover-footer">footer bar</a> with the card's location links and
+    <strong>Open Structure Designer</strong>, and <a href="#ca-hover-footer">attribute chips</a> now
+    appear on WINDOW, APPLICATION and REPORT headers and on FILE, KEY, INDEX, MEMO and BLOB
+    declarations; an attribute that takes a value is inserted with its value selected. Hovering a
+    parameter, local, routine or procedure call shows the language server's card, and a link to the
+    embeditor's own module stays in the CA Embeditor. Completion no longer keeps showing a stale list,
+    and <kbd>Ctrl</kbd>+<kbd>Space</kbd> always asks the server again.
+  </p>
+
+  <p>
+    CodeGraph follows a <code>.red</code> that ends <code>{include %BIN%\%REDNAME%}</code>, reads
+    <code>INCLUDE()</code> the way the compiler does (comments skipped, conditional ones not counted
+    as missing) and names the files that did not resolve. <strong>Work With Solution</strong> no
+    longer looks like a re-index when nothing changed: the header reads <em>Checking for
+    changes...</em>, then says what the run did. The installer has a new
+    <a href="#getting-started-plugin-location">Plugin Location</a> page, for one copy of the plugin
+    shared by every Claude profile.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>After upgrading:</strong> update Clarion Assistant in the Clarion you open your solution
+    in &mdash; the IDE tools reach only a Clarion running 6.2 or later. The <strong>first CodeGraph
+    index</strong> after updating runs a full rebuild by itself; if your solution's <code>.red</code>
+    ends <code>{include %BIN%\%REDNAME%}</code>
+    (<a href="https://github.com/ClarionLive/ClarionAssistant/issues/278">#278</a>), re-index to pick
+    up the ABC and third-party classes it was missing. The <strong>first language-server
+    start</strong> is slower once while v1.0.9 rebuilds its caches. Close Claude Code and
+    MultiTerminal sessions before running the installer, or run <code>/mcp</code> to reconnect in
+    each one afterwards: a running plugin server holds files in the install folder.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v6.2.0.md">v6.2.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-61">v6.1 &mdash; Indexing Outside Clarion, a Boundary for the MCP Tools, Safer Saves</h3>
 
@@ -1213,6 +1266,49 @@
     file and restart the IDE to trigger re-detection.
   </div>
 
+  <h3 id="getting-started-plugin-location">Plugin Location</h3>
+
+  <p>
+    The installer's <strong>Plugin Location</strong> page decides where the clarion-assistant Claude
+    Code plugin is installed. It matters if you keep more than one Claude Code profile
+    (<code>CLAUDE_CONFIG_DIR</code>, for example <code>%USERPROFILE%\.claude-work</code>).
+  </p>
+
+  <ul>
+    <li>
+      <strong>Default Claude profile</strong> &mdash; the plugin goes in
+      <code>%USERPROFILE%\.claude</code>, as in earlier releases. This is the default.
+    </li>
+    <li>
+      <strong>Shared folder</strong> &mdash; the marketplace is cloned <em>once</em> into a folder
+      outside every profile (suggested:
+      <code>%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace</code>),
+      and registered as a local marketplace in <code>%USERPROFILE%\.claude</code>, in every
+      <code>%USERPROFILE%\.claude-*</code> profile setup finds, in <code>CLAUDE_CONFIG_DIR</code>, and
+      in any other profile folders you list. Plain <code>claude</code> sessions in those profiles load
+      the plugin too, and updating the shared folder (re-running setup, or <code>git pull</code> in it)
+      updates every profile.
+    </li>
+  </ul>
+
+  <p>
+    The chosen folder is kept in <code>HKCU\Software\ClarionAssistant</code>, value
+    <code>PluginMarketplacePath</code>. Clarion Assistant's own terminals look for the plugin in the
+    shared folder first, then the active profile, then <code>%USERPROFILE%\.claude</code>, and in a
+    profile's plugin cache take the newest installed version. An upgrade starts the page on the choice
+    you made last time. Uninstalling removes the registration from each profile and deletes the shared
+    folder if setup created it.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>Known limitation:</strong> uninstall cannot run as the original user, so it acts on the
+    registry of the account that runs it. If you uninstall by elevating to an administrator account
+    other than the one you work in, it leaves the shared folder and its registrations in place: run
+    <code>claude plugin marketplace remove clarionassistant-marketplace</code> in each profile, then
+    delete the folder and the <code>PluginMarketplace*</code> values under
+    <code>HKCU\Software\ClarionAssistant</code>.
+  </div>
+
   <h3 id="getting-started-first-launch">First Launch</h3>
 
   <p>
@@ -1822,8 +1918,41 @@
     nothing to re-index.
   </p>
 
+  <h4 id="ca-hover-footer">Hover footer bar and attribute chips</h4>
+
   <p>
-    You can turn either surface off under <strong>Options &rarr; Clarion Assistant &rarr; Editor
+    A hover card in the CA Editor or CA Embeditor ends in a bar, like the one Monaco draws under a
+    problem hover:
+  </p>
+
+  <ul>
+    <li><strong>Location links</strong> &mdash; the card's <code>File.clw:12</code> links (a
+      declaration and implementation pair, or a &#128205; line) sit in the bar, always in the same place.
+      In the CA Embeditor a link to the procedure's own module reads <em>line N</em> and moves within
+      the embeditor; <strong>Back</strong> then returns to the line you hovered.</li>
+    <li><strong>Open Structure Designer</strong> &mdash; on control cards and WINDOW / REPORT header
+      cards. The label shows the key the Structure Designer is on under your key profile
+      (<kbd>Ctrl</kbd>+<kbd>D</kbd>, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> under the VS Code,
+      Visual Studio and Notepad++ profiles); a click puts the cursor where you hovered and does what
+      that key does.</li>
+    <li>On a tall card the bar stays visible, and the card's body scrolls behind it.</li>
+  </ul>
+
+  <p>
+    <strong>Attribute chips</strong> stay in the card. With the bundled language server v1.0.9, the
+    cards for controls, WINDOW / APPLICATION / REPORT headers and FILE, KEY, INDEX, MEMO and BLOB
+    declarations list their attributes as chips: filled for the ones the declaration sets, outlined for
+    ones it could take. Click a flag chip to add or remove it; click a chip for an attribute that takes
+    a value (<code>TIP</code>, <code>AT</code>, <code>MSG</code>...) to insert it with its value
+    selected, ready to type over. Each change is one undo step, applies only if the lines still match
+    the card, and refreshes the card. Read-only files, text outside an embed point and the generated
+    modules of an open app show plain names instead of chips. Completion after a comma on a control or
+    header offers only the attributes it accepts, and <kbd>Tab</kbd> moves between an inserted
+    attribute's values.
+  </p>
+
+  <p>
+    You can turn the Monaco source editor or the CA Embeditor off under <strong>Options &rarr; Clarion Assistant &rarr; Editor
     Surfaces</strong>:
   </p>
 
@@ -2564,6 +2693,46 @@
     your questions and requests. This reference is provided so you know what capabilities are available.
   </p>
 
+  <h3 id="tools-outside-ide">IDE Tools from MultiTerminal, VS Code and Other Plugin Clients</h3>
+
+  <p>
+    A Claude session outside a CA tab &mdash; a MultiTerminal or VS Code terminal with the
+    clarion-assistant plugin, or any other client that loads it &mdash; gets the IDE tools on this page
+    too, while Clarion is open on the <strong>same solution</strong> as the client and runs Clarion
+    Assistant 6.2 or later. The plugin's server starts without Clarion and sends each IDE call to that
+    Clarion, which answers it as it would for a CA tab, inside the same
+    <a href="#tools-path-scope">file-access rules</a>. No Clarion Assistant pane has to be open.
+  </p>
+
+  <ul>
+    <li><strong>Clarion closed, or open on another solution:</strong> an IDE tool says so and asks you
+      to open the solution in Clarion. The documentation, CodeGraph, LSP, schema, file and search tools
+      work regardless. A Clarion that has a different solution open is never used.</li>
+    <li><strong>Two Clarions on the same solution:</strong> the call is refused until you close one, or
+      set <code>CLARION_IDE_PID</code> to the process ID of the one you mean.</li>
+    <li><strong>One IDE tool at a time across all clients:</strong> a call that arrives while another
+      client's tool is running waits up to 10 seconds, then says Clarion is busy and that nothing was
+      run. If Clarion switched to another solution meanwhile, the call says so and nothing is run.</li>
+    <li><strong>Not offered outside a CA tab:</strong> <code>execute_command</code> and
+      <code>dump_object_api</code>; there <code>inspect_ide</code> takes only <code>active_view</code>,
+      <code>editor_text</code>, <code>all_windows</code>, <code>all_pads</code> and
+      <code>app_details</code>.</li>
+    <li><strong>Visible in Clarion:</strong> each editing, saving, importing or generating call from a
+      plugin client writes <code>[ide-callback] &lt;tool&gt; from plugin client</code> to
+      <code>monaco-spike.log</code> and shows a note in Clarion's status bar.</li>
+  </ul>
+
+  <div class="info-box info-box--warning">
+    <strong>Edits are checked against the file in the editor</strong>, in a CA tab too: the editing
+    tools and <code>save_file</code> are refused, with nothing changed, when the active file is one the
+    tools may not write &mdash; a Clarion template under the Clarion root, <code>CLAUDE.md</code>,
+    <code>.mcp.json</code>, <code>.vscode\tasks.json</code>, a <code>.sln</code> or <code>.red</code>.
+    Edit those yourself, or with your assistant's own Edit tool, which asks you first. Generated
+    <code>.clw</code> modules in the solution and embed code are edited as before. One call at a time
+    per client: a long IDE call (an embeditor open, a generate) holds up that client's next call, and
+    cancelling it in the client does not stop it in Clarion.
+  </div>
+
   <h3 id="tools-ide-context">IDE Context (Read-Only)</h3>
   <p>These tools let Claude observe what you are currently working on without making any changes.</p>
   <table class="tools-table">
@@ -3034,7 +3203,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.10 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.11 &middot; for Clarion.Assistant 6.2 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->

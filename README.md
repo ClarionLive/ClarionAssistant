@@ -64,6 +64,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 Do these once after installing this release:
 
 - **Update Clarion Assistant in the Clarion you open your solution in.** The IDE tools below reach only a Clarion running Clarion Assistant 6.2 or later; an older one is named in the error, with the folder to update.
+- **The first CodeGraph index after updating is a full rebuild**, which runs by itself: the indexer now reads `INCLUDE()` differently, so an index made by 6.1 is upgraded (feature level 2 to 3), and the header reads **Rebuilding index...** while it runs. Re-index any solution whose `.red` ends `{include %BIN%\%REDNAME%}` ([#278](https://github.com/ClarionLive/ClarionAssistant/issues/278)) to pick up the ABC and third-party classes it was missing; that rebuild does it.
+- **The first language-server start after updating is slower once**: v1.0.9 rebuilds its saved caches.
+- **Close Claude Code and MultiTerminal sessions before running the installer**, or run `/mcp` to reconnect in each one afterwards: a running plugin server holds files in the install folder.
 
 <!-- release-docs: covered=ide-proxy,mcp-server,ide-tools -->
 ### MultiTerminal, VS Code and other plugin clients can use the IDE tools while Clarion is open
@@ -105,20 +108,21 @@ The first index after updating runs a full one by itself. Thanks to [@KevinErski
 
 In the CA Editor and CA Embeditor, hovering a parameter, a local variable, a routine (`DO RefreshList`) or a procedure call used to show Clarion Assistant's own quick card, which names the file but no line, and the language server was never asked. Those hovers now show the language server's card, which names the owning procedure and links the declaration. The quick card still appears when the server has nothing, is not running, or does not answer within 300 ms. For a procedure call this also fixes a wrong answer: with two libraries that both have a `Log_Write`, the card came from whichever the index found first, not from the prototype the file actually sees.
 
-- **In the CA Embeditor, a link to the procedure's own module stays in the embeditor.** The card's link reads *line 474* and a click goes to that line of the embeditor, where the routine is. It used to read `demoleg018.clw:474` and open the module's `.clw` at line 474, which is a line of the embeditor's text, not of the file on disk. A CodeGraph card's link, which is a line of the file on disk, still opens the `.clw`, as do links to other files.
+- **In the CA Embeditor, a link to the procedure's own module stays in the embeditor.** The card's link reads *line 474* and a click goes to that line of the embeditor, where the routine is. It used to read `demoleg018.clw:474` and open the module's `.clw` at line 474, which is a line of the embeditor's text, not of the file on disk. A CodeGraph card's link, which is a line of the file on disk, still opens the `.clw`, as do links to other files. **Back** after clicking a card's link to the same embeditor or CA Editor file returns to the line you hovered, not to where the caret was before.
 - **A window labelled `Window`** (`Window  WINDOW('Details'),...`) shows the WINDOW keyword's card on the keyword, not the label's.
 - **When the language server has no answer**, the CodeGraph fallback for hover and Ctrl+Click looks at every row of that name instead of the first one, so another procedure's local no longer hides a global or equate the file can see, and the CodeGraph card links its declaration.
 
 <!-- release-docs: covered=codegraph-header -->
 ### Work With Solution no longer looks like a re-index when nothing changed ([#279](https://github.com/ClarionLive/ClarionAssistant/issues/279))
 
-- **Work With Solution no longer looks like a re-index when nothing changed ([#279](https://github.com/ClarionLive/ClarionAssistant/issues/279)).** Opening a solution runs a quick check for changed files. The header used to show the "Updating..." spinner for that check every time, as if the index were being rebuilt. Now the CODEGRAPH line reads **Checking for changes...** with no spinner. As soon as the check finds changed projects it switches to **Updating...**. When an index made by an older indexer has to be rebuilt, it switches at once to **Rebuilding index...**, because that run takes minutes. When the run finishes, the line says what it did, and keeps saying it:
-  - **Up to date (checked *time*)** means nothing had changed and nothing was re-parsed.
-  - **Updated: *time*** means changed files were re-indexed.
-  - **Rebuilt (index upgrade): *time*** means the index was rebuilt for the new indexer.
-  - **Error: ...** or **Index cancelled** stays on the line until the next run.
+Opening a solution runs a quick check for changed files. The header used to show the "Updating..." spinner for that check every time, as if the index were being rebuilt. Now the CODEGRAPH line reads **Checking for changes...** with no spinner. As soon as the check finds changed projects it switches to **Updating...**. When an index made by an older indexer has to be rebuilt, it switches at once to **Rebuilding index...**, because that run takes minutes. When the run finishes, the line says what it did, and keeps saying it:
 
-  The line is dropped once something else writes the index, such as `index_codegraph` or another IDE. A run never paints its spinner over another solution's header. A run that is refused because another run holds the index restores the line. If you click Work With Solution for a second solution while the first is still being checked, the second solution is checked when the first finishes. The index window never opens for this automatic check. It still opens if the run fails, and **Reindex** and **Update** in the header show it as before.
+- **Up to date (checked *time*)** means nothing had changed and nothing was re-parsed.
+- **Updated: *time*** means changed files were re-indexed.
+- **Rebuilt (index upgrade): *time*** means the index was rebuilt for the new indexer.
+- **Error: ...** or **Index cancelled** stays on the line until the next run.
+
+The line is dropped once something else writes the index, such as `index_codegraph` or another IDE. A run never paints its spinner over another solution's header. A run that is refused because another run holds the index restores the line. If you click Work With Solution for a second solution while the first is still being checked, the second solution is checked when the first finishes. The index window never opens for this automatic check. It still opens if the run fails, and **Reindex** and **Update** in the header show it as before.
 
 <!-- release-docs: covered=completion,codegraph -->
 ### Completion no longer keeps showing a stale list, and Ctrl+Space asks again ([#280](https://github.com/ClarionLive/ClarionAssistant/issues/280), reported by geircodes)
@@ -161,6 +165,8 @@ Clarion Assistant's own terminals find the plugin in this order: the shared fold
 
 An upgrade keeps a shared install shared: the page starts on the choice you made last time, and choosing the default profile on a machine whose default profile uses the shared folder leaves the shared folder in place rather than moving the plugin back without asking.
 
+**Known limitation:** uninstall cannot run as the original user, so it acts on the registry of the account that runs it. If you uninstall by elevating to an administrator account other than the one you work in, it finds nothing recorded there and leaves the shared folder and its registrations in place. Remove them by hand in that case: `claude plugin marketplace remove clarionassistant-marketplace` in each profile, then delete the shared folder and the `PluginMarketplace*` values under `HKCU\Software\ClarionAssistant`.
+
 <!-- release-docs: covered=hover -->
 ### Hover cards end in a bar with their location links and Open Structure Designer, by geircodes ([#270](https://github.com/ClarionLive/ClarionAssistant/issues/270))
 
@@ -173,12 +179,10 @@ In the CA Editor and CA Embeditor, a hover card now ends in a bar like the one M
 
 ### Thanks
 
-- **[@msarson](https://github.com/msarson)** &mdash; [#281](https://github.com/ClarionLive/ClarionAssistant/issues/281): language server 1.0.9, the spec for the new attribute-edit links, and the reference client they were checked against.
-- **[@geircodes](https://github.com/geircodes)** &mdash; the attribute cards for WINDOW, APPLICATION and REPORT headers and for FILE declarations in 1.0.9 ([msarson/Clarion-Extension#745](https://github.com/msarson/Clarion-Extension/pull/745), [#746](https://github.com/msarson/Clarion-Extension/issues/746)), and the link form agreed with Mark in [#731](https://github.com/msarson/Clarion-Extension/issues/731).
-- **[@geircodes](https://github.com/geircodes)** &mdash; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280): the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix.
-- **[@BoxSoft](https://github.com/BoxSoft)** &mdash; [#214](https://github.com/ClarionLive/ClarionAssistant/issues/214): the request for a shared plugin location, with the three duplicated lookups, the install paths that must not move, and the uninstall rules already worked out.
-- **[@geircodes](https://github.com/geircodes)** &mdash; [#270](https://github.com/ClarionLive/ClarionAssistant/issues/270): the hover footer bar, its patch and tests, and the sticky fix for tall cards.
-- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279): the log that showed the "update" on every open was only an up-to-date check.
+- **[@geircodes](https://github.com/geircodes)** &mdash; eight merged PRs: [#276](https://github.com/ClarionLive/ClarionAssistant/pull/276) (`%REDNAME%`), [#275](https://github.com/ClarionLive/ClarionAssistant/pull/275) and [#268](https://github.com/ClarionLive/ClarionAssistant/pull/268) (INCLUDE() and `Itemize` in CodeGraph), and [#273](https://github.com/ClarionLive/ClarionAssistant/pull/273), [#277](https://github.com/ClarionLive/ClarionAssistant/pull/277), [#274](https://github.com/ClarionLive/ClarionAssistant/pull/274), [#272](https://github.com/ClarionLive/ClarionAssistant/pull/272) and [#269](https://github.com/ClarionLive/ClarionAssistant/pull/269) (hover asks the language server); [#270](https://github.com/ClarionLive/ClarionAssistant/issues/270), the hover footer bar, its patch and tests, and the sticky fix for tall cards; [#280](https://github.com/ClarionLive/ClarionAssistant/issues/280), the diagnosis of the completion cache, down to the line that keyed it, and the direction for the fix; and in language server 1.0.9, the attribute cards for WINDOW, APPLICATION and REPORT headers and FILE declarations ([msarson/Clarion-Extension#745](https://github.com/msarson/Clarion-Extension/pull/745), [msarson/Clarion-Extension#746](https://github.com/msarson/Clarion-Extension/issues/746)) and the link form agreed with Mark in [msarson/Clarion-Extension#731](https://github.com/msarson/Clarion-Extension/issues/731).
+- **[Mark Sarson](https://github.com/msarson)** &mdash; [#281](https://github.com/ClarionLive/ClarionAssistant/issues/281): language server 1.0.9, the spec for the new attribute-edit links, and the reference client they were checked against; and [#278](https://github.com/ClarionLive/ClarionAssistant/issues/278), the `%REDNAME%` include that left ABC and third-party classes out of the index.
+- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#279](https://github.com/ClarionLive/ClarionAssistant/issues/279), the log that showed the "update" on every open was only an up-to-date check; and [#271](https://github.com/ClarionLive/ClarionAssistant/issues/271), the "Library path not found" warnings.
+- **[Mike Hanson](https://github.com/BoxSoft)** &mdash; [#214](https://github.com/ClarionLive/ClarionAssistant/issues/214): the request for a shared plugin location, with the three duplicated lookups, the install paths that must not move, and the uninstall rules already worked out.
 
 ## What's New in v6.1
 
@@ -349,17 +353,6 @@ In a module with nothing named `text` declared, `x LONG(text)` hovered as *Text 
 
 The IDE's MCP server listens on port 19372, the one MultiTerminal sessions and Claude Desktop are configured with. When a new Clarion started while the previous one was still shutting down and holding that port, the new server took 19373 and stayed there, so those clients could no longer connect, even after 19372 was free again, until you restarted Clarion or edited their config. Sessions the IDE launches itself were never affected. The server now retries 19372 every 10 seconds and, once it is free, answers on both ports. The status bar shows it as `MCP: port 19373 + 19372`, and the Settings dialog's external endpoint shows the stable port. Thanks to [Jesper Z. Laugesen](https://github.com/Aarhusdk) for the diagnosis and the patch.
 
-<!-- release-docs: covered=installer,plugin -->
-### One copy of the Claude Code plugin for every Claude profile, by Mike Hanson ([#214](https://github.com/ClarionLive/ClarionAssistant/issues/214))
-
-If you keep more than one Claude Code profile (`CLAUDE_CONFIG_DIR`, e.g. `%USERPROFILE%\.claude-work`), the installer used to put the clarion-assistant plugin in `%USERPROFILE%\.claude` only. The installer now has a **Plugin Location** page:
-
-- **Default Claude profile** works as before, and stays the default.
-- **Shared folder** (suggested: `%LOCALAPPDATA%\ClarionLive\claude-plugins\marketplaces\clarionassistant-marketplace`) clones the marketplace there **once**, outside every profile. Setup then registers that folder as a local marketplace in `%USERPROFILE%\.claude`, in every `%USERPROFILE%\.claude-*` profile it finds (one with a `settings.json` or `plugins` folder), in `CLAUDE_CONFIG_DIR`, and in any other profile folders you list. Plain `claude` sessions in those profiles load the plugin too. Updating the shared folder (re-running setup, or `git pull` in it) updates every profile. Uninstalling removes the registration from each of those profiles, and deletes the folder if setup created it.
-
-Clarion Assistant's own terminals find the plugin in this order: the shared folder, then the active profile (`CLAUDE_CONFIG_DIR`, else `%USERPROFILE%\.claude`), then `%USERPROFILE%\.claude`. In each profile it looks at the marketplace first and then the plugin cache. In the cache it now takes the newest installed version, rather than looking only for a `1.0.0` folder that recent plugin versions never create. The MultiTerminal plugin is looked up the same way, and is also found in a `multiterminal-marketplace` folder next to the shared one. The chosen folder is kept in `HKCU\Software\ClarionAssistant`, value `PluginMarketplacePath`. `installer\sync-marketplace-to-profile.ps1` copies to that folder when it is set.
-
-An upgrade keeps a shared install shared: the page starts on the choice you made last time, and choosing the default profile on a machine whose default profile uses the shared folder leaves the shared folder in place rather than moving the plugin back without asking.
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; the clickable hover chips ([#263](https://github.com/ClarionLive/ClarionAssistant/issues/263)), the client side of his [msarson/Clarion-Extension#731](https://github.com/msarson/Clarion-Extension/issues/731) proposal; two merged PRs, [#257](https://github.com/ClarionLive/ClarionAssistant/pull/257) (hover and Ctrl+Click fallbacks scoped to the file's includes) and [#258](https://github.com/ClarionLive/ClarionAssistant/pull/258) (`ITEMIZE` members under their real names); and [#262](https://github.com/ClarionLive/ClarionAssistant/issues/262), the range tools' missing column rules.
