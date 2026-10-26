@@ -55,6 +55,21 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+<!-- release-docs: covered=skills -->
+### The StringTheory skill is rewritten and checked against the StringTheory source, by geircodes ([PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282))
+
+The bundled `stringtheory` skill told Claude to use `FromBlob` / `ToBlob` on a MEMO field. Those methods take a `*BLOB`, so that code does not compile; a MEMO is a plain string and is assigned like one. The `jfiles` skill repeated the advice and is corrected too. The skill also listed `Encrypt` / `Decrypt` methods that StringTheory does not have.
+
+geircodes ([@geircodes](https://github.com/geircodes)) rewrote the skill with every rule checked against `StringTheory.clw` / `.inc` 3.90, and added the silent failures an agent hits when writing StringTheory code: arguments used at their full declared size unless clipped, the three return conventions (`TRUE`/`FALSE`, `st:ok` which is zero, `st:notFound`), the `base64` and `encoding` properties that `SetValue` and `Append` leave behind, the US-ASCII default code page, `UrlEncode(Text)` binding to the flags overload and encoding the object's own value, overlapping `Count` matches, `Equals` clipping, `Random` / `MakeGuid` being predictable, and who owns the memory returned by `GetValuePtr`, `ToCstring`, `Utf16To8` and `_StealValue`. The skill's solution-specific example is replaced by a generic one. We read the rules against the StringTheory 3.70 source as well: the ones that need a newer library (a negative end in `Slice`, the `Normalize` property, `st:min`, `st:CSVDecode`) now say which version added them, and `Equals(StringTheory)` is noted as always comparing exact lengths.
+
+### Thanks
+
+- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source.
+
 ## What's New in v6.2
 
 6.2 lets MultiTerminal, VS Code and any other client that loads the clarion-assistant plugin use the Clarion IDE tools (embeds, the editor, the app tree) while Clarion is open on the same solution, moves the bundled language server to v1.0.9 with clickable attribute chips on controls, window headers and FILE declarations, ends hover cards in a bar with their location links and Open Structure Designer, and fixes CodeGraph's `.red` `{include %REDNAME%}` and `INCLUDE()` handling. It also adds a shared plugin location for people with several Claude profiles. Full notes: **[docs/releases/v6.2.0.md](docs/releases/v6.2.0.md)**.
