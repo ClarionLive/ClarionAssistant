@@ -7,7 +7,7 @@ version: 1.5.0
 
 # CapeSoft StringTheory for Clarion
 
-Verified against StringTheory 3.90 (`StringTheory.clw` / `.inc`). Other versions may differ; when in doubt, resolve `StringTheory.clw` through the .red and read the method.
+Verified against StringTheory 3.90 (`StringTheory.clw` / `.inc`); the rules below also hold for 3.70 except where a version is given in brackets. When in doubt, resolve `StringTheory.clw` through the .red and read the method; `StringTheory:Version` in the .inc says which version is installed.
 
 ## 1. File fields
 
@@ -64,15 +64,15 @@ String arguments are used at full `SIZE()`, trailing spaces included. Literals a
 ## 6. Split and Lines
 
 - `Split(sep)` fills the Lines queue and leaves the value unchanged. Loop `i = 1 TO st.Records()` with `st.GetLine(i)`: `GetLine` returns `''` both for an empty line and out of range.
-- `Split(',', '"')` keeps separators inside quotes. 4th parameter `true` strips the quotes; `st:CSVDecode` also turns `""` into `"`.
+- `Split(',', '"')` keeps separators inside quotes. 4th parameter `true` strips the quotes; `st:CSVDecode` (3.80 and later) also turns `""` into `"`.
 - `Split` frees the old Lines. `Free()` keeps the Lines; `Free(true)` clears both.
 
 ## 7. UTF-8 / ANSI: silent data loss
 
 1. The default code page is `st:CP_US_ASCII`: accented letters (é ü ø) are lost. Always pass one (`st:CP_WINDOWS_1252`, `st:CP_ACP`).
-2. Conversion depends on the `encoding` property, which `SetValue` doesn't change. `ToAnsi()` on a fresh object does nothing and returns `FALSE`: pass `st:EncodeUtf8`. On a reused object a second `ToUnicode` does nothing and returns `TRUE`. Reset with `st.encoding = st:EncodeAnsi`, or use a fresh instance.
+2. Conversion depends on the `encoding` property, which `SetValue(string)` doesn't change (`SetValue(otherSt)` copies it). `ToAnsi()` on a fresh object does nothing and returns `FALSE`: pass `st:EncodeUtf8`. On a reused object a second `ToUnicode` does nothing and returns `TRUE`. Reset with `st.encoding = st:EncodeAnsi`, or use a fresh instance.
 3. `JsonDecode` writes `\uXXXX` escapes in the current encoding. Convert UTF-8 to ANSI **before** `JsonDecode`, not after.
-4. `ToAnsi` from UTF-8 applies NFKC normalization (`²` → `2`) unless `st.Normalize = false` is set first: not safe where text must round-trip.
+4. `ToAnsi` from UTF-8 applies NFKC normalization (`²` → `2`) unless `st.Normalize = false` is set first (property since 3.85; earlier versions always normalize): not safe where text must round-trip.
 
 ```clarion
 st.ToAnsi(st:EncodeUtf8, st:CP_WINDOWS_1252)       ! UTF-8 -> Windows-1252
@@ -90,12 +90,12 @@ n   = st.Replace(CLIP(a), CLIP(b), 0, 1, 0, st:noCase)   ! count (0 = all), star
 
 - `Replace` returns the number of replacements and doesn't replace text it inserted.
 - `Count` counts overlapping matches (`'aa'` in `'aaaa'` is 3); pass `false` as the 7th parameter for non-overlapping. The 6th, `softClip`, lets a match extend past `pEnd`; it doesn't clip.
-- `Equals(string)` ignores trailing spaces on both sides by default (`ST:Clip`) and is case-sensitive; add `st:NoCaseCompare` to ignore case. For binary data: `st.Equals(Buf[1 : Len], ST:SimpleCompare)`. `Equals(StringTheory)` compares exact lengths unless `ST:Clip` is passed.
+- `Equals(string)` ignores trailing spaces on both sides by default (`ST:Clip`) and is case-sensitive; add `st:NoCaseCompare` to ignore case. For binary data: `st.Equals(Buf[1 : Len], ST:SimpleCompare)`. `Equals(StringTheory)` always compares exact lengths: `ST:Clip` applies to the string form only.
 - `StartsWith(s, FALSE)` / `EndsWith(s, FALSE)` are case-insensitive (the default is case-sensitive). An empty `s` always matches: `IF Prefix <> '' AND st.StartsWith(Prefix, FALSE)`.
 
 ## 9. Extracting
 
-- `Sub(start, length)` (length defaults to 1) vs `Slice(start, end)` (defaults to the end; a negative end counts back). Both return `''` out of range.
+- `Sub(start, length)` (length defaults to 1) vs `Slice(start, end)` (defaults to the end; a negative end counts back from the end in 3.83 and later, but means the end of the string before that). Both return `''` out of range.
 - `Between(left, right)` excludes the delimiters and returns `''` if either is missing. For several occurrences loop with `FindBetween(left, right, start, end)`.
 - `Clip()` removes trailing spaces, `Trim()` both sides. `UnQuote()` removes the first and last character only if both are the quote; `Quote()` adds `"` unless already quoted.
 - `FileNameOnly(p [, includeExtension])`, `PathOnly(p)`, `ExtensionOnly(p)` return a string, don't change the value, and handle `\` and `/`. `PathOnly` has no trailing `\` (`''` when there is no path); `ExtensionOnly` has no dot.
@@ -109,7 +109,7 @@ n   = st.Replace(CLIP(a), CLIP(b), 0, 1, 0, st:noCase)   ! count (0 = all), star
 - **`st.UrlEncode(Text)` encodes the object's value, not `Text`.** The overload that takes text has no defaults, so a single string binds to `UrlEncode(long flags = 0)`. Use `st.SetValue(Text, st:Clip)` first.
 - By default `-` `_` `.` `~` are encoded; `st:php` keeps them (RFC 3986). Space becomes `+`; `st:BigPlus` gives `%20`. `&` `=` `?` `:` `/` `\` `$` are encoded unless `st:Parameters`, `st:NoColon` or `st:dos` is passed.
 - Bytes are encoded as they are: convert non-ASCII text with `ToUnicode(st:EncodeUtf8, cp)` first.
-- `JsonEncode()` only escapes the value for use inside a JSON string; it adds no quotes. `st:min` escapes only `\` and `"`. For JSON documents use jFiles (see the `jfiles` skill).
+- `JsonEncode()` only escapes the value for use inside a JSON string; it adds no quotes. `st:min` (3.82 and later) escapes only `\` and `"`. For JSON documents use jFiles (see the `jfiles` skill).
 
 ## 12. Pointers and memory ownership
 
