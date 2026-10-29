@@ -6,19 +6,20 @@ using ClarionCodeGraph.Parsing;
 
 namespace ClarionAssistant.Services
 {
-    /// <summary>A buffer-local hover answer. <see cref="Authoritative"/> is true when the word resolved to
-    /// something declared right here (a procedure of this file), so no other source can name a better
-    /// declaration and the caller may skip the language server.</summary>
+    /// <summary>A buffer-local hover answer. <see cref="Authoritative"/> is true when no other source can name a
+    /// better declaration and the caller may skip the language server: the live dictionary's card and an index
+    /// card that is not a procedure (LocalLayerHandlers.HoverAt). No buffer card sets it.</summary>
     public sealed class LocalHoverResult
     {
         public string Markdown;
         public bool Authoritative;
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
-        /// deadline. Also set for every DATA label declared in the buffer (procedure and routine locals, module
-        /// data, GROUP/QUEUE/CLASS structures), for a routine and for a parameter, whose server card carries scope,
-        /// field count or the owning procedure, and a link to the declaration - a slice's line is not the file's, so
-        /// this card cannot link it. Never set together with <see cref="Authoritative"/>.</summary>
+        /// deadline. Set for every buffer card but a local class member: DATA labels (procedure and routine locals,
+        /// module data, GROUP/QUEUE/CLASS structures), routines, parameters and procedures, whose server card
+        /// carries scope, field count, the owning procedure or the prototype, and a link to the declaration - a
+        /// slice's line is not the file's, so this card cannot link it. Never set together with
+        /// <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
         public string Kind;
@@ -931,13 +932,10 @@ namespace ClarionAssistant.Services
                         string detail, doc;
                         BuildVarDetail(rest, null, out detail, out doc);
                         string sig = string.IsNullOrEmpty(detail) ? word : word + "  " + detail;
-                        var card = Card(sig, "local", fileName, "local");
                         // Any DATA label: the server's card says more (scope, field count, a link to the
                         // declaration), so this one is only its FALLBACK (GH #250 semantics). The page waits for the
                         // server at most FALLBACK_LSP_DEADLINE_MS and shows this card if the server misses it.
-                        card.Authoritative = false;
-                        card.Fallback = true;
-                        return card;
+                        return Card(sig, "local", fileName, "local");
                     }
                     var ps = r.Kind == "proc" ? _params : (r.Kind == "owner" ? _ownerParams : null);
                     if (ps != null)
@@ -946,15 +944,14 @@ namespace ClarionAssistant.Services
                             {
                                 // A parameter: the server's card names the procedure and links its PROCEDURE line,
                                 // which this one cannot (a slice's line is not the file's), so this is its FALLBACK.
-                                var pc = Card(string.IsNullOrEmpty(p.Type) ? p.Name : p.Name + "  " + p.Type, "parameter", fileName, "parameter");
-                                pc.Authoritative = false;
-                                pc.Fallback = true;
-                                return pc;
+                                return Card(string.IsNullOrEmpty(p.Type) ? p.Name : p.Name + "  " + p.Type, "parameter", fileName, "parameter");
                             }
                 }
                 // Procedures, narrowest declaration first: a procedure's local MAP, the header MAP (global in
                 // a PROGRAM file, module in a MEMBER one), then an implementation whose prototype is not in
-                // this buffer - it is declared elsewhere, so no scope is claimed for it.
+                // this buffer - it is declared elsewhere, so no scope is claimed for it. Each is the server's
+                // FALLBACK: its card links the prototype and the implementation, and it finds the prototype the
+                // buffer cannot see (an INCLUDE in the MAP, the MEMBER parent's MAP).
                 var lp = FindLocalMapProc(word);
                 if (lp != null)
                     return Card(lp.Proto, "local procedure of " + lp.Owner, fileName, "procedure");
@@ -969,10 +966,7 @@ namespace ClarionAssistant.Services
                     {
                         // A routine: the server's card names its procedure and links the ROUTINE line, so this
                         // one is its FALLBACK.
-                        var rc = Card(name + " ROUTINE", "routine", fileName, "routine");
-                        rc.Authoritative = false;
-                        rc.Fallback = true;
-                        return rc;
+                        return Card(name + " ROUTINE", "routine", fileName, "routine");
                     }
                 return null;
             }
@@ -985,12 +979,13 @@ namespace ClarionAssistant.Services
                     if (string.Equals(kv.Key, member, StringComparison.OrdinalIgnoreCase))
                     {
                         var r = Card(kv.Key + "  " + kv.Value, "member of " + cls.Name, fileName, "member");
-                        r.Authoritative = false;   // inherited overrides/docs may still come from the LSP
+                        r.Fallback = false;   // shown with the server's: inherited overrides/docs may still come from the LSP
                         return r;
                     }
                 return null;
             }
 
+            // Every buffer card is the server's FALLBACK (see LocalHoverResult.Fallback).
             private static LocalHoverResult Card(string sig, string what, string fileName, string kind)
             {
                 var bits = new List<string> { what };
@@ -998,7 +993,7 @@ namespace ClarionAssistant.Services
                 return new LocalHoverResult
                 {
                     Markdown = "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits),
-                    Authoritative = true,
+                    Fallback = true,
                     Kind = kind
                 };
             }

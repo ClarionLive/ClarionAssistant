@@ -66,9 +66,14 @@ The bundled `stringtheory` skill told Claude to use `FromBlob` / `ToBlob` on a M
 
 geircodes ([@geircodes](https://github.com/geircodes)) rewrote the skill with every rule checked against `StringTheory.clw` / `.inc` 3.90, and added the silent failures an agent hits when writing StringTheory code: arguments used at their full declared size unless clipped, the three return conventions (`TRUE`/`FALSE`, `st:ok` which is zero, `st:notFound`), the `base64` and `encoding` properties that `SetValue` and `Append` leave behind, the US-ASCII default code page, `UrlEncode(Text)` binding to the flags overload and encoding the object's own value, overlapping `Count` matches, `Equals` clipping, `Random` / `MakeGuid` being predictable, and who owns the memory returned by `GetValuePtr`, `ToCstring`, `Utf16To8` and `_StealValue`. The skill's solution-specific example is replaced by a generic one. We read the rules against the StringTheory 3.70 source as well: the ones that need a newer library (a negative end in `Slice`, the `Normalize` property, `st:min`, `st:CSVDecode`) now say which version added them, and `Equals(StringTheory)` is noted as always comparing exact lengths.
 
+<!-- release-docs: covered=hover -->
+### Hovering a procedure declared in the file you are editing shows the language server's card, by geircodes ([PR #286](https://github.com/ClarionLive/ClarionAssistant/pull/286))
+
+6.2 made hover ask the language server for parameters, locals, routines and procedures found through the index. One case still showed only Clarion Assistant's quick card: a procedure the file itself prototypes or implements (`InventoryDetailToolBar PROCEDURE` in its own module, a procedure in the module's MAP, or one in a procedure's local MAP). That card names the file but no line, and it cannot see a prototype the file does not hold, so a procedure implemented in a MEMBER module and prototyped in a file INCLUDEd by the MAP showed its implementation line as the declaration. Those hovers now show the language server's card, which links the prototype and then the implementation (`protos.inc:1` → `mod.clw:5`). The quick card still appears when the server has nothing, is not running, or does not answer within 300 ms. A member of a CLASS declared in the file keeps both cards, as before, since the server may know inherited members.
+
 ### Thanks
 
-- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source.
+- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source; [PR #286](https://github.com/ClarionLive/ClarionAssistant/pull/286): the last hover card that skipped the language server, procedures declared in the file, now asks it too, with a 10,000-hover measurement behind the change.
 
 ## What's New in v6.2
 
