@@ -280,6 +280,10 @@ static class SymbolIndexTest
             // A local first, then a module variable of another file (visible to the fallback, as before).
             Sym(cn, "LOC_MOD", "variable", dir + "Other.clw", "local", "LONG", 1, "OtherProc");
             Sym(cn, "LOC_MOD", "variable", dir + "Util.clw", "module", "LONG", 1);
+            // Only INCLUDE statement sites of a file of this name, in a file nothing includes (so the closure
+            // above is unchanged). The indexer leaves scope empty on these rows.
+            Sym(cn, "SyncM.inc", "include", dir + "ZLib.inc", "", null, 1);
+            Sym(cn, "SyncM.inc", "include", dir + "ZOther.inc", "", null, 1);
         }
         SymbolIndex.Release(db);
         var idx2 = SymbolIndex.For(db);
@@ -317,6 +321,9 @@ static class SymbolIndexTest
                 s => string.Equals(Path.GetFileName(s.FilePath), "C.inc", StringComparison.OrdinalIgnoreCase));
             Check(rejected != null && string.Equals(Path.GetFileName(rejected.FilePath), "Common.inc", StringComparison.OrdinalIgnoreCase),
                   "E.26", "a row the caller's unreachable test rejects is skipped and the next row is tried");
+            var inc = SymbolIndex.FirstVisibleByName(p, "SyncM.inc", null, memClosureDbs);
+            Check(inc == null, "E.28", "an 'include' row is the INCLUDE's site, never a declaration -> null, not a jump into the including file: "
+                  + (inc == null ? "null" : inc.FilePath));
         }
 
         Check(mem.Contains("A.inc") && !mem.Contains("bad<name.inc"), "E.21", "a malformed include row is skipped, the rest of the closure is intact");
