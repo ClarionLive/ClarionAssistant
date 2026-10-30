@@ -277,6 +277,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs",
                            "Services\RedResolution.cs", "CodeGraph\Parsing\SolutionParser.cs", "CodeGraph\Parsing\Models\SolutionProject.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # Ctrl+Click on the file name in INCLUDE/MODULE/MEMBER/LINK: which name the cursor is on, and where the
+            # .red puts it for the clicked file's project (not a CodeGraph name lookup, which opened the includer).
+            @{ Name = "FileRefTarget.Test"
+               Sources = @("tests\FileRefTarget.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
+                           "Services\FileRefTarget.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
             @{ Name = "InstanceCoordination.ReRegister.Test"
