@@ -986,9 +986,9 @@ foreach ($ver in $TargetVersions) {
         # copy's return: this is the check that actually proved an install undamaged on 2026-09-10.
         $DeployedDll = Join-Path $DeployDir "ClarionAssistant.dll"
         $BuiltDll    = Join-Path $BuildOutput "ClarionAssistant.dll"
-        if ((Test-Path $DeployedDll) -and (Test-Path $BuiltDll)) {
+        if ((Test-Path -LiteralPath $DeployedDll) -and (Test-Path -LiteralPath $BuiltDll)) {
             try {
-                if ((Get-FileHash $DeployedDll -Algorithm SHA256).Hash -ne (Get-FileHash $BuiltDll -Algorithm SHA256).Hash) {
+                if ((Get-FileHash -LiteralPath $DeployedDll -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $BuiltDll -Algorithm SHA256).Hash) {
                     Write-Host "  FAIL  ClarionAssistant.dll does NOT match the build it came from." -ForegroundColor Red
                     Write-Host "        deployed: $DeployedDll" -ForegroundColor Red
                     Write-Host "        built:    $BuiltDll" -ForegroundColor Red
