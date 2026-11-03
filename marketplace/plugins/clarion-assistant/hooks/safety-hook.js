@@ -6,18 +6,36 @@
  * or gate dangerous operations. Designed for multi-agent environments
  * where one rogue command can cause real damage.
  *
- * Matchers registered in settings.local.json:
- *   - Bash                                    (shell commands)
- *   - Read                                    (file reads)
- *   - Write|Edit                              (file writes)
- *   - mcp__sqlite__write_query|mcp__mssql__query  (SQL execution)
+ * Registered ONCE in hooks.json (GH #294), as a single PreToolUse entry whose
+ * matcher is
+ *   Bash|Read|Write|Edit|mcp__sqlite__write_query|mcp__mssql__query
+ * Claude Code reads a matcher made only of letters, digits, _ - , | as an
+ * exact list of tool names, so that is six exact matches, not a regex. The
+ * four entries it replaces (Bash / Read / Write|Edit / the SQL tools) each
+ * ran this same script; one entry means one node process per tool call, and
+ * the timeout is counted once.
  *
  * Decision outcomes:
  *   - DENY:  Blocked outright, agent gets rejection reason.
  *   - ASK:   User prompted for approval before execution.
  *   - ALLOW: No output, exit 0 (fast path).
  *
- * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms.
+ * WHAT A TIMEOUT MEANS. hooks.json gives this hook 10 s. The Claude Code hooks
+ * reference: "On PreToolUse, a timed-out command hook doesn't block the tool
+ * call. The call continues through the normal permission flow, so don't count
+ * on a stalled hook to act as a gate." So under timeout this hook is ADVISORY:
+ * the tool call runs as if the hook had said nothing, and only Claude Code's
+ * own permission rules apply. The script finishes in 70-200 ms once node is
+ * up; the 98 timeouts in GH #294 (9-21 s recorded against a 5 s limit) were
+ * node failing to START on a starved machine, which no change here prevents.
+ * Claude Code can fail closed instead ("onFailure": "block" on the hook
+ * entry, v2.1.295+), but that would stop every tool call for as long as the
+ * machine stalls, so it is not set. The script is kept cheap so that a hook
+ * which does start always answers: no requires, no I/O beyond one read of
+ * stdin, and no JSON built unless a decision is returned.
+ *
+ * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms
+ * after node starts.
  */
 
 // ── Process-kill detection (ticket 24a72aa1) ────────────────────────
@@ -559,54 +577,40 @@ function checkSql(query) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
-
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch {
-    // Can't parse — allow the tool to proceed
-    process.exit(0);
-    return;
-  }
-
-  const toolName = hookData.tool_name;
-  const toolInput = hookData.tool_input || {};
-
-  let result = null;
-  switch (toolName) {
+function decide(hookData) {
+  const toolInput = (hookData && hookData.tool_input) || {};
+  switch (hookData && hookData.tool_name) {
     case 'Bash':
-      result = checkBash(toolInput.command);
-      break;
+      return checkBash(toolInput.command);
     case 'Read':
-      result = checkFile(toolInput.file_path);
-      break;
     case 'Write':
-      result = checkFile(toolInput.file_path);
-      break;
     case 'Edit':
-      result = checkFile(toolInput.file_path);
-      break;
+      return checkFile(toolInput.file_path);
     case 'mcp__sqlite__write_query':
-      result = checkSql(toolInput.query);
-      break;
     case 'mcp__mssql__query':
-      result = checkSql(toolInput.query);
-      break;
+      return checkSql(toolInput.query);
   }
-
-  if (result) {
-    console.log(JSON.stringify(result));
-  }
-
-  // Exit 0 always — decision is in the JSON output
-  process.exit(0);
+  return null;
 }
 
-main().catch(() => {
-  process.exit(0);
-});
+// One read of stdin, one write at most, exit 0 whatever happens: the decision
+// travels in the JSON, and a hook that failed must never become a block (see
+// the header). The process is left to end on its own after the write instead
+// of calling process.exit(), so the output cannot be cut short on a pipe.
+function main() {
+  const chunks = [];
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => chunks.push(chunk));
+  process.stdin.on('error', () => {});
+  process.stdin.on('end', () => {
+    let result = null;
+    try {
+      result = decide(JSON.parse(chunks.join('')));
+    } catch {
+      result = null; // unparseable input, or a rule threw: let the tool proceed
+    }
+    if (result) process.stdout.write(JSON.stringify(result) + '\n');
+  });
+}
+
+main();
