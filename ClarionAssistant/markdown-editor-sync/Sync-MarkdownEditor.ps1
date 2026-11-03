@@ -13,13 +13,14 @@
     That means it is self-contained on any machine, which is the property Sync-LspServer.ps1's
     -Pure mode had to be repaired to get (PR #186).
 
-    WHY THE IDENTITY VERSION MATTERS. The upstream DLL's FileVersion resource is not bumped
-    between releases: v1.2.0 reports 1.0.2.0, byte-identical to v1.0.2. Any freshness decision
-    based on file version -- including Inno Setup's built-in "only replace if newer" -- is
-    therefore inert for this addin and silently cannot tell one release from another. The
-    <Identity version="..."/> attribute in ClarionMarkdownEditor.addin IS maintained upstream,
-    so that is what we parse and record, and that is what the installer compares against a
-    user's existing install.
+    WHY THE IDENTITY VERSION MATTERS. The upstream DLL's FileVersion resource was not bumped
+    between releases up to v1.2.0: v1.2.0 reports 1.0.2.0, byte-identical to v1.0.2. It is
+    bumped from v1.3.0 on (v1.5.0 reports 1.5.0.0), but installs from the frozen releases are
+    still in the field, so any freshness decision based on file version -- including Inno
+    Setup's built-in "only replace if newer" -- cannot be trusted for this addin. The
+    <Identity version="..."/> attribute in ClarionMarkdownEditor.addin has always been
+    maintained upstream, so that is what we parse and record, and that is what the installer
+    compares against a user's existing install.
 
 .PARAMETER Tag
     Release tag to sync to (e.g. v1.2.0). Defaults to targetPin.tag in markdown-snapshot.json.
@@ -29,7 +30,7 @@
 
 .EXAMPLE
     .\Sync-MarkdownEditor.ps1
-    .\Sync-MarkdownEditor.ps1 -Tag v1.3.0
+    .\Sync-MarkdownEditor.ps1 -Tag v1.5.0
 
 .NOTES
     If you ever call this from another script's FUNCTION, pipe it: `& $sync | Out-Host`.

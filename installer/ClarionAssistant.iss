@@ -76,12 +76,13 @@
 ; PREBUILT release zip, so unlike the LSP there is nothing to compile: Sync-MarkdownEditor.ps1 just
 ; downloads, verifies and extracts it. Tag tracks markdown-editor-sync\markdown-snapshot.json
 ; "resolvedTag"; bump BOTH defines below when the pin bumps (Sync-MarkdownEditor.ps1 -Tag <tag>).
-#define SrcMarkdown SrcBase + "\.markdown-build\v1.3.0"
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.5.0"
 ; The version the only-if-newer check compares against a user's existing install. MUST equal
 ; markdown-snapshot.json "resolvedIdentityVersion" — which is the <Identity version> from the .addin,
-; NOT the DLL's FileVersion. Upstream freezes FileVersion at 1.0.2.0 across every release, so Inno's
-; built-in newer-file comparison cannot tell v1.0.2 from v1.2.0 and must not be relied on here.
-#define MarkdownPinVersion "1.3.0"
+; NOT the DLL's FileVersion. Upstream froze FileVersion at 1.0.2.0 through v1.2.0 (it is bumped from
+; v1.3.0 on, and from v1.5.0 the .csproj drives both numbers), but installs from the frozen releases
+; are still in the field, so Inno's built-in newer-file comparison must not be relied on here.
+#define MarkdownPinVersion "1.5.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
 ; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.
@@ -512,9 +513,10 @@ Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC12Path}\acc
 ; ClarionAssistant. See the [Components] note: a duplicate Identity anywhere under accessory\addins
 ; stops the IDE starting.
 ;
-; ignoreversion is REQUIRED, not incidental. Upstream never bumps the DLL's FileVersion resource
-; (v1.2.0 still reports 1.0.2.0), so Inno's default version comparison would compare equal and
-; behave unpredictably across releases. All freshness logic lives in ShouldInstallMarkdown, which
+; ignoreversion is REQUIRED, not incidental. Upstream did not bump the DLL's FileVersion resource
+; before v1.3.0 (v1.2.0 still reports 1.0.2.0) and those installs are still out there, so Inno's
+; default version comparison would compare equal and behave unpredictably across releases. All
+; freshness logic lives in ShouldInstallMarkdown, which
 ; reads the <Identity version> out of any already-installed .addin and declines to overwrite a copy
 ; NEWER than our pin — so a user tracking upstream directly is never silently downgraded.
 #if HaveMarkdown && HaveMarkdownLicense
@@ -758,9 +760,10 @@ end;
 // somebody who is ahead of our pin.
 //
 // The comparison has to read <Identity version="..."/> out of the .addin manifest. It cannot use the
-// DLL: upstream does not bump the FileVersion resource, so v1.2.0 and v1.0.2 both report 1.0.2.0.
-// That also means Inno's own "replace only if newer" file-version logic is blind here — hence
-// ignoreversion on the [Files] entries and all the real logic in this function.
+// DLL: upstream did not bump the FileVersion resource before v1.3.0, so v1.2.0 and v1.0.2 both report
+// 1.0.2.0, and such installs are still in the field. That also means Inno's own "replace only if
+// newer" file-version logic is blind here — hence ignoreversion on the [Files] entries and all the
+// real logic in this function.
 
 function ReadAddinIdentityVersion(AddinPath: String): String;
 var
