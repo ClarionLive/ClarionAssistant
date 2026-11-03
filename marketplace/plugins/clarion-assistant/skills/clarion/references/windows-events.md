@@ -70,7 +70,7 @@ FieldType = File{PROP:Type, idx}         ! Get field type at index
 ## Window/Form Syntax
 
 ### Window Definition
-One `END` closes the WINDOW and its controls. Container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, TOOLBAR) take their own `END`. A second `END` after the controls does not compile.
+One `END` closes the WINDOW and its controls. Container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, MENU, TOOLBAR) take their own `END`. A second `END` after the controls does not compile.
 
 ```clarion
 Window    WINDOW('Window Title'),AT(,,343,131),FONT('Segoe UI',9),CENTER,SYSTEM

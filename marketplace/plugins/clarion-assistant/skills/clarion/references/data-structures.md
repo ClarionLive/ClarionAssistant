@@ -38,6 +38,7 @@ MyQueue      QUEUE
 Name             STRING(50)
 Value            LONG
              END
+Idx          LONG                     ! Position when walking the queue
 ```
 
 ### Operations
@@ -58,6 +59,12 @@ END
 ! Get by key value
 MyQueue.Name = 'Test'
 GET(MyQueue, MyQueue.Name)            ! Get by key field
+
+! Walk every record
+LOOP Idx = 1 TO RECORDS(MyQueue)
+  GET(MyQueue, Idx)
+  ! MyQueue.Name / MyQueue.Value hold record Idx
+END
 
 ! Update current record
 MyQueue.Value = 99

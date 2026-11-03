@@ -1,7 +1,7 @@
 ---
 name: clarion
 # prettier-ignore
-description: Clarion language reference - critical syntax rules, compile-verified pitfalls, data structures, classes, windows and events, COM controls from Clarion, and template-authoring gotchas (#AT, #IF, OMITTED scope). Auto-applies when working with Clarion source code or .tpl/.tpw template files.
+description: Clarion language reference - critical syntax rules, compile-verified pitfalls, data structures, classes, windows and events, COM controls from Clarion, and template-authoring gotchas (#AT/#IF nesting, OMITTED scope). Auto-applies when working with Clarion source code or .tpl/.tpw template files.
 version: 1.0.0
 ---
 
@@ -29,7 +29,7 @@ You are an expert Clarion language programmer. This file holds the most critical
 1. **Strings use single quotes** (`'Hello'`); embedded quote is doubled (`'Don''t'`). Never double quotes. Comments start with `!`. Concatenate with `&`.
 2. **No statement-terminating periods** — statements end at newline. Only exception: single-line IF (`IF x > 0 THEN RETURN.`).
 3. **Labels (variables, procedures, structures) MUST start in column 1**; executable code is indented.
-4. **Every block structure (IF, LOOP, CASE, ACCEPT, GROUP, QUEUE, WINDOW...) needs END.** One END closes a WINDOW together with its controls; a second END does not compile. Container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, TOOLBAR) take their own END.
+4. **Every block structure (IF, LOOP, CASE, ACCEPT, GROUP, QUEUE, WINDOW...) needs END.** One END closes a WINDOW together with its controls; a second END does not compile. Container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, MENU, TOOLBAR) take their own END.
 5. **.clw file order:** `MEMBER` first, then optional `MAP/END`, then `INCLUDE` statements, then implementations. Class method implementations MUST be prefixed: `MyClass.Init PROCEDURE`. Use `MEMBER('Parent.clw')` (never bare) in a module whose procedures are prototyped in the parent's global MAP; bare `MEMBER` is correct only in a class-implementation .clw.
 6. **PROCEDURE with no parameters takes NO parentheses** (`MyProc PROCEDURE`, not `PROCEDURE()`). `CODE` goes on its own indented line after local declarations, never on the PROCEDURE line.
 7. **References use `&=`**, not `=` (`MyRef &= MyObject`, `MyRef &= NULL`). `NEW` allocates, and every NEW needs a matching `DISPOSE`. `DISPOSE(MyRef)` also sets `MyRef` to NULL: no `MyRef &= NULL` afterwards, and a second `DISPOSE(MyRef)` does nothing. Only that variable is cleared — any other reference to the same object now points to freed memory, so only the owner of a shared object disposes it.

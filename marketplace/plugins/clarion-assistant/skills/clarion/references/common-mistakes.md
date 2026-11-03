@@ -92,7 +92,7 @@ Window    WINDOW('Title'),AT(,,400,300)
             END                   ! This END already closes the WINDOW
           END                     ! WRONG — does not compile
 ```
-✅ One END closes the WINDOW; container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, TOOLBAR) take their own:
+✅ One END closes the WINDOW; container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, MENU, TOOLBAR) take their own:
 ```clarion
 Window    WINDOW('Title'),AT(,,400,300)
             BUTTON('Click'),USE(?Button1)

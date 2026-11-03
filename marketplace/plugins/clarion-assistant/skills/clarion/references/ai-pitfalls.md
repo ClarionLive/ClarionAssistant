@@ -32,7 +32,7 @@ Read this before writing or reviewing non-trivial Clarion code. The last section
 - **Trailing blanks are ignored in comparisons.** A `STRING(10)` holding `'Hello'` *equals* `'Hello'` (run-tested), and `CLIP(S1) = 'Hello'` and `S1 = S2` are true as well. `CLIP()` matters when *concatenating* (`CLIP(First) & ' ' & CLIP(Last)`), not for comparing to a literal.
 - **`DATE`/`TIME` are real types**: `D DATE`, `T TIME`, `D = TODAY()`, `T = CLOCK()`, `S = FORMAT(D,@D17)`, `D = DEFORMAT(S,@D17)` all compile.
 - `PUSHERRORS` / `POPERRORS` exist and compile.
-- **One `END` closes a WINDOW** together with its controls; SHEET, TAB, OPTION, GROUP and OLE inside it take their own `END`. A second `END` after the controls fails at that END with `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP` (12.0.14258 and 11.1.13855).
+- **One `END` closes a WINDOW** together with its controls; SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, MENU and TOOLBAR inside it take their own `END` (all eight compiled in one window on 12.0.14523). A second `END` after the controls fails at that END with `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP` (12.0.14258 and 11.1.13855).
 - **`REAL` is 8 bytes and `SREAL` 4** (`SIZE()`, run-tested). **`LEN()` counts trailing blanks:** for a `STRING(10)` holding `'Hello'`, `LEN(S)` is 10 and `LEN(CLIP(S))` is 5 (run-tested).
 
 ## References and DISPOSE
