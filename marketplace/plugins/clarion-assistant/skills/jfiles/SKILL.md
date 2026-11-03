@@ -1,8 +1,8 @@
 ---
 name: jfiles
 # prettier-ignore
-description: jFiles JSON serialization patterns for Clarion. Queue-to-JSON, NAME attributes for case control, TagCase settings, field trimming, and common gotchas. Auto-applies when working with jFiles or JSON serialization in Clarion code.
-version: 1.0.0
+description: jFiles JSON serialization patterns for Clarion. Queue-to-JSON, NAME attributes for case control, TagCase settings, field trimming, loading queues inside groups (NewPointer), and common gotchas. Auto-applies when working with jFiles or JSON serialization in Clarion code.
+version: 1.1.0
 ---
 
 # jFiles JSON Serialization Skill for Clarion
@@ -86,6 +86,54 @@ IF POl:Inception <> 0
 END
 ! If 0, the STRING field stays blank - jFiles outputs: "Inception":""
 ```
+
+### 6. Loading a Queue Inside a Group (or Queue) Requires a Derived NewPointer
+
+A `&QueueType` field inside a GROUP (or inside another QUEUE) is **not allocated by `Load`**. Unless your JSONClass is derived with a `NewPointer` override that NEWs it, the reference stays NULL and the array is silently dropped: `Load` returns no error, there are just zero records.
+
+```clarion
+ModelIdQType   QUEUE,TYPE
+id               STRING(128), NAME('id')
+               END
+ModelListG     GROUP                                   ! {"object":"list","data":[{"id":...},...]}
+data             &ModelIdQType, NAME('data | queue')
+               END
+
+json           CLASS(JSONClass)                        ! DERIVED - a plain JSONClass will not do
+NewPointer       PROCEDURE( *CSTRING pGroupName, *CSTRING pColumnName), VIRTUAL
+               END
+
+  CODE
+  json.Start()
+  json.SetTagCase(jf:CaseAsIs)
+  json.Load( ModelListG, st )                          ! calls json.NewPointer for 'data'
+  IF NOT ModelListG.data &= NULL
+     LOOP i = 1 TO RECORDS(ModelListG.data)
+        GET(ModelListG.data, i)
+        ! ... use ModelListG.data.id ...
+     END
+  END
+  json.DisposeGroup( ModelListG )                      ! frees + disposes the loaded queue
+  RETURN
+
+json.NewPointer PROCEDURE( *CSTRING pGroupName, *CSTRING pColumnName)
+  CODE
+  CASE pGroupName
+  OF 'group'                                           ! an unnamed GROUP is reported as 'group'
+     CASE pColumnName
+     OF 'data'                                         ! the JSON (external) name of the queue field
+        ModelListG.data &= NEW( ModelIdQType )
+        CLEAR(ModelListG.data)
+     END
+  END
+```
+
+- The method is implemented after the procedure's last ROUTINE. A local derived class's methods can see the procedure's data, so they can NEW `ModelListG.data` directly.
+- If you are not sure which names arrive, put a `?` debug trace or a breakpoint in `NewPointer`, or call `json.Reflection.Walk()` after the Load. That matters for a GROUP with its own `NAME()` or for nested structures.
+- The CapeSoft `NewPointer` page shows an older one-parameter signature (`String pColumnName`). Current jFiles passes `*CSTRING pGroupName, *CSTRING pColumnName`.
+- **Save does not need this.** For Save the caller NEWs and fills the queue first (`MyGroup.Q &= NEW(MyQType)`, `ADD(...)`, `json.Save(MyGroup, st)`), then calls `json.DisposeGroup(MyGroup)`.
+- `&StringTheory` fields (`NAME('x | StringTheory')`) are allocated by jFiles itself. Only queue references need `NewPointer`.
+- When copying a working Load-into-group example from existing code, copy its derived class and `NewPointer` method too. The declarations alone look complete but load nothing.
 
 ## Common Patterns
 
@@ -186,3 +234,4 @@ json.Reflection.Walk   ! Outputs field mapping to debug - useful for troubleshoo
 4. Pre-format dates as strings in the queue
 5. `FREE(queue)` before populating and after done
 6. `DISPOSE` all NEW'd references (JsonClass, StringTheory)
+7. Loading into a `&Queue` field of a GROUP or QUEUE: a derived JSONClass with a `NewPointer` override that NEWs it (rule 6), then `json.DisposeGroup()` / `json.DisposeQueue()` afterwards
