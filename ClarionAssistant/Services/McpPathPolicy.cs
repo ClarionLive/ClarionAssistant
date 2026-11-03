@@ -117,9 +117,14 @@ namespace ClarionAssistant.Services
     /// CANONICALISATION, FAIL CLOSED. A path is judged only after: no control/wildcard characters, no alternate data
     /// stream, no reserved device name, fully qualified "X:\" (relative, "\x" and "C:x" are refused), GetFullPath
     /// (so ".." is resolved BEFORE containment is checked, never after), containment on a separator boundary
-    /// (C:\Sol does not contain C:\Solution2), ordinal case-insensitive. <see cref="Check"/> then resolves the
-    /// nearest existing ancestor with GetFinalPathNameByHandle, which expands 8.3 short names AND follows
-    /// junctions / symlinks / subst drives, and judges that real path too. Anything that throws is refused.
+    /// (C:\Sol does not contain C:\Solution2), ordinal case-insensitive. <see cref="Check"/> then takes the nearest
+    /// existing ancestor and derives TWO forms from it, the not-yet-existing tail re-appended to both: the LONG form
+    /// (GetLongPathNameW: 8.3 short names spelled out, links NOT followed - GH #291) and the REAL path
+    /// (GetFinalPathNameByHandle: junctions / symlinks / subst drives followed too). Every rule judges the long form
+    /// and, where it differs, the real one; every root and built-in folder is kept in the same long form, so the
+    /// profile's short alias (C:\Users\JOHNSM~1, which Windows puts in %TEMP% when the profile folder's name is not
+    /// a valid 8.3 name) is the own profile, and another user's short alias is still another user's profile.
+    /// A network path never reaches either call: it is judged by its text. Anything that throws is refused.
     ///
     /// NO SOLUTION. With nothing open the solution and project roots simply are not there; the Clarion roots,
     /// the .red's absolute folders, the extra roots and CA's data folder still apply, so the tools stay useful
@@ -222,8 +227,8 @@ namespace ClarionAssistant.Services
 
         public sealed class Root
         {
-            public string Lexical;   // GetFullPath form
-            public string Resolved;  // link/8.3-resolved form (== Lexical when nothing to resolve)
+            public string Lexical;   // canonical text with 8.3 segments spelled out (GH #291); links NOT followed
+            public string Resolved;  // link-resolved form (== Lexical when nothing to resolve)
             public bool Writable;
             public bool Explicit;    // from Mcp.AllowedRoots / the env var: wins a tie
             public bool Network;     // a share or network drive - only ever explicit
@@ -424,6 +429,7 @@ namespace ClarionAssistant.Services
                 _skipped.Add(lex + " (" + source + ": network location; only " + AllowedRootsSetting + " may name one)");
                 return;
             }
+            if (!network) lex = ExpandShortNames(lex);   // GH #291: a root given as C:\Users\JOHNSM~1\Sol is kept long
             string res = ResolveForRoot(lex) ?? lex;
             if (!network && !IsLocalDrivePath(res))
             {
@@ -514,18 +520,22 @@ namespace ClarionAssistant.Services
                     "Network locations are allowed only by an explicit " + AllowedRootsSetting + " entry (or " + AllowedRootsEnv + ") naming them."
                     + (SolutionNote != null ? " Note: " + SolutionNote + "." : ""));
 
-            string real = lex;
+            // GH #291: two forms of a local path from one walk to its nearest existing ancestor. lexLong is the name as
+            // typed with its 8.3 segments spelled out, links NOT followed (a junction is still judged under the name it
+            // was typed by); real is the link-resolved path. Windows hands a process %TEMP% as
+            // C:\Users\JOHNSM~1\AppData\Local\Temp when the profile folder's name is not a valid 8.3 name, and the
+            // rules used to judge that text as it stood - the own profile read as ANOTHER user's folder. A share is
+            // judged by its text: never opened for either form (pipeline run 5).
+            string lexLong = lex, real = lex;
             if (resolve)
             {
-                // A share is judged by its text: never opened to resolve it (pipeline run 5).
-                real = IsNetworkPathStatic(lex) ? lex : ResolveNearest(lex);
-                if (real == null)
+                if (!IsNetworkPathStatic(lex) && !ResolveBoth(lex, out lexLong, out real))
                     return Refuse(lex, "its real location could not be determined (link or short name did not resolve)", "This fails closed and cannot be overridden.");
                 if (!IsLocalDrivePath(real) && !(IsUncPath(real) && UnderNetworkRoot(real)))
                     return Refuse(lex, "it resolves to '" + real + "', which is not a local drive path", "Network targets are allowed only by an explicit " + AllowedRootsSetting + " entry naming them.");
             }
 
-            DenyRule hit = FindDeny(lex, access) ?? (Same(real, lex) ? null : FindDeny(real, access));
+            DenyRule hit = FindDeny(lexLong, access) ?? (Same(real, lexLong) ? null : FindDeny(real, access));
             if (hit != null)
             {
                 if (hit.Hint != null) return Refuse(real, "it matches the built-in rule '" + hit.Text + "'", hit.Hint);
@@ -534,7 +544,7 @@ namespace ClarionAssistant.Services
                 return Refuse(real, "it matches your " + DeniedPathsSetting + " entry '" + hit.Text + "'",
                     "Remove that entry from " + DeniedPathsSetting + " (or " + DeniedPathsEnv + ") to allow it.");
             }
-            string other = OtherProfileHit(lex) ?? (Same(real, lex) ? null : OtherProfileHit(real));
+            string other = OtherProfileHit(lexLong) ?? (Same(real, lexLong) ? null : OtherProfileHit(real));
             if (other != null)
                 return Refuse(real, "it is inside another user's profile (" + other + ")", "Other users' profiles are always refused.");
 
@@ -547,7 +557,7 @@ namespace ClarionAssistant.Services
                 if (resolve)
                 {
                     if (IsUnder(real, r.Resolved)) len = r.Resolved.Length;
-                    else if (Same(real, lex) && IsUnder(lex, r.Lexical)) len = r.Lexical.Length;
+                    else if (Same(real, lexLong) && IsUnder(lexLong, r.Lexical)) len = r.Lexical.Length;
                 }
                 else
                 {
@@ -760,8 +770,9 @@ namespace ClarionAssistant.Services
         /// the file system or the network: pure text (pipeline run 5, security MEDIUM). It used to end in
         /// Path.GetFullPath, which on .NET Framework expands any segment containing '~' through GetLongPathNameW - network
         /// I/O, and an NTLM handshake, for "\\attacker\s\A~1\x" or "Z:\A~1" on a mapped drive, BEFORE any rule had looked
-        /// at the path. Short names are expanded later, by <see cref="Check"/>'s link resolution, and only for a path the
-        /// lexical rules let through. A UNC form is only syntax here (\\?\UNC\server\share\ is rewritten to
+        /// at the path. Short names are expanded later, by <see cref="Check"/> (GetLongPathNameW on the nearest existing
+        /// ancestor, GH #291) beside its link resolution, and only for a LOCAL path the lexical rules let through. A UNC
+        /// form is only syntax here (\\?\UNC\server\share\ is rewritten to
         /// \\server\share\): <see cref="Decide"/> refuses it unless an explicit Mcp.AllowedRoots entry names the share.
         /// Other device and NT forms (\\?\, \\.\, \??\) are always refused.
         /// </summary>
@@ -891,10 +902,14 @@ namespace ClarionAssistant.Services
             return list;
         }
 
+        /// <summary>A Build-time input (profile, protected / confined / denied folder, CA's folders, the solution) in the
+        /// canonical form the rules compare against: <see cref="Canonical"/> text with its 8.3 segments spelled out
+        /// (GH #291); a network path stays as typed. Null for nothing or an invalid path.</summary>
         private static string Lexical(string input)
         {
             string why;
-            return string.IsNullOrWhiteSpace(input) ? null : Canonical(input, out why);
+            string full = string.IsNullOrWhiteSpace(input) ? null : Canonical(input, out why);
+            return full == null || IsNetworkPathStatic(full) ? full : ExpandShortNames(full);
         }
 
         /// <summary>The parent folder by text (null at X:\ or \\server\share). No I/O.</summary>
@@ -988,28 +1003,99 @@ namespace ClarionAssistant.Services
         /// </summary>
         private static string ResolveNearest(string lex)
         {
+            string lng, real;
+            return ResolveBoth(lex, out lng, out real) ? real : null;
+        }
+
+        /// <summary>
+        /// GH #291: both forms of a LOCAL path from one walk to its nearest existing ancestor. <paramref name="longForm"/>
+        /// is the typed name with its 8.3 segments spelled out by GetLongPathNameW - links are NOT followed, so a junction
+        /// is still judged under the name it was typed by; <paramref name="real"/> is the link-resolved final path. The
+        /// not-yet-existing tail is re-appended to both unchanged, so a file Claude is about to write under a short-named
+        /// folder resolves too. Nothing on the path exists (a missing drive): both are the text, judged lexically. False
+        /// when the walk gave up or the final path could not be read: the caller refuses (fail closed). When only the
+        /// long name cannot be read (a parent the user may not list), the text stands in for it and the rules still see
+        /// the real path. Never call it for a network path: GetLongPathNameW on \\server\... opens the share.
+        /// </summary>
+        private static bool ResolveBoth(string lex, out string longForm, out string real)
+        {
+            longForm = real = lex;
             try
             {
-                string current = lex;
-                string tail = "";
-                for (int guard = 0; guard < 256 && current != null; guard++)
-                {
-                    if (FsFileExists(current) || FsDirExists(current))
-                    {
-                        string final = FinalPath(current);
-                        if (final == null) return null;
-                        final = TrimEnd(final);
-                        return tail.Length == 0 ? final : (final.EndsWith("\\") ? final : final + "\\") + tail;
-                    }
-                    string parent = ParentText(current);
-                    if (parent == null) return lex;                       // nothing on the path exists (missing drive): judge it lexically
-                    string name = LeafText(current);
-                    tail = tail.Length == 0 ? name : name + "\\" + tail;
-                    current = parent;
-                }
-                return null;
+                string tail;
+                string existing = NearestExisting(lex, out tail);
+                if (existing == null) return tail != null;
+                string final = FinalPath(existing);
+                if (final == null) return false;
+                longForm = Rejoin(LongName(existing) ?? existing, tail);
+                real = Rejoin(final, tail);
+                return true;
             }
-            catch { return null; }
+            catch { return false; }
+        }
+
+        /// <summary>GH #291: <paramref name="full"/> with its 8.3 segments spelled out (links NOT followed), for the
+        /// roots and built-in folders the rules compare against. The text itself for a network path (never opened),
+        /// when nothing on the path exists, or when Windows cannot say.</summary>
+        private static string ExpandShortNames(string full)
+        {
+            if (full == null || IsNetworkPathStatic(full)) return full;
+            try
+            {
+                string tail;
+                string existing = NearestExisting(full, out tail);
+                if (existing == null) return full;
+                string lng = LongName(existing);
+                return lng == null ? full : Rejoin(lng, tail);
+            }
+            catch { return full; }
+        }
+
+        /// <summary>The nearest EXISTING ancestor of <paramref name="lex"/> (itself when it exists), with the missing
+        /// <paramref name="tail"/> below it ("" when none). Null with tail "" when nothing on the path exists (a missing
+        /// drive); null with a null tail when the walk gave up.</summary>
+        private static string NearestExisting(string lex, out string tail)
+        {
+            tail = "";
+            string current = lex;
+            for (int guard = 0; guard < 256 && current != null; guard++)
+            {
+                if (FsFileExists(current) || FsDirExists(current)) return current;
+                string parent = ParentText(current);
+                if (parent == null) return null;
+                string name = LeafText(current);
+                tail = tail.Length == 0 ? name : name + "\\" + tail;
+                current = parent;
+            }
+            tail = null;
+            return null;
+        }
+
+        private static string Rejoin(string head, string tail)
+        {
+            head = TrimEnd(head);
+            return tail.Length == 0 ? head : (head.EndsWith("\\") ? head : head + "\\") + tail;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint len);
+
+        /// <summary>GetLongPathNameW on an EXISTING local path: 8.3 segments spelled out, links untouched. Null when
+        /// Windows cannot (a parent the user may not list, for one); the caller keeps the text then.</summary>
+        private static string LongName(string existing)
+        {
+            Fs("GetLongPathName", existing);
+            var sb = new StringBuilder(1024);
+            uint n = GetLongPathNameW(existing, sb, (uint)sb.Capacity);
+            if (n == 0) return null;
+            if (n >= sb.Capacity)
+            {
+                sb = new StringBuilder((int)n + 1);
+                n = GetLongPathNameW(existing, sb, (uint)sb.Capacity);
+                if (n == 0 || n >= sb.Capacity) return null;
+            }
+            string s = sb.ToString();
+            return s.Length == 0 ? null : s;
         }
 
         private const uint FILE_SHARE_ALL = 0x7;
