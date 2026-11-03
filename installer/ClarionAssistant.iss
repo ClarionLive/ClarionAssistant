@@ -76,12 +76,13 @@
 ; PREBUILT release zip, so unlike the LSP there is nothing to compile: Sync-MarkdownEditor.ps1 just
 ; downloads, verifies and extracts it. Tag tracks markdown-editor-sync\markdown-snapshot.json
 ; "resolvedTag"; bump BOTH defines below when the pin bumps (Sync-MarkdownEditor.ps1 -Tag <tag>).
-#define SrcMarkdown SrcBase + "\.markdown-build\v1.3.0"
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.5.0"
 ; The version the only-if-newer check compares against a user's existing install. MUST equal
 ; markdown-snapshot.json "resolvedIdentityVersion" — which is the <Identity version> from the .addin,
-; NOT the DLL's FileVersion. Upstream freezes FileVersion at 1.0.2.0 across every release, so Inno's
-; built-in newer-file comparison cannot tell v1.0.2 from v1.2.0 and must not be relied on here.
-#define MarkdownPinVersion "1.3.0"
+; NOT the DLL's FileVersion. Upstream froze FileVersion at 1.0.2.0 through v1.2.0 (it is bumped from
+; v1.3.0 on, and from v1.5.0 the .csproj drives both numbers), but installs from the frozen releases
+; are still in the field, so Inno's built-in newer-file comparison must not be relied on here.
+#define MarkdownPinVersion "1.5.0"
 ; The directory containing this .iss file itself (SourcePath already ends in "\").
 #define SrcInstaller Copy(SourcePath, 1, Len(SourcePath)-1)
 ; Repo root — for THIRD-PARTY-NOTICES.md, which must ship wherever the addin does.
@@ -219,7 +220,9 @@ Name: "lsp"; Description: "Clarion Language Server (LSP)"; Types: full custom
 ; under ClarionAssistant\. Clarion scans every subfolder of accessory\addins, and two copies sharing
 ; the ClarionMarkdownEditor Identity fail IDE startup outright ("Identity name used by multiple
 ; addins") — so the canonical folder is the only safe destination. Guarded by ShouldInstallMarkdown:
-; an existing install that is NEWER than our pin is left alone.
+; an existing install that is NEWER than our pin is left alone, and a copy under ANY other folder of
+; accessory\addins (Addin Finder's ClarionMarkdownEditor, upstream's MarkdownAddin, or a hand-made
+; one) means ours is skipped for that Clarion root altogether (GH #290).
 Name: "markdown"; Description: "Markdown Editor addin (by Mark Sarson)"; Types: full custom
 Name: "docgraph"; Description: "Pre-loaded Documentation Database"; Types: full custom
 Name: "docs"; Description: "User Guide"; Types: full custom
@@ -510,11 +513,13 @@ Source: "{#SrcLsp}\node_modules\safer-buffer\*"; DestDir: "{code:GetC12Path}\acc
 ;
 ; Destination is accessory\addins\MarkdownEditor — its OWN folder, deliberately NOT a subfolder of
 ; ClarionAssistant. See the [Components] note: a duplicate Identity anywhere under accessory\addins
-; stops the IDE starting.
+; stops the IDE starting — which is also why ShouldInstallMarkdown answers False for a root where any
+; OTHER accessory\addins folder already holds the editor (MarkdownForeignFolder, GH #290).
 ;
-; ignoreversion is REQUIRED, not incidental. Upstream never bumps the DLL's FileVersion resource
-; (v1.2.0 still reports 1.0.2.0), so Inno's default version comparison would compare equal and
-; behave unpredictably across releases. All freshness logic lives in ShouldInstallMarkdown, which
+; ignoreversion is REQUIRED, not incidental. Upstream did not bump the DLL's FileVersion resource
+; before v1.3.0 (v1.2.0 still reports 1.0.2.0) and those installs are still out there, so Inno's
+; default version comparison would compare equal and behave unpredictably across releases. All
+; freshness logic lives in ShouldInstallMarkdown, which
 ; reads the <Identity version> out of any already-installed .addin and declines to overwrite a copy
 ; NEWER than our pin — so a user tracking upstream directly is never silently downgraded.
 #if HaveMarkdown && HaveMarkdownLicense
@@ -724,6 +729,10 @@ var
   // freezing is load-bearing and not merely an optimisation.
   MarkdownDecided: array[0..3] of Boolean;
   MarkdownVerdict: array[0..3] of Boolean;
+  // GH #290: what the Finished page tells the user about Markdown Editor copies we did NOT write
+  // (one line per Clarion root, '' when every selected root installed normally). Filled by
+  // DecideInstallMarkdown, shown by CurPageChanged(wpFinished).
+  MarkdownSkipNote: String;
   // GH #214 "Plugin Location": default profile (option 0) or a shared folder (option 1), and the
   // shared folder + extra profile folders when option 1 is chosen.
   PluginLocPage: TInputOptionWizardPage;
@@ -758,9 +767,10 @@ end;
 // somebody who is ahead of our pin.
 //
 // The comparison has to read <Identity version="..."/> out of the .addin manifest. It cannot use the
-// DLL: upstream does not bump the FileVersion resource, so v1.2.0 and v1.0.2 both report 1.0.2.0.
-// That also means Inno's own "replace only if newer" file-version logic is blind here — hence
-// ignoreversion on the [Files] entries and all the real logic in this function.
+// DLL: upstream did not bump the FileVersion resource before v1.3.0, so v1.2.0 and v1.0.2 both report
+// 1.0.2.0, and such installs are still in the field. That also means Inno's own "replace only if
+// newer" file-version logic is blind here — hence ignoreversion on the [Files] entries and all the
+// real logic in this function.
 
 function ReadAddinIdentityVersion(AddinPath: String): String;
 var
@@ -834,11 +844,105 @@ begin
   else Result := 3;
 end;
 
+function MarkdownLabelFor(Which: String): String;
+begin
+  if Which = '10' then Result := 'Clarion 10'
+  else if Which = '11' then Result := 'Clarion 11'
+  else if Which = '111' then Result := 'Clarion 11.1'
+  else Result := 'Clarion 12';
+end;
+
+// ------------------------------------------------------------
+// GH #290: the editor may already be installed under ANOTHER folder name
+// ------------------------------------------------------------
+// Clarion loads every .addin under accessory\addins, and two manifests declaring the
+// ClarionMarkdownEditor Identity stop the IDE starting ("Identity name used by multiple addins").
+// Up to 6.2.0 the guard looked only in OUR folder, accessory\addins\MarkdownEditor, so a user who
+// had the editor from any other route got a second copy and a dead IDE (it happened; Addin Finder's
+// changelog records the case). The other routes use other names:
+//   accessory\addins\ClarionMarkdownEditor   Clarion Addin Finder, and upstream's own release notes
+//   accessory\addins\MarkdownAddin           upstream's addin-config.json deploymentPath
+// and nothing stops a user extracting the zip under any name at all. So the named folders are
+// probed first (the log then names the route that put it there) and every immediate subfolder of
+// accessory\addins is scanned after them. Decided once per Clarion root, inside the frozen verdict
+// (see ShouldInstallMarkdown) -- never per file.
+
+// True when Dir holds a manifest for the ClarionMarkdownEditor Identity: the canonical file name,
+// or failing that any *.addin whose <Identity name="ClarionMarkdownEditor". The manifest is read
+// rather than the folder name trusted, as Addin Finder's IdentityAudit does.
+function DirHoldsMarkdownIdentity(Dir: String): Boolean;
+var
+  FR: TFindRec;
+  Raw: AnsiString;
+begin
+  Result := FileExists(Dir + '\ClarionMarkdownEditor.addin');
+  if Result then Exit;
+  if not DirExists(Dir) then Exit;
+  if FindFirst(Dir + '\*.addin', FR) then
+  try
+    repeat
+      if (FR.Attributes and FILE_ATTRIBUTE_DIRECTORY) = 0 then
+        if LoadStringFromFile(Dir + '\' + FR.Name, Raw) then
+          if Pos('<Identity name="ClarionMarkdownEditor"', String(Raw)) > 0 then
+          begin
+            Result := True;
+            Break;
+          end;
+    until not FindNext(FR);
+  finally
+    FindClose(FR);
+  end;
+end;
+
+// The folder under <Root>\accessory\addins, OTHER than our own MarkdownEditor, that holds a Markdown
+// Editor manifest; '' when there is none. Immediate subfolders only: that is where every known
+// route puts it, and the IDE's own duplicate check is what a deeper copy would hit anyway.
+function MarkdownForeignFolder(Root: String): String;
+var
+  Base: String;
+  FR: TFindRec;
+begin
+  Result := '';
+  Base := Root + '\accessory\addins';
+  if DirHoldsMarkdownIdentity(Base + '\ClarionMarkdownEditor') then
+  begin
+    Result := Base + '\ClarionMarkdownEditor';
+    Exit;
+  end;
+  if DirHoldsMarkdownIdentity(Base + '\MarkdownAddin') then
+  begin
+    Result := Base + '\MarkdownAddin';
+    Exit;
+  end;
+  if FindFirst(Base + '\*', FR) then
+  try
+    repeat
+      if ((FR.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0) and (FR.Name <> '.') and (FR.Name <> '..')
+         and (CompareText(FR.Name, 'MarkdownEditor') <> 0) then
+        if DirHoldsMarkdownIdentity(Base + '\' + FR.Name) then
+        begin
+          Result := Base + '\' + FR.Name;
+          Break;
+        end;
+    until not FindNext(FR);
+  finally
+    FindClose(FR);
+  end;
+end;
+
+// Collected for the Finished page (CurPageChanged), where the user actually reads it. The install
+// log gets the same facts from the Log call beside each decision.
+procedure NoteMarkdownSkip(Line: String);
+begin
+  if MarkdownSkipNote <> '' then MarkdownSkipNote := MarkdownSkipNote + #13#10;
+  MarkdownSkipNote := MarkdownSkipNote + Line;
+end;
+
 // The actual decision. Do NOT wire this to a [Files] Check directly -- go through
 // ShouldInstallMarkdown, which freezes the answer. See the comment there.
 function DecideInstallMarkdown(Param: String): Boolean;
 var
-  Root, Dir, AddinPath, Installed: String;
+  Root, Dir, AddinPath, Installed, Foreign, ForeignVer: String;
 begin
   Root := MarkdownRootFor(Param);
   if Root = '' then
@@ -849,6 +953,40 @@ begin
 
   Dir := Root + '\accessory\addins\MarkdownEditor';
   AddinPath := Dir + '\ClarionMarkdownEditor.addin';
+
+  // GH #290: a copy under any OTHER folder name means ours must not be written -- the IDE would see
+  // two ClarionMarkdownEditor Identities and refuse to start. Decided before everything else,
+  // including the version comparison: the other copy's version does not matter, a second folder IS
+  // the defect, so we never write one (and never "upgrade in place" into a folder we do not own).
+  //
+  // UPGRADE, when OUR earlier copy is still in MarkdownEditor AND the user has since installed the
+  // editor elsewhere (Addin Finder, upstream's zip): the machine already holds two copies and the IDE
+  // is already failing to start. We still skip ours -- refreshing it would not reduce the count --
+  // and we delete neither. This installer has never claimed MarkdownEditor (it is not in
+  // [UninstallDelete]; a user may be managing that folder by hand), and deleting a folder we did not
+  // verify we created is how a customised copy gets lost. Instead the install log and the Finished
+  // page name BOTH folders and say which one to remove: ours, so the copy the user chose survives.
+  Foreign := MarkdownForeignFolder(Root);
+  if Foreign <> '' then
+  begin
+    ForeignVer := ReadAddinIdentityVersion(Foreign + '\ClarionMarkdownEditor.addin');
+    if ForeignVer = '' then ForeignVer := 'unknown version';
+    if FileExists(AddinPath) then
+    begin
+      Log('Markdown[' + Param + ']: TWO copies -- ours in ' + Dir + ' and another (' + ForeignVer + ') in ' + Foreign + ' -> NOT installing; the IDE will not start until one of them is removed');
+      NoteMarkdownSkip(MarkdownLabelFor(Param) + ': the Markdown Editor is installed twice, in ' + Dir +
+        ' (by an earlier Clarion Assistant) and in ' + Foreign + '. The Clarion IDE will not start until one is removed. ' +
+        'Delete the ' + Dir + ' folder to keep the copy you installed yourself; nothing was changed.');
+    end
+    else
+    begin
+      Log('Markdown[' + Param + ']: already installed (' + ForeignVer + ') in ' + Foreign + ', not our folder -> skipping ours so the IDE does not see two copies');
+      NoteMarkdownSkip(MarkdownLabelFor(Param) + ': the Markdown Editor was not installed because a copy (' + ForeignVer +
+        ') is already in ' + Foreign + '. Update it from where you got it (Clarion Addin Finder or the editor''s own release).');
+    end;
+    Result := False;
+    Exit;
+  end;
 
   if not FileExists(AddinPath) then
   begin
@@ -1675,10 +1813,28 @@ end;
 // Only remove the addin from Clarion versions being reinstalled
 procedure CurPageChanged(CurPageID: Integer);
 var
-  i: Integer;
+  i, Shift: Integer;
   Cap: string;
   HasPath: Boolean;
 begin
+  // GH #290: a Markdown Editor copy we skipped, or a duplicate we found, is said on the Finished
+  // page too, not only in a log nobody opens. Appended to the finished text; the post-install run
+  // list below it is pushed down (and shortened) to make room.
+  if (CurPageID = wpFinished) and (MarkdownSkipNote <> '') then
+  begin
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 + MarkdownSkipNote;
+    WizardForm.FinishedLabel.AdjustHeight;
+    Shift := WizardForm.FinishedLabel.Top + WizardForm.FinishedLabel.Height + ScaleY(12) - WizardForm.RunList.Top;
+    if Shift > 0 then
+    begin
+      WizardForm.RunList.Top := WizardForm.RunList.Top + Shift;
+      if WizardForm.RunList.Height > Shift then
+        WizardForm.RunList.Height := WizardForm.RunList.Height - Shift
+      else
+        WizardForm.RunList.Height := 0;
+    end;
+  end;
+
   // When entering Components page, auto-check versions that have a path, uncheck those without
   if CurPageID = wpSelectComponents then
   begin

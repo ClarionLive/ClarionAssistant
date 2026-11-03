@@ -9,34 +9,43 @@ Pins and stages the third-party Markdown Editor addin that the installer redistr
 ## Bumping the pin
 
 ```powershell
-.\Sync-MarkdownEditor.ps1 -Tag v1.3.0
+.\Sync-MarkdownEditor.ps1 -Tag v1.5.0
 ```
 
 Then update **both** defines in `installer\ClarionAssistant.iss` — they are hardcoded, exactly as
 `SrcLsp` is:
 
 ```
-#define SrcMarkdown SrcBase + "\.markdown-build\v1.3.0"
-#define MarkdownPinVersion "1.3.0"
+#define SrcMarkdown SrcBase + "\.markdown-build\v1.5.0"
+#define MarkdownPinVersion "1.5.0"
 ```
+
+Also bump the version in the Markdown Editor table of `THIRD-PARTY-NOTICES.md`.
+`tests\InstallerMarkdownDuplicate.SourceScan.ps1` checks that all of these agree.
 
 Rebuild the installer and confirm the ISCC log has no `shipping WITHOUT` line for the Markdown
 Editor. (`build-installer.ps1` fails the build on those, so a clean exit is the proof.)
 
 ## Three things that are easy to get wrong
 
-**The DLL's version resource is frozen.** Upstream does not bump it: v1.2.0 still reports
-`1.0.2.0`, byte-identical to v1.0.2. So Inno's built-in "replace only if newer" comparison cannot
-tell one release from another and must never be relied on here. The authoritative version is the
-`<Identity version="..."/>` attribute in `ClarionMarkdownEditor.addin`, which upstream *does*
-maintain. The sync parses it and records it as `resolvedIdentityVersion`; the installer's
-`ShouldInstallMarkdown` compares that against whatever the user already has and declines to
-overwrite a newer copy.
+**The DLL's version resource was frozen.** Up to v1.2.0 upstream did not bump it: v1.2.0 still
+reports `1.0.2.0`, byte-identical to v1.0.2. It is bumped from v1.3.0 on (v1.5.0 reports `1.5.0.0`,
+and the `.csproj` now drives both numbers), but installs from the frozen releases are still in the
+field, so Inno's built-in "replace only if newer" comparison must never be relied on here. The
+authoritative version is the `<Identity version="..."/>` attribute in `ClarionMarkdownEditor.addin`,
+which upstream has always maintained. The sync parses it and records it as
+`resolvedIdentityVersion`; the installer's `ShouldInstallMarkdown` compares that against whatever
+the user already has and declines to overwrite a newer copy.
 
-**It must install to `accessory\addins\MarkdownEditor`.** Clarion scans every subfolder under
-`accessory\addins`, and two copies sharing the `ClarionMarkdownEditor` Identity fail IDE startup
-outright with *"Identity name used by multiple addins"*. Putting it under `ClarionAssistant\`
-would break the IDE for anyone who already had the addin installed properly.
+**It must install to `accessory\addins\MarkdownEditor`, and only when no other folder has it.**
+Clarion scans every subfolder under `accessory\addins`, and two copies sharing the
+`ClarionMarkdownEditor` Identity fail IDE startup outright with *"Identity name used by multiple
+addins"*. Putting it under `ClarionAssistant\` would break the IDE for anyone who already had the
+addin installed properly. The other install routes use other folder names
+(`accessory\addins\ClarionMarkdownEditor` for Clarion Addin Finder and upstream's release notes,
+`accessory\addins\MarkdownAddin` in upstream's `addin-config.json`), so the installer looks for the
+manifest in every immediate subfolder of `accessory\addins` and skips our copy when any other
+folder holds one (GH #290).
 
 **The release ZIP contains no LICENSE.** MIT requires the copyright and permission notice to
 travel with every redistributed copy, so the sync fetches `LICENSE` from the repo at the pinned
