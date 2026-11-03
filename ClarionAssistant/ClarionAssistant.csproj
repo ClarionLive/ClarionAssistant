@@ -177,6 +177,7 @@
     <Compile Include="Services\SolutionVersionResolver.cs" />
     <Compile Include="Services\IdeVersionFollower.cs" />
     <Compile Include="Services\LspStartGate.cs" />
+    <Compile Include="Services\FileRefTarget.cs" />
     <Compile Include="Services\RedFileService.cs" />
     <Compile Include="Services\RedResolution.cs" />
     <Compile Include="Services\LspTrace.cs" />
