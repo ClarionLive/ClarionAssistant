@@ -307,6 +307,89 @@ static class McpPathPolicyTest
             }
             else Console.WriteLine("  [skip] 8.3 short names are not generated on this volume");
 
+            Console.WriteLine("=== GH #291: 8.3 short names of the own profile, other profiles and the roots ===");
+            // Windows hands a process %TEMP% in 8.3 form when the profile folder's name is not a valid 8.3 name
+            // (C:\Users\JOHNSM~1\AppData\Local\Temp for C:\Users\JohnSmithDev), so every path built from it - Claude
+            // Code's scratchpad included - reached the policy in short form and was refused as ANOTHER user's profile.
+            // Real folders with real 8.3 aliases; the profile is given LONG (Environment.GetFolderPath), as in the IDE.
+            string users291 = Mk(root, "Users291");
+            string meLong = Mk(users291, "JohnSmithDev");            // > 8 chars: gets a JOHNSM~1 alias
+            string bobLong = Mk(users291, "RobertJohnson");
+            Mk(users291, "Public");
+            string meTemp = Mk(meLong, "AppData", "Local", "Temp");
+            Touch(Path.Combine(meTemp, "existing.md"));
+            Touch(Path.Combine(bobLong, "Documents", "invoice.txt"));
+            // Only the profile segment is shortened: C:\Users is a valid 8.3 name, so the real %TEMP% shares the policy's
+            // profiles-folder prefix by text. (ShortName() of the whole path would shorten the temp prefix too, and a
+            // path that shares no prefix with C:\Users never reached the other-profile rule - it passed on master.)
+            string meShort = ShortLeaf(meLong);
+            string bobShort = ShortLeaf(bobLong);
+            if (meShort != null && bobShort != null && !Same(meShort, meLong) && !Same(bobShort, bobLong))
+            {
+                var own = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = meLong, ExtraAllowedRoots = meLong });
+                string shortTemp = Path.Combine(meShort, "AppData", "Local", "Temp");
+                // 1. the own profile by its short name, where the long name is allowed
+                var d291a = own.Check(Path.Combine(shortTemp, "existing.md"), PathAccess.Read);
+                Ok("GH291-1a: own profile by its 8.3 name is allowed where the long name is", d291a.Allowed, d291a.Reason);
+                Ok("GH291-1b: ...and the decision carries the long path", d291a.Allowed && Same(d291a.Path, Path.Combine(meTemp, "existing.md")), d291a.Path);
+                Allowed(own, "GH291-1c: own profile by its 8.3 name (write)", Path.Combine(shortTemp, "existing.md"), PathAccess.Write);
+                Allowed(own, "GH291-1d: the short-named profile folder itself (list_directory)", meShort);
+                Allowed(own, "GH291-1e: the whole path in 8.3 form (every segment short)", ShortName(Path.Combine(meTemp, "existing.md")));
+                // 2. another user's profile by its short name: still refused, with the same message pattern
+                var d291b = Denied(own, "GH291-2a: another user's profile by its 8.3 name is still refused", Path.Combine(bobShort, "Documents", "invoice.txt"));
+                Ok("GH291-2b: ...as 'another user's profile'", d291b.Reason != null && d291b.Reason.StartsWith("it is inside another user's profile ("), d291b.Reason);
+                var explicitUsers = McpPathPolicy.Build(new PathPolicyInputs { UserProfile = meLong, ExtraAllowedRoots = users291 });
+                Denied(explicitUsers, "GH291-2c: ...even under an explicit root covering the profiles folder", Path.Combine(bobShort, "Documents", "invoice.txt"));
+                Allowed(explicitUsers, "GH291-2d: ...while the own profile by its 8.3 name is allowed under that root", Path.Combine(shortTemp, "existing.md"));
+                // the profile given SHORT (a policy built from a short %USERPROFILE%), the candidates long and short
+                var ownShort = McpPathPolicy.Build(new PathPolicyInputs { UserProfile = meShort, ExtraAllowedRoots = meShort });
+                Allowed(ownShort, "GH291-2e: profile given as its 8.3 name: the long-named own profile is allowed", Path.Combine(meTemp, "existing.md"));
+                Denied(ownShort, "GH291-2f: profile given as its 8.3 name: another user's long-named profile is refused", Path.Combine(bobLong, "Documents", "invoice.txt"));
+                Denied(ownShort, "GH291-2g: ...and by its 8.3 name", Path.Combine(bobShort, "Documents", "invoice.txt"));
+                Denied(own, "GH291-2h: another user's profile with the whole path in 8.3 form is refused", ShortName(Path.Combine(bobLong, "Documents", "invoice.txt")));
+                // 3. a short-named allowed root matches its long-named path, and the reverse
+                string libsLong = Mk(root, "LongNamedLibraries");
+                Touch(Path.Combine(libsLong, "x.inc"));
+                string libsShort = ShortLeaf(libsLong);
+                var rootShort = McpPathPolicy.Build(new PathPolicyInputs { UserProfile = meLong, ExtraAllowedRoots = libsShort });
+                Allowed(rootShort, "GH291-3a: Mcp.AllowedRoots entry in 8.3 form: the long path under it is allowed", Path.Combine(libsLong, "x.inc"));
+                Allowed(rootShort, "GH291-3b: ...and the 8.3 path", Path.Combine(libsShort, "x.inc"));
+                Ok("GH291-3c: ...the root is recorded by its long name", rootShort.Roots.Count == 1 && Same(rootShort.Roots[0].Lexical, libsLong),
+                    rootShort.Roots.Count == 1 ? rootShort.Roots[0].Lexical : "roots=" + rootShort.Roots.Count);
+                var rootLong = McpPathPolicy.Build(new PathPolicyInputs { UserProfile = meLong, ExtraAllowedRoots = libsLong });
+                Allowed(rootLong, "GH291-3d: Mcp.AllowedRoots entry long: the 8.3 path under it is allowed", Path.Combine(libsShort, "x.inc"));
+                Denied(rootShort, "GH291-3e: a sibling of the short-named root is not swept in", Path.Combine(root, "LongNamedLibraries2", "x.inc"));
+                // 4. a not-yet-existing tail under a short-named existing folder (the scratchpad case: Claude writes, then open_file)
+                string newTail = Path.Combine(shortTemp, "example", "notes.md");
+                var d291c = own.Check(newTail, PathAccess.Write);
+                Ok("GH291-4a: not-yet-existing file under the short-named profile: allowed (write)", d291c.Allowed, d291c.Reason);
+                Ok("GH291-4b: ...judged as the long path with the tail re-appended", d291c.Allowed && Same(d291c.Path, Path.Combine(meTemp, "example", "notes.md")), d291c.Path);
+                Allowed(own, "GH291-4c: ...and readable", newTail);
+                Denied(own, "GH291-4d: a not-yet-existing file under another user's short-named profile is still refused", Path.Combine(bobShort, "Documents", "new", "x.txt"));
+                // a short-looking name whose prefix does not exist at all is judged by its text (no crash, no widening)
+                Denied(own, "GH291-4e: a '~' path on a drive that does not exist is judged textually and refused", "Q:\\NOSUCH~1\\x.txt");
+                Denied(own, "GH291-4f: a '~' folder that does not exist beside the solution is refused", Path.Combine(root, "NOSUCH~1", "x.txt"));
+                Allowed(own, "GH291-4g: a '~' folder that does not exist INSIDE the solution is allowed (write)", Path.Combine(sol, "NEWFOL~1", "x.clw"), PathAccess.Write);
+            }
+            else Console.WriteLine("  [skip] GH291-1..4: 8.3 short names are not generated on this volume (fsutil 8dot3name query " + Path.GetPathRoot(root) + ")");
+            // 5. a UNC path with a short-looking segment is refused with no long-name (or any other file-system) call
+            {
+                var calls291 = new List<string>();
+                McpPathPolicy.FsCallForTest = (op, path) => { lock (calls291) calls291.Add(op + " " + path); };
+                try
+                {
+                    var own5 = McpPathPolicy.Build(new PathPolicyInputs { SolutionDir = sol, UserProfile = meLong, ExtraAllowedRoots = meLong });
+                    calls291.Clear();
+                    var d291d = own5.Check("\\\\ca-291-no-such-host\\share\\JOHNSM~1\\AppData\\x.md", PathAccess.Read);
+                    Ok("GH291-5a: a UNC path with a '~' segment is still refused as UNC", !d291d.Allowed && d291d.Reason != null && d291d.Reason.Contains("UNC"), d291d.Reason);
+                    Ok("GH291-5b: ...with no GetLongPathName or other file-system call", calls291.Count == 0, string.Join("; ", calls291.ToArray()));
+                    calls291.Clear();
+                    own5.Check(Path.Combine(meLong, "AppData", "x.md"), PathAccess.Read);
+                    Ok("GH291-5c: control: a local path DOES go through the long-name expansion", calls291.Exists(c => c.StartsWith("GetLongPathName ")), string.Join("; ", calls291.ToArray()));
+                }
+                finally { McpPathPolicy.FsCallForTest = null; }
+            }
+
             Console.WriteLine("=== no solution context ===");
             var noSln = McpPathPolicy.Build(new PathPolicyInputs
             {
@@ -714,6 +797,11 @@ static class McpPathPolicyTest
         return false;
     }
 
+    static bool Same(string a, string b)
+    {
+        return string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+    }
+
     static bool MakeJunction(string link, string target)
     {
         try
@@ -759,5 +847,15 @@ static class McpPathPolicyTest
         var sb = new StringBuilder(1024);
         uint n = GetShortPathNameW(longPath, sb, (uint)sb.Capacity);
         return n == 0 || n >= sb.Capacity ? null : sb.ToString();
+    }
+
+    /// <summary>The path with only its LAST segment in 8.3 form (C:\Users\JOHNSM~1 for C:\Users\JohnSmithDev); null when
+    /// the volume gives it no short name.</summary>
+    static string ShortLeaf(string longPath)
+    {
+        string s = ShortName(longPath);
+        if (s == null) return null;
+        string leaf = Path.GetFileName(s);
+        return leaf.Length == 0 ? null : Path.Combine(Path.GetDirectoryName(longPath), leaf);
     }
 }
