@@ -220,6 +220,7 @@
     <Compile Include="..\Services\ColonQualifierScope.cs"><Link>Services\ColonQualifierScope.cs</Link></Compile>
     <Compile Include="..\Services\LocalScopeIndex.cs"><Link>Services\LocalScopeIndex.cs</Link></Compile>
     <Compile Include="..\Services\SymbolIndex.cs"><Link>Services\SymbolIndex.cs</Link></Compile>
+    <Compile Include="..\Services\FileRefTarget.cs"><Link>Services\FileRefTarget.cs</Link></Compile>
     <Compile Include="..\Services\LiveDictionaryIndex.cs"><Link>Services\LiveDictionaryIndex.cs</Link></Compile>
     <Compile Include="..\Services\McpToolRegistry.cs"><Link>Services\McpToolRegistry.cs</Link></Compile>
     <Compile Include="..\Services\EmbedOverlayGuard.cs"><Link>Services\EmbedOverlayGuard.cs</Link></Compile>
