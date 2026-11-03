@@ -86,9 +86,32 @@ Three things the skill told Claude were wrong. A WINDOW is closed by **one** END
 
 `json.Load()` fills a GROUP or QUEUE that holds a `&Queue` reference field without ever allocating that queue. Unless your JSONClass is derived with a `NewPointer` override that NEWs it, the reference stays NULL, Load reports no error, and the JSON array is silently dropped. The new rule gives a complete example (the queue type, `NAME('data | queue')`, the derived class and its `DERIVED` override, `Load`, `DisposeGroup`), states exactly which group and column names jFiles passes for a top-level, boundary, queue and nested load, and records the version boundary: the two-parameter `NewPointer(*CSTRING, *CSTRING)` is jFiles 3 (3.02 and later also fall back to the old form), while the vendor's page and jFiles 2.x show only the one-parameter form. Checked against the jFiles 3.08, 3.03 and 2.28 sources.
 
+<!-- release-docs: covered=launcher -->
+### The plugin's `clarion-tools` server starts on machines without `CLARION_ROOTS` ([#293](https://github.com/ClarionLive/ClarionAssistant/issues/293))
+
+Without `CLARION_ROOTS` set, the plugin's launcher stopped with "The following usage of the path operator in batch-parameter substitution is invalid" before it looked for a server, and Claude Code reported that the server failed to connect. `cmd` expands a `%VAR:old=new%` substitution before it evaluates the `if defined` in front of it, and an undefined variable in that form corrupts the rest of the line. The split now runs only after a separate check. Roots wrapped in quotes (`"C:\Clarion 12";"D:\C11"`), which stopped the launcher in a different way, work too. This fix reaches you through the plugin update below.
+
+<!-- release-docs: covered=hooks,publish -->
+### The plugin's hooks start faster and time out less ([#294](https://github.com/ClarionLive/ClarionAssistant/issues/294))
+
+The two PowerShell checks at session start are now one Node script. It finishes in a few milliseconds' work in a folder without a `.sln`, and says what the two checks said in a folder with one. The safety hook is registered once for all the tools it inspects instead of four times, with a 10 s limit instead of 5 s. When Claude Code cancels a hook at its limit, the tool call goes ahead without that check; the hook files now say so. The plugin is version 2.1.1. To get it, run `claude plugin update clarion-assistant@clarionassistant-marketplace`, because Claude Code keeps its cached copy until the version changes. The publish script now refuses a plugin change that has no version bump, since such a change reaches nobody.
+
+<!-- release-docs: covered=path-policy -->
+### Paths using a short (8.3) folder name are judged by their long name ([#291](https://github.com/ClarionLive/ClarionAssistant/issues/291))
+
+When your profile folder's name is not a valid 8.3 name, Windows gives programs `%TEMP%` in short form, such as `C:\Users\JOHNSM~1\AppData\Local\Temp`. The path policy read that as another user's profile and refused every path built from it, Claude Code's scratchpad included. It now expands short names on the path being checked and on every root and protected folder it compares against. Your own profile's short name is your profile, a short-named `Mcp.AllowedRoots` entry matches its long path, and another user's short-named profile is still refused. Network paths are still judged by their text and never opened.
+
+<!-- release-docs: covered=markdown-editor,installer -->
+### Markdown Editor v1.5.0, and the installer no longer adds a second copy ([#289](https://github.com/ClarionLive/ClarionAssistant/issues/289), [#290](https://github.com/ClarionLive/ClarionAssistant/issues/290))
+
+The bundled Markdown Editor moves from v1.3.0 to [v1.5.0](https://github.com/msarson/ClarionMarkdownEditor/releases/tag/v1.5.0). Among other changes, files dropped from Explorer now open in editor tabs. Two copies of the editor stop the Clarion IDE from starting, and the installer only looked for an existing copy in `accessory\addins\MarkdownEditor`, while Clarion Addin Finder and the editor's own zip use `accessory\addins\ClarionMarkdownEditor`. It now checks every folder under `accessory\addins` and skips ours when it finds the editor elsewhere, naming that folder in the install log and on the final page. If you already have two copies, the installer leaves both in place and tells you to delete `MarkdownEditor`.
+
 ### Thanks
 
-- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source; [PR #286](https://github.com/ClarionLive/ClarionAssistant/pull/286): the last hover card that skipped the language server, procedures declared in the file, now asks it too, with a 10,000-hover measurement behind the change; [PR #288](https://github.com/ClarionLive/ClarionAssistant/pull/288): Ctrl+Click on an INCLUDE file name, resolved through the `.red`; [PR #292](https://github.com/ClarionLive/ClarionAssistant/pull/292): the `clarion` skill dedupe and its three corrections; [PR #296](https://github.com/ClarionLive/ClarionAssistant/pull/296): the `jfiles` `NewPointer` rule.
+- **[@msarson](https://github.com/msarson)** &mdash; [#289](https://github.com/ClarionLive/ClarionAssistant/issues/289) and [#290](https://github.com/ClarionLive/ClarionAssistant/issues/290): the Markdown Editor release details and the diagnosis of the duplicate install.
+- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#293](https://github.com/ClarionLive/ClarionAssistant/issues/293) and [#294](https://github.com/ClarionLive/ClarionAssistant/issues/294): the launcher failure and a measured analysis of the hook timeouts.
+
+- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source; [PR #286](https://github.com/ClarionLive/ClarionAssistant/pull/286): the last hover card that skipped the language server, procedures declared in the file, now asks it too, with a 10,000-hover measurement behind the change; [PR #288](https://github.com/ClarionLive/ClarionAssistant/pull/288): Ctrl+Click on an INCLUDE file name, resolved through the `.red`; [PR #292](https://github.com/ClarionLive/ClarionAssistant/pull/292): the `clarion` skill dedupe and its three corrections; [PR #296](https://github.com/ClarionLive/ClarionAssistant/pull/296): the `jfiles` `NewPointer` rule; [#291](https://github.com/ClarionLive/ClarionAssistant/issues/291): the short-name path refusal, diagnosed down to the rule.
 
 ## What's New in v6.2
 
