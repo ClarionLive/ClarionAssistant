@@ -1,99 +1,60 @@
 # Clarion Syntax Basics
 
-Core syntax rules, file structure, parameter passing, routines, directives, and coding conventions.
+Data types, procedure and control-structure shapes, reserved words, file layout, parameters, routines and directives. The critical rules in SKILL.md (quotes, no periods, column 1, END, `&=`, parameter markers, `DO`) are not repeated here.
 
-## Core Syntax Rules
+## Data Types
 
-### Comments
-- Single-line comments start with `!`
-- Example: `! This is a comment`
-
-### Variable Declaration
-Variables are declared with type after name:
 ```clarion
-VariableName    TYPE
-MyString        STRING(100)
+MyString        STRING(100)                ! Fixed length, space-padded
+MyCString       CSTRING(101)               ! Null-terminated: 100 characters + the null
 MyNumber        LONG
-MyByte          BYTE
-MyReal          REAL
 ```
 
-Common types:
-- `STRING(size)` - Fixed or variable length string
-- `LONG` - 32-bit signed integer
-- `SHORT` - 16-bit signed integer
-- `BYTE` - 8-bit unsigned integer
-- `REAL` - 4-byte floating point
-- `DECIMAL(digits,decimals)` - Decimal number
+- `BYTE` (8-bit unsigned), `SHORT` (16-bit signed), `LONG` (32-bit signed)
+- `REAL` (8-byte floating point), `SREAL` (4-byte)
+- `DECIMAL(digits,decimals)` - packed decimal; see ai-pitfalls.md for its parameter and return limits
+- `DATE`, `TIME` - date and time types
 
-### Procedures
+## Procedures and Control Structures
+
 ```clarion
-ProcedureName PROCEDURE
-! Local variables here
-LocalVar    LONG
+MyProc    PROCEDURE
+Counter       LONG                         ! Local data before CODE
   CODE
-  ! Procedure code here
+  IF Counter > 0
+    ! ...
+  ELSIF Counter < 0
+    ! ...
+  ELSE
+    ! ...
+  END
+  CASE Counter
+  OF 1
+  OROF 2                                   ! Either value
+    ! ...
+  ELSE
+    ! ...
+  END
+  LOOP Counter = 1 TO 10
+    IF Counter = 5 THEN CYCLE.
+    IF Counter = 8 THEN BREAK.
+  END
   RETURN
 ```
 
-### Control Structures
+## Reserved Words
 
-**IF statement:**
-```clarion
-IF condition
-  ! code
-END
-```
-
-**CASE statement:**
-```clarion
-CASE variable
-OF value1
-  ! code
-OF value2
-  ! code
-END
-```
-
-**LOOP:**
-```clarion
-LOOP
-  IF condition THEN BREAK.
-  ! code
-END
-```
-
-### String Literals
-- Single quotes for strings: `'Hello World'`
-- Double single quotes for embedded quote: `'Don''t'`
-
-## Reserved Words and Keywords
-
-Clarion has reserved words that cannot be used as identifiers (variable names, column names, table names, procedure parameters, etc.). Using reserved words as identifiers will cause compilation errors or unexpected behavior.
-
-### Strictly Reserved Keywords
-**These keywords are reserved and may NOT be used as labels for any purpose:**
+**Never usable as a label:**
 
 `ACCEPT`, `AND`, `ASSERT`, `BEGIN`, `BREAK`, `BY`, `CASE`, `CATCH`, `CHOOSE`, `CODE`, `COMPILE`, `CONST`, `CYCLE`, `DATA`, `DO`, `ELSE`, `ELSIF`, `END`, `EXECUTE`, `EXIT`, `FINALLY`, `FUNCTION`, `GOTO`, `IF`, `INCLUDE`, `LOOP`, `MEMBER`, `NEW`, `NOT`, `NULL`, `OF`, `OMIT`, `OR`, `OROF`, `PRAGMA`, `PROCEDURE`, `PROGRAM`, `RETURN`, `ROUTINE`, `SECTION`, `THEN`, `THROW`, `TIMES`, `TO`, `TRY`, `UNTIL`, `WHILE`, `XOR`
 
-### Data Structure Keywords
-**These keywords may be used as labels of data structures or executable statements, but may NOT be the label of any PROCEDURE statement:**
+**Usable as the label of data or a statement, but not of a PROCEDURE:**
 
 `APPLICATION`, `CLASS`, `DETAIL`, `FILE`, `FOOTER`, `FORM`, `GROUP`, `HEADER`, `ITEM`, `ITEMIZE`, `JOIN`, `MAP`, `MENU`, `MENUBAR`, `MODULE`, `OLE`, `OPTION`, `QUEUE`, `PARENT`, `RECORD`, `REPORT`, `SELF`, `SHEET`, `TAB`, `TOOLBAR`, `VIEW`, `WINDOW`
 
-**IMPORTANT:** `SELF` and `PARENT` cannot name local variables or parameters of any class or interface method.
+## File Layout
 
-### Best Practices
-- ✅ Use descriptive names that don't conflict with reserved words
-- ✅ Prefix variables to avoid conflicts (e.g., `MyData` instead of `DATA`)
-- ❌ Never use reserved keywords as column names in database tables
-- ❌ Never use reserved keywords as procedure names
-- ❌ Never use `SELF` or `PARENT` as local variables in class methods
-
-## File Structure
-
-### .clw File Structure (Implementation)
-Every .clw implementation file follows this structure:
+### .clw (implementation)
 ```clarion
                      MEMBER
                      MAP
@@ -112,11 +73,7 @@ MyClass.Kill    PROCEDURE
   ! implementation here
 ```
 
-**Rules:** `MEMBER` must be first. Then optional `MAP/END` block. Then `INCLUDE` statements. Then procedure implementations.
-
-The bare `MEMBER` shown above is correct for a class-implementation file (`CLASS,MODULE(...),LINK(...)`). In a module that implements procedures prototyped in the parent program's global MAP, write `MEMBER('Parent.clw')` — bare `MEMBER` there fails with `No matching prototype available`.
-
-### .inc File Structure (Declarations)
+### .inc (declarations)
 ```clarion
 MyClass    CLASS,TYPE,MODULE('MyClass.clw'),LINK('MyClass.clw')
 Q                &MyQueue
@@ -128,90 +85,36 @@ Process          PROCEDURE(STRING xParam),STRING,PROC
 
 **CLASS attributes:** `TYPE` (can be used as a type), `MODULE()` (implementation file), `LINK()` (link this file), `IMPLEMENTS()`, `PROTECTED`, `PRIVATE`, `VIRTUAL`
 
-### Label Column Rules
-**Labels MUST start in column 1.** Code statements are indented.
+## Parameters
+
 ```clarion
-MyVariable    LONG              ! Label at column 1
-MyProc        PROCEDURE         ! Label at column 1
-                CODE            ! CODE is indented
-                RETURN          ! Statements are indented
-```
+! Prototype (in a MAP or CLASS)
+MyProc    PROCEDURE(STRING xName, *LONG xCount, <STRING xOpt>),STRING,PROC
 
-### Statement Termination
-Clarion does NOT use periods to end statements. Statements are terminated by newlines. `END` closes block structures.
-```clarion
-CLEAR(SELF.Q)                   ! No period
-SELF.Q.Field &= xOrigField     ! No period
-ADD(SELF.Q)                     ! No period
-IF NOT ERRORCODE()              ! No period
-   BREAK                        ! No period
-END                             ! No period — END closes the IF
-```
-
-**Exception:** Single-line IF uses period: `IF condition THEN statement.`
-
-## Parameter Passing
-
-### By Value (default)
-```clarion
-MyProc    PROCEDURE(STRING xName, LONG xCount)
-```
-
-### By Reference
-```clarion
-MyProc    PROCEDURE(*STRING xName, *LONG xCount)   ! * = by reference
+! Implementation
+MyProc    PROCEDURE(STRING xName, *LONG xCount, <STRING xOpt>)
   CODE
-  xName = 'Modified'     ! Modifies caller's variable
-```
-
-### Omittable Parameters
-```clarion
-MyProc    PROCEDURE(STRING xName, <STRING xOptional>, <LONG xCount>)
-  CODE
-  IF NOT OMITTED(2)       ! Check if parameter 2 was passed (1-based)
-    ! use xOptional
+  xCount += 1                              ! *LONG changes the caller's variable
+  IF OMITTED(xOpt) = 0                     ! The omittable parameter was passed
+    RETURN CLIP(xName) & ' ' & CLIP(xOpt)
   END
-  IF NOT OMITTED(3)
-    ! use xCount
-  END
+  RETURN xName
 ```
 
-**Angle brackets** `<>` denote omittable parameters. Check with `OMITTED(n)`.
+## ROUTINE
 
-### Return Values
-```clarion
-MyFunc    PROCEDURE(LONG xInput),STRING   ! Return type after parameters
-  CODE
-  RETURN 'Result: ' & xInput
-```
-
-**PROC attribute:** Add `,PROC` to allow calling a function and ignoring the return value.
-
-## ROUTINE and DO
-
-ROUTINEs are named code blocks within a procedure. Called with `DO`.
 ```clarion
 MyProc    PROCEDURE
 Counter       LONG
   CODE
-  DO InitializeData
-  DO ProcessRecords
+  DO InitData
   RETURN
 
-InitializeData   ROUTINE
+InitData  ROUTINE
   Counter = 0
-  CLEAR(MyQueue)
-
-ProcessRecords   ROUTINE
-  LOOP Counter = 1 TO RECORDS(MyQueue)
-    GET(MyQueue, Counter)
-    ! process record
-  END
 ```
 
-**Rules:** ROUTINEs have access to the procedure's local variables. They cannot accept parameters or return values. Always called with `DO RoutineName`.
-
-## INCLUDE and OMIT Directives
+## INCLUDE, OMIT and COMPILE
 
 ```clarion
 INCLUDE('MyHeader.inc'),ONCE         ! Include once (header guard)
@@ -226,42 +129,11 @@ COMPILE('_EndCompile_',_MySymbol_)   ! Compile block if symbol defined
 _EndCompile_
 ```
 
-**OMIT terminator rule (verified):** an `OMIT('some text')` block is closed by the first occurrence of that exact text anywhere in the source, including inside a comment (`!` and `!!` are both ordinary comments). An `OMIT` whose text never reappears fails with `OMIT not terminated`.
+## Naming
 
-## Best Practices
-
-### Naming Conventions
-- PascalCase for procedures: `CalculateTotal`
-- Local variables often start with lowercase: `counter`, `index`
-- Module/global variables often PascalCase: `GlobalErrors`, `INIMgr`
-- Control IDs prefixed with `?`: `?ButtonSave`, `?OLE`
-
-### Code Organization
-- Use `MAP/END` for procedure declarations
-- Use `CODE` section for executable code
-- Use proper indentation (2-4 spaces)
-
-### String Concatenation
-```clarion
-Result = 'String1' & 'String2' & Variable
-```
-
-### Alignment for Readability
-Clarion developers often align assignments:
+- PascalCase procedures (`CalculateTotal`) and globals (`GlobalErrors`); control IDs start with `?` (`?ButtonSave`).
+- Align runs of assignments:
 ```clarion
 MyCOMCtrl{'Title'}      = 'Meeting Invitation'
-MyCOMCtrl{'Subtitle'}   = 'Tomorrow 2:00 PM'
 MyCOMCtrl{'Message'}    = 'Please RSVP'
-MyCOMCtrl{'Type'}       = 0
 ```
-
-## When Generating Clarion Examples
-
-1. **Always use correct syntax**: Single quotes for strings, `!` for comments
-2. **Align assignments** for readability when showing property settings
-3. **Use realistic variable names** following Clarion conventions
-4. **Show complete context** - don't assume variables are declared elsewhere
-5. **Comment complex sections** using `!` prefix
-6. **Use proper indentation** (consistent spacing)
-7. **For COM examples**: Show the full pattern including control creation
-8. **Property names are case-sensitive** in COM calls - use exact names from interface

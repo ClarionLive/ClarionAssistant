@@ -43,5 +43,3 @@ MyObj    &BaseClass                    ! Reference (pointer) variable
   MyObj.Init()                        ! Call method
   DISPOSE(MyObj)                      ! Deallocate
 ```
-
-**Pointer syntax:** `&=` assigns a reference. `&= NULL` checks/clears. `NEW` allocates. `DISPOSE` deallocates.

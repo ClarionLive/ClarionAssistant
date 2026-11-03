@@ -59,7 +59,7 @@ For each test case:
 **Score checklist:**
 - [ ] WINDOW declaration with correct syntax
 - [ ] Controls use USE(?ControlName) pattern
-- [ ] Two ENDs for WINDOW (controls + structure)
+- [ ] One END closes a WINDOW (a second END after the controls does not compile)
 - [ ] OPEN(Window) before ACCEPT
 - [ ] ACCEPT (not LOOP) for event processing
 - [ ] CASE EVENT() for event dispatch

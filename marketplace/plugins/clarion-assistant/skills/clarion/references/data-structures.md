@@ -38,6 +38,7 @@ MyQueue      QUEUE
 Name             STRING(50)
 Value            LONG
              END
+Idx          LONG                     ! Position when walking the queue
 ```
 
 ### Operations
@@ -58,6 +59,12 @@ END
 ! Get by key value
 MyQueue.Name = 'Test'
 GET(MyQueue, MyQueue.Name)            ! Get by key field
+
+! Walk every record
+LOOP Idx = 1 TO RECORDS(MyQueue)
+  GET(MyQueue, Idx)
+  ! MyQueue.Name / MyQueue.Value hold record Idx
+END
 
 ! Update current record
 MyQueue.Value = 99
@@ -96,7 +103,7 @@ LEFT(string)                    ! Left-justify (remove leading spaces)
 RIGHT(string)                   ! Right-justify
 UPPER(string)                   ! Uppercase
 LOWER(string)                   ! Lowercase
-LEN(string)                     ! Length (excluding trailing spaces)
+LEN(string)                     ! Length including trailing spaces; LEN(CLIP(s)) without
 SIZE(variable)                  ! Size in bytes
 INSTRING(find, source, start, count)  ! Find substring (returns position, 0 if not found)
 SUB(string, start, length)      ! Substring
@@ -118,8 +125,6 @@ RANDOM(low, high)               ! Random number in range
 ```clarion
 ERRORCODE()                     ! Last error code (0 = success)
 ERROR()                         ! Last error message
-RECORDS(queue_or_file)          ! Record count
-POINTER(queue_or_file)          ! Current position
 ADDRESS(variable)               ! Memory address
 WHAT(group, n)                  ! Field reference by index
 WHO(group, n)                   ! Field name by index
@@ -128,7 +133,7 @@ CLOCK()                         ! Current time (centiseconds since midnight)
 TODAY()                         ! Current date (Clarion standard date)
 ```
 
-### File/Queue Functions
+### File Functions
 ```clarion
 SET(file)                       ! Set file to beginning
 SET(key)                        ! Set to beginning of key order

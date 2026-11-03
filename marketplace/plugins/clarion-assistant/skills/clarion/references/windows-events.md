@@ -4,13 +4,12 @@ ACCEPT loop event processing, EVENT constants, PROP:xxx property syntax, and WIN
 
 ## ACCEPT Loop (Event Processing)
 
-The ACCEPT loop is the core event processing structure for windows:
 ```clarion
   OPEN(Window)
   ACCEPT
     CASE EVENT()
     OF EVENT:OpenWindow
-      ! Window just opened — initialize controls
+      ! Initialize controls
     OF EVENT:Accepted
       CASE FIELD()
       OF ?ButtonSave
@@ -25,9 +24,6 @@ The ACCEPT loop is the core event processing structure for windows:
         ! List selection changed
       END
     OF EVENT:CloseWindow
-      IF SELF.Request = InsertRecord OR SELF.Request = ChangeRecord
-        ! Prompt to save changes
-      END
       BREAK
     END
   END
@@ -74,40 +70,16 @@ FieldType = File{PROP:Type, idx}         ! Get field type at index
 ## Window/Form Syntax
 
 ### Window Definition
-Windows require TWO `END` statements:
-1. First `END` - closes the control list
-2. Second `END` - closes the window structure
+One `END` closes the WINDOW and its controls. Container controls (SHEET, TAB, OPTION, GROUP, OLE, MENUBAR, MENU, TOOLBAR) take their own `END`. A second `END` after the controls does not compile.
 
 ```clarion
-Window    WINDOW('Window Title'),AT(,,Width,Height),FONT('Segoe UI',9)
-            BUTTON('Click Me'),AT(X,Y,W,H),USE(?ButtonID)
-            OLE,AT(X,Y),USE(?OLE),HIDE
-            END                    ! Closes control list
-          END                      ! Closes window structure
-```
-
-**Important:** The OLE control for COM objects is typically positioned off-screen or hidden:
-```clarion
-Window    WINDOW('Toast Notifications'),AT(,,343,131),FONT('Segoe UI',9),CENTER,SYSTEM
-            BUTTON('Show Toast'),AT(15,10,64,20),USE(?BUTTONShowToast)
-            OLE,AT(291,79),USE(?OLE),HIDE
+Window    WINDOW('Window Title'),AT(,,343,131),FONT('Segoe UI',9),CENTER,SYSTEM
+            BUTTON('Click Me'),AT(15,10,64,20),USE(?ButtonID)
+            SHEET,AT(4,34,250,90),USE(?Sheet)
+              TAB('First'),USE(?Tab1)
+              END
             END
-          END
+            OLE,AT(291,79),USE(?OLE),HIDE      ! COM host control, usually hidden
+            END                                ! The OLE control takes its own END
+          END                                  ! Closes the WINDOW
 ```
-
-### Accept Loop Pattern
-```clarion
-LOOP
-  CASE ACCEPTED()
-  OF ?ButtonID
-    ! Button was clicked
-  END
-
-  CASE EVENT()
-  OF EVENT:CloseWindow
-    BREAK
-  END
-END
-```
-
-**Note:** For window event processing, prefer the ACCEPT structure (above) over a plain LOOP with ACCEPTED() — the LOOP/ACCEPTED() form is an old/simplified pattern.
