@@ -15,6 +15,17 @@
 #   pwsh installer\publish-marketplace-to-github.ps1                   # publish
 #   pwsh installer\publish-marketplace-to-github.ps1 -WhatIf           # dry run (no push)
 #   pwsh installer\publish-marketplace-to-github.ps1 -AllowDeletions   # permit removals
+#   pwsh installer\publish-marketplace-to-github.ps1 -AllowSameVersion # permit a plugin change without a version bump
+#
+# A PLUGIN CHANGE WITHOUT A VERSION BUMP IS REFUSED BY DEFAULT (GH #294). Claude
+# Code pins a marketplace plugin to the "version" in its plugin.json: `claude
+# plugin update` and the background auto-update recompute that version and, when
+# it matches what installed_plugins.json records, leave the cached copy alone and
+# print "already at the latest version". So files published under an unchanged
+# version reach nobody who installed from GitHub. The gate below compares each
+# plugin's version before and after the mirror and stops when its files changed
+# but the string did not. -AllowSameVersion is for a change that may stay
+# invisible to installed users (a README correction, say).
 #
 # DELETIONS ARE REFUSED BY DEFAULT. The mirror step prunes anything absent from
 # marketplace/, which is only safe while marketplace/ genuinely IS the source of
@@ -49,8 +60,19 @@ param(
     # So deletions now stop the run and are printed on their own. Pass this switch
     # only when you have LOOKED at that list and every entry is a skill you actually
     # meant to retire. See ticket 69b2f1fb.
-    [switch]$AllowDeletions
+    [switch]$AllowDeletions,
+    # Allow files under plugins\<name>\ to change while that plugin's plugin.json
+    # "version" stays what is already published. See the header: installed users
+    # never receive such a publish.
+    [switch]$AllowSameVersion
 )
+
+# The "version" in <pluginDir>\.claude-plugin\plugin.json, or $null when there is none.
+function Get-PluginVersion([string]$PluginDir) {
+    $manifest = Join-Path $PluginDir '.claude-plugin\plugin.json'
+    if (-not (Test-Path $manifest)) { return $null }
+    try { return [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).version } catch { return $null }
+}
 
 $ErrorActionPreference = 'Stop'
 
@@ -125,6 +147,15 @@ if ($needFreshClone) {
 # honor $ErrorActionPreference) does not throw on the benign exit-1 before our
 # `-ge 8` guard runs. Zero $LASTEXITCODE afterward so a residual 1 can't poison the
 # git checks below.
+# Each plugin's version AS PUBLISHED, read from the clone before the mirror replaces it.
+$publishedVersions = @{}
+$publishedPluginsDir = Join-Path $WorkDir 'plugins'
+if (Test-Path $publishedPluginsDir) {
+    foreach ($dir in Get-ChildItem -LiteralPath $publishedPluginsDir -Directory) {
+        $publishedVersions[$dir.Name] = Get-PluginVersion $dir.FullName
+    }
+}
+
 Write-Host "Mirroring files ..."
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
@@ -193,6 +224,34 @@ if ($deleted.Count -gt 0 -and -not $AllowDeletions) {
 
 if ($deleted.Count -gt 0) {
     Write-Host "-AllowDeletions given: $($deleted.Count) file(s) will be REMOVED from $Repo." -ForegroundColor Yellow
+}
+
+# 3b. VERSION GATE (GH #294). A plugin whose files changed must carry a new "version", or no
+#     installed user ever sees the change (see the header). Porcelain paths use forward slashes.
+$pendingPaths = @($pending | ForEach-Object { ($_ -replace '^..\s+', '').Trim('"') })
+$unbumped = @()
+foreach ($name in @($pendingPaths | ForEach-Object { if ($_ -match '^plugins/([^/]+)/') { $Matches[1] } } | Sort-Object -Unique)) {
+    $before = $publishedVersions[$name]
+    $after  = Get-PluginVersion (Join-Path (Join-Path $WorkDir 'plugins') $name)
+    if ($null -ne $before -and $before -eq $after) { $unbumped += "$name (still $after)" }
+}
+if ($unbumped.Count -gt 0 -and -not $AllowSameVersion) {
+    Write-Host ""
+    Write-Host "REFUSING TO PUBLISH: plugin files changed but the plugin version did not:" -ForegroundColor Red
+    $unbumped | ForEach-Object { Write-Host "    - $_" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "Claude Code pins an installed plugin to the 'version' in its plugin.json. 'claude plugin update'" -ForegroundColor Yellow
+    Write-Host "sees the same version, says 'already at the latest version', and keeps the cached copy -- so" -ForegroundColor Yellow
+    Write-Host "this publish would reach nobody who installed from GitHub (GH #294)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Bump 'version' in marketplace\plugins\<name>\.claude-plugin\plugin.json and re-run, or pass" -ForegroundColor Yellow
+    Write-Host "-AllowSameVersion if this change really may stay invisible to installed users." -ForegroundColor Yellow
+    & git -C $WorkDir reset --quiet --hard HEAD
+    & git -C $WorkDir clean --quiet -fd
+    throw "Publish aborted: plugin changed without a version bump ($($unbumped -join ', '))."
+}
+if ($unbumped.Count -gt 0) {
+    Write-Host "-AllowSameVersion given: $($unbumped -join ', ') will be published under an unchanged version." -ForegroundColor Yellow
 }
 
 if ($PSCmdlet.ShouldProcess($Repo, "Commit and push marketplace changes")) {
