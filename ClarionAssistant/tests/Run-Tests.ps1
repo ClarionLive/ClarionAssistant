@@ -755,6 +755,11 @@ if (-not $CSharpOnly -and -not $NodeOnly) {
     # Auto-discovered, like the installer family below, so a new harness is picked up by being
     # written rather than by also remembering to edit this file. Run-Tests.ps1 EXCLUDES ITSELF —
     # it lives in this directory and would otherwise recurse.
+    #
+    # The *.SourceScan.ps1 harnesses here pin IDE-coupled or declarative sources a compiled harness
+    # cannot reach. InstallerMarkdownDuplicate.SourceScan.ps1 (GH #289 / #290) is the one over
+    # installer\ClarionAssistant.iss: the Markdown Editor duplicate scan across accessory\addins,
+    # the per-root frozen verdict, and the v-pin agreeing across the .iss, snapshot and notices.
     $caTests = Get-ChildItem $PSScriptRoot -Filter *.ps1 -ErrorAction SilentlyContinue |
                Where-Object { $_.Name -ne 'Run-Tests.ps1' } |
                Sort-Object Name

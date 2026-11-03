@@ -21,6 +21,7 @@ Then update **both** defines in `installer\ClarionAssistant.iss` — they are ha
 ```
 
 Also bump the version in the Markdown Editor table of `THIRD-PARTY-NOTICES.md`.
+`tests\InstallerMarkdownDuplicate.SourceScan.ps1` checks that all of these agree.
 
 Rebuild the installer and confirm the ISCC log has no `shipping WITHOUT` line for the Markdown
 Editor. (`build-installer.ps1` fails the build on those, so a clean exit is the proof.)
@@ -36,10 +37,15 @@ which upstream has always maintained. The sync parses it and records it as
 `resolvedIdentityVersion`; the installer's `ShouldInstallMarkdown` compares that against whatever
 the user already has and declines to overwrite a newer copy.
 
-**It must install to `accessory\addins\MarkdownEditor`.** Clarion scans every subfolder under
-`accessory\addins`, and two copies sharing the `ClarionMarkdownEditor` Identity fail IDE startup
-outright with *"Identity name used by multiple addins"*. Putting it under `ClarionAssistant\`
-would break the IDE for anyone who already had the addin installed properly.
+**It must install to `accessory\addins\MarkdownEditor`, and only when no other folder has it.**
+Clarion scans every subfolder under `accessory\addins`, and two copies sharing the
+`ClarionMarkdownEditor` Identity fail IDE startup outright with *"Identity name used by multiple
+addins"*. Putting it under `ClarionAssistant\` would break the IDE for anyone who already had the
+addin installed properly. The other install routes use other folder names
+(`accessory\addins\ClarionMarkdownEditor` for Clarion Addin Finder and upstream's release notes,
+`accessory\addins\MarkdownAddin` in upstream's `addin-config.json`), so the installer looks for the
+manifest in every immediate subfolder of `accessory\addins` and skips our copy when any other
+folder holds one (GH #290).
 
 **The release ZIP contains no LICENSE.** MIT requires the copyright and permission notice to
 travel with every redistributed copy, so the sync fetches `LICENSE` from the repo at the pinned
