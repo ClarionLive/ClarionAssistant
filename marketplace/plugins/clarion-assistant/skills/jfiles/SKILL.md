@@ -100,8 +100,10 @@ data             &ModelIdQType, NAME('data | queue')
                END
 
 json           CLASS(JSONClass)                        ! DERIVED - a plain JSONClass will not do
-NewPointer       PROCEDURE( *CSTRING pGroupName, *CSTRING pColumnName), VIRTUAL
+NewPointer       PROCEDURE( *CSTRING pGroupName, *CSTRING pColumnName), DERIVED
                END
+st             StringTheory                            ! holds the JSON text
+i              LONG
 
   CODE
   json.Start()
@@ -121,16 +123,16 @@ json.NewPointer PROCEDURE( *CSTRING pGroupName, *CSTRING pColumnName)
   CASE pGroupName
   OF 'group'                                           ! an unnamed GROUP is reported as 'group'
      CASE pColumnName
-     OF 'data'                                         ! the JSON (external) name of the queue field
-        ModelListG.data &= NEW( ModelIdQType )
-        CLEAR(ModelListG.data)
+     OF 'data'                                         ! the NAME() text before the first '|', case-sensitive
+        ModelListG.data &= NEW( ModelIdQType )         ! jFiles CLEARs it and loads it after you return
      END
   END
 ```
 
 - The method is implemented after the procedure's last ROUTINE. A local derived class's methods can see the procedure's data, so they can NEW `ModelListG.data` directly.
-- If you are not sure which names arrive, put a `?` debug trace or a breakpoint in `NewPointer`, or call `json.Reflection.Walk()` after the Load. That matters for a GROUP with its own `NAME()` or for nested structures.
-- The CapeSoft `NewPointer` page shows an older one-parameter signature (`String pColumnName`). Current jFiles passes `*CSTRING pGroupName, *CSTRING pColumnName`.
+- Which names arrive: `pGroupName` is `'group'` for `json.Load(MyGroup, st)` with no boundary, the boundary name if you pass one (`json.Load(MyGroup, st, 'result')` gives `'result'`), `'queue'` for a top-level queue load, and `parent.column` one level down (a queue inside the records of `data` arrives as `'group.data'`). The GROUP's own `NAME()` does not change it. `pColumnName` is the field's `NAME()` text before the first `|`, not the label. If in doubt, put a debug trace or a breakpoint in `NewPointer`, or call `json.Reflection.Walk()` after the Load.
+- The `| queue` suffix is required. It is how jFiles/Reflection classifies the field as a queue reference, both for `Load` (so it asks `NewPointer`) and for `DisposeGroup` (so it finds and disposes the queue). Without it the field is neither loaded nor disposed.
+- The CapeSoft `NewPointer` page shows the jFiles 2 one-parameter signature (`String pColumnName`). jFiles 3 (3.03 and 3.08 checked) passes `*CSTRING pGroupName, *CSTRING pColumnName` and, since 3.02, falls back to the one-parameter form if the new one leaves the reference NULL. jFiles 2.x (2.28 ships with Clarion 10) has only the one-parameter form. Declare the override `DERIVED` rather than `VIRTUAL`: a prototype that matches neither parent then fails to compile instead of becoming an unused overload.
 - **Save does not need this.** For Save the caller NEWs and fills the queue first (`MyGroup.Q &= NEW(MyQType)`, `ADD(...)`, `json.Save(MyGroup, st)`), then calls `json.DisposeGroup(MyGroup)`.
 - `&StringTheory` fields (`NAME('x | StringTheory')`) are allocated by jFiles itself. Only queue references need `NewPointer`.
 - When copying a working Load-into-group example from existing code, copy its derived class and `NewPointer` method too. The declarations alone look complete but load nothing.
