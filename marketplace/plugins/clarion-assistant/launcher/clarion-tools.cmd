@@ -21,6 +21,15 @@ REM PATHS AND ARGUMENTS PASS THROUGH UNCHANGED. Delayed expansion is OFF (a "!" 
 REM eaten when it was on), nothing is run through "call" or "for /f" (both expand "%" in the
 REM client's arguments a second time), and the hand-overs are plain lines outside any ( ) block,
 REM so a ")" in a path cannot end a block early. Hence the gotos.
+REM
+REM A %VAR:old=new% OR %VAR:~n% EXPANSION IS WRITTEN ONLY AFTER A GOTO ON ITS OWN LINE HAS PROVED
+REM VAR DEFINED (GH #293). cmd expands every %...% in a line BEFORE it runs any command on that
+REM line - an "if defined VAR" in front changes nothing - and expands those two forms of an
+REM UNDEFINED variable by dropping only "%VAR:": the "old=new%" tail stays in the line and its
+REM closing % pairs with the next % along, so every %%R after it shifts into a %R
+REM batch-parameter expansion and the whole script dies with "The following usage of the path
+REM operator in batch-parameter substitution is invalid" before it looked for any server. A plain
+REM %VAR% of an undefined variable is harmless (it expands to nothing).
 REM ---------------------------------------------------------------------------------------------
 
 set "EXE="
@@ -52,7 +61,19 @@ REM
 REM    Checking each VERSION across both sources matters: the registry is written only by the
 REM    installer, so a developer who deployed by script has no entry for that version, and an
 REM    incomplete registry must not outrank a newer real install.
-if defined CLARION_ROOTS for %%R in ("%CLARION_ROOTS:;=" "%") do if not defined EXE if not "%%~R"=="" if exist "%%~R\%REL%" set "EXE=%%~R\%REL%"
+REM
+REM    CLARION_ROOTS is split on ";" by the %ROOTS:;=" "% substitution, which turns a;b into
+REM    "a" "b" for the for-set. The two gotos before it are the fix for GH #293 (see the header):
+REM    with CLARION_ROOTS unset - most machines - the substitution used to wreck the line and the
+REM    launcher died before it looked anywhere, so the plugin never connected. Quotes a user put
+REM    round a path ("C:\Clarion 12";"D:\C11") are removed first; an empty item (a;;b or a;) is
+REM    skipped; a root with spaces, "(x86)", "&", "!" or "%" passes through.
+if not defined CLARION_ROOTS goto roots_done
+set "ROOTS=%CLARION_ROOTS:"=%"
+if not defined ROOTS goto roots_done
+for %%R in ("%ROOTS:;=" "%") do if not defined EXE if not "%%~R"=="" if exist "%%~R\%REL%" set "EXE=%%~R\%REL%"
+:roots_done
+set "ROOTS="
 for %%V in (Clarion12 Clarion11.1 Clarion11 Clarion10) do (
   if not defined EXE (
     for /f "tokens=2,*" %%A in ('reg query "HKCU\Software\ClarionAssistant\InstallPaths" /v "%%V" 2^>nul ^| findstr /i "REG_SZ"') do (
