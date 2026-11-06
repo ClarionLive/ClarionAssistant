@@ -74,6 +74,10 @@ process.stdin.on('end', () => {
             gitBranch: git.branch,
             gitStatus: git.status,
             gitDirty: git.dirty,
+            // The session this tab is running NOW. /clear and /resume move a running claude to another
+            // session id, so the Home tab's resume list reads this rather than only the launch-time id
+            // (ticket f9843525).
+            sessionId: typeof data.session_id === 'string' ? data.session_id : null,
             timestamp: Date.now()
         };
 

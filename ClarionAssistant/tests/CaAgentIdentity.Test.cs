@@ -266,7 +266,8 @@ static class CaAgentIdentityTest
                     newChat != null && newChat.Contains("GetOpenSolutionPath()") && newChat.Contains("RetitleFollowingTab(tab, ideSln);")
                     && newChat.IndexOf("RetitleFollowingTab(tab, ideSln);", StringComparison.Ordinal)
                        < newChat.IndexOf("_tabManager.ActivateTab(tab.Id);", StringComparison.Ordinal));
-                string openSln = Body(src, "private void OpenSolutionInNewTab(string slnPath)");
+                // Prefix only: f9843525 added an optional resume parameter.
+                string openSln = Body(src, "private void OpenSolutionInNewTab(string slnPath");
                 Ok("F4: a tab opened on a solution follows the IDE's solution",
                     openSln != null && openSln.Contains("tab.FollowsIdeSolution = true;"));
                 string retitleAll = Body(src, "private void RetitleSolutionTabs(string newPath)");

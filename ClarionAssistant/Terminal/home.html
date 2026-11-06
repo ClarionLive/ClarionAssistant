@@ -113,6 +113,82 @@ body.light .backend-row .default-hint .current { color: #40a02b; }
 body.light .backend-row .reset-link { color: #1e66f5; }
 body.light .action-card .backend-tag { background: rgba(30,102,245,0.1); color: #1e66f5; }
 
+/* Work With Open Solution: new / resume last / more options (f9843525, approved mockup). The three
+   buttons are always there; one that cannot act is dimmed with a tooltip saying why, never hidden. */
+.card-btns { display: flex; justify-content: center; gap: 8px; margin-top: 10px; }
+.ibtn {
+  position: relative; width: 32px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 5px; border: 1px solid #45475a; background: #313244; color: #cdd6f4;
+  cursor: pointer; padding: 0; font: inherit;
+}
+.ibtn svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ibtn:hover { border-color: #89b4fa; color: #89b4fa; }
+.ibtn.on { background: #89b4fa; border-color: #89b4fa; color: #1e1e2e; }
+.ibtn.off { opacity: .4; cursor: default; }
+.ibtn.off:hover { border-color: #45475a; color: #cdd6f4; }
+.ibtn[data-tip]:hover::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
+  white-space: nowrap; background: #11111b; color: #cdd6f4; font-size: 12px; font-weight: 400;
+  padding: 5px 9px; border-radius: 4px; pointer-events: none; z-index: 5; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
+.action-card.open { border-color: #89b4fa; }
+
+/* Previous sessions drawer: full width, pinned to the row under the card (row 1 is the group label),
+   so with two columns Evaluate Code flows below it. Pushes the rest down, never covers it. */
+.drawer {
+  grid-column: 1 / -1; grid-row: 3;
+  overflow: hidden; max-height: 0; opacity: 0; margin-top: -10px;
+  transition: max-height .28s ease, opacity .2s ease, margin .28s ease;
+}
+.drawer.open { max-height: 1400px; opacity: 1; margin-top: 0; }
+.drawer-pad { padding-top: 7px; }   /* room for the pointer inside the clip box */
+.drawer-inner { position: relative; background: #252536; border: 1px solid #89b4fa; border-radius: 8px; padding: 12px 14px; }
+.drawer-inner::before {
+  content: ''; position: absolute; top: -7px; left: var(--ptr, calc(16.66% - 6px));
+  width: 12px; height: 12px; background: #252536;
+  border-left: 1px solid #89b4fa; border-top: 1px solid #89b4fa; transform: rotate(45deg);
+}
+.dhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.dhead .t { font-size: 13px; font-weight: 600; }
+.dhead .sub { font-size: 12px; color: #7f849c; }
+.dhead .x { margin-left: auto; width: 26px; height: 26px; border: none; background: none; color: #7f849c; font-size: 18px; cursor: pointer; border-radius: 4px; }
+.dhead .x:hover { background: #313244; color: #cdd6f4; }
+.srow { display: grid; grid-template-columns: 44px 80px minmax(0,1fr) auto; gap: 12px; align-items: center; padding: 7px 8px; border-radius: 5px; font-size: 13px; }
+.srow + .srow { border-top: 1px solid #313244; }
+.srow:hover { background: #2a2a3c; }
+.srow .agent { font-weight: 600; }
+.srow .age { color: #7f849c; font-size: 12px; }
+.srow .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #a6adc8; }
+.srow .warn { color: #f9e2af; font-size: 12px; }
+.sbtn { height: 26px; padding: 0 12px; border-radius: 4px; border: 1px solid #45475a; background: #313244; color: #cdd6f4; font: inherit; font-size: 12px; cursor: pointer; }
+.sbtn:hover { border-color: #89b4fa; color: #89b4fa; }
+.sbtn.off { opacity: .45; cursor: default; }
+.sbtn.off:hover { border-color: #45475a; color: #cdd6f4; }
+.dfoot { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #313244; font-size: 12px; color: #7f849c; }
+.dfoot a { color: #89b4fa; cursor: pointer; }
+.dfoot .spacer { flex: 1; }
+.dempty { font-size: 12px; color: #7f849c; padding: 8px; }
+
+body.light .ibtn { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
+body.light .ibtn:hover { border-color: #1e66f5; color: #1e66f5; }
+body.light .ibtn.on { background: #1e66f5; border-color: #1e66f5; color: #fff; }
+body.light .ibtn.off:hover { border-color: #bcc0cc; color: #4c4f69; }
+body.light .ibtn[data-tip]:hover::after { background: #4c4f69; color: #fff; }
+body.light .action-card.open { border-color: #1e66f5; }
+body.light .drawer-inner { background: #e6e9ef; border-color: #1e66f5; }
+body.light .drawer-inner::before { background: #e6e9ef; border-color: #1e66f5; }
+body.light .dhead .sub, body.light .srow .age, body.light .dfoot, body.light .dempty, body.light .dhead .x { color: #6c6f85; }
+body.light .dhead .x:hover { background: #ccd0da; color: #4c4f69; }
+body.light .srow + .srow, body.light .dfoot { border-color: #ccd0da; }
+body.light .srow:hover { background: #eff1f5; }
+body.light .srow .sum { color: #5c5f77; }
+body.light .srow .warn { color: #b5650d; }
+body.light .sbtn { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
+body.light .sbtn:hover { border-color: #1e66f5; color: #1e66f5; }
+body.light .sbtn.off:hover { border-color: #bcc0cc; color: #4c4f69; }
+body.light .dfoot a { color: #1e66f5; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -162,12 +238,21 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
        list tabs; they used to share a table here that read as "one project per Clarion app". -->
   <div class="quick-actions">
     <div class="group-label">Your Clarion apps</div>
-    <div class="action-card" onclick="send('workWithSolution')">
+    <div class="action-card" id="wwos" onclick="send('workWithSolution')">
       <div class="backend-tag" data-backend-tag></div>
       <div class="action-icon">&#128194;</div>
       <div class="action-label">Work With Open Solution</div>
       <div class="action-desc">Open terminal for IDE solution</div>
       <div class="action-hint">Your apps work here &mdash; no setup needed</div>
+      <!-- f9843525: new / resume last / more options. The card body still starts a new session. -->
+      <div class="card-btns">
+        <button class="ibtn" data-tip="Start a new session" onclick="event.stopPropagation(); send('workWithSolution')">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+        <button class="ibtn off" id="resumeBtn" data-tip="No previous session" onclick="event.stopPropagation(); resumeLast()">
+          <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg></button>
+        <button class="ibtn" id="moreBtn" data-tip="More options" onclick="event.stopPropagation(); toggleDrawer()">
+          <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg></button>
+      </div>
     </div>
     <div class="action-card" onclick="send('newChat')">
       <div class="backend-tag" data-backend-tag></div>
@@ -181,6 +266,18 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       <div class="action-label">Evaluate Code</div>
       <div class="action-desc">Analyze current app</div>
     </div>
+
+    <!-- Previous sessions drawer (f9843525). Filled by renderSessions from the host's setSessions. -->
+    <div class="drawer" id="drawer"><div class="drawer-pad">
+      <div class="drawer-inner" id="drawerInner">
+        <div class="dhead">
+          <span class="t">Previous sessions</span><span class="sub" id="drawerSln"></span>
+          <button class="x" title="Close" onclick="toggleDrawer(false)">&times;</button>
+        </div>
+        <div id="sessRows"></div>
+        <div class="dfoot" id="sessFoot"></div>
+      </div>
+    </div></div>
 
     <div class="group-label">Build something new</div>
     <div class="action-card" onclick="send('createClass')">
@@ -259,6 +356,118 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     // Update per-card backend badges
     var tags = document.querySelectorAll('[data-backend-tag]');
     for (var i = 0; i < tags.length; i++) tags[i].textContent = displayBackendName(_sessionBackend).toUpperCase();
+    if (typeof renderSessions === 'function') renderSessions();   // resume dims for Copilot / Codex (f9843525)
+  }
+
+  /* ==================== Resume sessions (f9843525) ==================== */
+  // _sessions: the host's last setSessions payload. Resume is a Claude Code feature: with another
+  // backend chosen the buttons stay, dimmed, and say why (nothing appears or disappears).
+  var _sessions = { solution: '', sessions: [], hasMore: false };
+  var _shown = 5;
+  var MAX_SESSIONS = 50;   // keep equal to the clamp in AssistantChatControl.OnHomeAction("listSessions")
+  var NOT_CLAUDE = 'Resume is for Claude Code sessions';
+
+  function isClaude() { return _sessionBackend === 'Claude'; }
+
+  function resumeLast() {
+    var b = document.getElementById('resumeBtn');
+    if (!b || b.classList.contains('off')) return;
+    send('resumeLast');
+  }
+
+  function resumeSession(id) {
+    if (!isClaude()) return;
+    send('resumeSession', id);
+  }
+
+  function toggleDrawer(force) {
+    var d = document.getElementById('drawer');
+    var open = (typeof force === 'boolean') ? force : !d.classList.contains('open');
+    d.classList.toggle('open', open);
+    document.getElementById('moreBtn').classList.toggle('on', open);
+    document.getElementById('wwos').classList.toggle('open', open);
+    if (open) { placePointer(); send('listSessions', String(_shown)); }   // fresh list each time it opens
+  }
+
+  // The pointer aims at the card's centre whatever the column count.
+  function placePointer() {
+    var c = document.getElementById('wwos').getBoundingClientRect();
+    var i = document.getElementById('drawerInner');
+    var r = i.getBoundingClientRect();
+    i.style.setProperty('--ptr', (c.left + c.width / 2 - r.left - 6) + 'px');
+  }
+  window.addEventListener('resize', placePointer);
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;   // textContent, never innerHTML: prompts are user text
+    return e;
+  }
+
+  function hoverText(s) {
+    var t = [];
+    if (s.last) t.push('Last: ' + s.last);
+    if (s.first && s.first !== s.last) t.push('First: ' + s.first);
+    t.push(s.when);
+    return t.join('\n');
+  }
+
+  function renderSessions() {
+    var list = _sessions.sessions || [];
+    var claude = isClaude();
+    var hasSln = !!_sessions.solution;
+
+    // ↺ Resume last session
+    var rb = document.getElementById('resumeBtn');
+    var tip, off = true;
+    if (!claude) tip = NOT_CLAUDE;
+    else if (!hasSln) tip = 'No solution is open in the IDE';
+    else if (!list.length) tip = 'No previous session';
+    else { off = false; tip = 'Resume last session · ' + (list[0].agent ? list[0].agent + ', ' : '') + list[0].age; }
+    rb.classList.toggle('off', off);
+    rb.setAttribute('data-tip', tip);
+
+    // Drawer
+    document.getElementById('drawerSln').textContent = _sessions.solution || '';
+    var rows = document.getElementById('sessRows');
+    rows.innerHTML = '';
+    if (!hasSln) rows.appendChild(el('div', 'dempty', 'Open a solution in the Clarion IDE to see its sessions.'));
+    else if (!list.length) rows.appendChild(el('div', 'dempty', 'No earlier Claude Code sessions for this solution.'));
+    for (var i = 0; i < list.length; i++) {
+      var s = list[i];
+      var row = el('div', 'srow');
+      row.appendChild(el('span', 'agent', s.agent || '—'));
+      row.appendChild(el('span', 'age', s.age));
+      var sum = el('span', 'sum', s.summary);
+      if (s.open) {
+        sum.appendChild(document.createTextNode(' · '));
+        sum.appendChild(el('span', 'warn', 'may be open elsewhere'));
+      }
+      sum.title = hoverText(s);
+      row.appendChild(sum);
+      var btn = el('button', 'sbtn' + (claude ? '' : ' off'), 'Resume');
+      if (!claude) btn.title = NOT_CLAUDE;
+      btn.onclick = (function (id) { return function () { resumeSession(id); }; })(s.id);
+      row.appendChild(btn);
+      rows.appendChild(row);
+    }
+    rows.style.opacity = claude ? '' : '.55';
+
+    var foot = document.getElementById('sessFoot');
+    foot.innerHTML = '';
+    if (!claude) foot.appendChild(el('span', null, NOT_CLAUDE + '. Switch the back end to Claude Code to resume one.'));
+    else {
+      foot.appendChild(el('span', null, (list.length ? list.length + ' shown · ' : '') + "sessions open in a CA tab aren't listed"));
+      foot.appendChild(el('span', 'spacer'));
+      // The host lists at most MAX_SESSIONS (OnHomeAction clamps to 50); past that the link would do nothing.
+      if (_sessions.hasMore && list.length < MAX_SESSIONS) {
+        var more = el('a', null, 'Show more');
+        more.onclick = function () { _shown = Math.min(_shown + 10, MAX_SESSIONS); send('listSessions', String(_shown)); };
+        foot.appendChild(more);
+      }
+    }
+    if (document.getElementById('drawer').classList.contains('open')) placePointer();
   }
 
   function countLabel(n) {
@@ -273,6 +482,10 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       if (msg.type === 'setProjectCounts') {
         document.getElementById('comCount').textContent = countLabel(msg.com || 0);
         document.getElementById('addinCount').textContent = countLabel(msg.addin || 0);
+      }
+      if (msg.type === 'setSessions') {
+        _sessions = msg;
+        renderSessions();
       }
       if (msg.type === 'setTheme') {
         document.body.classList.toggle('light', msg.theme === 'light');

@@ -148,6 +148,16 @@ namespace ClarionAssistant.Terminal
             SendMessage("{\"type\":\"setBackend\",\"backend\":\"" + EscapeJson(backend ?? "Claude") + "\"}");
         }
 
+        /// <summary>
+        /// The Work With Open Solution card's resume list (ticket f9843525): the open solution's
+        /// name and its newest resumable Claude sessions, already shaped for the page. A ready-made
+        /// JSON payload, built by the caller with a real serializer.
+        /// </summary>
+        public void SetSessions(string payloadJson)
+        {
+            SendMessage(payloadJson);
+        }
+
         /// <summary>Switch the home page between light and dark theme.</summary>
         public void SetTheme(bool isDark)
         {

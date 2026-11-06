@@ -80,6 +80,26 @@ namespace ClarionAssistant.Terminal
         /// <summary>Knowledge service session ID.</summary>
         public int SessionId { get; set; }
 
+        /// <summary>
+        /// The Claude Code session this tab is running (a lowercase GUID): passed as --session-id
+        /// to a new session, or the id resumed with --resume. The Home tab's resume list leaves
+        /// these out, so a session is never opened in two tabs. Cleared when Claude exits
+        /// (ticket f9843525).
+        /// </summary>
+        public string ClaudeSessionId { get; set; }
+
+        /// <summary>
+        /// One-shot: the Claude session the next launch resumes, set by the Home tab's resume
+        /// buttons. BuildClaudeCommand consumes it. Null starts a new session.
+        /// </summary>
+        public string ResumeSessionId { get; set; }
+
+        /// <summary>
+        /// One-shot: the CA name a resumed session ran under (CA1). The launch keeps it when no
+        /// other tab or MultiTerminal terminal holds it, so the conversation's own name still fits.
+        /// </summary>
+        public string PreferredAgentName { get; set; }
+
         /// <summary>Whether an AI assistant has been launched in this tab.</summary>
         public bool AssistantLaunched { get; set; }
 

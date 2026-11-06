@@ -146,6 +146,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # f9843525: the Home tab's resume list. Fixture transcripts in %TEMP%; gets the project dir for
+            # the check that BuildInitialPrompt's greetings come from the catalog.
+            @{ Name = "ClaudeSessionCatalog.Test"
+               Sources = @("tests\ClaudeSessionCatalog.Test.cs", "Services\ClaudeSessionCatalog.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
+               Args = @($RepoDir) }
             # GH #263 Q2: a generated module opened as a plain file shows attribute names, not chips.
             @{ Name = "GeneratedModuleMatch.Test"
                Sources = @("tests\GeneratedModuleMatch.Test.cs", "Services\GeneratedModuleMatch.cs")

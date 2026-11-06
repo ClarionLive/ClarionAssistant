@@ -198,6 +198,82 @@ namespace ClarionAssistant
             _dashboardBackend = savedBackend;   // the page resets its dropdown to the saved default on setBackend
             LoadProjects();
             SendProjectsToViews();
+            RefreshHomeSessions();
+        }
+
+        /// <summary>How many sessions the drawer lists; "Show more" raises it (f9843525).</summary>
+        private int _homeSessionMax = 5;
+        private int _homeSessionGen;
+
+        /// <summary>
+        /// Send the Home tab the open solution's resumable Claude sessions (ticket f9843525): for the
+        /// Resume button's tooltip and the Previous sessions drawer. Runs when the page loads, when
+        /// the Home tab is shown (so a tab closed or a session ended since is reflected), when the
+        /// IDE's solution changes, and when the drawer asks for more. The transcripts are read off
+        /// the UI thread (about 50 ms for five, measured on a real solution); a newer request
+        /// supersedes an older one still running.
+        /// </summary>
+        private void RefreshHomeSessions(int max = 0)
+        {
+            if (_homeView == null || !_homeView.IsReady) return;
+            if (max > 0) _homeSessionMax = max;
+            int want = _homeSessionMax;
+            int gen = ++_homeSessionGen;
+
+            string sln = null;
+            try { sln = EditorService.GetOpenSolutionPath(); } catch { }
+            if (string.IsNullOrEmpty(sln)) sln = _currentSlnPath;
+            string slnDir = !string.IsNullOrEmpty(sln) && File.Exists(sln) ? Path.GetDirectoryName(sln) : null;
+            string slnName = slnDir != null ? Path.GetFileNameWithoutExtension(sln) : null;
+            var live = GetLiveClaudeSessionIds();
+
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string json;
+                try
+                {
+                    var now = DateTime.UtcNow;
+                    var list = slnDir == null
+                        ? new Services.ClaudeSessionList()
+                        : Services.ClaudeSessionCatalog.List(Services.ClaudeSessionCatalog.DefaultProjectsRoot(), slnDir, live, now,
+                                                            want, Services.ClaudeSessionCatalog.IsCaTabName);
+                    var rows = new List<Dictionary<string, object>>();
+                    foreach (var s in list.Sessions)
+                    {
+                        rows.Add(new Dictionary<string, object>
+                        {
+                            { "id", s.Id },
+                            { "agent", s.AgentName ?? "" },
+                            { "age", Services.ClaudeSessionCatalog.FormatAge(s.LastWriteUtc, now) },
+                            { "when", s.LastWriteUtc.ToLocalTime().ToString("ddd d MMM yyyy, h:mm tt", System.Globalization.CultureInfo.InvariantCulture) },
+                            { "summary", s.Summary ?? "" },
+                            { "first", s.FirstPrompt ?? "" },
+                            { "last", s.LastPrompt ?? "" },
+                            { "open", s.PossiblyOpenElsewhere },
+                        });
+                    }
+                    json = new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new Dictionary<string, object>
+                    {
+                        { "type", "setSessions" },
+                        { "solution", slnName ?? "" },
+                        { "sessions", rows },
+                        { "hasMore", list.HasMore },
+                    });
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine("[HomeSessions] " + ex.Message);
+                    return;
+                }
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (gen == _homeSessionGen && _homeView != null) _homeView.SetSessions(json);
+                    }));
+                }
+                catch (InvalidOperationException) { } // the pad closed meanwhile
+            });
         }
 
         private void SendDefaultProjectFolderToProjectViews()
@@ -269,6 +345,13 @@ namespace ClarionAssistant
                 case "openComProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindCom); break;
                 case "openAddinProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindAddin); break;
                 case "workWithSolution": OnWorkWithSolution(); break;
+                // The Work With Open Solution card's resume buttons and drawer (f9843525).
+                case "resumeLast": OnWorkWithSolution(resumeLast: true); break;
+                case "resumeSession": OnWorkWithSolution(resumeId: e.Data); break;
+                case "listSessions":
+                    int max;
+                    RefreshHomeSessions(int.TryParse(e.Data, out max) ? Math.Max(1, Math.Min(max, 50)) : 0);
+                    break;
                 case "newChat": OnNewChat(sender, EventArgs.Empty); break;
                 case "evaluateCode": OnEvaluateCode(sender, EventArgs.Empty); break;
                 case "settings": OnSettings(sender, EventArgs.Empty); break;
@@ -281,6 +364,8 @@ namespace ClarionAssistant
         {
             return action == "newChat"
                 || action == "workWithSolution"
+                || action == "resumeLast"
+                || action == "resumeSession"
                 || action == "evaluateCode"
                 || action == "createClass";
         }
@@ -322,6 +407,8 @@ namespace ClarionAssistant
 
         private void OnActiveTabChanged(object sender, TerminalTab tab)
         {
+            // Back on Home: a tab closed or a session ended since, so the resume list may have changed (f9843525).
+            if (tab != null && tab.IsHome) RefreshHomeSessions();
             if (tab != null && !tab.IsHome && tab.Renderer != null)
                 tab.Renderer.Focus();
         }
@@ -1143,6 +1230,7 @@ namespace ClarionAssistant
             // switch now - the refresh button reaches here between polls - and relabel the tabs to match.
             Services.IdeSolutionRecord.Publish(path);
             RetitleSolutionTabs(path);
+            RefreshHomeSessions();   // the resume list is per solution (f9843525)
 
             // Auto-index in the background when a solution is opened (ticket 7f1c67b2).
             // RunIndexAutomatic, not RunIndex: this run is a consequence of opening a
@@ -1666,7 +1754,7 @@ namespace ClarionAssistant
             }
         }
 
-        private void OpenSolutionInNewTab(string slnPath)
+        private void OpenSolutionInNewTab(string slnPath, Services.ClaudeSessionInfo resume = null)
         {
             System.Diagnostics.Debug.WriteLine("[AssistantChatControl] OpenSolutionInNewTab: " + slnPath);
             if (string.IsNullOrEmpty(slnPath) || !File.Exists(slnPath))
@@ -1705,6 +1793,14 @@ namespace ClarionAssistant
             tab.FollowsIdeSolution = true;   // its label follows the IDE's solution from here on (9e1bd280)
             tab.WorkingDirectory = Path.GetDirectoryName(slnPath);
             tab.VersionConfig = _currentVersionConfig;
+            if (resume != null)
+            {
+                // The catalog listed it for this folder, so its cwd IS WorkingDirectory: --resume finds
+                // the transcript only from the folder the session started in (f9843525).
+                tab.ResumeSessionId = resume.Id;
+                tab.PreferredAgentName = resume.AgentName;
+                tab.RequestedBackend = "Claude";   // resume is a Claude Code session, whatever the dropdown says
+            }
 
             // Wire renderer events to per-tab handlers
             renderer.DataReceived += data => OnTabRendererDataReceived(tab, data);
@@ -3984,6 +4080,9 @@ namespace ClarionAssistant
             // it), and its tab drops the CA<n> label. Before AssistantBackend is cleared: the
             // restored label is built from it.
             ReleaseAgentName(tab);
+            // A resume that never launched must not resurface on this tab's next launch (pipeline run 1, debugger).
+            tab.ResumeSessionId = null;
+            tab.PreferredAgentName = null;
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
             try { if (tab.Terminal != null) tab.Terminal.Dispose(); } catch { }
@@ -4052,6 +4151,16 @@ namespace ClarionAssistant
             // so the same string is the session's native messaging address - one name, not two
             // that can drift. Resolved HERE, before the system-prompt file is written, because that
             // file also tells the model the name (ticket c175492a).
+            // Resume (f9843525): a session picked on the Home tab is continued with --resume, a new
+            // one is started with a known --session-id so the Home tab can leave it out of the
+            // resume list while this tab runs it. One-shot: a later relaunch of this tab is new.
+            string resumeId = Services.ClaudeSessionCatalog.NormalizeId(tab.ResumeSessionId);
+            tab.ResumeSessionId = null;
+            tab.ClaudeSessionId = resumeId ?? Guid.NewGuid().ToString("D");
+            string sessionFlag = resumeId != null
+                ? $" --resume '{resumeId}'"
+                : $" --session-id '{tab.ClaudeSessionId}'";
+
             string agentName = ResolveUniqueAgentName(tab);
             // Remembered on the tab: it is what other tabs' uniqueness checks read.
             tab.AgentName = agentName;
@@ -4059,14 +4168,21 @@ namespace ClarionAssistant
             // developer sees is what they type to message it (ticket 7792e3e0).
             _tabManager.RenameTab(tab, Services.CaAgentIdentity.TabLabel(agentName, tab.BaseName));
 
-            string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir);
+            // A resumed session already holds its conversation: no "Last Session Recap" (it would
+            // tell the model to greet and summarise a different, newest session) and no greeting
+            // prompt (it would land as a new message in the old conversation).
+            string systemPromptExtra = BuildSystemPromptInjection(ctx.WorkDir, includeRecap: resumeId == null);
             systemPromptExtra = Services.ClaudeMdDeployer.ComposeSystemPromptExtra(
                 claudeMdDelivered, claudeMdDelivered ? null : ReadClarionAssistantPrompt(), systemPromptExtra);
             // Only when the multiterminal MCP is really in this tab's config: the section is about
             // its tools, and that server is what registers the name with MultiTerminal.
             if (_mcpServer != null && _mcpServer.MultiTerminalConfigured)
                 systemPromptExtra = Services.CaAgentIdentity.AppendIdentityPrompt(systemPromptExtra, agentName);
-            string initialPrompt = BuildInitialPrompt(ctx.WorkDir);
+            // The briefing says to greet on session start; a resume is not a start (pipeline run 1, adversary).
+            if (resumeId != null)
+                systemPromptExtra = (systemPromptExtra ?? "") + Environment.NewLine + Environment.NewLine +
+                    Services.ClaudeSessionCatalog.ResumedSessionNote;
+            string initialPrompt = resumeId == null ? BuildInitialPrompt(ctx.WorkDir) : null;
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] prompts built");
 
             string tempDir = Path.Combine(Path.GetTempPath(), "ClarionAssistant");
@@ -4201,7 +4317,7 @@ namespace ClarionAssistant
                 updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
             }
 
-            string claudeInvocation = $"{claudeBase}{nameFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+            string claudeInvocation = $"{claudeBase}{nameFlag}{sessionFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
             if (initialPromptFile != null)
             {
@@ -4584,14 +4700,18 @@ namespace ClarionAssistant
                         taken.Add(t.AgentName);
             }
 
+            bool rosterAnswered = false;
             if (prefix == Services.CaAgentIdentity.ClaudePrefix)
             {
                 try
                 {
                     var roster = new Services.MultiTerminalApiClient(timeoutMs: 1500).ListTerminals();
                     if (roster != null && roster.Success && roster.Data != null)
+                    {
+                        rosterAnswered = true;
                         foreach (var row in roster.Data)
                             if (!string.IsNullOrEmpty(row.Name)) taken.Add(row.Name);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -4599,7 +4719,61 @@ namespace ClarionAssistant
                 }
             }
 
+            // A resumed session keeps the CA name it ran under when that name is free (f9843525). "Free"
+            // must include MultiTerminal's roster: another IDE may hold CA1. So with MultiTerminal in
+            // this tab's config, the name is kept only when the roster answered; otherwise the lowest
+            // free number is taken as usual (pipeline run 1, adversary).
+            string preferred = tab.PreferredAgentName;
+            tab.PreferredAgentName = null;
+            bool rosterNeeded = _mcpServer != null && _mcpServer.MultiTerminalConfigured;
+            if (prefix == Services.CaAgentIdentity.ClaudePrefix && Services.ClaudeSessionCatalog.IsCaTabName(preferred)
+                && (rosterAnswered || !rosterNeeded) && !taken.Contains(preferred.Trim()))
+                return preferred.Trim();
+
             return Services.CaAgentIdentity.NextFreeName(prefix, taken.Contains);
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex StatusLineSessionId =
+            new System.Text.RegularExpressions.Regex("\"sessionId\"\\s*:\\s*\"([^\"]+)\"");
+
+        /// <summary>
+        /// The Claude session ids open in any CA tab of this IDE (every pad). The Home tab's resume
+        /// list leaves them out (ticket f9843525). Per tab, three ids count:
+        ///  - the id it launched with (ClaudeSessionId);
+        ///  - a resume it was asked for but has not launched yet (ResumeSessionId: the WebView
+        ///    starts asynchronously, and without this a second quick click opened the same session
+        ///    in a second tab - pipeline run 1, debugger);
+        ///  - the id its statusline last reported. /clear and an in-session /resume move a running
+        ///    claude to another session, so the launch-time id alone left the session the tab is
+        ///    really running on offer (pipeline run 1, adversary).
+        /// UI thread.
+        /// </summary>
+        private List<string> GetLiveClaudeSessionIds()
+        {
+            var ids = new List<string>();
+            List<AssistantChatControl> pads;
+            lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
+            foreach (var pad in pads)
+            {
+                if (pad._tabManager == null) continue;
+                foreach (var t in pad._tabManager.Tabs)
+                {
+                    string pending = Services.ClaudeSessionCatalog.NormalizeId(t.ResumeSessionId);
+                    if (pending != null) ids.Add(pending);
+                    if (string.IsNullOrEmpty(t.ClaudeSessionId)) continue;   // no claude running here
+                    ids.Add(t.ClaudeSessionId);
+                    try
+                    {
+                        string status = Path.Combine(Path.GetTempPath(), "ca-statusline-" + t.Id + ".json");
+                        if (!File.Exists(status)) continue;
+                        var m = StatusLineSessionId.Match(File.ReadAllText(status));
+                        string now = m.Success ? Services.ClaudeSessionCatalog.NormalizeId(m.Groups[1].Value) : null;
+                        if (now != null) ids.Add(now);
+                    }
+                    catch { }   // a statusline file mid-write: the launch id still counts
+                }
+            }
+            return ids;
         }
 
         /// <summary>
@@ -4723,13 +4897,22 @@ namespace ClarionAssistant
         /// </summary>
         private void ReleaseAgentName(TerminalTab tab)
         {
+            // No session runs here any more, so the Home tab may offer it for resume again (f9843525).
+            tab.ClaudeSessionId = null;
             if (tab.AgentName == null) return;
             if (tab.BaseName != null)
                 _tabManager.RenameTab(tab, ApplyBackendSuffix(tab.BaseName, tab.AssistantBackend));
             tab.AgentName = null;
         }
 
-        private void OnWorkWithSolution()
+        /// <summary>
+        /// Work With Open Solution: a new session (no arguments), the newest resumable one
+        /// (<paramref name="resumeLast"/>), or the session <paramref name="resumeId"/> picked in the
+        /// Home tab's drawer (ticket f9843525). A resume is re-checked here, just before the tab
+        /// opens: the list may be minutes old, and the session may have been opened in another tab
+        /// or deleted since.
+        /// </summary>
+        private void OnWorkWithSolution(string resumeId = null, bool resumeLast = false)
         {
             // Detect current solution from the IDE
             DetectFromIde();
@@ -4741,8 +4924,48 @@ namespace ClarionAssistant
                 return;
             }
 
+            Services.ClaudeSessionInfo resume = null;
+            if (resumeId != null || resumeLast)
+            {
+                string slnDir = Path.GetDirectoryName(_currentSlnPath);
+                string root = Services.ClaudeSessionCatalog.DefaultProjectsRoot();
+                var live = GetLiveClaudeSessionIds();
+                if (resumeLast)
+                {
+                    // The drawer's size, not 1: List reads at most 3 transcripts per wanted session, so
+                    // max 1 could miss a CA session behind three MultiTerminal ones that the drawer, and
+                    // the button's tooltip, did show (pipeline run 1, debugger).
+                    var list = Services.ClaudeSessionCatalog.List(root, slnDir, live, DateTime.UtcNow, Math.Max(5, _homeSessionMax),
+                                                                  Services.ClaudeSessionCatalog.IsCaTabName);
+                    resume = list.Sessions.Count > 0 ? list.Sessions[0] : null;
+                }
+                else
+                {
+                    resume = Services.ClaudeSessionCatalog.TryGet(root, slnDir, resumeId, live, DateTime.UtcNow,
+                                                                   Services.ClaudeSessionCatalog.IsCaTabName);
+                }
+                if (resume == null)
+                {
+                    MessageBox.Show(resumeLast
+                            ? "There is no earlier Claude Code session for this solution to resume."
+                            : "That session can't be resumed now: it is open in another tab, or its transcript is gone.",
+                        "Resume session", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshHomeSessions();
+                    return;
+                }
+                // Written in the last 2 minutes: another terminal (another IDE, MultiTerminal) may be
+                // running it, and two claude processes on one transcript corrupt it. Ask, don't just warn.
+                if (resume.PossiblyOpenElsewhere &&
+                    MessageBox.Show("This session was active in the last 2 minutes, so it may still be open in another " +
+                                    "terminal or IDE. Resuming it there and here at once would mix the two conversations." +
+                                    "\n\nResume it anyway?",
+                                    "Resume session", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                                    MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                    return;
+            }
+
             // Open a terminal tab for the detected solution
-            OpenSolutionInNewTab(_currentSlnPath);
+            OpenSolutionInNewTab(_currentSlnPath, resume);
         }
 
         private void OnNewChat(object sender, EventArgs e)
@@ -4881,7 +5104,7 @@ namespace ClarionAssistant
         /// Builds the full system prompt injection file containing knowledge + session recap.
         /// Everything goes into the system prompt (invisible to the user).
         /// </summary>
-        private string BuildSystemPromptInjection(string workDir)
+        private string BuildSystemPromptInjection(string workDir, bool includeRecap = true)
         {
             var sb = new System.Text.StringBuilder();
 
@@ -4900,8 +5123,8 @@ namespace ClarionAssistant
                 catch { }
             }
 
-            // 2. Session recap from JSONL (primary) or DB (fallback)
-            try
+            // 2. Session recap from JSONL (primary) or DB (fallback). Not for a resumed session.
+            if (includeRecap) try
             {
                 string recap = Services.KnowledgeService.GetSessionRecapFromJsonl(workDir, 10);
                 if (string.IsNullOrEmpty(recap) && _knowledgeService != null)
@@ -4930,22 +5153,16 @@ namespace ClarionAssistant
             int hour = DateTime.Now.Hour;
             string[] timeGreetings;
 
+            // The greetings live in ClaudeSessionCatalog, which must recognise them so a
+            // resumable session's summary is the developer's first prompt, not this one (f9843525).
             if (hour < 12)
-                timeGreetings = new[] { "Good morning!", "Morning!", "Top of the morning!" };
+                timeGreetings = Services.ClaudeSessionCatalog.TimeGreetingsMorning;
             else if (hour < 17)
-                timeGreetings = new[] { "Good afternoon!", "Afternoon!" };
+                timeGreetings = Services.ClaudeSessionCatalog.TimeGreetingsAfternoon;
             else
-                timeGreetings = new[] { "Good evening!", "Evening!" };
+                timeGreetings = Services.ClaudeSessionCatalog.TimeGreetingsEvening;
 
-            string[] funGreetings = new[]
-            {
-                "Clarion Assistant is on-line!",
-                "Greetings, Clarion Developer!",
-                "Ready to write some Clarion!",
-                "Let's build something!",
-                "Reporting for duty!",
-                "At your service!",
-            };
+            string[] funGreetings = Services.ClaudeSessionCatalog.FunGreetings;
 
             // Combine time-based and fun greetings, pick one randomly
             var all = new System.Collections.Generic.List<string>();
