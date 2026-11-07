@@ -39,6 +39,9 @@ function Resolve-MSBuild {
 
 $ProjectDir  = $PSScriptRoot
 $ProjectFile = Join-Path $ProjectDir "ClarionAssistant.csproj"
+# The Clarion IDE's process names: Clarion.exe, and ClarionLAA.exe (SoftVelocity's LargeAddressAware build). Keep in
+# step with Services\ClarionIdeProcess.cs IdeImageNames (1976d2e9).
+$IdeImageNames = @("Clarion", "ClarionLAA")
 $MSBuild     = Resolve-MSBuild
 
 # Indexer build output. VENDORED into this repo as indexer/ (GitHub #30) — self-contained,
@@ -564,7 +567,8 @@ function Get-DeployBlockers {
                 $blockers += [PSCustomObject]@{ Name = $p.ProcessName; Id = $p.Id; Why = $path }
                 break
             }
-            if ($p.ProcessName -eq "Clarion" -and $path -like "$rr\*") {
+            # Clarion.exe or ClarionLAA.exe, SoftVelocity's LargeAddressAware build beside it (1976d2e9).
+            if ($IdeImageNames -contains $p.ProcessName -and $path -like "$rr\*") {
                 $blockers += [PSCustomObject]@{ Name = $p.ProcessName; Id = $p.Id; Why = "$path (loads the addin)" }
                 break
             }
@@ -574,7 +578,7 @@ function Get-DeployBlockers {
 }
 
 if ($Kill) {
-    $proc = Get-Process -Name "Clarion" -ErrorAction SilentlyContinue
+    $proc = Get-Process -Name $IdeImageNames -ErrorAction SilentlyContinue
     if ($proc) {
         Write-Host ""
         Write-Host "Stopping Clarion IDE..." -ForegroundColor Yellow

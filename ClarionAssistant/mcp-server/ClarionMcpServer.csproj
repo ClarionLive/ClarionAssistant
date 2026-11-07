@@ -146,6 +146,7 @@
     <Compile Include="..\Services\RedResolution.cs"><Link>Services\RedResolution.cs</Link></Compile>
     <Compile Include="..\Services\ClarionConfigDirectory.cs"><Link>Services\ClarionConfigDirectory.cs</Link></Compile>
     <Compile Include="..\Services\ClarionVersionService.cs"><Link>Services\ClarionVersionService.cs</Link></Compile>
+    <Compile Include="..\Services\ClarionIdeProcess.cs"><Link>Services\ClarionIdeProcess.cs</Link></Compile>
     <Compile Include="..\Services\EffectiveClarionVersion.cs"><Link>Services\EffectiveClarionVersion.cs</Link></Compile>
     <Compile Include="..\Services\SolutionVersionResolver.cs"><Link>Services\SolutionVersionResolver.cs</Link></Compile>
     <Compile Include="..\Services\LspStartGate.cs"><Link>Services\LspStartGate.cs</Link></Compile>

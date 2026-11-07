@@ -142,6 +142,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Args = @($RepoDir) }
             # c175492a: two IDEs' CA tabs could not tell which MultiTerminal name was theirs. Gets the
             # project dir so it can check the launch resolves the name before composing the prompt.
+            # 1976d2e9: Clarion.exe and ClarionLAA.exe are both the IDE. Gets the project dir for the call-site checks.
+            @{ Name = "ClarionIdeProcess.Test"
+               Sources = @("tests\ClarionIdeProcess.Test.cs", "Services\ClarionIdeProcess.cs")
+               Refs = @("System.dll", "System.Core.dll")
+               Args = @($RepoDir) }
             @{ Name = "CaAgentIdentity.Test"
                Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
                Refs = @("System.dll")
@@ -641,6 +646,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             $harnesses += @{ Name = "VsCodeSettingsImporter.LiveProbe"
                              Sources = @("tests\VsCodeSettingsImporter.LiveProbe.cs", "Services\VsCodeSettingsImporter.cs")
                              Refs = @("System.dll", "System.Web.Extensions.dll") }
+        }
+
+        # 1976d2e9: these Services files ask Services\ClarionIdeProcess.cs which processes are the IDE (Clarion.exe or
+        # ClarionLAA.exe). Every harness that compiles one gets the helper too, so the 17 lists that name them need
+        # no edit - and a harness added later cannot forget it.
+        $needsIdeProcess = @("Services\IdeEndpointRecord.cs", "Services\IdeSolutionRecord.cs", "Services\ClarionVersionService.cs", "Services\MemoryHeadroom.cs")
+        foreach ($h in $harnesses) {
+            if (($h.Sources | Where-Object { $needsIdeProcess -contains $_ }) -and -not ($h.Sources -contains "Services\ClarionIdeProcess.cs")) {
+                $h.Sources = @($h.Sources) + "Services\ClarionIdeProcess.cs"
+            }
         }
 
         foreach ($h in $harnesses) {

@@ -63,7 +63,7 @@ $sources = @('tests\bench\HoverBench.cs', 'tests\LocalLayer.Handlers.Stubs.cs', 
              'CodeGraph\Parsing\Models\ClarionSymbol.cs', 'CodeGraph\Parsing\Models\ClarionRelationship.cs',
              'CodeGraph\Parsing\Models\SolutionProject.cs', 'CodeGraph\Parsing\Models\ParseResult.cs', 'CodeGraph\Parsing\ClarionBuiltins.cs',
              'Services\LspClient.cs', 'Services\LspTextDiff.cs', 'Services\JsonTextStream.cs', 'Services\LspTrace.cs', 'Services\EncodingHelper.cs',
-             'Services\ClarionVersionService.cs', 'Services\ClarionConfigDirectory.cs') | ForEach-Object { Join-Path $repo $_ }
+             'Services\ClarionVersionService.cs', 'Services\ClarionIdeProcess.cs', 'Services\ClarionConfigDirectory.cs') | ForEach-Object { Join-Path $repo $_ }
 Copy-Item (Join-Path $repo 'lib\sqlite-fts5\System.Data.SQLite.dll'), (Join-Path $repo 'lib\sqlite-fts5\SQLite.Interop.dll') $out -Force
 $exe = Join-Path $out 'HoverBench.exe'
 & $csc -nologo -nowarn:0168,0169,0414,0649 -platform:x86 -out:$exe -r:System.dll -r:System.Core.dll -r:System.Xml.dll -r:System.Data.dll `

@@ -276,9 +276,14 @@ namespace ClarionAssistant.Services
                 {
                     _warned = true;
                     MonacoSpikeLog.Write("[mem-watch] LOW — warning shown " + MonacoSpikeLog.MemSummary() + " scanMs=" + a.ElapsedMs);
+                    // With ClarionLAA.exe beside the standard exe, say so: restarting with it doubles the memory (1976d2e9).
+                    string advice = null;
+                    try { advice = ClarionIdeProcess.LowMemoryAdvice(System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName, null); }
+                    catch { }
                     Terminal.CaNotice.Post(NoticeKey, "Clarion is running low on memory",
                         "Clarion has only " + a.LargestFreeMB + " MB of memory left in one piece. Opening a large procedure "
-                        + "or file may crash the IDE. Save your work and restart Clarion soon.");
+                        + "or file may crash the IDE. Save your work and restart Clarion soon."
+                        + (advice != null ? " " + advice : ""));
                 }
                 else if (_warned && a.LargestFreeMB > RearmAboveMB)
                 {

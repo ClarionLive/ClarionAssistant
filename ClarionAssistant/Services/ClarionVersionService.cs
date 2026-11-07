@@ -258,7 +258,8 @@ namespace ClarionAssistant.Services
         /// </summary>
         internal static ClarionVersionInfo DetectForHost(string hostExePath, string installRoot, string settingsRoot)
         {
-            if (string.Equals(Path.GetFileName(hostExePath), "Clarion.exe", StringComparison.OrdinalIgnoreCase))
+            // Clarion.exe or ClarionLAA.exe (1976d2e9): either is the IDE, and both carry the same version.
+            if (ClarionIdeProcess.IsIdeExe(hostExePath))
                 return Detect(hostExePath, settingsRoot);
             return installRoot != null ? DetectForInstall(installRoot, hostExePath, settingsRoot) : null;
         }

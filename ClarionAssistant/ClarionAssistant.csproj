@@ -165,6 +165,7 @@
     <Compile Include="Services\ClarionDeclarationParser.cs" />
     <Compile Include="Services\EmbedEditorMonitorService.cs" />
     <Compile Include="Services\MemoryHeadroom.cs" />
+    <Compile Include="Services\ClarionIdeProcess.cs" />
     <Compile Include="Services\TextLines.cs" />
     <Compile Include="Services\JsonTextStream.cs" />
     <Compile Include="Services\ShutdownLog.cs" />

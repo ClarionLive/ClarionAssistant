@@ -144,7 +144,8 @@ static class OutOfProcessIndexerTest
         "CodeGraph\\Parsing\\Models\\ClarionSymbol.cs", "CodeGraph\\Parsing\\Models\\ClarionRelationship.cs",
         "CodeGraph\\Parsing\\Models\\SolutionProject.cs", "CodeGraph\\Parsing\\Models\\ParseResult.cs",
         "Services\\RedFileService.cs", "Services\\RedResolution.cs", "Services\\ClarionConfigDirectory.cs",
-        "Services\\ClarionVersionService.cs", "Services\\EncodingHelper.cs", "Services\\IndexRunGate.cs"
+        "Services\\ClarionVersionService.cs", "Services\\ClarionIdeProcess.cs",   // 1976d2e9: as indexer\ClarionIndexer.csproj
+        "Services\\EncodingHelper.cs", "Services\\IndexRunGate.cs"
     };
 
     static int RunCsc(string args)
