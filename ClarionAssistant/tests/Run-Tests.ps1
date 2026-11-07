@@ -140,13 +140,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ModelRegistry.Test.cs", "Services\SettingsService.cs")
                Refs = @("System.dll", "System.Web.Extensions.dll")
                Args = @($RepoDir) }
-            # c175492a: two IDEs' CA tabs could not tell which MultiTerminal name was theirs. Gets the
-            # project dir so it can check the launch resolves the name before composing the prompt.
             # 1976d2e9: Clarion.exe and ClarionLAA.exe are both the IDE. Gets the project dir for the call-site checks.
             @{ Name = "ClarionIdeProcess.Test"
                Sources = @("tests\ClarionIdeProcess.Test.cs", "Services\ClarionIdeProcess.cs")
                Refs = @("System.dll", "System.Core.dll")
                Args = @($RepoDir) }
+            # c175492a: two IDEs' CA tabs could not tell which MultiTerminal name was theirs. Gets the
+            # project dir so it can check the launch resolves the name before composing the prompt.
             @{ Name = "CaAgentIdentity.Test"
                Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
                Refs = @("System.dll")
@@ -655,11 +655,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
         foreach ($h in $harnesses) {
             if (($h.Sources | Where-Object { $needsIdeProcess -contains $_ }) -and -not ($h.Sources -contains "Services\ClarionIdeProcess.cs")) {
                 $h.Sources = @($h.Sources) + "Services\ClarionIdeProcess.cs"
+                $h.AutoAdded = "Services\ClarionIdeProcess.cs"
             }
         }
 
         foreach ($h in $harnesses) {
             Section $h.Name
+            if ($h.AutoAdded) { Write-Host "  (auto-added to the compile set: $($h.AutoAdded))" -ForegroundColor DarkGray }
             $exe  = Join-Path $OutDir ($h.Name + ".exe")
             $srcs = $h.Sources | ForEach-Object { Join-Path $RepoDir $_ }
 

@@ -45,6 +45,19 @@ static class ClarionIdeProcessTest
         Ok("ClarionCL, ClarionLAAx, Clarion12 are not", !ClarionIdeProcess.IsIdeImageName("ClarionCL") &&
            !ClarionIdeProcess.IsIdeImageName("ClarionLAAx") && !ClarionIdeProcess.IsIdeImageName("Clarion12"));
         Ok("null and empty are not", !ClarionIdeProcess.IsIdeImageName(null) && !ClarionIdeProcess.IsIdeImageName(""));
+        Ok("exact means verbatim: ' Clarion', 'Clarion ', 'ClarionLAA ' are not (pipeline run 1, Codex)",
+           !ClarionIdeProcess.IsIdeImageName(" Clarion") && !ClarionIdeProcess.IsIdeImageName("Clarion ") && !ClarionIdeProcess.IsIdeImageName("ClarionLAA "));
+        Ok("...nor the file 'Clarion .exe' or ' ClarionLAA.exe'",
+           !ClarionIdeProcess.IsIdeExe(@"C:\x\Clarion .exe") && !ClarionIdeProcess.IsIdeExe(@"C:\x\ ClarionLAA.exe"));
+        Ok("...nor through Matches", !ClarionIdeProcess.Matches("Clarion ", null) && !ClarionIdeProcess.Matches("StandIn ", "StandIn"));
+
+        // ---- Matches: the rule both record readers use (production names, or a test's stand-in) ----
+        Ok("Matches, no hook: Clarion and ClarionLAA yes", ClarionIdeProcess.Matches("Clarion", null) && ClarionIdeProcess.Matches("ClarionLAA", ""));
+        Ok("Matches, no hook: ClarionClone.IDE no", !ClarionIdeProcess.Matches("ClarionClone.IDE", null));
+        Ok("Matches, hook: exactly the stand-in", ClarionIdeProcess.Matches("ClarionIdeProcess.Test", "ClarionIdeProcess.Test"));
+        Ok("Matches, hook: not a prefix of it (one rule, not StartsWith)", !ClarionIdeProcess.Matches("ClarionIdeProcess.Test2", "ClarionIdeProcess.Test"));
+        Ok("Matches, hook: the real IDE names do NOT pass when a stand-in is named", !ClarionIdeProcess.Matches("Clarion", "StandIn"));
+        Ok("Matches: null name no", !ClarionIdeProcess.Matches(null, null) && !ClarionIdeProcess.Matches(null, "x"));
 
         // ---- Exe paths ----
         Ok("bin\\Clarion.exe is the IDE exe", ClarionIdeProcess.IsIdeExe(@"C:\Clarion12\bin\Clarion.exe"));
@@ -72,12 +85,14 @@ static class ClarionIdeProcessTest
         {
             string dir = args[0];
             string ep = File.ReadAllText(Path.Combine(dir, "Services", "IdeEndpointRecord.cs"));
-            Ok("IdeEndpointRecord: the IDE check uses IsIdeImageName", ep.Contains("ClarionIdeProcess.IsIdeImageName(p.ProcessName)"));
+            Ok("IdeEndpointRecord: the IDE check uses Matches", ep.Contains("ClarionIdeProcess.Matches(p.ProcessName, TestHook(ImageNameEnv))"));
             Ok("IdeEndpointRecord: no hard-coded image = \"Clarion\" left", !ep.Contains("image = \"Clarion\""));
 
             string sr = File.ReadAllText(Path.Combine(dir, "Services", "IdeSolutionRecord.cs"));
             string verify = Body(sr, "private static bool VerifyWriter(");
-            Ok("IdeSolutionRecord.VerifyWriter: uses IsIdeImageName", verify != null && verify.Contains("ClarionIdeProcess.IsIdeImageName(liveName)"));
+            Ok("IdeSolutionRecord.VerifyWriter: uses Matches, same rule as IdeEndpointRecord",
+               verify != null && verify.Contains("ClarionIdeProcess.Matches(liveName, TestHook(\"CA_IDE_IMAGE_NAME\"))"));
+            Ok("IdeSolutionRecord.VerifyWriter: no .StartsWith( call left", verify != null && !verify.Contains(".StartsWith("));
             Ok("IdeSolutionRecord.VerifyWriter: no StartsWith(\"Clarion\") default left", verify != null && !verify.Contains("image = \"Clarion\""));
 
             string vs = File.ReadAllText(Path.Combine(dir, "Services", "ClarionVersionService.cs"));

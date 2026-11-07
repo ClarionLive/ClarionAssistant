@@ -372,12 +372,9 @@ namespace ClarionAssistant.Services
             }
 
             // The IDE is Clarion.exe or ClarionLAA.exe, matched EXACTLY (1976d2e9): this used to be StartsWith("Clarion"),
-            // which also took ClarionClone.IDE. A test names its stand-in through the hook (L2: only with CA_TEST_HOOKS=1).
-            string image = TestHook("CA_IDE_IMAGE_NAME");
-            bool isIde = string.IsNullOrEmpty(image)
-                ? ClarionIdeProcess.IsIdeImageName(liveName)
-                : liveName != null && liveName.StartsWith(image, StringComparison.OrdinalIgnoreCase);
-            if (liveName == null || !isIde
+            // which also took ClarionClone.IDE. A test names its stand-in through the hook (L2: only with CA_TEST_HOOKS=1),
+            // matched by the same rule as IdeEndpointRecord's.
+            if (liveName == null || !ClarionIdeProcess.Matches(liveName, TestHook("CA_IDE_IMAGE_NAME"))
                 || (!string.IsNullOrEmpty(recordedName) && !string.Equals(liveName, recordedName, StringComparison.OrdinalIgnoreCase)))
             {
                 why = "the record for pid " + pid + " is stale: that pid is now '" + liveName

@@ -19,13 +19,27 @@ namespace ClarionAssistant.Services
         /// <summary>The LargeAddressAware build's file name, in the same bin folder as Clarion.exe.</summary>
         public const string LaaExeName = "ClarionLAA.exe";
 
-        /// <summary>True for a process name that is the Clarion IDE: exactly one of <see cref="IdeImageNames"/>, any case.</summary>
+        /// <summary>
+        /// True for a process name that is the Clarion IDE: exactly one of <see cref="IdeImageNames"/>, any case.
+        /// Verbatim, NOT trimmed: "Clarion " or a file "Clarion .exe" is some other program (pipeline run 1, Codex).
+        /// </summary>
         public static bool IsIdeImageName(string processName)
         {
             if (string.IsNullOrEmpty(processName)) return false;
             foreach (var n in IdeImageNames)
-                if (string.Equals(processName.Trim(), n, StringComparison.OrdinalIgnoreCase)) return true;
+                if (string.Equals(processName, n, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        /// <summary>
+        /// The IDE check the two record readers make: exactly <paramref name="testImageName"/> when a test names
+        /// its stand-in process (the CA_IDE_IMAGE_NAME hook, honoured only with CA_TEST_HOOKS=1), otherwise
+        /// <see cref="IsIdeImageName"/>. One rule for both readers, so a stand-in that passes one passes the other.
+        /// </summary>
+        public static bool Matches(string processName, string testImageName)
+        {
+            if (string.IsNullOrEmpty(testImageName)) return IsIdeImageName(processName);
+            return processName != null && string.Equals(processName, testImageName, StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>True for a path whose file is the Clarion IDE's exe (Clarion.exe or ClarionLAA.exe).</summary>
