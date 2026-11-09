@@ -413,6 +413,7 @@ namespace ClarionAssistant.Services
         private static readonly Regex MapModuleOpen =new Regex(@"^\s*MODULE\b", RegexOptions.IgnoreCase);
         private static readonly Regex MapDirective = new Regex(@"^\s*(INCLUDE|OMIT|COMPILE|SECTION|PRAGMA|!)", RegexOptions.IgnoreCase);
         private static readonly Regex MapProtoName = new Regex(@"^\s*([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.IgnoreCase);
+        private static readonly Regex TypeAttr = new Regex(@",\s*TYPE\b", RegexOptions.IgnoreCase);
         private static readonly Regex PreAttr = new Regex(@",\s*PRE\(\s*([A-Za-z_][A-Za-z0-9_]*)?\s*\)", RegexOptions.IgnoreCase);
         // Qualifier immediately before the cursor: <identifier><':' or '.'><partial>. The identifier may
         // contain ':' (template queues like "Queue:Browse:1"); greedy backtracking keeps PRE ("Cus:Name" ->
@@ -430,8 +431,10 @@ namespace ClarionAssistant.Services
 
         /// <summary>BaseType is the type argument of "Name QUEUE(SomeType)" / "Name GROUP(SomeType)". Such a
         /// structure has the named type's fields PLUS any declared inline, and the type lives elsewhere, so
-        /// when BaseType is set Fields is known to be INCOMPLETE.</summary>
-        internal sealed class Struct { public string Name; public string Pre; public string BaseType; public readonly List<StructField> Fields = new List<StructField>(); }
+        /// when BaseType is set Fields is known to be INCOMPLETE. IsType marks a TYPE declaration
+        /// ("Name QUEUE,TYPE") or a structure nested in one: it declares no data, so its fields are never in
+        /// scope as bare labels.</summary>
+        internal sealed class Struct { public string Name; public string Pre; public string BaseType; public bool IsType; public readonly List<StructField> Fields = new List<StructField>(); }
 
         internal sealed class ClassBlock { public string Name; public string Parent; public readonly List<KeyValuePair<string, string>> Members = new List<KeyValuePair<string, string>>(); }
 
@@ -751,7 +754,7 @@ namespace ClarionAssistant.Services
             {
                 foreach (var s in Structures)
                 {
-                    if (s.Pre != null) continue;
+                    if (s.Pre != null || s.IsType) continue;
                     foreach (var f in s.Fields)
                     {
                         if (!f.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
@@ -1044,7 +1047,8 @@ namespace ClarionAssistant.Services
                 if (gq.Success)
                 {
                     string pre = ExtractPre(gq.Groups[3].Value) ?? (stack.Count > 0 ? stack[stack.Count - 1].Pre : null);
-                    var s = new Struct { Name = gq.Groups[1].Value, Pre = pre, BaseType = ExtractBaseType(gq.Groups[3].Value) };
+                    bool isType = HasTypeAttr(gq.Groups[3].Value) || (stack.Count > 0 && stack[stack.Count - 1].IsType);
+                    var s = new Struct { Name = gq.Groups[1].Value, Pre = pre, BaseType = ExtractBaseType(gq.Groups[3].Value), IsType = isType };
                     if (stack.Count > 0)   // a nested group is also a field of its parent
                         stack[stack.Count - 1].Fields.Add(new StructField { Name = s.Name, Type = gq.Groups[2].Value });
                     all.Add(s);
@@ -1112,6 +1116,17 @@ namespace ClarionAssistant.Services
         {
             var m = PreAttr.Match(attrs ?? "");
             return (m.Success && m.Groups[1].Success && m.Groups[1].Value.Length > 0) ? m.Groups[1].Value : null;
+        }
+
+        /// <summary>True when a GROUP/QUEUE declaration carries the TYPE attribute ("QUEUE,TYPE",
+        /// "GROUP(Base),PRE(x),TYPE"). String literals and a trailing comment are removed first, so
+        /// NAME('TYPE') or "! ,TYPE" is never read as the attribute.</summary>
+        private static bool HasTypeAttr(string afterKeyword)
+        {
+            if (string.IsNullOrEmpty(afterKeyword)) return false;
+            string tail = StructLiteral.Replace(afterKeyword, "''");
+            tail = LineComment.Replace(tail, "");
+            return TypeAttr.IsMatch(tail);
         }
 
         private static string ExtractBaseType(string afterKeyword)
