@@ -184,6 +184,10 @@ namespace ClarionAssistant
             LoadVersions();
             LoadSolutionHistory();
             DetectFromIde();
+            // The solution is known only from here on. The Home page often loads first, and its
+            // OnHomeReady list then came back empty: the Resume button stayed off until the drawer
+            // or a tab switch asked again (seen 2026-11-09 after a restart).
+            RefreshHomeSessions();
             StartMcpServer();
             _header.SetTheme(_isDarkTheme);
             _header.SetRedFile(_redFileDisplay, _redFileCss, RedFileOpenable); // re-push in case LoadRedFile ran before header was ready
@@ -204,6 +208,38 @@ namespace ClarionAssistant
         /// <summary>How many sessions the drawer lists; "Show more" raises it (f9843525).</summary>
         private int _homeSessionMax = 5;
         private int _homeSessionGen;
+        /// <summary>
+        /// The solution folder the Home tab's session list was last built for ("" = none); null = never built;
+        /// <see cref="HomeSessionListFailed"/> = the last build failed, so the poll retries.
+        /// </summary>
+        private string _homeSessionSlnDir;
+        private const string HomeSessionListFailed = "<failed>";   // never a folder path: always a mismatch
+
+        /// <summary>
+        /// Backstop for the solution poll: rebuild the Home tab's session list when the solution it was
+        /// built for is no longer the one CA would list (the IDE opened its solution late, or the list was
+        /// built before any solution was known). Not on a switch: OnSolutionChanged refreshes that itself.
+        /// </summary>
+        private void RefreshHomeSessionsIfSolutionMoved()
+        {
+            if (_homeSessionSlnDir == null || _homeView == null || !_homeView.IsReady) return;
+            string sln = HomeSessionSolution();
+            string slnDir = sln != null ? Path.GetDirectoryName(sln) : "";
+            if (!string.Equals(slnDir, _homeSessionSlnDir, StringComparison.OrdinalIgnoreCase)) RefreshHomeSessions();
+        }
+
+        /// <summary>
+        /// The solution whose sessions the Home tab lists: the IDE's open one, else CA's own (restored at
+        /// startup), or null when neither exists on disk. One rule for RefreshHomeSessions and its poll
+        /// backstop: the backstop only stays quiet while both compute the same folder.
+        /// </summary>
+        private string HomeSessionSolution()
+        {
+            string sln = null;
+            try { sln = EditorService.GetOpenSolutionPath(); } catch { }
+            if (string.IsNullOrEmpty(sln)) sln = _currentSlnPath;
+            return !string.IsNullOrEmpty(sln) && File.Exists(sln) ? sln : null;
+        }
 
         /// <summary>
         /// Send the Home tab the open solution's resumable Claude sessions (ticket f9843525): for the
@@ -220,11 +256,10 @@ namespace ClarionAssistant
             int want = _homeSessionMax;
             int gen = ++_homeSessionGen;
 
-            string sln = null;
-            try { sln = EditorService.GetOpenSolutionPath(); } catch { }
-            if (string.IsNullOrEmpty(sln)) sln = _currentSlnPath;
-            string slnDir = !string.IsNullOrEmpty(sln) && File.Exists(sln) ? Path.GetDirectoryName(sln) : null;
+            string sln = HomeSessionSolution();
+            string slnDir = sln != null ? Path.GetDirectoryName(sln) : null;
             string slnName = slnDir != null ? Path.GetFileNameWithoutExtension(sln) : null;
+            _homeSessionSlnDir = slnDir ?? "";
             var live = GetLiveClaudeSessionIds();
 
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
@@ -244,6 +279,7 @@ namespace ClarionAssistant
                         {
                             { "id", s.Id },
                             { "agent", s.AgentName ?? "" },
+                            { "title", s.Title ?? "" },
                             { "age", Services.ClaudeSessionCatalog.FormatAge(s.LastWriteUtc, now) },
                             { "when", s.LastWriteUtc.ToLocalTime().ToString("ddd d MMM yyyy, h:mm tt", System.Globalization.CultureInfo.InvariantCulture) },
                             { "summary", s.Summary ?? "" },
@@ -263,6 +299,10 @@ namespace ClarionAssistant
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine("[HomeSessions] " + ex.Message);
+                    // The page kept its old list: forget which folder it was built for, so the next
+                    // solution poll tries again instead of believing the list is current.
+                    try { BeginInvoke((Action)(() => { if (gen == _homeSessionGen) _homeSessionSlnDir = HomeSessionListFailed; })); }
+                    catch (InvalidOperationException) { }
                     return;
                 }
                 try
@@ -346,7 +386,7 @@ namespace ClarionAssistant
                 case "openAddinProjects": OpenProjectsTab(Terminal.ProjectsWebView.KindAddin); break;
                 case "workWithSolution": OnWorkWithSolution(); break;
                 // The Work With Open Solution card's resume buttons and drawer (f9843525).
-                case "resumeLast": OnWorkWithSolution(resumeLast: true); break;
+                case "resumeLast": OnWorkWithSolution(resumeId: e.Data, resumeLast: true); break;   // e.Data: the id the tooltip names
                 case "resumeSession": OnWorkWithSolution(resumeId: e.Data); break;
                 case "listSessions":
                     int max;
@@ -1164,6 +1204,9 @@ namespace ClarionAssistant
                     // Backstop for the Clarion.Version PropertyChanged hook (16d140e9): follow a
                     // Build > Set Clarion Version change within one poll even if the event was missed.
                     SyncVersionWithIde();
+
+                    // The Home tab's resume list, if it was built for another (or no) solution folder.
+                    RefreshHomeSessionsIfSolutionMoved();
                 }
 
                 // Every poll, not just on a switch (F4, 9e1bd280): the IDE closing its solution, or reopening the
@@ -1799,6 +1842,9 @@ namespace ClarionAssistant
                 // the transcript only from the folder the session started in (f9843525).
                 tab.ResumeSessionId = resume.Id;
                 tab.PreferredAgentName = resume.AgentName;
+                // Renamed by the developer: resume without -n, so the title (their only clue to which
+                // session is which) is not reset to CA<n>. Never-renamed sessions keep -n as before.
+                tab.ResumeKeepsTitle = resume.Title != null;
                 tab.RequestedBackend = "Claude";   // resume is a Claude Code session, whatever the dropdown says
             }
 
@@ -4083,6 +4129,7 @@ namespace ClarionAssistant
             // A resume that never launched must not resurface on this tab's next launch (pipeline run 1, debugger).
             tab.ResumeSessionId = null;
             tab.PreferredAgentName = null;
+            tab.ResumeKeepsTitle = false;
             tab.AssistantLaunched = false;
             tab.AssistantBackend = null;
             try { if (tab.Terminal != null) tab.Terminal.Dispose(); } catch { }
@@ -4151,11 +4198,16 @@ namespace ClarionAssistant
             // so the same string is the session's native messaging address - one name, not two
             // that can drift. Resolved HERE, before the system-prompt file is written, because that
             // file also tells the model the name (ticket c175492a).
+            // One exception: a resumed session the developer renamed gets no -n (keepTitle below), so
+            // its native name stays their title while MULTITERMINAL_NAME and the tab label are CA<n>.
+            // -n would overwrite the title on --resume, and the title is how they find the session.
             // Resume (f9843525): a session picked on the Home tab is continued with --resume, a new
             // one is started with a known --session-id so the Home tab can leave it out of the
             // resume list while this tab runs it. One-shot: a later relaunch of this tab is new.
             string resumeId = Services.ClaudeSessionCatalog.NormalizeId(tab.ResumeSessionId);
             tab.ResumeSessionId = null;
+            bool keepTitle = resumeId != null && tab.ResumeKeepsTitle;
+            tab.ResumeKeepsTitle = false;
             tab.ClaudeSessionId = resumeId ?? Guid.NewGuid().ToString("D");
             string sessionFlag = resumeId != null
                 ? $" --resume '{resumeId}'"
@@ -4302,7 +4354,10 @@ namespace ClarionAssistant
             // MultiTerminal itself launched; a CA-hosted session registers by name alone, with the
             // claude.exe pid as its owner so the broker's reaper can retire the row when it dies.
             string mtEnv = $"$env:MULTITERMINAL_NAME='{safeAgentName}'";
-            string nameFlag = $" -n '{safeAgentName}'";
+            // A resumed session the developer renamed keeps its title: no -n, which Claude Code would
+            // write as the title even on --resume. MULTITERMINAL_NAME and the tab label stay CA<n>; the
+            // session's own Claude name stays the developer's title, as it was before the tab closed.
+            string nameFlag = keepTitle ? "" : $" -n '{safeAgentName}'";
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] MultiTerminal identity: name=" + agentName);
 
             // Auto-update Claude Code before launching if enabled in settings
@@ -4930,16 +4985,23 @@ namespace ClarionAssistant
                 string slnDir = Path.GetDirectoryName(_currentSlnPath);
                 string root = Services.ClaudeSessionCatalog.DefaultProjectsRoot();
                 var live = GetLiveClaudeSessionIds();
-                if (resumeLast)
+                // The button sends the id its tooltip names: one transcript read on the UI thread, and it
+                // resumes exactly that session. Re-listed only when the page sent none, or that session can
+                // no longer be resumed (opened in a tab, deleted) - then the newest one that still can.
+                string shownId = resumeLast ? Services.ClaudeSessionCatalog.NormalizeId(resumeId) : null;
+                if (shownId != null)
+                    resume = Services.ClaudeSessionCatalog.TryGet(root, slnDir, shownId, live, DateTime.UtcNow,
+                                                                   Services.ClaudeSessionCatalog.IsCaTabName);
+                if (resumeLast && resume == null)
                 {
-                    // The drawer's size, not 1: List reads at most 3 transcripts per wanted session, so
-                    // max 1 could miss a CA session behind three MultiTerminal ones that the drawer, and
-                    // the button's tooltip, did show (pipeline run 1, debugger).
+                    // The drawer's size, not 1: List reads at most ReadBudgetFactor transcripts per wanted
+                    // session (capped at MaxReads), so max 1 could miss a CA session behind MultiTerminal ones
+                    // that the drawer, and the button's tooltip, did show (pipeline run 1, debugger).
                     var list = Services.ClaudeSessionCatalog.List(root, slnDir, live, DateTime.UtcNow, Math.Max(5, _homeSessionMax),
                                                                   Services.ClaudeSessionCatalog.IsCaTabName);
                     resume = list.Sessions.Count > 0 ? list.Sessions[0] : null;
                 }
-                else
+                else if (!resumeLast)
                 {
                     resume = Services.ClaudeSessionCatalog.TryGet(root, slnDir, resumeId, live, DateTime.UtcNow,
                                                                    Services.ClaudeSessionCatalog.IsCaTabName);

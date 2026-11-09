@@ -13,8 +13,20 @@ namespace ClarionAssistant.Services
     {
         /// <summary>The session id: the transcript's file name, a lowercase GUID.</summary>
         public string Id;
-        /// <summary>The tab's name (CA1, CA2, ...) from the transcript's agent-name / custom-title record; may be null.</summary>
+        /// <summary>
+        /// The tab's name (CA1, CA2, ...) from the transcript's agent-name / custom-title records; may be null.
+        /// The newest CA tab name the session ran under, even when the developer renamed it since
+        /// (<see cref="Title"/>): a rename must not hide the session from the Home tab, and the name a
+        /// resume runs under must stay a CA tab name. Without any CA tab name, the newest name.
+        /// </summary>
         public string AgentName;
+        /// <summary>
+        /// The developer's own name for the session (/rename, or -n given by hand), when its current
+        /// name is not a CA tab name but it ran as a CA tab before; null when it was never renamed, or
+        /// never ran as a CA tab. Cut to <see cref="ClaudeSessionCatalog.TitleMaxChars"/>. Display text
+        /// only: never a command-line argument.
+        /// </summary>
+        public string Title;
         /// <summary>The developer's first prompt, CA's own greeting skipped. Null when the head holds none.</summary>
         public string FirstPrompt;
         /// <summary>The newest prompt Claude Code recorded (its last-prompt record), when it is a real prompt.</summary>
@@ -58,8 +70,20 @@ namespace ClarionAssistant.Services
         internal const int HeadMaxBytes = 256 * 1024;
         internal const int TailBytes = 64 * 1024;
         internal const int SummaryMaxChars = 160;
-        /// <summary>Read at most this many transcripts per listed session, so a folder of empty sessions stays cheap.</summary>
-        internal const int ReadBudgetFactor = 3;
+        /// <summary>
+        /// Read at most this many transcripts per listed session, so a folder of empty sessions stays cheap.
+        /// Was 3: measured 2026-11-09 on a solution folder, CA tabs opened and closed without a prompt
+        /// (greeting-only transcripts, ~600 KB each) were 9 of the 25 newest files, so a list asking for 5
+        /// ran out of reads at 4 and skipped a day of sessions. A transcript costs ~10 ms (head + tail only).
+        /// </summary>
+        internal const int ReadBudgetFactor = 10;
+        /// <summary>
+        /// The most transcripts one List call reads, whatever <c>max</c> is: the old worst case (50 x 3), so the
+        /// drawer's "Show more" (max 50) cannot turn into 500 reads.
+        /// </summary>
+        internal const int MaxReads = 150;
+        /// <summary>A renamed session's title is cut to this many characters for display.</summary>
+        internal const int TitleMaxChars = 80;
         public static readonly TimeSpan RecentWriteWindow = TimeSpan.FromMinutes(2);
 
         /// <summary>
@@ -210,7 +234,7 @@ namespace ClarionAssistant.Services
 
             files.Sort((a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
 
-            int budget = max * ReadBudgetFactor, read = 0, i = 0;
+            int budget = Math.Min(max * ReadBudgetFactor, MaxReads), read = 0, i = 0;
             for (; i < files.Count && result.Sessions.Count < max && read < budget; i++)
             {
                 read++;
@@ -310,6 +334,8 @@ namespace ClarionAssistant.Services
                 var info = new ClaudeSessionInfo { Id = id, TranscriptPath = path, LastWriteUtc = lastWrite };
                 bool hasAssistant = false;
                 string firstCwd = null, customTitle = null, tailAgent = null, tailTitle = null;
+                // The newest CA tab name in the head, then in the tail: what a renamed session ran under.
+                string headCaName = null, tailCaName = null;
                 var ser = NewSerializer();
 
                 string[] headLines = head.Split('\n');
@@ -331,7 +357,12 @@ namespace ClarionAssistant.Services
                     string type = GetString(obj, "type");
                     if (type == "assistant") hasAssistant = true;
                     else if (type == "user" && info.FirstPrompt == null) info.FirstPrompt = PromptText(obj);
-                    else if (type == "agent-name" && info.AgentName == null) info.AgentName = Clean(GetString(obj, "agentName"));
+                    else if (type == "agent-name")
+                    {
+                        string an = Clean(GetString(obj, "agentName"));
+                        if (an != null) info.AgentName = an;   // file order: a rename in the head wins over the launch name
+                        if (IsCaTabName(an)) headCaName = an;
+                    }
                     else if (type == "custom-title" && customTitle == null) customTitle = Clean(GetString(obj, "customTitle"));
                 }
 
@@ -354,12 +385,30 @@ namespace ClarionAssistant.Services
                     // Claude Code re-writes the name records as it goes, so the tail has the CURRENT name
                     // (after a rename, or a resume under another -n), and has it when the head is all
                     // start-up output (pipeline run 1, adversary). The last one wins.
-                    else if (type == "agent-name") { string n = Clean(GetString(obj, "agentName")); if (n != null) tailAgent = n; }
+                    else if (type == "agent-name")
+                    {
+                        string n = Clean(GetString(obj, "agentName"));
+                        if (n != null) tailAgent = n;
+                        if (IsCaTabName(n)) tailCaName = n;
+                    }
                     else if (type == "custom-title") { string n = Clean(GetString(obj, "customTitle")); if (n != null) tailTitle = n; }
                 }
 
                 if (tailAgent != null) info.AgentName = tailAgent;
                 if (info.AgentName == null) info.AgentName = tailTitle ?? customTitle;
+                // Renamed (/rename writes both records): the current name is the developer's title, and
+                // the session is still the CA tab it was launched as. Measured 2026-11-09 on a solution
+                // folder: every session the developer had renamed was missing from the Home tab, because
+                // the CA-tab filter saw only the new name. Known limit: a CA session later resumed outside
+                // CA with a non-CA -n looks the same as a rename (the transcript cannot tell them apart).
+                string caName = tailCaName ?? headCaName;
+                if (info.AgentName != null && !IsCaTabName(info.AgentName) && caName != null)
+                {
+                    string title = info.AgentName;
+                    if (title.Length > TitleMaxChars) title = title.Substring(0, TitleMaxChars - 1).TrimEnd() + "…";
+                    info.Title = title;
+                    info.AgentName = caName;
+                }
                 // A session only CA's greeting ever reached is not worth resuming.
                 if (info.Summary == null || !hasAssistant) return null;
                 // Same folder name, different folder: H:\a-b and H:\a\b encode alike.
