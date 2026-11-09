@@ -154,6 +154,24 @@ static class LocalScopeIndexTest
         var pg = Labels(At(c18, "Pg"));
         Check(gr.Contains("GrpA") && gr.Contains("GrpB") && !pg.Contains("PgX"), "1.8", "'Gr' -> GrpA GrpB; 'Pg' has no bare PgX: " + string.Join(",", pg));
 
+        // 1.8b: a TYPE structure declares no data - its fields (and a nested group's) are never bare labels,
+        // while a no-PRE instance declared inline still is; TYPE inside a string or a comment is not the attribute.
+        string c18b = InsertAfter(_two, "ModCounter           LONG                          ! module counter",
+            "OrderQType           QUEUE,TYPE\r\n" +
+            "OrdId                  LONG\r\n" +
+            "OrdInner               GROUP\r\n" +
+            "OrdNested                LONG\r\n" +
+            "                       END\r\n" +
+            "                     END\r\n" +
+            "OrderQ               QUEUE(OrderQType) END\r\n" +
+            "OrdNamed             QUEUE,NAME('X,TYPE')  ! ,TYPE\r\n" +
+            "OrdLive                LONG\r\n" +
+            "                     END");
+        c18b = WithLine(c18b, "Gr", "  Ord");
+        var ord = Labels(At(c18b, "Ord"));
+        Check(!ord.Contains("OrdId") && !ord.Contains("OrdInner") && !ord.Contains("OrdNested") && ord.Contains("OrdLive"), "1.8b",
+              "'Ord' -> OrdLive only; no TYPE fields (OrdId/OrdInner/OrdNested): " + string.Join(",", ord));
+
         // 1.9: DO -> routines of the current procedure only.
         var doB = Labels(At(_two, "DO R"));
         string c19 = WithLine(_two, "Mo", "  DO R");
