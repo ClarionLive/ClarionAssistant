@@ -13,7 +13,30 @@ You are an expert Clarion language programmer. This file holds the most critical
 
 **Always write Clarion source files (`.clw`, `.inc`, `.equ`, `.int`, `.tpl`, `.tpw`, `.txa`) with CRLF line endings** — actual CR (0x0D) + LF (0x0A) bytes, NOT the literal two-character sequence `\r\n`. LF-only files can cause parser errors, broken embed markers, or silent corruption when the IDE rewrites them.
 
-**Gotcha (verified on Clarion 12):** neither write path produces CRLF for you. `mcp__clarion-assistant__write_file` does NOT interpret escape sequences (`\r\n` lands on disk as four literal characters), and Claude Code's built-in `Write` tool emits **LF only** on Windows. LF-only files do not compile: the whole file is reported as line 1 with a huge column number, `Illegal character` at every line break, and `Expected: <ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP`. After writing any of these files, convert LF to CRLF (`unix2dos`, or read the text, replace LF with CRLF and write it back) before compiling. `write_embed_content` is safe — the embeditor converts LF to CRLF.
+**Which write paths give you CRLF:**
+- **Already CRLF:**
+  - `mcp__clarion-assistant__write_file` and `append_to_file` convert every line ending to CRLF (no BOM) for `.clw`, `.inc`, `.equ`, `.int`, `.trn`, `.tpl` and `.tpw`. They do NOT interpret escape sequences, so write real line breaks: `\r\n` typed as text lands on disk as four literal characters.
+  - The editor tools (`insert_text_at_cursor`, `replace_text`, `replace_range`).
+  - `write_embed_content` and `apply_embed_edits`.
+  - Saves from the CA Editor and the CA Embeditor.
+- **NOT CRLF:**
+  - `write_file` on a `.txa` (it is not in that list).
+  - Claude Code's built-in `Write` and `Edit` tools, which emit **LF only** on Windows.
+
+  After writing a Clarion file with one of these, convert LF to CRLF before compiling or importing: `unix2dos`, or read the text, replace LF with CRLF and write it back.
+
+**Gotcha (verified on Clarion 12):** LF-only files do not compile:
+- the whole file is reported as line 1 with a huge column number;
+- `Illegal character` appears at every line break;
+- the compiler expects `<ID> <LINEBREAK> ; CODE INCLUDE OMIT SECTION COMPILE PRAGMA GROUP ITEMIZE MAP`.
+
+LF-only template code breaks the same way.
+
+## Working With Apps (ALWAYS)
+
+- **One app open at a time.** Before you `open_file` an `.app`, call `get_open_files`. If another `.app` is open, ask the developer to save and close it first, and do not open the second one until they have. The Clarion IDE is a 32-bit program limited to 2 GB of memory (4 GB with the LargeAddressAware `ClarionLAA.exe`). Two large apps can use all of it, and an out-of-memory halt can damage the app being edited and the template registry.
+- **Closing an app is the developer's job, and it is always saved.** Never close an `.app` tab yourself. `close_file` closes the active tab without the IDE's save prompt. Ask the developer to close it and to answer **Yes** to saving. If you changed the app (embeds, `import_txa`), say so, so that they know there is something to save. A procedure's embeditor is different: close it with `save_and_close_embeditor`, never `cancel_embeditor`, unless the developer asks to discard.
+- **If Clarion offers to recover an app** (after a crash it may offer the last save or a recovery copy), that is the developer's decision. Tell them the dialog is up, and wait.
 
 ## Finding Clarion Files (ALWAYS)
 
