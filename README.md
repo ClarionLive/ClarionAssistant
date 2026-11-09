@@ -999,7 +999,7 @@ Clarion Assistant exposes **108 MCP tools** that Claude uses to interact with th
 | `is_modified` | Check if the active file has unsaved changes |
 | `undo` | Undo the last edit |
 | `redo` | Redo the last undone edit |
-| `show_diff` | Show a side-by-side diff in the Monaco viewer |
+| `show_diff` | Show a diff: unified with review notes (default), or Monaco side-by-side / inline with `renderer='monaco'` |
 | `get_diff_result` | Get approval/notes from the diff viewer |
 
 ### Application Tree & Embeditor (22 tools)

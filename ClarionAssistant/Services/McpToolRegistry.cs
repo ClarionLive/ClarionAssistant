@@ -3635,8 +3635,12 @@ COMMON QUERIES:
             {
                 Name = "show_diff",
 IdeOnly = true,
-                Description = "Open a unified diff viewer in the IDE editor panel. Shows color-coded additions/removals with a changes sidebar and inline code review notes. " +
-                    "The developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. " +
+                Description = "Open a diff viewer in the IDE editor panel. Two renderers, chosen with 'renderer': " +
+                    "'monaco' is a Monaco diff editor with Clarion syntax in both panes and a side-by-side / inline toggle (it opens side-by-side); " +
+                    "use it when the developer just wants to compare two versions. It has no review notes. " +
+                    "'classic' (the DEFAULT when renderer is omitted) is a color-coded unified diff with a changes sidebar and inline code review notes: " +
+                    "the developer can add severity-tagged notes (BLOCKER/SUGGESTION/NITPICK/QUESTION) on any line. It has NO side-by-side view; " +
+                    "use it when you need those notes back from get_diff_result. Only one diff window is open at a time: a new show_diff closes the current one. " +
                     "You can provide text directly via original_text/modified_text, OR provide file paths via original_file/modified_file to load from disk (avoids encoding issues with large files), " +
                     "OR set modified_from_active_editor='true' to diff the IDE's current (possibly unsaved) editor buffer directly, in-process — no MCP text transport, so it works regardless of file size and costs no extra tokens. " +
                     "Use ignore_whitespace to suppress trivial whitespace-only differences. Use get_diff_result to check the outcome, " +
@@ -3746,7 +3750,7 @@ IdeOnly = true,
 IdeOnly = true,
                 Description = "Check the result of the diff viewer. Returns: 'pending' if the developer hasn't acted yet, " +
                     "'approved' with the modified text if they clicked Approve, " +
-                    "'notes' with an array of review notes [{line, lineContent, severity, comment}] if they submitted feedback, " +
+                    "'notes' with an array of review notes [{line, lineContent, severity, comment}] if they submitted feedback (classic renderer only), " +
                     "or 'cancelled' if they dismissed it.",
                 InputSchema = McpJsonRpc.BuildSchema(
                     new Dictionary<string, string>(),
