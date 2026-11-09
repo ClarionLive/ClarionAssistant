@@ -161,6 +161,8 @@ body.light .action-card .backend-tag { background: rgba(30,102,245,0.1); color: 
 .srow .age { color: #7f849c; font-size: 12px; }
 .srow .sum { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #a6adc8; }
 .srow .warn { color: #f9e2af; font-size: 12px; }
+.srow .sum .stitle { color: #cdd6f4; font-weight: 600; }   /* not .title: that is the page heading style (18px) */
+body.light .srow .sum .stitle { color: #4c4f69; }
 .sbtn { height: 26px; padding: 0 12px; border-radius: 4px; border: 1px solid #45475a; background: #313244; color: #cdd6f4; font: inherit; font-size: 12px; cursor: pointer; }
 .sbtn:hover { border-color: #89b4fa; color: #89b4fa; }
 .sbtn.off { opacity: .45; cursor: default; }
@@ -372,7 +374,8 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
   function resumeLast() {
     var b = document.getElementById('resumeBtn');
     if (!b || b.classList.contains('off')) return;
-    send('resumeLast');
+    var first = (_sessions.sessions || [])[0];
+    send('resumeLast', first ? first.id : '');   // the session the tooltip names; the host re-checks it
   }
 
   function resumeSession(id) {
@@ -407,6 +410,7 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
 
   function hoverText(s) {
     var t = [];
+    if (s.title) t.push(s.title);   // a long title is cut off in the row
     if (s.last) t.push('Last: ' + s.last);
     if (s.first && s.first !== s.last) t.push('First: ' + s.first);
     t.push(s.when);
@@ -424,7 +428,7 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     if (!claude) tip = NOT_CLAUDE;
     else if (!hasSln) tip = 'No solution is open in the IDE';
     else if (!list.length) tip = 'No previous session';
-    else { off = false; tip = 'Resume last session · ' + (list[0].agent ? list[0].agent + ', ' : '') + list[0].age; }
+    else { off = false; tip = 'Resume last session · ' + (list[0].title ? list[0].title + ', ' : list[0].agent ? list[0].agent + ', ' : '') + list[0].age; }
     rb.classList.toggle('off', off);
     rb.setAttribute('data-tip', tip);
 
@@ -439,7 +443,13 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       var row = el('div', 'srow');
       row.appendChild(el('span', 'agent', s.agent || '—'));
       row.appendChild(el('span', 'age', s.age));
-      var sum = el('span', 'sum', s.summary);
+      // A renamed session leads with the developer's name for it; the agent column keeps the CA name.
+      var sum = el('span', 'sum');
+      if (s.title) {
+        sum.appendChild(el('span', 'stitle', s.title));
+        sum.appendChild(document.createTextNode(' · '));
+      }
+      sum.appendChild(document.createTextNode(s.summary));
       if (s.open) {
         sum.appendChild(document.createTextNode(' · '));
         sum.appendChild(el('span', 'warn', 'may be open elsewhere'));

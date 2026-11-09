@@ -100,6 +100,13 @@ namespace ClarionAssistant.Terminal
         /// </summary>
         public string PreferredAgentName { get; set; }
 
+        /// <summary>
+        /// One-shot: the resumed session carries the developer's own title (/rename), so the launch
+        /// leaves out -n. Claude Code writes -n as the session's title even on --resume (tested
+        /// 2026-11-09 on 2.1.319), which would silently undo the rename. BuildClaudeCommand consumes it.
+        /// </summary>
+        public bool ResumeKeepsTitle { get; set; }
+
         /// <summary>Whether an AI assistant has been launched in this tab.</summary>
         public bool AssistantLaunched { get; set; }
 

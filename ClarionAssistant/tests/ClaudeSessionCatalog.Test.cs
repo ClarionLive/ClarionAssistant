@@ -179,7 +179,7 @@ static class ClaudeSessionCatalogTest
             Ok("max 2: HasMore", two.HasMore);
             Ok("max 10: not HasMore", !list.HasMore);
             var one = ClaudeSessionCatalog.List(root, sol, live, now, 1);
-            Ok("max 1 (budget 3): newest valid found", one.Sessions.Count == 1 && one.Sessions[0].Id == idE);
+            Ok("max 1: newest valid found", one.Sessions.Count == 1 && one.Sessions[0].Id == idE);
 
             // ---- Folder that does not exist / bad input ----
             Ok("no folder for the solution -> empty, no throw", ClaudeSessionCatalog.List(root, Path.Combine(tmp, "nowhere"), null, now, 5).Sessions.Count == 0);
@@ -250,6 +250,108 @@ static class ClaudeSessionCatalogTest
             var tn = ClaudeSessionCatalog.TryGet(root, sol, idT, null, now, ClaudeSessionCatalog.IsCaTabName);
             Ok("name: a name record only past the head (line 213) still makes it a CA session", tn != null && tn.AgentName == "CA2",
                tn == null ? "hidden" : tn.AgentName);
+            Ok("title: a session never renamed has none", rn != null && rn.Title == null && tn != null && tn.Title == null);
+
+            // ---- Renamed sessions (2026-11-09) ----
+            // /rename writes BOTH a custom-title and an agent-name record with the new name (as Claude Code
+            // writes them). The session is still the CA tab it was launched as: listed, CA name kept for the
+            // resume, the developer's name shown as its title. Before the fix every renamed session was hidden.
+            string idRen = "11111111-0000-4000-8000-00000000000f";
+            Write(folder, idRen, now.AddMinutes(-8),
+                Title("CA3"), AgentName("CA3"), User(sol, "the work"), Asst(sol, "ok"),
+                Title("my renamed session"), AgentName("my renamed session"), LastPrompt("show the diff again"));
+            var ren = ClaudeSessionCatalog.TryGet(root, sol, idRen, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: a renamed CA session passes the CA filter", ren != null);
+            Ok("renamed: AgentName stays the CA tab name it ran under", ren != null && ren.AgentName == "CA3", ren == null ? null : ren.AgentName);
+            Ok("renamed: Title is the developer's name", ren != null && ren.Title == "my renamed session", ren == null ? null : ren.Title);
+            var renList = ClaudeSessionCatalog.List(root, sol, null, now, 50, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: listed by List with the CA filter", Find(renList, idRen) != null);
+
+            // Resumed under CA4 (the CA3 slot was taken), then renamed: the NEWEST CA name is the one to reuse.
+            string idRen2 = "12121212-0000-4000-8000-000000000010";
+            Write(folder, idRen2, now.AddMinutes(-9),
+                AgentName("CA3"), User(sol, "first"), Asst(sol, "ok"), AgentName("CA4"), User(sol, "second"), Asst(sol, "ok"),
+                Title("my title"), AgentName("my title"));
+            var ren2 = ClaudeSessionCatalog.TryGet(root, sol, idRen2, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: the newest CA name wins (CA4, not CA3)", ren2 != null && ren2.AgentName == "CA4" && ren2.Title == "my title",
+               ren2 == null ? "hidden" : ren2.AgentName + " / " + ren2.Title);
+
+            // A rename in the head, with no name record in the tail: the rename still counts.
+            string idRen3 = "13131313-0000-4000-8000-000000000011";
+            var r3 = new List<string> { AgentName("CA1"), User(sol, "q"), Asst(sol, "a"), AgentName("head rename") };
+            for (int i = 0; i < 100; i++) r3.Add(Asst(sol, filler));   // ~200 KB: the 64 KB tail holds no name record
+            Write(folder, idRen3, now.AddMinutes(-10), r3.ToArray());
+            var ren3 = ClaudeSessionCatalog.TryGet(root, sol, idRen3, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: a rename seen only in the head still sets the title", ren3 != null && ren3.AgentName == "CA1" && ren3.Title == "head rename",
+               ren3 == null ? "hidden" : ren3.AgentName + " / " + ren3.Title);
+
+            // A MultiTerminal agent renamed: never a CA tab, so it stays out, and has no CA name to resume under.
+            string idRenMt = "14141414-0000-4000-8000-000000000012";
+            Write(folder, idRenMt, now.AddMinutes(-11),
+                AgentName("Charlie"), User(sol, "x"), Asst(sol, "ok"), Title("charlie renamed"), AgentName("charlie renamed"));
+            Ok("renamed: a renamed MultiTerminal agent stays out of the CA list",
+               ClaudeSessionCatalog.TryGet(root, sol, idRenMt, null, now, ClaudeSessionCatalog.IsCaTabName) == null);
+            var mtR = ClaudeSessionCatalog.TryGet(root, sol, idRenMt, null, now);
+            Ok("renamed: without a CA name there is no Title split (AgentName is the current name)",
+               mtR != null && mtR.AgentName == "charlie renamed" && mtR.Title == null, mtR == null ? "hidden" : mtR.AgentName + " / " + mtR.Title);
+
+            // A long renamed session: the CA name only in the head, the rename only in the tail (review).
+            string idRen4 = "15151515-0000-4000-8000-000000000013";
+            var r4 = new List<string> { Title("CA5"), AgentName("CA5"), User(sol, "long work"), Asst(sol, "ok") };
+            for (int i = 0; i < 220; i++) r4.Add(Asst(sol, filler));   // ~440 KB: past the 256 KB head and the 64 KB tail
+            r4.Add(Title("tail rename")); r4.Add(AgentName("tail rename")); r4.Add(LastPrompt("keep going"));
+            Write(folder, idRen4, now.AddMinutes(-12), r4.ToArray());
+            var ren4 = ClaudeSessionCatalog.TryGet(root, sol, idRen4, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: CA name only in the head, rename only in the tail -> listed with both",
+               ren4 != null && ren4.AgentName == "CA5" && ren4.Title == "tail rename", ren4 == null ? "hidden" : ren4.AgentName + " / " + ren4.Title);
+
+            // Renamed to something CA-shaped: it IS a CA tab name, so it is the name, and there is no title.
+            string idRen5 = "16161616-0000-4000-8000-000000000014";
+            Write(folder, idRen5, now.AddMinutes(-13),
+                AgentName("CA2"), User(sol, "x"), Asst(sol, "ok"), Title("CA-review"), AgentName("CA-review"));
+            var ren5 = ClaudeSessionCatalog.TryGet(root, sol, idRen5, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: a CA-shaped new name is the agent name, with no title",
+               ren5 != null && ren5.AgentName == "CA-review" && ren5.Title == null, ren5 == null ? "hidden" : ren5.AgentName + " / " + ren5.Title);
+
+            // A long title is cut for display.
+            string idRen6 = "17171717-0000-4000-8000-000000000015";
+            string longTitle = new string('t', 120);
+            Write(folder, idRen6, now.AddMinutes(-14),
+                AgentName("CA1"), User(sol, "x"), Asst(sol, "ok"), Title(longTitle), AgentName(longTitle));
+            var ren6 = ClaudeSessionCatalog.TryGet(root, sol, idRen6, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed: a long title is cut to TitleMaxChars with an ellipsis",
+               ren6 != null && ren6.Title != null && ren6.Title.Length == ClaudeSessionCatalog.TitleMaxChars && ren6.Title.EndsWith("…"),
+               ren6 == null || ren6.Title == null ? "none" : ren6.Title.Length.ToString());
+
+            // ---- Read budget (2026-11-09) ----
+            // CA tabs opened and closed without a prompt leave greeting-only transcripts. With a budget of 3 per
+            // wanted session, 8 of them in front of a real session made a list of 2 come back with 0.
+            string solB = Path.Combine(tmp, "solB");
+            Directory.CreateDirectory(solB);
+            string folderB = Path.Combine(root, ClaudeSessionCatalog.EncodeProjectPath(solB));
+            Directory.CreateDirectory(folderB);
+            for (int i = 0; i < 8; i++)
+                Write(folderB, "0000000" + i + "-0000-4000-8000-0000000000aa", now.AddMinutes(-1 - i),
+                    AgentName("CA1"), User(solB, "Good afternoon!"), Asst(solB, "Ready"), LastPrompt("Good afternoon!"));
+            string idReal = "abababab-0000-4000-8000-0000000000bb";
+            Write(folderB, idReal, now.AddMinutes(-30), AgentName("CA2"), User(solB, "real work"), Asst(solB, "ok"));
+            var budget = ClaudeSessionCatalog.List(root, solB, null, now, 1, ClaudeSessionCatalog.IsCaTabName);
+            Ok("budget: a real session behind 8 greeting-only ones is found with max 1",
+               budget.Sessions.Count == 1 && budget.Sessions[0].Id == idReal, budget.Sessions.Count.ToString());
+
+            // ...and the budget is capped (review): "Show more" (max 50) must not read 500 transcripts. 160
+            // greeting-only ones in front: the session with a prompt sits past MaxReads and is not reached.
+            string solC = Path.Combine(tmp, "solC");
+            Directory.CreateDirectory(solC);
+            string folderC = Path.Combine(root, ClaudeSessionCatalog.EncodeProjectPath(solC));
+            Directory.CreateDirectory(folderC);
+            for (int i = 0; i < 160; i++)
+                Write(folderC, i.ToString("x8") + "-0000-4000-8000-0000000000cc", now.AddSeconds(-10 - i),
+                    AgentName("CA1"), User(solC, "Evening!"), Asst(solC, "Ready"));
+            Write(folderC, "cdcdcdcd-0000-4000-8000-0000000000dd", now.AddHours(-2), AgentName("CA2"), User(solC, "work"), Asst(solC, "ok"));
+            var capped = ClaudeSessionCatalog.List(root, solC, null, now, 50, ClaudeSessionCatalog.IsCaTabName);
+            Ok("budget: reads are capped at MaxReads (150) whatever max is",
+               ClaudeSessionCatalog.MaxReads == 150 && capped.Sessions.Count == 0 && capped.HasMore, capped.Sessions.Count.ToString());
 
             // Long paths: Claude Code cuts a folder name over 200 chars and appends "-<hash>". Such a fixture
             // needs paths over 260 chars, which a runtime with legacy path handling (this harness, maybe the
@@ -345,6 +447,53 @@ static class ClaudeSessionCatalogTest
                    abort != null && abort.Contains("tab.ResumeSessionId = null;") && abort.Contains("tab.PreferredAgentName = null;"));
                 Ok("launch (run 1): a resume gets the do-not-greet note",
                    build != null && build.Contains("ClaudeSessionCatalog.ResumedSessionNote"));
+
+                // Renamed sessions (2026-11-09): -n on --resume overwrites the developer's title (tested on
+                // Claude Code 2.1.319), so a renamed session resumes without it; everything else keeps -n.
+                Ok("rename: a renamed session's resume leaves out -n",
+                   build != null && build.Contains("string nameFlag = keepTitle ? \"\" : $\" -n '{safeAgentName}'\";"));
+                Ok("rename: keepTitle needs a resume and is one-shot",
+                   build != null && build.Contains("bool keepTitle = resumeId != null && tab.ResumeKeepsTitle;") &&
+                   build.Contains("tab.ResumeKeepsTitle = false;") &&
+                   build.IndexOf("bool keepTitle", StringComparison.Ordinal) < build.IndexOf("string nameFlag", StringComparison.Ordinal));
+                Ok("rename: the title is never put on the command line",
+                   build != null && !build.Contains(".Title") && !build.Contains("resume.Title"));
+                Ok("rename: the Home tab's resume sets ResumeKeepsTitle from the session's Title",
+                   src.Contains("tab.ResumeKeepsTitle = resume.Title != null;") && src.Contains("tab.PreferredAgentName = resume.AgentName;"));
+                Ok("rename: an aborted launch clears ResumeKeepsTitle",
+                   abort != null && abort.Contains("tab.ResumeKeepsTitle = false;"));
+                Ok("rename: the Home rows carry the title",
+                   src.Contains("{ \"title\", s.Title ?? \"\" }"));
+                string home = File.ReadAllText(Path.Combine(args[0], "Terminal", "home.html"));
+                Ok("rename: the drawer shows the title as text (never innerHTML)",
+                   home.Contains("el('span', 'stitle', s.title)"));
+                Ok("rename: the title's class is not the page heading's .title (18px)",
+                   home.Contains(".srow .sum .stitle {") && !home.Contains(".srow .sum .title"));
+                string hdr = Body(src, "private void OnHeaderReady(");
+                Ok("startup: the list is rebuilt once the header has restored the solution",
+                   hdr != null && hdr.IndexOf("RefreshHomeSessions();", StringComparison.Ordinal) > hdr.IndexOf("DetectFromIde();", StringComparison.Ordinal) &&
+                   hdr.IndexOf("DetectFromIde();", StringComparison.Ordinal) > 0);
+                string poll = Body(src, "private void PollForSolutionChange(");
+                Ok("startup: the solution poll rebuilds a list built for another (or no) solution",
+                   poll != null && poll.Contains("RefreshHomeSessionsIfSolutionMoved();"));
+                string moved = Body(src, "private void RefreshHomeSessionsIfSolutionMoved(");
+                string refresh = Body(src, "private void RefreshHomeSessions(int max = 0)");
+                Ok("startup (review): the list and its poll backstop share one solution rule",
+                   moved != null && refresh != null && moved.Contains("HomeSessionSolution()") && refresh.Contains("HomeSessionSolution()"));
+                Ok("startup (review): a failed list build makes the poll retry",
+                   refresh != null && refresh.Contains("_homeSessionSlnDir = HomeSessionListFailed;"));
+
+                // Review: "Resume last" on the UI thread reads the one session the tooltip names.
+                Ok("resume last (review): the button sends the id its tooltip names",
+                   home.Contains("send('resumeLast', first ? first.id : '')"));
+                Ok("resume last (review): the host passes that id on",
+                   src.Contains("case \"resumeLast\": OnWorkWithSolution(resumeId: e.Data, resumeLast: true);"));
+                Ok("resume last (review): one TryGet first, the list only as a fallback",
+                   wws != null && wws.Contains("TryGet(root, slnDir, shownId,") && wws.Contains("if (resumeLast && resume == null)") &&
+                   wws.IndexOf("shownId,", StringComparison.Ordinal) < wws.IndexOf("ClaudeSessionCatalog.List(", StringComparison.Ordinal));
+                Ok("rename (review): the one-name comment at the -n launch site names the exception",
+                   build != null && build.Contains("One exception: a resumed session the developer renamed gets no -n"));
+
                 string sl = File.ReadAllText(Path.Combine(args[0], "Terminal", "ca-statusline.js"));
                 Ok("statusline (run 1): writes the current session id", sl.Contains("sessionId: typeof data.session_id === 'string'"));
             }
