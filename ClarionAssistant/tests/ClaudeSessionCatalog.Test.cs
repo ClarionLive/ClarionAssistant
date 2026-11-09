@@ -482,6 +482,9 @@ static class ClaudeSessionCatalogTest
                    moved != null && refresh != null && moved.Contains("HomeSessionSolution()") && refresh.Contains("HomeSessionSolution()"));
                 Ok("startup (review): a failed list build makes the poll retry",
                    refresh != null && refresh.Contains("_homeSessionSlnDir = HomeSessionListFailed;"));
+                Ok("startup (PR #304 review): a failed build retries after a delay, not on every 10 s poll",
+                   refresh != null && refresh.Contains("_homeSessionRetryAtUtc = DateTime.UtcNow + HomeSessionRetryDelay;") &&
+                   moved != null && moved.Contains("ReferenceEquals(_homeSessionSlnDir, HomeSessionListFailed) && DateTime.UtcNow < _homeSessionRetryAtUtc) return;"));
 
                 // Review: "Resume last" on the UI thread reads the one session the tooltip names.
                 Ok("resume last (review): the button sends the id its tooltip names",

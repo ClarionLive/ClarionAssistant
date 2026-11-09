@@ -214,6 +214,13 @@ namespace ClarionAssistant
         /// </summary>
         private string _homeSessionSlnDir;
         private const string HomeSessionListFailed = "<failed>";   // never a folder path: always a mismatch
+        /// <summary>
+        /// After a failed build the poll (every 10 s) waits until this time before listing again, so a
+        /// persistent failure (an unreadable projects folder) costs one re-list a minute, not up to 150
+        /// transcript reads every tick (PR #304 review).
+        /// </summary>
+        private DateTime _homeSessionRetryAtUtc;
+        private static readonly TimeSpan HomeSessionRetryDelay = TimeSpan.FromSeconds(60);
 
         /// <summary>
         /// Backstop for the solution poll: rebuild the Home tab's session list when the solution it was
@@ -223,6 +230,7 @@ namespace ClarionAssistant
         private void RefreshHomeSessionsIfSolutionMoved()
         {
             if (_homeSessionSlnDir == null || _homeView == null || !_homeView.IsReady) return;
+            if (ReferenceEquals(_homeSessionSlnDir, HomeSessionListFailed) && DateTime.UtcNow < _homeSessionRetryAtUtc) return;
             string sln = HomeSessionSolution();
             string slnDir = sln != null ? Path.GetDirectoryName(sln) : "";
             if (!string.Equals(slnDir, _homeSessionSlnDir, StringComparison.OrdinalIgnoreCase)) RefreshHomeSessions();
@@ -301,7 +309,15 @@ namespace ClarionAssistant
                     System.Diagnostics.Debug.WriteLine("[HomeSessions] " + ex.Message);
                     // The page kept its old list: forget which folder it was built for, so the next
                     // solution poll tries again instead of believing the list is current.
-                    try { BeginInvoke((Action)(() => { if (gen == _homeSessionGen) _homeSessionSlnDir = HomeSessionListFailed; })); }
+                    try
+                    {
+                        BeginInvoke((Action)(() =>
+                        {
+                            if (gen != _homeSessionGen) return;
+                            _homeSessionSlnDir = HomeSessionListFailed;
+                            _homeSessionRetryAtUtc = DateTime.UtcNow + HomeSessionRetryDelay;
+                        }));
+                    }
                     catch (InvalidOperationException) { }
                     return;
                 }
