@@ -184,5 +184,8 @@
     "",
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
-  "acknowledgedCommits": {}
+  "acknowledgedCommits": {
+    "2281ac2": "ClarionLAA.exe recognition - documented by the 'Clarion Assistant recognises ClarionLAA.exe' entry; unprefixed subject.",
+    "5f94467": "ClarionLAA.exe review fixes (verbatim names) - documented by the same 'recognises ClarionLAA.exe' entry; unprefixed subject."
+  }
 }

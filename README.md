@@ -106,6 +106,26 @@ When your profile folder's name is not a valid 8.3 name, Windows gives programs 
 
 The bundled Markdown Editor moves from v1.3.0 to [v1.5.0](https://github.com/msarson/ClarionMarkdownEditor/releases/tag/v1.5.0). Among other changes, files dropped from Explorer now open in editor tabs. Two copies of the editor stop the Clarion IDE from starting, and the installer only looked for an existing copy in `accessory\addins\MarkdownEditor`, while Clarion Addin Finder and the editor's own zip use `accessory\addins\ClarionMarkdownEditor`. It now checks every folder under `accessory\addins` and skips ours when it finds the editor elsewhere, naming that folder in the install log and on the final page. If you already have two copies, the installer leaves both in place and tells you to delete `MarkdownEditor`.
 
+<!-- release-docs: covered=terminal,home -->
+### Start a new Claude session, resume the last one, or pick an earlier one
+
+Every chat tab used to start a fresh Claude Code session, so picking up yesterday's work meant explaining it again. The **Work With Open Solution** card on the Home tab now has three buttons:
+- **Start a new session** opens a fresh one, as before.
+- **Resume last session** reopens your most recent session for this solution.
+- **More options** opens a drawer listing earlier sessions, newest first. Each shows the tab name it ran under, how long ago it was used, and the last thing you asked in it. Click one to resume it.
+
+Resuming a session skips the greeting and the recap, and Claude is told that the session was resumed. If a session may still be open in another tab or window, Clarion Assistant asks before opening it a second time. The list holds up to 50 sessions and comes from Claude Code's own transcripts for the solution's folder.
+
+<!-- release-docs: covered=ide-detection,deploy -->
+### Clarion Assistant recognises `ClarionLAA.exe`, SoftVelocity's large-address-aware Clarion 12 ([#297](https://github.com/ClarionLive/ClarionAssistant/issues/297))
+
+Clarion.exe is a 32-bit program limited to 2 GB of memory, and one large app plus a second one can use all of it ([#297](https://github.com/ClarionLive/ClarionAssistant/issues/297)). SoftVelocity plans to ship a signed `ClarionLAA.exe` beside `Clarion.exe` in the next Clarion 12 beta refresh. It can use 4 GB, and you choose which one to run each session. Clarion Assistant now treats `ClarionLAA.exe` as the Clarion IDE everywhere it checks:
+- chat tabs and the IDE tools that other clients reach;
+- Clarion version detection;
+- the deploy script's "Clarion is still running" check.
+
+When memory runs low under `Clarion.exe` and `ClarionLAA.exe` is installed beside it, the low-memory notice suggests running that one instead. Until SoftVelocity ships it, nothing changes.
+
 ### Thanks
 
 - **[@msarson](https://github.com/msarson)** &mdash; [#289](https://github.com/ClarionLive/ClarionAssistant/issues/289) and [#290](https://github.com/ClarionLive/ClarionAssistant/issues/290): the Markdown Editor release details and the diagnosis of the duplicate install.
