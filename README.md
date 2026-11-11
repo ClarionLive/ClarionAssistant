@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/ClarionLive/ClarionAssistant/releases/latest"><img src="https://img.shields.io/github/v/release/ClarionLive/ClarionAssistant?include_prereleases&label=download&style=for-the-badge" alt="Download"></a>
   <img src="https://img.shields.io/badge/Clarion-10%20%7C%2011%20%7C%2011.1%20%7C%2012-blue?style=for-the-badge" alt="Clarion 10 | 11 | 11.1 | 12">
-  <img src="https://img.shields.io/badge/version-6.2-blue?style=for-the-badge" alt="v6.2">
+  <img src="https://img.shields.io/badge/version-6.3-blue?style=for-the-badge" alt="v6.3">
 </p>
 
 <p align="center">
@@ -55,9 +55,9 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
-## What's New (Unreleased)
+## What's New in v6.3
 
-<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+6.3 lets you resume an earlier Claude session from the Home tab, ships UltimateCOM 4.1 (each control's handler gets only its own events, and Before/After COM Registration code is no longer dropped), opens INCLUDE files with Ctrl+Click through the `.red`, and corrects the bundled `clarion`, `stringtheory` and `jfiles` skills against the compiler and library sources. The plugin is version 2.1.2: update it as described below. Full notes: **[docs/releases/v6.3.0.md](docs/releases/v6.3.0.md)**.
 
 <!-- release-docs: covered=skills -->
 ### The StringTheory skill is rewritten and checked against the StringTheory source, by geircodes ([PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282))
@@ -170,6 +170,7 @@ When memory runs low under `Clarion.exe` and `ClarionLAA.exe` is installed besid
 
 - **[@msarson](https://github.com/msarson)** &mdash; [#289](https://github.com/ClarionLive/ClarionAssistant/issues/289) and [#290](https://github.com/ClarionLive/ClarionAssistant/issues/290): the Markdown Editor release details and the diagnosis of the duplicate install.
 - **[@armisoftware](https://github.com/armisoftware)** &mdash; [#302](https://github.com/ClarionLive/ClarionAssistant/issues/302): the app-handling rules for the `clarion` skill.
+- **[@Aarhusdk](https://github.com/Aarhusdk)** &mdash; [#305](https://github.com/ClarionLive/ClarionAssistant/issues/305) and [#306](https://github.com/ClarionLive/ClarionAssistant/issues/306): the UltimateCOM `GetEventFor` patch tested on 35 handlers, and the root cause of the dropped COM Registration code, traced to the embed key.
 - **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#293](https://github.com/ClarionLive/ClarionAssistant/issues/293) and [#294](https://github.com/ClarionLive/ClarionAssistant/issues/294): the launcher failure and a measured analysis of the hook timeouts.
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; [PR #282](https://github.com/ClarionLive/ClarionAssistant/pull/282): the StringTheory skill rewrite, every rule read against the library source; [PR #286](https://github.com/ClarionLive/ClarionAssistant/pull/286): the last hover card that skipped the language server, procedures declared in the file, now asks it too, with a 10,000-hover measurement behind the change; [PR #288](https://github.com/ClarionLive/ClarionAssistant/pull/288): Ctrl+Click on an INCLUDE file name, resolved through the `.red`; [PR #292](https://github.com/ClarionLive/ClarionAssistant/pull/292): the `clarion` skill dedupe and its three corrections; [PR #296](https://github.com/ClarionLive/ClarionAssistant/pull/296): the `jfiles` `NewPointer` rule; [PR #299](https://github.com/ClarionLive/ClarionAssistant/pull/299): TYPE structure fields kept out of completion, with a test proven to fail without the fix; [PR #303](https://github.com/ClarionLive/ClarionAssistant/pull/303): the `show_diff` descriptions that name both viewers; [PR #304](https://github.com/ClarionLive/ClarionAssistant/pull/304): three fixes to the new session chooser, measured on a real solution folder; [#291](https://github.com/ClarionLive/ClarionAssistant/issues/291): the short-name path refusal, diagnosed down to the rule.

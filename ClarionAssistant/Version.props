@@ -53,10 +53,10 @@
   -->
   <PropertyGroup>
     <VersionMajor>6</VersionMajor>
-    <VersionMinor>2</VersionMinor>
+    <VersionMinor>3</VersionMinor>
     <VersionPatch>0</VersionPatch>
     <VersionBuild>1353</VersionBuild>
-    <FullVersion>6.2.0</FullVersion>
-    <AssemblyFullVersion>6.2.0.1353</AssemblyFullVersion>
+    <FullVersion>6.3.0</FullVersion>
+    <AssemblyFullVersion>6.3.0.1353</AssemblyFullVersion>
   </PropertyGroup>
 </Project>
