@@ -263,6 +263,16 @@ static class TabManagerOverflowTest
         Check(menu.Items.Count == 4 && !menu.Items.Contains(four), "menu: ...and its row goes, the rest stay");
         Check(menuRig.Tabs.ActiveTab == menuRig.Opened[1], "menu: ...leaving the active tab alone");
 
+        // ---- ⋯ toggles: the press that closed the list does not reopen it ----
+        var toggle = new Rig(600, five);
+        var closedOnButton = typeof(TabManager).GetField("_menuClosedOnButton", Priv);
+        closedOnButton.SetValue(toggle.Tabs, true);   // as the list's Closed handler leaves it after a press on ⋯
+        typeof(TabManager).GetField("_menuClosedOnButtonTick", Priv).SetValue(toggle.Tabs, Environment.TickCount);
+        toggle.Mouse("OnMouseClick", MouseButtons.Left, Centre(toggle.Overflow), 0);
+        Check(typeof(TabManager).GetField("_overflowMenu", Priv).GetValue(toggle.Tabs) == null,
+              "toggle: the click of the press that closed the list does not open it again");
+        Check(!(bool)closedOnButton.GetValue(toggle.Tabs), "toggle: ...and the next click on ⋯ opens it as usual");
+
         // ---- Middle click ----
         var mid = new Rig(1600, "Alpha", "Bravo");
         int asked = 0;

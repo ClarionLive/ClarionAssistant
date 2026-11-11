@@ -54,6 +54,8 @@ namespace ClarionAssistant.Terminal
         private Rectangle _rightArrowRect;
         private ContextMenuStrip _overflowMenu;
         private bool _menuCloseClick;          // the pending overflow-menu click landed on a row's ✕
+        private bool _menuClosedOnButton;      // the list closed under a press on ⋯: that press's click must not reopen it
+        private int _menuClosedOnButtonTick;
         private readonly ToolTip _toolTip = new ToolTip();
         private string _toolTipText;
 
@@ -512,7 +514,12 @@ namespace ClarionAssistant.Terminal
         {
             if (e.Button == MouseButtons.Left && !_overflowRect.IsEmpty && _overflowRect.Contains(e.Location))
             {
-                ShowOverflowMenu();
+                // ⋯ toggles: a press on it while the list is open closes the list (a click outside it),
+                // and the click that follows must not open it again (it reopened at once).
+                bool justClosed = _menuClosedOnButton
+                    && unchecked(Environment.TickCount - _menuClosedOnButtonTick) < 1000;
+                _menuClosedOnButton = false;
+                if (!justClosed) ShowOverflowMenu();
                 return;
             }
             if (e.Button == MouseButtons.Left && !_leftArrowRect.IsEmpty && _leftArrowRect.Contains(e.Location))
@@ -615,6 +622,14 @@ namespace ClarionAssistant.Terminal
                 // The ✕ of a row was clicked: keep the menu open for the next one.
                 if (_menuCloseClick && e.CloseReason == ToolStripDropDownCloseReason.ItemClicked)
                     e.Cancel = true;
+            };
+            _overflowMenu.Closed += (s, e) =>
+            {
+                // Closed by the left button going down on ⋯ itself (not Esc, not a click elsewhere).
+                _menuClosedOnButton = (Control.MouseButtons & MouseButtons.Left) != 0
+                    && !_overflowRect.IsEmpty
+                    && _overflowRect.Contains(_tabStrip.PointToClient(Control.MousePosition));
+                _menuClosedOnButtonTick = Environment.TickCount;
             };
         }
 
