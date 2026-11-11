@@ -512,7 +512,10 @@ if (-not $settings['permissions'].Contains('allow')) {
     $settings['permissions']['allow'] = @()
 }
 
-# Permissions to add for Clarion Assistant MCP tools
+# Permissions to add for Clarion Assistant MCP tools. These are for the server a Clarion Assistant
+# chat tab registers as "clarion-assistant". The plugin's server (MultiTerminal, VS Code) is named
+# differently, mcp__plugin_clarion-assistant_clarion-tools__<tool>, so a settings.json holding both
+# sets is expected, not duplication (GH #309). Entries are only ever added, never removed.
 $requiredPermissions = @(
     'mcp__clarion-assistant__get_active_file',
     'mcp__clarion-assistant__get_selected_text',
@@ -535,7 +538,6 @@ $requiredPermissions = @(
     'mcp__clarion-assistant__find_in_file',
     'mcp__clarion-assistant__is_modified',
     'mcp__clarion-assistant__toggle_comment',
-    'mcp__clarion-assistant__open_app',
     'mcp__clarion-assistant__get_app_info',
     'mcp__clarion-assistant__list_procedures',
     'mcp__clarion-assistant__get_procedure_details',
