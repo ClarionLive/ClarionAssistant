@@ -165,6 +165,7 @@ namespace ClarionAssistant
             _tabManager = new TabManager(_tabStrip, _contentArea);
             _tabManager.ActiveTabChanged += OnActiveTabChanged;
             _tabManager.TabRemoved += OnTabRemoved;
+            _tabManager.ConfirmMiddleClickClose = ConfirmMiddleClickClose;
             // Add in correct order (Fill first, then Top items from bottom to top)
             Controls.Add(_contentArea);
             Controls.Add(_tabStrip);
@@ -729,6 +730,32 @@ namespace ClarionAssistant
         {
             var view = tab != null ? tab.ContentControl as Terminal.ProjectsWebView : null;
             if (view != null) view.Dispose();
+        }
+
+        // settings.txt key: "true" once the user chose "Close without asking next time". Delete the line to
+        // get the warning back.
+        private const string MiddleClickCloseNoConfirmKey = "Tabs.MiddleClickClose.NoConfirm";
+
+        /// <summary>
+        /// A middle-click on a tab closes it, as in a browser. Not everyone expects that, so ask first, until the
+        /// user says not to.
+        /// </summary>
+        private bool ConfirmMiddleClickClose(TerminalTab tab)
+        {
+            if (string.Equals(_settings.Get(MiddleClickCloseNoConfirmKey), "true", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            using (var dlg = new MiddleClickCloseDialog(tab != null ? tab.Name : ""))
+            {
+                var owner = FindForm();
+                bool close = (owner != null ? dlg.ShowDialog(owner) : dlg.ShowDialog()) == DialogResult.OK;
+                if (close && dlg.DontAskAgain)
+                {
+                    try { _settings.Set(MiddleClickCloseNoConfirmKey, "true"); }
+                    catch (SettingsLockedException) { }   // just asked again next time
+                }
+                return close;
+            }
         }
 
         private static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
