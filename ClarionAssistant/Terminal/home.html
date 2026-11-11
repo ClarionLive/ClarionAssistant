@@ -127,10 +127,12 @@ body.light .action-card .backend-tag { background: rgba(30,102,245,0.1); color: 
 .ibtn.on { background: #89b4fa; border-color: #89b4fa; color: #1e1e2e; }
 .ibtn.off { opacity: .4; cursor: default; }
 .ibtn.off:hover { border-color: #45475a; color: #cdd6f4; }
-.ibtn[data-tip]:hover::after {
-  content: attr(data-tip); position: absolute; bottom: calc(100% + 7px); left: 50%; transform: translateX(-50%);
-  white-space: nowrap; background: #11111b; color: #cdd6f4; font-size: 12px; font-weight: 400;
-  padding: 5px 9px; border-radius: 4px; pointer-events: none; z-index: 5; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+/* The buttons' data-tip, shown by the script at the end (placeTip). A CSS ::after centred on the button
+   was cut off by the pane's edge when the card sat near it, e.g. "esume last session · ..." in a narrow pad. */
+.ibtn-tip {
+  position: fixed; display: none; max-width: calc(100vw - 12px); white-space: normal;
+  background: #11111b; color: #cdd6f4; font-size: 12px; font-weight: 400;
+  padding: 5px 9px; border-radius: 4px; pointer-events: none; z-index: 50; box-shadow: 0 2px 8px rgba(0,0,0,.3);
 }
 .action-card.open { border-color: #89b4fa; }
 
@@ -176,7 +178,7 @@ body.light .ibtn { background: #fff; border-color: #bcc0cc; color: #4c4f69; }
 body.light .ibtn:hover { border-color: #1e66f5; color: #1e66f5; }
 body.light .ibtn.on { background: #1e66f5; border-color: #1e66f5; color: #fff; }
 body.light .ibtn.off:hover { border-color: #bcc0cc; color: #4c4f69; }
-body.light .ibtn[data-tip]:hover::after { background: #4c4f69; color: #fff; }
+body.light .ibtn-tip { background: #4c4f69; color: #fff; }
 body.light .action-card.open { border-color: #1e66f5; }
 body.light .drawer-inner { background: #e6e9ef; border-color: #1e66f5; }
 body.light .drawer-inner::before { background: #e6e9ef; border-color: #1e66f5; }
@@ -509,6 +511,38 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       }
     });
   }
+
+  // Tooltips for the card buttons (.ibtn[data-tip]): above the button, centred on it, but always inside the
+  // window - moved sideways at an edge, below the button when there is no room above, wrapped when the
+  // pane is narrower than the text.
+  var ibtnTip = document.createElement('div');
+  ibtnTip.className = 'ibtn-tip';
+  document.body.appendChild(ibtnTip);
+
+  function placeTip(btn) {
+    var text = btn && btn.getAttribute('data-tip');
+    if (!text) { ibtnTip.style.display = 'none'; return; }
+    ibtnTip.textContent = text;
+    ibtnTip.style.left = '0px';            // measure at full available width
+    ibtnTip.style.top = '0px';
+    ibtnTip.style.display = 'block';
+    var r = btn.getBoundingClientRect();
+    var w = ibtnTip.offsetWidth, h = ibtnTip.offsetHeight, margin = 6;
+    var left = r.left + r.width / 2 - w / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - w - margin));
+    var top = r.top - h - 7;
+    if (top < margin) top = r.bottom + 7;
+    ibtnTip.style.left = left + 'px';
+    ibtnTip.style.top = top + 'px';
+  }
+
+  document.addEventListener('mouseover', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('.ibtn[data-tip]') : null;
+    placeTip(btn);
+  });
+  document.addEventListener('mouseleave', function () { placeTip(null); });
+  window.addEventListener('scroll', function () { placeTip(null); }, true);
+  window.addEventListener('blur', function () { placeTip(null); });
 
   renderBackendState(); // populate badges + hint before C# sends the saved default
   send('homeReady');
