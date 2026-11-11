@@ -427,7 +427,7 @@
 <header class="site-header">
   <h1>Clarion.Assistant</h1>
   <div class="subtitle">AI-Powered Development for the Clarion IDE</div>
-  <div class="version-badge">User Guide &middot; v1.11 &middot; for Clarion.Assistant 6.2</div>
+  <div class="version-badge">User Guide &middot; v1.12 &middot; for Clarion.Assistant 6.3</div>
 </header>
 
 <!-- ════════════════════════════════════════════════════ -->
@@ -439,6 +439,7 @@
   <nav class="sidebar">
     <h3>What's New</h3>
     <a href="#whats-new">Release Notes</a>
+    <a href="#whats-new-63" class="sub">v6.3</a>
     <a href="#whats-new-62" class="sub">v6.2</a>
     <a href="#whats-new-61" class="sub">v6.1</a>
     <a href="#whats-new-60" class="sub">v6.0</a>
@@ -536,6 +537,51 @@
 <!-- ════════════════════════════════════════════════════ -->
 <section id="whats-new" class="doc-section">
   <h2>What's New</h2>
+
+  <h3 id="whats-new-63">v6.3 &mdash; Resume Earlier Sessions, UltimateCOM 4.1, Sharper Skills</h3>
+
+  <p>
+    The <strong>Work With Open Solution</strong> card on the <a href="#claude-chat-home">Home tab</a>
+    now has three buttons: <strong>Start a new session</strong>, <strong>Resume last session</strong>,
+    and <strong>More options</strong>, a drawer listing earlier sessions for the solution with their
+    tab name, age and last request. A session you renamed with <code>/rename</code> keeps its title.
+    Clarion Assistant also recognises <code>ClarionLAA.exe</code>, the large-address-aware Clarion 12
+    that SoftVelocity plans to ship, and suggests it when memory runs low.
+  </p>
+
+  <p>
+    <strong>UltimateCOM 4.1</strong> fixes two bugs reported by Aarhusdk. Each control's event
+    handler now gets only its own control's events, and the procedure extension's handlers run at
+    all. Code in a control's <strong>Before</strong> or <strong>After COM Registration</strong> embed
+    is no longer left out of the generated source at random. The embeds are keyed on the control's
+    object now; code in the old embeds still generates, under a comment naming where it was stored,
+    until you move it.
+  </p>
+
+  <p>
+    In the CA Editor, Ctrl+Click on a file name in <code>INCLUDE</code>, <code>MODULE</code>,
+    <code>MEMBER</code> or <code>LINK</code> opens that file, found through the <code>.red</code>.
+    Hovering a procedure declared in the file you are editing shows the language server's card, and
+    completion no longer offers a TYPE structure's fields as variables. The bundled
+    <code>clarion</code>, <code>stringtheory</code> and <code>jfiles</code> skills were corrected and
+    checked against the compiler and library sources, and the plugin's hooks start faster.
+  </p>
+
+  <div class="info-box info-box--warning">
+    <strong>After upgrading:</strong> update the Claude Code plugin to 2.1.2 with
+    <code>claude plugin update clarion-assistant@clarionassistant-marketplace</code>, or run
+    <code>git pull</code> in the shared folder if you chose that plugin location. If you use the
+    UltimateCOM <strong>procedure extension</strong>, its Process COM Events code runs from now on:
+    check it before you rebuild. In UltimateCOM procedures where registration code was pasted in again
+    after it went missing, open the old embed entries and delete copies you do not need, since every
+    stored copy now generates. Close Claude Code and MultiTerminal sessions before running the
+    installer.
+  </div>
+
+  <p>
+    Full notes:
+    <a href="https://github.com/ClarionLive/ClarionAssistant/blob/master/docs/releases/v6.3.0.md">v6.3.0 release notes</a>.
+  </p>
 
   <h3 id="whats-new-62">v6.2 &mdash; IDE Tools from MultiTerminal and VS Code, Language Server v1.0.9, a Shared Plugin Location</h3>
 
@@ -3203,7 +3249,7 @@
 <!--  FOOTER                                             -->
 <!-- ════════════════════════════════════════════════════ -->
 <footer class="site-footer">
-  <p>Clarion.Assistant User Guide &middot; v1.11 &middot; for Clarion.Assistant 6.2 &middot; &copy; 2025&ndash;2026</p>
+  <p>Clarion.Assistant User Guide &middot; v1.12 &middot; for Clarion.Assistant 6.3 &middot; &copy; 2025&ndash;2026</p>
 </footer>
 
 <!-- Smooth scrolling -->
