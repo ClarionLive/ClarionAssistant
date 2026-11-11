@@ -86,6 +86,11 @@ namespace ClarionAssistant.Dialogs
             AcceptButton = keep;
             CancelButton = keep;
             ActiveControl = keep;
+
+            // Neither the icon's bitmap nor the font is owned by a control, so the form disposes them.
+            var iconImage = icon.Image;
+            var font = Font;
+            Disposed += (s, e) => { if (iconImage != null) iconImage.Dispose(); font.Dispose(); };
         }
     }
 }

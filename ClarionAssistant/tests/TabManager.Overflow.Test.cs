@@ -262,6 +262,17 @@ static class TabManagerOverflowTest
         Check(menuRig.Tabs.FindTab(menuRig.Opened[2].Id) == null, "menu: clicking a row's close mark closes that tab");
         Check(menu.Items.Count == 4 && !menu.Items.Contains(four), "menu: ...and its row goes, the rest stay");
         Check(menuRig.Tabs.ActiveTab == menuRig.Opened[1], "menu: ...leaving the active tab alone");
+        // The list must stay open after a ✕: the menu's Closing(ItemClicked) reads the same flag, and WinForms
+        // may run it after the row's Click. The Click must not clear it first (review of PR #308).
+        Check((bool)typeof(TabManager).GetField("_menuCloseClick", Priv).GetValue(menuRig.Tabs),
+              "menu: a row's close click leaves the close flag set for the menu's Closing");
+        var closing = new ToolStripDropDownClosingEventArgs(ToolStripDropDownCloseReason.ItemClicked);
+        typeof(ToolStripDropDown).GetMethod("OnClosing", Priv).Invoke(menu, new object[] { closing });
+        Check(closing.Cancel, "menu: ...so Closing(ItemClicked) keeps the list open for the next row");
+        menuRig.SetMenuCloseClick(false);
+        var closing2 = new ToolStripDropDownClosingEventArgs(ToolStripDropDownCloseReason.ItemClicked);
+        typeof(ToolStripDropDown).GetMethod("OnClosing", Priv).Invoke(menu, new object[] { closing2 });
+        Check(!closing2.Cancel, "menu: a click on a row's title closes the list as usual");
 
         // ---- ⋯ toggles: the press that closed the list does not reopen it ----
         var toggle = new Rig(600, five);
@@ -287,6 +298,17 @@ static class TabManagerOverflowTest
         Check(escError == null && passed is IntPtr && (IntPtr)passed != (IntPtr)1,
               "esc: with no list open the hook passes Esc on");
         Check(toggle.Tabs.Tabs.Count == 6, "focus: the strip losing focus with no list open changes nothing");
+
+        // The key-up of an Esc whose down closed the list is swallowed too, once; any other key-up passes.
+        var escHook = typeof(TabManager).GetMethod("EscHookProc", Priv);
+        var swallowed = typeof(TabManager).GetField("_escSwallowed", Priv);
+        IntPtr upFlags = (IntPtr)unchecked((int)0xC0000001);   // bits 31 and 30: key going up
+        swallowed.SetValue(toggle.Tabs, true);
+        object up1 = escHook.Invoke(toggle.Tabs, new object[] { 0, (IntPtr)(int)Keys.Escape, upFlags });
+        Check(up1 is IntPtr && (IntPtr)up1 == (IntPtr)1 && !(bool)swallowed.GetValue(toggle.Tabs),
+              "esc: the key-up of a swallowed Esc is swallowed as well, and only once");
+        object up2 = escHook.Invoke(toggle.Tabs, new object[] { 0, (IntPtr)(int)Keys.Escape, upFlags });
+        Check(up2 is IntPtr && (IntPtr)up2 != (IntPtr)1, "esc: a later Esc key-up passes on");
 
         // ---- Middle click ----
         var mid = new Rig(1600, "Alpha", "Bravo");

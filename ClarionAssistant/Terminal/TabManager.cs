@@ -628,7 +628,8 @@ namespace ClarionAssistant.Terminal
             };
             _overflowMenu.Closed += (s, e) =>
             {
-                RemoveEscHook();
+                // Closed by Esc: the hook stays until it has swallowed that Esc's key-up, then removes itself.
+                if (!_escSwallowed) RemoveEscHook();
                 // Closed by the left button going down on ⋯ itself (not Esc, not a click elsewhere).
                 _menuClosedOnButton = (Control.MouseButtons & MouseButtons.Left) != 0
                     && !_overflowRect.IsEmpty
@@ -691,20 +692,53 @@ namespace ClarionAssistant.Terminal
             _escHook = IntPtr.Zero;
         }
 
+        private bool _escSwallowed;   // the Esc down was swallowed: its key-up must go too
+
         private IntPtr EscHookProc(int code, IntPtr wParam, IntPtr lParam)
         {
-            // HC_ACTION, Esc, key going down (bit 31 of lParam clear), with the list open.
-            if (code == NativeHook.HC_ACTION && wParam.ToInt64() == (long)Keys.Escape
-                && (lParam.ToInt64() & 0x80000000L) == 0
-                && _overflowMenu != null && _overflowMenu.Visible)
+            // Nothing may escape a native hook callback: an exception here can take the IDE down.
+            try
             {
-                _tabStrip.BeginInvoke((Action)(() =>
+                if (code == NativeHook.HC_ACTION && wParam.ToInt64() == (long)Keys.Escape)
                 {
-                    if (_overflowMenu != null && _overflowMenu.Visible)
-                        _overflowMenu.Close(ToolStripDropDownCloseReason.Keyboard);
-                }));
-                return (IntPtr)1;
+                    long flags = lParam.ToInt64();
+                    bool keyUp = (flags & 0x80000000L) != 0;      // bit 31: transition state
+                    bool repeat = (flags & 0x40000000L) != 0;     // bit 30: key was already down
+                    if (keyUp)
+                    {
+                        // The up of an Esc whose down closed the list: swallow it too, so neither the IDE
+                        // nor a chat sees a lone Esc key-up.
+                        if (_escSwallowed)
+                        {
+                            _escSwallowed = false;
+                            // Closed kept the hook for this key-up (see the Closed handler); drop it now,
+                            // outside the callback.
+                            if ((_overflowMenu == null || !_overflowMenu.Visible)
+                                && _tabStrip.IsHandleCreated && !_tabStrip.IsDisposed)
+                                _tabStrip.BeginInvoke((Action)(() =>
+                                {
+                                    if (_overflowMenu == null || !_overflowMenu.Visible) RemoveEscHook();
+                                }));
+                            return (IntPtr)1;
+                        }
+                    }
+                    else if (_overflowMenu != null && _overflowMenu.Visible)
+                    {
+                        _escSwallowed = true;
+                        // One close per press, not one per auto-repeat.
+                        if (!repeat && _tabStrip.IsHandleCreated && !_tabStrip.IsDisposed)
+                        {
+                            _tabStrip.BeginInvoke((Action)(() =>
+                            {
+                                if (_overflowMenu != null && _overflowMenu.Visible)
+                                    _overflowMenu.Close(ToolStripDropDownCloseReason.Keyboard);
+                            }));
+                        }
+                        return (IntPtr)1;
+                    }
+                }
             }
+            catch { /* fall through: pass the key on */ }
             return NativeHook.CallNextHookEx(_escHook, code, wParam, lParam);
         }
 
@@ -752,12 +786,10 @@ namespace ClarionAssistant.Terminal
                     Checked = tab == _activeTab
                 };
                 if (tab.Name != null && tab.Name.Length > MenuMaxTitleLength) item.ToolTipText = tab.Name;
-                if (tab.IsClosable)
-                {
-                    // Drawn right-aligned in the shortcut column; MenuCloseZone is where it lands.
-                    item.ShortcutKeyDisplayString = "✕";
-                    item.MouseDown += OnOverflowItemMouseDown;
-                }
+                // Drawn right-aligned in the shortcut column; MenuCloseZone is where it lands.
+                if (tab.IsClosable) item.ShortcutKeyDisplayString = "✕";
+                // Every row records its press, so a row without ✕ can't inherit an earlier row's "close".
+                item.MouseDown += OnOverflowItemMouseDown;
                 item.Click += OnOverflowItemClick;
                 _overflowMenu.Items.Add(item);
             }
@@ -770,13 +802,17 @@ namespace ClarionAssistant.Terminal
             // Item.Bounds are in the menu's client coordinates; read the cursor in the same terms rather
             // than rely on how the event's own coordinates are translated.
             var p = _overflowMenu.PointToClient(Control.MousePosition);
-            _menuCloseClick = e.Button == MouseButtons.Left && p.X >= item.Bounds.Right - MenuCloseZone;
+            var tab = item.Tag as TerminalTab;
+            _menuCloseClick = e.Button == MouseButtons.Left && tab != null && tab.IsClosable
+                && p.X >= item.Bounds.Right - MenuCloseZone;
         }
 
         private void OnOverflowItemClick(object sender, EventArgs e)
         {
+            // Read, not cleared: the menu's Closing(ItemClicked) reads the same flag to stay open, and the
+            // order of Click and Closing is WinForms'. Each press re-sets it (OnOverflowItemMouseDown), and
+            // Opening clears it. A keyboard Enter has no press: the flag is false from Opening or the last one.
             bool close = _menuCloseClick;
-            _menuCloseClick = false;
             var item = sender as ToolStripMenuItem;
             var tab = item != null ? item.Tag as TerminalTab : null;
             if (tab == null || !_tabs.Contains(tab)) return;
@@ -787,7 +823,12 @@ namespace ClarionAssistant.Terminal
                 if (_overflowMenu != null)
                 {
                     _overflowMenu.Items.Remove(item);
-                    item.Dispose();
+                    // Not disposed here: its own Click and the menu's ItemClicked are still running on it.
+                    item.Tag = null;
+                    if (_tabStrip.IsHandleCreated && !_tabStrip.IsDisposed)
+                        _tabStrip.BeginInvoke((Action)item.Dispose);
+                    else
+                        item.Dispose();
                     foreach (ToolStripItem other in _overflowMenu.Items)
                     {
                         var mi = other as ToolStripMenuItem;
@@ -894,13 +935,20 @@ namespace ClarionAssistant.Terminal
 
         public void Dispose()
         {
-            for (int i = _tabs.Count - 1; i >= 0; i--)
-                _tabs[i].Dispose();
-            _tabs.Clear();
-            _activeTab = null;
-            if (_overflowMenu != null) { _overflowMenu.Dispose(); _overflowMenu = null; }
-            _toolTip.Dispose();
+            // The hook and the list first: a tab whose Dispose throws must not leave a keyboard hook behind.
             RemoveEscHook();
+            if (_overflowMenu != null) { _overflowMenu.Dispose(); _overflowMenu = null; }
+            try
+            {
+                for (int i = _tabs.Count - 1; i >= 0; i--)
+                    _tabs[i].Dispose();
+            }
+            finally
+            {
+                _tabs.Clear();
+                _activeTab = null;
+                _toolTip.Dispose();
+            }
         }
     }
 }
