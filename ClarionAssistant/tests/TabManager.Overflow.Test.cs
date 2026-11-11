@@ -273,6 +273,21 @@ static class TabManagerOverflowTest
               "toggle: the click of the press that closed the list does not open it again");
         Check(!(bool)closedOnButton.GetValue(toggle.Tabs), "toggle: ...and the next click on ⋯ opens it as usual");
 
+        // With no list open, the Esc hook passes every key on (it is only installed while the list is open,
+        // but must never swallow a key it has no list for), and the strip losing focus does nothing.
+        Exception escError = null;
+        object passed = null;
+        try
+        {
+            passed = typeof(TabManager).GetMethod("EscHookProc", Priv)
+                .Invoke(toggle.Tabs, new object[] { 0, (IntPtr)(int)Keys.Escape, IntPtr.Zero });
+            typeof(Control).GetMethod("OnLostFocus", Priv).Invoke(toggle.Strip, new object[] { EventArgs.Empty });
+        }
+        catch (Exception ex) { escError = ex; }
+        Check(escError == null && passed is IntPtr && (IntPtr)passed != (IntPtr)1,
+              "esc: with no list open the hook passes Esc on");
+        Check(toggle.Tabs.Tabs.Count == 6, "focus: the strip losing focus with no list open changes nothing");
+
         // ---- Middle click ----
         var mid = new Rig(1600, "Alpha", "Bravo");
         int asked = 0;

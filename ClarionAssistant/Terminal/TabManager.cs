@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace ClarionAssistant.Terminal
@@ -82,6 +83,7 @@ namespace ClarionAssistant.Terminal
             _tabStrip.MouseWheel += OnTabStripMouseWheel;
             _tabStrip.MouseMove += OnTabStripMouseMove;
             _tabStrip.MouseLeave += (s, e) => SetToolTip(null);
+            _tabStrip.LostFocus += OnTabStripLostFocus;
             // The layout depends on the strip's width, and a Panel does not repaint on resize by itself.
             _tabStrip.Resize += (s, e) => { _revealActive = true; _tabStrip.Invalidate(); };
         }
@@ -617,6 +619,7 @@ namespace ClarionAssistant.Terminal
             if (_overflowMenu != null) return;
             _overflowMenu = new ContextMenuStrip { ShowCheckMargin = true, ShowImageMargin = false };
             _overflowMenu.Opening += (s, e) => _menuCloseClick = false;
+            _overflowMenu.Opened += (s, e) => InstallEscHook();
             _overflowMenu.Closing += (s, e) =>
             {
                 // The ✕ of a row was clicked: keep the menu open for the next one.
@@ -625,11 +628,16 @@ namespace ClarionAssistant.Terminal
             };
             _overflowMenu.Closed += (s, e) =>
             {
+                RemoveEscHook();
                 // Closed by the left button going down on ⋯ itself (not Esc, not a click elsewhere).
                 _menuClosedOnButton = (Control.MouseButtons & MouseButtons.Left) != 0
                     && !_overflowRect.IsEmpty
                     && _overflowRect.Contains(_tabStrip.PointToClient(Control.MousePosition));
                 _menuClosedOnButtonTick = Environment.TickCount;
+                // Focus was moved to the strip while the list was open (ShowOverflowMenu): give it back to
+                // the tab, unless the click that closed the list put it somewhere else already. A tab picked
+                // from the list is focused by ActivateTab's handler anyway.
+                if (_tabStrip.Focused) FocusActiveTab();
             };
         }
 
@@ -641,7 +649,90 @@ namespace ClarionAssistant.Terminal
             _overflowMenu.Renderer = new OverflowMenuRenderer(_isDarkTheme);
             _overflowMenu.BackColor = OverflowMenuRenderer.Palette(_isDarkTheme).Back;
             SetToolTip(null);
+            // Keyboard focus is usually in a terminal: a WebView2, whose keys go to the browser process and
+            // never reach WinForms' menu handling. With the list open, Esc then went to the chat (interrupting
+            // the assistant; twice cleared the prompt) and Enter would have sent it. Take focus into this
+            // process for as long as the list is open; Closed gives it back.
+            _tabStrip.Focus();
             _overflowMenu.Show(_tabStrip, new Point(_overflowRect.Right, _overflowRect.Bottom), ToolStripDropDownDirection.BelowLeft);
+        }
+
+        // Focus left the strip while the list was open: the user clicked into a chat (a WebView2, whose clicks
+        // WinForms' menu does not see, so the list stayed open while they typed) or anywhere else. Checked
+        // once the focus change has settled, so focus moving into the list itself does not close it.
+        private void OnTabStripLostFocus(object sender, EventArgs e)
+        {
+            if (_overflowMenu == null || !_overflowMenu.Visible || !_tabStrip.IsHandleCreated) return;
+            _tabStrip.BeginInvoke((Action)(() =>
+            {
+                if (_overflowMenu != null && _overflowMenu.Visible && !_tabStrip.Focused && !_overflowMenu.ContainsFocus)
+                    _overflowMenu.Close(ToolStripDropDownCloseReason.AppFocusChange);
+            }));
+        }
+
+        // Esc while the list is open. Arrow keys and Enter reach the list, but Esc never did: the
+        // IDE takes it before WinForms' menu handling or the strip see it. A keyboard hook on this thread sees
+        // it first, closes the list and swallows it, so it reaches neither the IDE nor a chat. Installed only
+        // while the list is open.
+        private NativeHook.HookProc _escHookProc;
+        private IntPtr _escHook = IntPtr.Zero;
+
+        private void InstallEscHook()
+        {
+            if (_escHook != IntPtr.Zero) return;
+            if (_escHookProc == null) _escHookProc = EscHookProc;   // kept in a field: the hook outlives the call
+            _escHook = NativeHook.SetWindowsHookEx(NativeHook.WH_KEYBOARD, _escHookProc, IntPtr.Zero, NativeHook.GetCurrentThreadId());
+        }
+
+        private void RemoveEscHook()
+        {
+            if (_escHook == IntPtr.Zero) return;
+            NativeHook.UnhookWindowsHookEx(_escHook);
+            _escHook = IntPtr.Zero;
+        }
+
+        private IntPtr EscHookProc(int code, IntPtr wParam, IntPtr lParam)
+        {
+            // HC_ACTION, Esc, key going down (bit 31 of lParam clear), with the list open.
+            if (code == NativeHook.HC_ACTION && wParam.ToInt64() == (long)Keys.Escape
+                && (lParam.ToInt64() & 0x80000000L) == 0
+                && _overflowMenu != null && _overflowMenu.Visible)
+            {
+                _tabStrip.BeginInvoke((Action)(() =>
+                {
+                    if (_overflowMenu != null && _overflowMenu.Visible)
+                        _overflowMenu.Close(ToolStripDropDownCloseReason.Keyboard);
+                }));
+                return (IntPtr)1;
+            }
+            return NativeHook.CallNextHookEx(_escHook, code, wParam, lParam);
+        }
+
+        private static class NativeHook
+        {
+            public delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+            public const int WH_KEYBOARD = 2;
+            public const int HC_ACTION = 0;
+
+            [DllImport("user32.dll", SetLastError = true)]
+            public static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+            [DllImport("user32.dll", SetLastError = true)]
+            public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+            [DllImport("user32.dll")]
+            public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+            [DllImport("kernel32.dll")]
+            public static extern uint GetCurrentThreadId();
+        }
+
+        private void FocusActiveTab()
+        {
+            var tab = _activeTab;
+            if (tab == null) return;
+            if (tab.Renderer != null) tab.Renderer.Focus();   // its own Focus: also focuses the page's terminal
+            else if (tab.ContentControl != null) tab.ContentControl.Focus();
         }
 
         private void RebuildOverflowMenu()
@@ -809,6 +900,7 @@ namespace ClarionAssistant.Terminal
             _activeTab = null;
             if (_overflowMenu != null) { _overflowMenu.Dispose(); _overflowMenu = null; }
             _toolTip.Dispose();
+            RemoveEscHook();
         }
     }
 }
