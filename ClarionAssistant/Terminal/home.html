@@ -541,6 +541,9 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
     placeTip(btn);
   });
   document.addEventListener('mouseleave', function () { placeTip(null); });
+  // Leaving the WebView2 straight into the IDE fires no further mouseover, and a document-level
+  // mouseleave is not dependable there: a mouseout with no relatedTarget means the pointer left the page.
+  document.addEventListener('mouseout', function (e) { if (!e.relatedTarget) placeTip(null); });
   window.addEventListener('scroll', function () { placeTip(null); }, true);
   window.addEventListener('blur', function () { placeTip(null); });
 

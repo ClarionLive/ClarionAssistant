@@ -55,6 +55,15 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+<!-- release-docs: covered=home -->
+### The Home tab's button tooltips stay inside the pane, by geircodes ([PR #307](https://github.com/ClarionLive/ClarionAssistant/pull/307))
+
+In a narrow pane, the tooltip of the **Resume last session** button was cut off at the pane's left edge ("esume last session · ..."), because the tooltips of the three Work With Open Solution buttons were centred on the button with no way to see the window's edge. They are now placed by the page: above the button as before, moved sideways to stay inside the window, below the button when there is no room above, and wrapped when the pane is narrower than the text. They also disappear when the pointer leaves the pane.
+
 ## What's New in v6.3
 
 6.3 lets you resume an earlier Claude session from the Home tab, ships UltimateCOM 4.1 (each control's handler gets only its own events, and Before/After COM Registration code is no longer dropped), opens INCLUDE files with Ctrl+Click through the `.red`, and corrects the bundled `clarion`, `stringtheory` and `jfiles` skills against the compiler and library sources. The plugin is version 2.1.2: update it as described below. Full notes: **[docs/releases/v6.3.0.md](docs/releases/v6.3.0.md)**.
