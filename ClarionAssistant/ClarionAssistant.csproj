@@ -250,6 +250,7 @@
     <Compile Include="Dialogs\ClaudeChatSettingsDialog.cs" />
     <Compile Include="Dialogs\CheatSheetDialog.cs" />
     <Compile Include="Dialogs\CreateProjectFolderDialog.cs" />
+    <Compile Include="Dialogs\MiddleClickCloseDialog.cs" />
     <Compile Include="Terminal\NativeMethods.cs" />
     <Compile Include="Terminal\ConPtyTerminal.cs" />
     <Compile Include="Terminal\WebViewTerminalRenderer.cs" />
