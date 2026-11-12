@@ -12,8 +12,10 @@
  * Only a SIMPLE quoted string is treated as data (see safety-hook.js). By the
  * Owner's decisions after pipeline runs 3 and 6, these still ask, as the old
  * rule did, so there are deliberately no such cases in MENTIONS: an unquoted
- * mention (grep -n kill *.cs), a mention in a heredoc body, in a # comment or
- * in $'...', and a quoted mention in a command that also names a runner.
+ * mention (grep -n kill *.cs), a mention in a heredoc body that is not data,
+ * in a # comment or in $'...', and a quoted mention in a command that also
+ * names a runner. Data heredocs (cat > file <<'EOF', git commit -F -, ...) no
+ * longer ask since ticket b5d8ecdf; unit-safety-kill-targets.js covers them.
  *
  * This file collects every failing case before exiting, so a mutation run
  * reports exactly which cases went red instead of the first.
@@ -25,6 +27,9 @@
  *
  * Run: node marketplace/plugins/clarion-assistant/hooks/test/unit-safety-kill.js
  */
+// No process table: every kill these cases reach asks (or is denied by name), and
+// the run stays fast. unit-safety-kill-targets.js covers the table (MT ticket b5d8ecdf).
+process.env.MT_SAFETY_NO_PROCESS_TABLE = '1';
 const { spawnSync } = require('child_process');
 const path = require('path');
 
@@ -198,7 +203,7 @@ const KILLS = [
   // one-line rule for "..." keeps the kill between them visible.
   '# a 12" pipe\nkill 1\necho "done"',
   // Nested shells: the quoted text is itself a command, so it is still checked.
-  'powershell -Command "Stop-Process -Name MultiTerminal"',
+  'powershell -Command "Stop-Process -Name notepad"',
   "pwsh -c 'Get-Process x | Stop-Process'",
   'bash -c "kill 1"',
   // Security-audit findings: a quoted script whose name holds a kill word, and
@@ -208,7 +213,7 @@ const KILLS = [
   '"./kill.cmd"',
   '"C:/My Tools/kill-server.bat"',
   '"H:/Dev Tools/stop-and-kill.sh" 5050',
-  'CMD="taskkill //F //IM MultiTerminal.exe"; $CMD',
+  'CMD="taskkill //F //IM notepad.exe"; $CMD',
   'CMD="taskkill //F //IM vite.exe"; $CMD',
   'K="kill -9"; $K 1234',
   'K="kill -9"; ${K} 1234',

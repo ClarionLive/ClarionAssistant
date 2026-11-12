@@ -34,6 +34,9 @@
  * Run: node marketplace/plugins/clarion-assistant/hooks/test/unit-safety-powershell.js [hook path]
  * This file collects every failing case before exiting.
  */
+// No process table: every kill these cases reach asks (or is denied by name), and
+// the run stays fast. unit-safety-kill-targets.js covers the table (MT ticket b5d8ecdf).
+process.env.MT_SAFETY_NO_PROCESS_TABLE = '1';
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -112,8 +115,8 @@ const ALLOW = [
 const KILLS = [
   // The Owner's live test, verbatim.
   'taskkill /F /IM notepad.exe',
-  'Stop-Process -Name MultiTerminal',
-  'Stop-Process -Name MultiTerminal -Force',
+  'Stop-Process -Name notepad',
+  'Stop-Process -Name notepad -Force',
   'Get-Process node | Stop-Process -Force',
   'spps -Id 5',
   'kill 5',
@@ -129,16 +132,16 @@ const KILLS = [
   `wmic process where "name='x.exe'" call terminate`,
   'pkill node',
   'killall node',
-  'tskill MultiTerminal',
-  'pskill MultiTerminal',
-  '(Get-Process MultiTerminal).CloseMainWindow()',
+  'tskill notepad',
+  'pskill notepad',
+  '(Get-Process notepad).CloseMainWindow()',
   // Pipeline run 1. A method name is a string argument, and the documented
   // forms quote it.
-  `Get-CimInstance Win32_Process -Filter "Name='MultiTerminal.exe'" | Invoke-CimMethod -MethodName "Terminate"`,
+  `Get-CimInstance Win32_Process -Filter "Name='notepad.exe'" | Invoke-CimMethod -MethodName "Terminate"`,
   "Get-Process notepad | ForEach-Object -MemberName 'Kill'",
   // An apostrophe in a comment must not open a string that hides the next line.
-  "# Close the app's window first\nStop-Process -Name MultiTerminal -Force\n# it's done",
-  "<# here's the plan #>\nStop-Process -Name MultiTerminal\n<# it's ok #>",
+  "# Close the app's window first\nStop-Process -Name notepad -Force\n# it's done",
+  "<# here's the plan #>\nStop-Process -Name notepad\n<# it's ok #>",
   // A quoted program or script run by & or . is not data.
   "& 'C:\\Windows\\System32\\taskkill.exe' /F /IM x.exe",
   '& "taskkill" /F /IM x.exe',

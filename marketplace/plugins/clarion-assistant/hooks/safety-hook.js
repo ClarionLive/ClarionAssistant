@@ -33,10 +33,18 @@
  * entry, v2.1.295+), but that would stop every tool call for as long as the
  * machine stalls, so it is not set. The script is kept cheap so that a hook
  * which does start always answers: no requires, no I/O beyond one read of
- * stdin, and no JSON built unless a decision is returned.
+ * stdin, and no JSON built unless a decision is returned. The one exception
+ * is a command that kills a process: the kill rule then reads the process
+ * table once (one PowerShell process, under a second, capped at 3 s so the
+ * hook still answers well inside its 10 s; a slower read asks). See
+ * decideKill (MT ticket b5d8ecdf). MT_SAFETY_NO_PROCESS_TABLE=1 skips that
+ * read, so every such kill asks.
  *
- * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms
- * after node starts.
+ * Performance: pattern matching, no HTTP or disk I/O, target < 50ms after
+ * node starts, except for the kill rule's process-table read above.
+ *
+ * Not checked: the Monitor tool and the build-runner MCP run tools (MT
+ * follow-up ticket 6b133f05).
  */
 
 // ── Process-kill detection (ticket 24a72aa1) ────────────────────────
@@ -292,8 +300,19 @@ function isProcessKill(command) {
 
 const PS_KILL_WORD = /\b(taskkill|tskill|pskill|kill|pkill|killall|fkill|Stop-Process|spps|CloseMainWindow|Terminate|Remove-CimInstance|Remove-WmiObject|rwmi)\b/i;
 const WMIC_PROCESS_DELETE = /\bwmic(?:\.exe)?\b[^;|\n]*\bprocess\b[^;|\n]*\b(?:delete|terminate)\b/i;
-const QUOTED_METHOD_KILL =
-  /(?:\bInvoke-(?:Cim|Wmi)Method\b[^;|\n]*\bTerminate|(?:\bForEach-Object|\bforeach|%)\s[^;|\n]*-MemberName\b[^;|\n]*\bKill)\b/i;
+// Checked one segment (split at ; | and newline) at a time with simple
+// regexes, so a long line of "% " cannot make it quadratic (pipeline run 2).
+// Covers -MemberName or any shortening of it, the positional form % 'Kill',
+// and the icim / iwmi aliases.
+const METHOD_CALLER = /\b(?:Invoke-(?:Cim|Wmi)Method|icim|iwmi)\b/i;
+const FOREACH_CALLER = /(?:^|[\s(])(?:ForEach-Object|foreach|%)\s/i;
+const MEMBER_KILL = /(?:\s-M\w*[\s:]+['"]?|\s['"])Kill\b/i;
+
+function quotedMethodKill(command) {
+  return command.split(/[;|\n]/).some((segment) =>
+    (METHOD_CALLER.test(segment) && /\bTerminate\b/i.test(segment)) ||
+    (FOREACH_CALLER.test(segment) && MEMBER_KILL.test(segment)));
+}
 
 function namesPowerShellKill(text) {
   return PS_KILL_WORD.test(text) || WMIC_PROCESS_DELETE.test(text);
@@ -366,7 +385,10 @@ function removePowerShellSimpleQuotes(command) {
       i = close + 2;
       continue;
     }
-    if (c === '#' && (lastRaw === undefined || /[\s;|&({]/.test(lastRaw))) {
+    // A # starts a comment at the start of a token: after a blank, an
+    // operator, a bracket, or a string that just closed (pipeline run 2:
+    // "{ Get-Date }# the app's window" was not read as a comment).
+    if (c === '#' && (i === 0 || /[\s;|&(){}\[\]'"]/.test(command[i - 1]))) {
       const lineEnd = command.indexOf('\n', i);
       const end = lineEnd < 0 ? command.length : lineEnd;
       append(command.slice(i, end));
@@ -404,10 +426,661 @@ function removePowerShellSimpleQuotes(command) {
 
 function isPowerShellKill(command) {
   if (!namesPowerShellKill(command)) return false;
-  if (QUOTED_METHOD_KILL.test(command)) return true;
+  if (quotedMethodKill(command)) return true;
   const stripped = removePowerShellSimpleQuotes(command);
   if (namesPowerShellKill(stripped)) return true;
   return PS_RUNS_VARIABLE.test(stripped) || PS_RUNS_CODE.test(command);
+}
+
+// ── Heredocs that are data (ticket b5d8ecdf) ────────────────────────
+//
+// Two thirds of the kill prompts the Owner answered were not kills: the word
+// sat in a heredoc written to a file (cat > notes.md <<'EOF') or in a commit
+// message (git commit -m "$(cat <<'EOF' ... EOF)"). The bash reader above
+// stops at the first quote it cannot read, so the body counted as commands.
+//
+// A heredoc body is dropped before the kill check only when all of these hold:
+//   - the delimiter is quoted ('EOF', "EOF" or \EOF), so bash expands nothing
+//     in the body;
+//   - its consumer is a data sink: cat (optionally > file), tee [-a] file,
+//     git commit|tag|merge ... -F - / --file=-, gh <noun> <verb> ...
+//     --body-file - / -F -, or cat inside "$(...)" that is an argument of
+//     git commit|tag|merge or gh <noun> <verb>;
+//   - nothing pipes the heredoc on (cat <<'EOF' | sh is code), the consumer
+//     line holds no quote, backtick or backslash, and the text before that
+//     line is outside every quote, so the << really is an operator;
+//   - the closing delimiter is found.
+// Otherwise reading stops there and the rest is kept (FAIL SAFE, as above). A
+// heredoc fed to an interpreter (python - <<'EOF', node, bash, sh, pwsh) is
+// never a sink, so a kill in it still asks. Only the body goes: the consumer
+// line and everything after the closing delimiter are still checked.
+
+const HEREDOC_ANY = /(?<!<)<<(?!<)/g;
+const HEREDOC_OP = /(?<!<)<<(-?)[ \t]*(?:'([A-Za-z_][\w.-]*)'|"([A-Za-z_][\w.-]*)"|\\([A-Za-z_][\w.-]*))/;
+const SINK_WORD = String.raw`[^\s;&|<>()$'"` + '`' + String.raw`\\]+`;
+const CAT_SINK = new RegExp(String.raw`^cat(?:\s+\d?>>?\s*` + SINK_WORD + String.raw`)*$`);
+const TEE_SINK = new RegExp(String.raw`^tee(?:\s+-a)?(?:\s+` + SINK_WORD + String.raw`)+$`);
+const PLAIN_WORDS = new RegExp(String.raw`^` + SINK_WORD + String.raw`(?:\s+` + SINK_WORD + String.raw`)*$`);
+const GIT_STDIN_SINK = /^git\s+(?:commit|tag|merge)\b.*\s(?:-F\s*-|--file(?:=|\s+)-)(?:\s|$)/;
+const GH_STDIN_SINK = /^gh\s+[\w-]+\s+[\w-]+\b.*\s(?:--body-file|-F)(?:=|\s+)-(?:\s|$)/;
+const MESSAGE_COMMAND = /^(?:git\s+(?:commit|tag|merge)|gh\s+[\w-]+\s+[\w-]+)\s[^|()$]*$/;
+const HEREDOC_SUFFIX = new RegExp(String.raw`^\s*(?:\d?>>?\s*` + SINK_WORD + String.raw`\s*)?(?:(?:&&|\|\||;)[\s\S]*)?$`);
+
+// True when bash, having read `text`, is outside every quote. Comments are
+// skipped (an apostrophe there is text). Unsure -> false.
+function bashQuotesClosed(text) {
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(text[i - 1]))) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) return true;
+      i = end;
+      continue;
+    }
+    if (c === "'") {
+      if (text[i - 1] === '$') {
+        let j = i + 1;
+        for (; j < text.length && text[j] !== "'"; j++) if (text[j] === '\\') j++;
+        if (j >= text.length) return false;
+        i = j;
+        continue;
+      }
+      const close = text.indexOf("'", i + 1);
+      if (close < 0) return false;
+      i = close;
+      continue;
+    }
+    if (c === '"') {
+      const close = findClosingDoubleQuote(text, i + 1);
+      if (close < 0) return false;
+      i = close;
+      continue;
+    }
+  }
+  return true;
+}
+
+// Whether the heredoc whose operator follows `prefix` (on its line) and is
+// followed by `suffix` feeds a data sink (see above).
+function isDataSink(prefix, suffix) {
+  const separators = [...prefix.matchAll(/&&|\|\||;|\$\(|\||\(/g)];
+  const last = separators[separators.length - 1];
+  const consumer = prefix.slice(last ? last.index + last[0].length : 0).trim();
+  if (last && last[0] === '$(') {
+    if (consumer !== 'cat' || suffix.trim() !== '') return false;
+    const outer = prefix.slice(0, last.index).replace(/"$/, '');
+    if (/['"`\\]/.test(outer)) return false;
+    const parts = outer.split(/&&|\|\||;/);
+    return MESSAGE_COMMAND.test(parts[parts.length - 1].trim());
+  }
+  if (/['"`\\]/.test(prefix)) return false;
+  if (last && (last[0] === '|' || last[0] === '(')) return false;
+  if (!HEREDOC_SUFFIX.test(suffix)) return false;
+  if (CAT_SINK.test(consumer) || TEE_SINK.test(consumer)) return true;
+  return PLAIN_WORDS.test(consumer) && (GIT_STDIN_SINK.test(consumer) || GH_STDIN_SINK.test(consumer));
+}
+
+/**
+ * Returns the bash command with the body of every data heredoc removed (the
+ * operator line and the closing delimiter line are kept). Stops at the first
+ * heredoc that is not data and keeps the rest as it is.
+ */
+function removeDataHeredocs(command) {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const out = [];
+  const keepRest = (i) => out.concat(lines.slice(i)).join('\n');
+  for (let i = 0; i < lines.length;) {
+    const line = lines[i];
+    const operators = line.match(HEREDOC_ANY);
+    if (!operators) { out.push(line); i++; continue; }
+    const m = operators.length === 1 ? HEREDOC_OP.exec(line) : null;
+    if (!m || !bashQuotesClosed(out.length ? out.join('\n') + '\n' : '')) return keepRest(i);
+    if (!isDataSink(line.slice(0, m.index), line.slice(m.index + m[0].length))) return keepRest(i);
+    const delimiter = m[2] || m[3] || m[4];
+    const closes = (l) => (m[1] === '-' ? l.replace(/^\t+/, '') : l).replace(/\r$/, '') === delimiter;
+    let end = i + 1;
+    while (end < lines.length && !closes(lines[end])) end++;
+    if (end >= lines.length) return keepRest(i);
+    out.push(line, lines[end]);
+    i = end + 1;
+  }
+  return out.join('\n');
+}
+
+// ── Which processes a kill hits (ticket b5d8ecdf) ───────────────────
+//
+// isProcessKill and isPowerShellKill say whether a command kills. This part
+// says whom, and turns the old "always ask" into three answers:
+//
+// DENY (no prompt) when a target is MultiTerminal or claude: named (any case,
+// with or without .exe, or a wildcard that matches either), a PID that is one,
+// or a tree kill (/T) whose tree holds one. The Owner never approves these, so
+// asking only stalled the agent.
+//
+// ALLOW (no prompt) when the hook can read every target and all of them, with
+// the whole tree for /T, are on this machine and descend from this agent's own
+// claude.exe (found by walking up from the hook's parent), without passing
+// through another claude.exe or MultiTerminal, and none is a Windows system
+// process or explorer. These are the agent's own background runs and tools.
+//
+// ASK for everything else: a name that also matches processes the agent did
+// not start (node.exe includes every MCP server; another agent's dotnet.exe),
+// a kill on another machine (ssh, Invoke-Command, Enter-PSSession, taskkill
+// /S, -ComputerName), a PID or name that is not running, and any command the
+// reader below cannot follow (variables, subshells, braces, other pipelines,
+// pkill/killall, WMI/CIM, .Kill()). Bash's own kill also asks: in Git Bash its
+// PIDs are MSYS PIDs, not the Windows PIDs in the process table.
+//
+// The reader accepts only plain shapes: taskkill [/F] [/T] (/PID n | /IM name)
+// ... (also //F and -F), and in PowerShell Stop-Process / spps / kill with -Id,
+// -Name, -Force, -PassThru, -Confirm, -WhatIf, -ErrorAction (unique prefixes
+// too), and Get-Process [-Name] x | Stop-Process. A kill stage may be followed
+// by stages that only read its output (taskkill ... 2>&1 | tail -3). Every
+// other stage of the command must not name a kill at all.
+//
+// The process table is read once per hook call, and only when a kill word is
+// present and no deny was found from names alone: one PowerShell process that
+// takes a Toolhelp snapshot (about 0.7 s on a busy machine; WMI took 2.2 s),
+// bounded by PROCESS_TABLE_TIMEOUT_MS. No table means ASK. A parent link is
+// trusted only when the parent started no later than the child, so a reused
+// PID cannot make a stranger look like the agent's own process.
+//
+// Accepted: a process can start or end between this check and the kill (a
+// window of milliseconds), and like the rest of this file this guards against
+// accidents, not evasion.
+
+const DENY_PROCESS_NAMES = new Set(['multiterminal', 'claude']);
+const SYSTEM_PROCESS_NAMES = new Set([
+  'system', 'system idle process', '[system process]', 'secure system', 'registry', 'memory compression',
+  'smss', 'csrss', 'wininit', 'winlogon', 'services', 'lsass', 'lsaiso', 'svchost', 'explorer', 'dwm',
+  'fontdrvhost',
+]);
+const REMOTE_KILL = /\b(?:ssh|Invoke-Command|icm|Enter-PSSession|New-PSSession|psexec|paexec|winrs)\b|\s-(?:ComputerName|CimSession|cn)\b/i;
+// 3 s: well inside the ClarionAssistant copy's 10 s hook timeout, past which
+// Claude Code drops the hook's answer and the call goes ahead unchecked. A
+// slower read asks.
+const PROCESS_TABLE_TIMEOUT_MS = 3000;
+const KILL_DENY_REASON =
+  'Blocked: this command would end MultiTerminal or a Claude Code session (%s). Agents are never allowed to ' +
+  'do that and the Owner will not approve it. Stop your own work another way: end your own background ' +
+  'process by its PID (taskkill /PID <pid> /T /F), or finish your turn.';
+const KILL_ASK_REASON =
+  'Process termination detected (%s). This could kill MultiTerminal or other running apps. Are you sure?';
+
+const baseProcessName = (name) => String(name).toLowerCase().replace(/\.exe$/, '');
+
+// A name or wildcard pattern (taskkill /IM, Stop-Process -Name) as a test on a
+// process name; .exe is optional on both sides.
+function processNameMatcher(pattern) {
+  const body = baseProcessName(pattern)
+    .split('')
+    .map((ch) => (ch === '*' ? '.*' : ch === '?' ? '.' : ch.replace(/[\\^$.|+()[\]{}]/g, '\\$&')))
+    .join('');
+  const re = new RegExp(`^${body}$`);
+  return (name) => re.test(baseProcessName(name));
+}
+
+function deniedName(pattern) {
+  const matches = processNameMatcher(pattern);
+  return [...DENY_PROCESS_NAMES].find((name) => matches(name)) || null;
+}
+
+// Splits a command into pipelines (at newline ; && || and, in bash, a lone &)
+// and each pipeline into stages (at |), honouring the shell's quotes. Returns
+// null when a quote never closes.
+function splitStages(command, shell) {
+  const pipelines = [];
+  let stages = [];
+  let current = '';
+  const endStage = () => { stages.push(current); current = ''; };
+  const endPipeline = () => { endStage(); pipelines.push(stages); stages = []; };
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    const next = command[i + 1];
+    if ((shell === 'bash' && c === '\\') || (shell === 'powershell' && c === '`')) {
+      current += c + (next || '');
+      i++;
+      continue;
+    }
+    if (shell === 'powershell' && c === '@' && (next === "'" || next === '"')) {
+      const close = command.indexOf('\n' + next + '@', i + 2);
+      if (close < 0) return null;
+      current += command.slice(i, close + 3);
+      i = close + 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      for (; j < command.length; j++) {
+        if (command[j] === c) {
+          if (shell === 'powershell' && command[j + 1] === c) { j++; continue; }
+          break;
+        }
+        if (c === '"' && ((shell === 'bash' && command[j] === '\\') || (shell === 'powershell' && command[j] === '`'))) j++;
+      }
+      if (j >= command.length) return null;
+      current += command.slice(i, j + 1);
+      i = j;
+      continue;
+    }
+    if (c === '\n' || c === ';') { endPipeline(); continue; }
+    if ((c === '&' && next === '&') || (c === '|' && next === '|')) { endPipeline(); i++; continue; }
+    if (c === '|') { endStage(); continue; }
+    if (c === '&' && shell === 'bash' && command[i - 1] !== '>' && next !== '>') { endPipeline(); continue; }
+    current += c;
+  }
+  endPipeline();
+  return pipelines.map((p) => p.filter((s) => s.trim() !== '')).filter((p) => p.length);
+}
+
+// Reads one stage as plain words: unquoted letters, digits and _ . : / \ , * ?
+// - plus simple quoted strings. Redirections to null (2>&1, >/dev/null,
+// 2>$null, *>$null) are dropped first. $true, $false and $null are allowed
+// (-Confirm:$false); any other $, and every other character (braces, brackets,
+// parentheses, ` # % @ ! ~ < > = & and bash's \), makes it return null.
+function readWords(stage, shell) {
+  const text = stage
+    .replace(/(^|\s)(?:\d|\*)?>>?\s*(?:\/dev\/null|\$null|nul)(?=\s|$)/gi, '$1')
+    .replace(/(^|\s)\d?>&\d(?=\s|$)/g, '$1');
+  const words = [];
+  let word = null;
+  let dollar = false;
+  const finish = () => {
+    if (word === null) return true;
+    if (dollar && !/^(?:-\w+:)?\$(?:true|false|null)$/i.test(word.text)) return false;
+    words.push(word);
+    word = null;
+    dollar = false;
+    return true;
+  };
+  const plain = shell === 'bash' ? /[\w.:/,*?-]/ : /[\w.:/\\,*?-]/;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (/\s/.test(c)) { if (!finish()) return null; continue; }
+    if (word === null) word = { text: '', quoted: false };
+    if (c === "'") {
+      let j = i + 1;
+      let body = '';
+      for (; j < text.length; j++) {
+        if (text[j] === "'") {
+          if (shell === 'powershell' && text[j + 1] === "'") { body += "'"; j++; continue; }
+          break;
+        }
+        body += text[j];
+      }
+      if (j >= text.length || body.includes('\n')) return null;
+      word.text += body;
+      word.quoted = true;
+      i = j;
+      continue;
+    }
+    if (c === '"') {
+      const close = text.indexOf('"', i + 1);
+      if (close < 0) return null;
+      const body = text.slice(i + 1, close);
+      if (/[$`\\!\n]/.test(body)) return null;
+      word.text += body;
+      word.quoted = true;
+      i = close;
+      continue;
+    }
+    if (c === '$') { dollar = true; word.text += c; continue; }
+    if (!plain.test(c)) return null;
+    word.text += c;
+  }
+  return finish() ? words : null;
+}
+
+const programOf = (word) => baseProcessName(word.text.slice(Math.max(word.text.lastIndexOf('/'), word.text.lastIndexOf('\\')) + 1));
+
+// taskkill [/F] [/T] /PID n /IM name ... -> targets, or null.
+function readTaskkill(args) {
+  const targets = [];
+  let tree = false;
+  for (let i = 0; i < args.length; i++) {
+    const flag = !args[i].quoted && /^(?:\/\/?|-)([A-Za-z]+)$/.exec(args[i].text);
+    if (!flag) return null;
+    const name = flag[1].toLowerCase();
+    if (name === 'f') continue;
+    if (name === 't') { tree = true; continue; }
+    if (name !== 'pid' && name !== 'im') return null; // /S /U /P /FI and anything unknown
+    const value = args[++i];
+    if (!value) return null;
+    if (name === 'pid') {
+      if (!/^\d+$/.test(value.text)) return null;
+      targets.push({ pid: Number(value.text) });
+    } else {
+      if (!/^[\w.*? -]+$/.test(value.text)) return null;
+      targets.push({ name: value.text });
+    }
+  }
+  if (!targets.length) return null;
+  for (const t of targets) t.tree = tree;
+  return targets;
+}
+
+const STOP_PROCESS_NAMES = new Set(['stop-process', 'spps', 'kill']);
+const GET_PROCESS_NAMES = new Set(['get-process', 'gps', 'ps']);
+const SWITCHES = new Set(['Force', 'PassThru', 'Confirm', 'WhatIf']);
+const VALUED = new Set(['ErrorAction', 'WarningAction', 'InformationAction', 'ea', 'wa', 'infa']);
+
+// The parameter `written` names in `known` (exact, or a unique prefix as
+// PowerShell accepts), or null.
+function powerShellParameter(written, known) {
+  const lower = written.toLowerCase();
+  const exact = known.find((p) => p.toLowerCase() === lower);
+  if (exact) return exact;
+  const hits = known.filter((p) => p.toLowerCase().startsWith(lower));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// Reads the arguments of Stop-Process (positional = Id) or Get-Process
+// (positional = Name) into targets; null when anything is not understood.
+function readProcessCmdlet(args, positional) {
+  const known = ['Id', 'PID', 'Name', 'ProcessName', ...SWITCHES, ...VALUED];
+  const targets = [];
+  let positionalUsed = false;
+  const listFrom = (first, i) => {
+    let text = first;
+    while (i + 1 < args.length && (text.endsWith(',') || args[i + 1].text.startsWith(','))) text += args[++i].text;
+    return { items: text.split(',').filter((s) => s !== ''), i };
+  };
+  const add = (kind, items) => {
+    for (const item of items) {
+      if (kind === 'Id') {
+        if (!/^\d+$/.test(item)) return false;
+        targets.push({ pid: Number(item) });
+      } else {
+        if (!/^[\w.*? -]+$/.test(item)) return false;
+        targets.push({ name: item });
+      }
+    }
+    return true;
+  };
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i];
+    const param = !word.quoted && /^-([A-Za-z]+)(?::(.*))?$/.exec(word.text);
+    if (param) {
+      const name = powerShellParameter(param[1], known);
+      if (!name) return null;
+      if (SWITCHES.has(name)) {
+        if (param[2] !== undefined && !/^\$(?:true|false)$/i.test(param[2])) return null;
+        continue;
+      }
+      let value = param[2];
+      if (value === undefined || value === '') {
+        if (i + 1 >= args.length) return null;
+        value = args[++i].text;
+      }
+      if (VALUED.has(name)) continue;
+      const list = listFrom(value, i);
+      i = list.i;
+      if (!add(name === 'Id' || name === 'PID' ? 'Id' : 'Name', list.items)) return null;
+      continue;
+    }
+    if (positionalUsed) return null;
+    positionalUsed = true;
+    const list = listFrom(word.text, i);
+    i = list.i;
+    if (!add(positional, list.items)) return null;
+  }
+  return targets;
+}
+
+/**
+ * The processes a kill command targets, as [{pid} | {name}] each with a
+ * `tree` flag, or null when the command is not one of the plain shapes the
+ * reader follows (see above).
+ */
+function readKillTargets(command, shell) {
+  if (REMOTE_KILL.test(command)) return null;
+  const pipelines = splitStages(command, shell);
+  if (!pipelines) return null;
+  const namesKill = shell === 'bash' ? (s) => KILL_WORD.test(s) : namesPowerShellKill;
+  const targets = [];
+  for (const stages of pipelines) {
+    const killAt = stages.findIndex(namesKill);
+    if (killAt < 0) continue;
+    if (stages.some((s, i) => i !== killAt && namesKill(s))) return null;
+    const words = readWords(stages[killAt], shell);
+    if (!words || !words.length) return null;
+    if (shell === 'powershell' && words[0].quoted) return null; // a quoted string is not run without &
+    const program = programOf(words[0]);
+    const args = words.slice(1);
+    let found = null;
+    if (killAt === 0 && program === 'taskkill') {
+      found = readTaskkill(args);
+    } else if (shell === 'powershell' && STOP_PROCESS_NAMES.has(program) && words[0].text.toLowerCase() === program) {
+      if (killAt === 0) {
+        found = readProcessCmdlet(args, 'Id');
+        if (found && !found.length) found = null;
+      } else if (killAt === 1) {
+        const source = readWords(stages[0], shell);
+        const own = readProcessCmdlet(args, 'Id');
+        if (source && source.length && GET_PROCESS_NAMES.has(source[0].text.toLowerCase()) && own && !own.length) {
+          found = readProcessCmdlet(source.slice(1), 'Name');
+          if (found && !found.length) found = null;
+        }
+      }
+    }
+    if (!found) return null;
+    for (const t of found) { if (t.tree === undefined) t.tree = false; targets.push(t); }
+  }
+  return targets.length ? targets : null;
+}
+
+// For a command the reader cannot follow: a protected name among the words
+// of its kill pipelines (not the first word of a stage, which is the program),
+// and the plain numbers there, which may be PIDs.
+function looseKillWords(command, shell) {
+  const namesKill = shell === 'bash' ? (s) => KILL_WORD.test(s) : namesPowerShellKill;
+  const pipelines = splitStages(command, shell) || [[command]];
+  const names = [];
+  const pids = [];
+  for (const stages of pipelines) {
+    if (!stages.some(namesKill)) continue;
+    for (const stage of stages) {
+      const words = stage.split(/[\s,'"=();{}|&<>`]+/).filter(Boolean).slice(1);
+      for (const word of words) {
+        const last = word.slice(Math.max(word.lastIndexOf('/'), word.lastIndexOf('\\')) + 1);
+        if (/^\d+$/.test(word)) pids.push(Number(word));
+        else if (/^[\w.*?-]+$/.test(last) && deniedName(last)) names.push(last);
+      }
+    }
+  }
+  return { names, pids, tree: /(?:^|\s)(?:\/\/?|-)T(?=\s|$)/i.test(command) };
+}
+
+// ── The process table ──
+// pid -> { pid, ppid, created (FILETIME as BigInt, 0n when unreadable), name }.
+const PROCESS_TABLE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class MtSafetyProcessTable {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct PE32 { public uint dwSize; public uint cntUsage; public uint th32ProcessID; public IntPtr th32DefaultHeapID; public uint th32ModuleID; public uint cntThreads; public uint th32ParentProcessID; public int pcPriClassBase; public uint dwFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string szExeFile; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32FirstW(IntPtr snap, ref PE32 entry);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32NextW(IntPtr snap, ref PE32 entry);
+  [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll")] static extern bool GetProcessTimes(IntPtr h, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  public static string Dump() {
+    var sb = new StringBuilder();
+    IntPtr snap = CreateToolhelp32Snapshot(2, 0);
+    if (snap == new IntPtr(-1)) return "";
+    var e = new PE32(); e.dwSize = (uint)Marshal.SizeOf(typeof(PE32));
+    for (bool ok = Process32FirstW(snap, ref e); ok; ok = Process32NextW(snap, ref e)) {
+      long created = 0, exited, kernel, user;
+      IntPtr h = OpenProcess(0x1000, false, e.th32ProcessID);
+      if (h != IntPtr.Zero) { if (!GetProcessTimes(h, out created, out exited, out kernel, out user)) created = 0; CloseHandle(h); }
+      sb.Append(e.th32ProcessID).Append('|').Append(e.th32ParentProcessID).Append('|').Append(created).Append('|').Append(e.szExeFile).Append('\n');
+    }
+    CloseHandle(snap);
+    return sb.ToString();
+  }
+}
+'@
+[Console]::Out.Write([MtSafetyProcessTable]::Dump())
+`;
+
+function parseProcessTable(text) {
+  const table = new Map();
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = /^(\d+)\|(\d+)\|(\d+)\|(.+)$/.exec(line);
+    if (m) table.set(Number(m[1]), { pid: Number(m[1]), ppid: Number(m[2]), created: BigInt(m[3]), name: m[4] });
+  }
+  return table.size > 1 ? table : null;
+}
+
+// Reads this machine's process table, or null (not Windows, timeout, error).
+function readProcessTable() {
+  if (process.platform !== 'win32') return null;
+  try {
+    const { execFileSync } = require('child_process');
+    const path = require('path');
+    const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const out = execFileSync(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(PROCESS_TABLE_SCRIPT, 'utf16le').toString('base64')],
+      { encoding: 'utf8', timeout: PROCESS_TABLE_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
+    );
+    return parseProcessTable(out);
+  } catch {
+    return null;
+  }
+}
+
+// A parent link is trusted only when both start times are known and the
+// parent started no later than the child (Windows reuses PIDs).
+function trustedParent(table, child) {
+  const parent = table.get(child.ppid);
+  if (!parent || parent.pid === child.pid) return null;
+  if (!parent.created || !child.created || parent.created > child.created) return null;
+  return parent;
+}
+
+// The agent's own claude.exe: the first one above `startPid`, or null.
+function findAgentClaude(table, startPid) {
+  let entry = table.get(startPid);
+  for (let n = 0; entry && n < 64; n++) {
+    if (baseProcessName(entry.name) === 'claude') return entry.pid;
+    entry = trustedParent(table, entry);
+  }
+  return null;
+}
+
+// Whether `pid` descends from `anchor` without passing through another
+// claude.exe or MultiTerminal (whose children belong to another agent).
+function descendsFrom(table, pid, anchor) {
+  let entry = table.get(pid);
+  for (let n = 0; entry && n < 128; n++) {
+    const parent = trustedParent(table, entry);
+    if (!parent) return false;
+    if (parent.pid === anchor) return true;
+    if (DENY_PROCESS_NAMES.has(baseProcessName(parent.name))) return false;
+    entry = parent;
+  }
+  return false;
+}
+
+// `pid` and everything below it by parent PID (no start-time check: taskkill
+// /T may follow a stale link too, so more processes are checked, never fewer).
+function processTree(table, pid) {
+  const children = new Map();
+  for (const e of table.values()) {
+    if (e.pid === e.ppid) continue;
+    if (!children.has(e.ppid)) children.set(e.ppid, []);
+    children.get(e.ppid).push(e.pid);
+  }
+  const seen = new Set([pid]);
+  const queue = [pid];
+  while (queue.length) for (const child of children.get(queue.shift()) || []) if (!seen.has(child)) { seen.add(child); queue.push(child); }
+  return [...seen];
+}
+
+const describe = (table, pid) => `${(table.get(pid) || {}).name || 'process'} PID ${pid}`;
+const listSome = (items) => items.slice(0, 3).join(', ') + (items.length > 3 ? `, and ${items.length - 3} more` : '');
+const killDeny = (what) => ({ action: 'deny', reason: KILL_DENY_REASON.replace('%s', what) });
+const killAsk = (why) => ({ action: 'ask', reason: KILL_ASK_REASON.replace('%s', why) });
+
+// The hook call's process table, read at most once (ctx is per call).
+function tableFor(ctx) {
+  if (!('table' in ctx)) {
+    const read = (ctx.killEnv && ctx.killEnv.readTable) || readProcessTable;
+    ctx.table = read();
+  }
+  return ctx.table;
+}
+
+function agentClaudeFor(ctx, table) {
+  const env = ctx.killEnv || {};
+  if (env.anchorPid !== undefined) return env.anchorPid;
+  return findAgentClaude(table, env.startPid !== undefined ? env.startPid : process.ppid);
+}
+
+/**
+ * The kill rule for both shells: null (allow), or { action, reason }.
+ * `command` is the Bash or PowerShell command; ctx carries the per-call
+ * process table (and, from tests only, killEnv).
+ */
+function decideKill(command, shell, ctx = {}) {
+  const text = shell === 'bash' ? removeDataHeredocs(command) : command;
+  if (!(shell === 'bash' ? isProcessKill(text) : isPowerShellKill(text))) return null;
+
+  const targets = readKillTargets(text, shell);
+  if (!targets) {
+    const loose = looseKillWords(text, shell);
+    if (loose.names.length) return killDeny(`names ${listSome(loose.names)}`);
+    if (REMOTE_KILL.test(text)) return killAsk('it runs on another machine');
+    if (loose.pids.length) {
+      const table = tableFor(ctx);
+      if (table) {
+        for (const pid of loose.pids) {
+          const tree = loose.tree ? processTree(table, pid) : [pid];
+          const hit = tree.find((p) => table.has(p) && DENY_PROCESS_NAMES.has(baseProcessName(table.get(p).name)));
+          if (hit !== undefined) return killDeny(describe(table, hit));
+        }
+      }
+    }
+    return killAsk('the hook cannot tell which processes it would end');
+  }
+
+  const named = targets.filter((t) => t.name !== undefined).map((t) => deniedName(t.name) && t.name).filter(Boolean);
+  if (named.length) return killDeny(`names ${listSome(named)}`);
+
+  const table = tableFor(ctx);
+  if (!table) return killAsk('the process table could not be read');
+  const hit = new Set();
+  for (const t of targets) {
+    let roots;
+    if (t.pid !== undefined) {
+      if (!table.has(t.pid)) return killAsk(`PID ${t.pid} is not running`);
+      roots = [t.pid];
+    } else {
+      const matches = processNameMatcher(t.name);
+      roots = [...table.values()].filter((e) => matches(e.name)).map((e) => e.pid);
+      if (!roots.length) return killAsk(`no process named ${t.name} is running`);
+    }
+    for (const root of roots) for (const pid of t.tree ? processTree(table, root) : [root]) hit.add(pid);
+  }
+  const all = [...hit].filter((pid) => table.has(pid));
+  const protectedHit = all.filter((pid) => DENY_PROCESS_NAMES.has(baseProcessName(table.get(pid).name)));
+  if (protectedHit.length) return killDeny(listSome(protectedHit.map((pid) => describe(table, pid))));
+  const system = all.filter((pid) => SYSTEM_PROCESS_NAMES.has(baseProcessName(table.get(pid).name)));
+  if (system.length) return killAsk(`it targets ${listSome(system.map((pid) => describe(table, pid)))}`);
+  const anchor = agentClaudeFor(ctx, table);
+  if (anchor === null || anchor === undefined) return killAsk("this agent's own claude.exe was not found");
+  const foreign = all.filter((pid) => !descendsFrom(table, pid, anchor));
+  if (foreign.length) {
+    return killAsk(`it would also end processes this agent did not start: ${listSome(foreign.map((pid) => describe(table, pid)))}`);
+  }
+  return null;
 }
 
 // ── Rule Definitions ────────────────────────────────────────────────
@@ -557,10 +1230,10 @@ const BASH_RULES = [
   // Gate process killing — could take down MultiTerminal or other critical apps.
   // Matches a kill that is RUN, not the word appearing in a grep pattern or a
   // message (ticket 24a72aa1); see isProcessKill below.
+  // decide returns deny, ask or null (no prompt; the later rules still run):
+  // see decideKill (ticket b5d8ecdf).
   {
-    test: isProcessKill,
-    action: 'ask',
-    reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
+    decide: (command, ctx) => decideKill(command, 'bash', ctx)
   },
   // Gate Windows registry operations — system-level changes
   {
@@ -616,17 +1289,21 @@ const PS_START = String.raw`(?:^|[;|&{(\n])\s*`;
 // word or after a path separator, quote, = or :, and ending the word. So
 // "process.env" or 'import.meta.env' in a search pattern is not one
 // (pipeline run 1: Select-String -Pattern 'process.env' used to be denied).
-const PS_ENV_FILE = /(?:^|[\s'"\\/=:,])\.env(?:\.[\w.-]+)?(?=$|[\s'";|,)])/i;
+// A wildcard after the name (.env*, .env.?) counts too (pipeline run 2).
+const PS_ENV_FILE = /(?:^|[\s'"\\/=:,])\.env(?:[.*?][\w.*?-]*)?(?=$|[\s'";|,)])/i;
 const PS_ENV_READ = /\b(?:gc|Get-Content|cat|type|more|Select-String|sls|Import-Csv)\b/i;
 const PS_ENV_WRITE = /\b(?:Set-Content|Add-Content|Out-File|Tee-Object|New-Item)\b/i;
-const PS_ENV_REDIRECT = /\d?>>?\s*['"]?(?:[^\s;|'"<>]*[\\/])?\.env(?:\.[\w.-]+)?(?=$|[\s'";|,)])/i;
+const PS_ENV_REDIRECT = /\d?>>?\s*['"]?(?:[^\s;|'"<>]*[\\/])?\.env(?:[.*?][\w.*?-]*)?(?=$|[\s'";|,)])/i;
 
 // Whether one segment of the command (split at ; | and newline) uses a reader
 // or writer cmdlet on a .env file, or redirects into one. Checked per segment,
 // so Get-Content x.js; node -e "...process.env..." is two segments and neither
 // reads a .env file. A test, not one regex, so no input makes it backtrack.
+// A ; | or newline inside a simple quoted string does not end a segment
+// (pipeline run 2: Select-String -Pattern 'A|B' -Path .env was allowed).
 function psEnvFileAccess(command, verb) {
-  return command.split(/[;|\n]/).some((segment) =>
+  const unsplit = command.replace(/'[^']*'|"[^"]*"/g, (q) => q.replace(/[;|\n]/g, ' '));
+  return unsplit.split(/[;|\n]/).some((segment) =>
     (verb === PS_ENV_WRITE && PS_ENV_REDIRECT.test(segment)) ||
     (verb.test(segment) && PS_ENV_FILE.test(segment)));
 }
@@ -687,11 +1364,9 @@ const POWERSHELL_RULES = [
     reason: 'Blocked: agents must not send real emails.'
   },
   ...BASH_RULES.filter((rule) => rule.powershell),
-  // Process killing (see isPowerShellKill).
+  // Process killing (see isPowerShellKill and decideKill).
   {
-    test: isPowerShellKill,
-    action: 'ask',
-    reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
+    decide: (command, ctx) => decideKill(command, 'powershell', ctx)
   },
 ];
 
@@ -810,9 +1485,14 @@ function ask(reason) {
   };
 }
 
-function checkCommand(command, rules) {
+function checkCommand(command, rules, ctx = {}) {
   if (!command) return null;
   for (const rule of rules) {
+    if (rule.decide) {
+      const decision = rule.decide(command, ctx);
+      if (decision) return decision.action === 'deny' ? deny(decision.reason) : ask(decision.reason);
+      continue;
+    }
     if (rule.test ? rule.test(command) : rule.pattern.test(command)) {
       return rule.action === 'deny' ? deny(rule.reason) : ask(rule.reason);
     }
@@ -820,15 +1500,27 @@ function checkCommand(command, rules) {
   return null;
 }
 
-function checkBash(command) {
-  return checkCommand(command, BASH_RULES);
+function checkBash(command, ctx = {}) {
+  return checkCommand(command, BASH_RULES, ctx);
 }
 
-// A backtick at the end of a line continues the command on the next one, so it
-// is read as a space first: otherwise a rule that stops at a newline misses
-// Remove-Item -Path C:\ `<newline> -Recurse (pipeline run 1).
-function checkPowerShell(command) {
-  return checkCommand(command && command.replace(/`\r?\n/g, ' '), POWERSHELL_RULES);
+const SEVERITY = { deny: 2, ask: 1 };
+const severityOf = (result) => (result ? SEVERITY[result.hookSpecificOutput.permissionDecision] || 0 : 0);
+
+// A backtick at the end of a line continues the command on the next one, so a
+// rule that stops at a newline would miss Remove-Item -Path C:\ `<newline>
+// -Recurse (pipeline run 1). Joining blindly is wrong too: a backtick in a
+// comment or an escaped one (``) does not continue the line, and joining there
+// hid a real statement start (pipeline run 2). So both forms are checked, as
+// written and joined, and the stricter answer wins. They share one process
+// table read.
+function checkPowerShell(command, ctx = {}) {
+  if (!command) return null;
+  const asWritten = checkCommand(command, POWERSHELL_RULES, ctx);
+  const joined = command.replace(/`\r?\n/g, ' ');
+  if (joined === command) return asWritten;
+  const asJoined = checkCommand(joined, POWERSHELL_RULES, ctx);
+  return severityOf(asJoined) > severityOf(asWritten) ? asJoined : asWritten;
 }
 
 function checkFile(filePath) {
@@ -855,13 +1547,18 @@ function checkSql(query) {
 
 // ── Main ────────────────────────────────────────────────────────────
 
-function decide(hookData) {
+// `opts.killEnv` exists for tests only ({ readTable, anchorPid, startPid });
+// main() passes nothing, so live calls read the real process table and find
+// their claude.exe from process.ppid (MT ticket b5d8ecdf).
+function decide(hookData, opts) {
   const toolInput = (hookData && hookData.tool_input) || {};
+  const ctx = opts && opts.killEnv ? { killEnv: opts.killEnv } : {};
+  if (process.env.MT_SAFETY_NO_PROCESS_TABLE === '1' && !ctx.killEnv) ctx.table = null;
   switch (hookData && hookData.tool_name) {
     case 'Bash':
-      return checkBash(toolInput.command);
+      return checkBash(toolInput.command, ctx);
     case 'PowerShell':
-      return checkPowerShell(toolInput.command);
+      return checkPowerShell(toolInput.command, ctx);
     case 'Read':
     case 'Write':
     case 'Edit':
@@ -893,4 +1590,12 @@ function main() {
   });
 }
 
-main();
+// Run as the hook, or required by the tests (decide, plus _internals).
+if (require.main === module) {
+  main();
+} else {
+  module.exports = {
+    decide,
+    _internals: { decideKill, readKillTargets, removeDataHeredocs, readProcessTable, parseProcessTable, findAgentClaude, descendsFrom },
+  };
+}
