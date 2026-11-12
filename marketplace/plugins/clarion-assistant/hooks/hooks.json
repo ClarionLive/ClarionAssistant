@@ -15,7 +15,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Read|Write|Edit|mcp__sqlite__write_query|mcp__mssql__query",
+        "matcher": "Bash|PowerShell|Read|Write|Edit|mcp__sqlite__write_query|mcp__mssql__query",
         "hooks": [
           {
             "type": "command",
