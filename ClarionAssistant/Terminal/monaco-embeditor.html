@@ -372,6 +372,47 @@
         color: var(--title-color); font-family: var(--mono, monospace); font-size: 11px;
         white-space: pre; overflow: hidden; user-select: none;
     }
+    /* Diagnostics count at the right end of the status bar: what the squiggles show for this text, counted
+       from the model's markers. Hidden until the page has asked for diagnostics at least once. */
+    #statusPos { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+    #statusDiag { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; margin-left: 12px;
+        padding: 0 6px; height: 100%; cursor: pointer; }
+    #statusDiag.hidden { display: none; }
+    #statusDiag:hover { background: var(--toolbar-border); }
+    #statusDiag.open { background: var(--toolbar-border); }
+    #statusDiag .sd-item { display: inline-flex; align-items: center; gap: 4px; }
+    #statusDiag .codicon, #diagPopup .dp-row .codicon { font-size: 13px; }
+    .sd-err { color: #f38ba8; }
+    .sd-warn { color: var(--warn-fg); }
+    .sd-ok { color: #a6e3a1; }
+    .sd-unknown { color: var(--muted-fg); }
+    body.light .sd-err { color: #d20f39; }
+    body.light .sd-ok { color: #40a02b; }
+    /* Problems pop-up: grows up out of the status bar's count, anchored bottom-right, no bottom border so
+       it reads as an extension of the bar. Lists the same markers the count counts. */
+    #diagPopup {
+        position: absolute; right: 6px; bottom: var(--status-bar-h); z-index: 40;
+        width: 580px; max-width: calc(100% - 12px); max-height: 45%;
+        display: flex; flex-direction: column; box-sizing: border-box;
+        background: var(--toolbar-bg); color: var(--fg);
+        border: 1px solid var(--toolbar-border); border-bottom: none; border-radius: 6px 6px 0 0;
+        box-shadow: 0 -6px 18px rgba(0,0,0,0.25); font-size: 12px;
+        transform-origin: bottom right; animation: diagPopIn 0.14s ease-out;
+    }
+    #diagPopup.hidden { display: none; }
+    @keyframes diagPopIn { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { #diagPopup { animation: none; } }
+    #diagPopupHeader { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; flex-shrink: 0;
+        border-bottom: 1px solid var(--toolbar-border); color: var(--title-color); font-weight: 600; }
+    #diagPopupTitle { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #diagPopupList { flex: 1 1 auto; overflow: auto; outline: none; padding: 2px 0; }
+    #diagPopup .dp-row { display: flex; align-items: center; gap: 8px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+    #diagPopup .dp-row:hover { background: var(--toolbar-border); }
+    #diagPopup .dp-row.sel { background: rgba(137,180,250,0.20); }
+    body.light #diagPopup .dp-row.sel { background: rgba(30,102,245,0.14); }
+    #diagPopup .dp-msg { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+    #diagPopup .dp-ln { flex: 0 0 auto; color: var(--muted-fg); font-family: var(--mono, monospace); font-size: 11px; }
+    #diagPopup .dp-empty { padding: 10px; color: var(--muted-fg); }
     /* Fold button shows the icon for what the NEXT click will do (#147). Only one of the two SVGs is
        ever visible; .expand is set by refreshFoldBtn() from the live folding model, never a remembered
        flag — so hand-folding a region can't leave the icon promising the wrong action. */
@@ -976,7 +1017,16 @@
     <div id="navHist" class="hidden"></div>
     <div id="editor"></div>
     <div id="editor2"></div>
-    <div id="statusBar"></div>
+    <div id="statusBar"><span id="statusPos"></span><span id="statusDiag" class="hidden"
+        title="Problems in this text (the squiggles)&#10;Click: show / hide the list&#10;Shift+Click: next problem (F8)"></span></div>
+    <div id="diagPopup" class="hidden" role="dialog" aria-label="Problems">
+        <div id="diagPopupHeader">
+            <span id="diagPopupTitle"></span>
+            <button class="ol-tbtn" id="diagPopupClose" title="Close (Esc)"><span class="codicon codicon-close"></span></button>
+        </div>
+        <div id="diagPopupList" tabindex="0" role="listbox"
+            title="Up/Down: preview in the editor   Enter or double-click: go there   Esc: close"></div>
+    </div>
     <!-- Document structure fly-out (left column, Phase-1 outline prototype). -->
     <div id="outlinePanel" class="hidden">
         <div id="outlineHeader">
@@ -4874,6 +4924,7 @@
         // whichever split pane has focus.
         ed.onDidChangeModelContent(function () { updateStatusBar(ed); });
         ed.onDidFocusEditorText(function () { updateStatusBar(ed); });
+        wireDiagStatus();
         updateStatusBar(ed);   // seed on creation
     }
 
@@ -4897,8 +4948,259 @@
             var txt = 'Ln ' + grp(pos.lineNumber) + '    Col ' + grp(pos.column) + '    Pos ' + grp(offset);
             if (sel && !sel.isEmpty()) txt += '    Sel ' + grp(model.getValueLengthInRange(sel));
             txt += '    │    ' + grp(model.getLineCount()) + ' lines    ' + grp(model.getValueLength()) + ' chars';
-            bar.textContent = txt;
+            var posEl = document.getElementById('statusPos');
+            (posEl || bar).textContent = txt;
+            updateDiagStatus(model);
         } catch (e) { }
+    }
+
+    // ----- Diagnostics count in the status bar (prototype, replaces the retired chat-pane pill) -----
+    // Counted from the markers on the model, i.e. exactly what is squiggled, from every owner ('clarion' =
+    // the LSP pass, 'clarion-slot' = the host's slot checks). Three states, as the old pill had:
+    //   hidden  - this page has never asked for diagnostics (no LSP for this surface)
+    //   unknown - asked, but no answer yet for this source (a muted circle, never a false green OK)
+    //   counts  - errors / warnings, or a green check when the answer was "clean"
+    // Built from DOM nodes with textContent only, so nothing from a message can reach the DOM as markup.
+    var diagStatusAsked = false;      // a diagnostics pass has been dispatched for the current source
+    var diagStatusAnswered = false;   // a real (non-null, non-pending) answer has been painted for it
+    var diagStatusSig = null;         // last rendered state, so a cursor move does not rebuild the DOM
+    // The markers that belong to the text on screen. A new source reuses the same model (setSource ->
+    // model.setValue), and the previous source's LSP ('clarion') set stays registered on it until this
+    // source's first LSP reply replaces it: resetDiagnosticsForNewSource clears only the slot set. So until
+    // that reply lands, count only the slot checks, which are computed for this text.
+    function diagCurrentMarkers(model) {
+        if (!model || !monaco.editor.getModelMarkers) return [];
+        var q = diagStatusAnswered ? { resource: model.uri } : { owner: SLOT_MARKER_OWNER, resource: model.uri };
+        return monaco.editor.getModelMarkers(q) || [];
+    }
+    function updateDiagStatus(model) {
+        var el = document.getElementById('statusDiag');
+        if (!el) return;
+        if (!diagStatusAsked) {
+            if (diagStatusSig !== 'hidden') { el.classList.add('hidden'); el.textContent = ''; diagStatusSig = 'hidden'; }
+            return;
+        }
+        var errs = 0, warns = 0, infos = 0;
+        if (model) {
+            diagCurrentMarkers(model).forEach(function (m) {
+                if (m.severity === monaco.MarkerSeverity.Error) errs++;
+                else if (m.severity === monaco.MarkerSeverity.Warning) warns++;
+                else if (m.severity === monaco.MarkerSeverity.Info) infos++;
+            });
+        }
+        var total = errs + warns + infos;
+        var state = (total === 0 && !diagStatusAnswered) ? 'unknown' : (total === 0 ? 'ok' : 'counts');
+        var sig = state + '|' + errs + '|' + warns + '|' + infos;
+        if (sig === diagStatusSig) return;
+        diagStatusSig = sig;
+        el.classList.remove('hidden');
+        el.textContent = '';
+        function item(icon, cls, text) {
+            var s = document.createElement('span'); s.className = 'sd-item ' + cls;
+            var i = document.createElement('span'); i.className = 'codicon codicon-' + icon;
+            var t = document.createElement('span'); t.textContent = text;
+            s.appendChild(i); s.appendChild(t); el.appendChild(s);
+        }
+        if (state === 'unknown') { item('circle-large-outline', 'sd-unknown', '…'); return; }
+        if (state === 'ok') { item('check', 'sd-ok', 'OK'); return; }
+        item('error', errs ? 'sd-err' : 'sd-unknown', String(errs));
+        item('warning', warns ? 'sd-warn' : 'sd-unknown', String(warns));
+        if (infos) item('info', 'sd-unknown', String(infos));
+    }
+    function diagStatusRefresh() { try { var ed = activeEd(); updateDiagStatus(ed && ed.getModel()); renderDiagPopup(); } catch (e) { } }
+    function diagStatusReset() { closeDiagPopup(false); diagStatusAsked = false; diagStatusAnswered = false; diagStatusSig = null; diagStatusRefresh(); }
+
+    // ----- Problems pop-up over the status bar count -----
+    // Up/Down select AND preview (the editor scrolls to the line, focus stays in the list); Enter or a
+    // double-click goes there and closes; a single click selects + previews; Esc, the count again, the X,
+    // or a click anywhere else closes. Re-rendered live while open, from the same markers as the count.
+    var DIAG_POPUP_MAX_ROWS = 1000;
+    var diagPopupOpen = false, diagPopupSel = -1, diagPopupItems = [];
+    var diagPreviewMoved = false;   // a preview moved the cursor since the pop-up opened (not yet in history)
+    function diagSortedMarkers(model) {
+        var list = diagCurrentMarkers(model).filter(function (m) {
+            return m.severity === monaco.MarkerSeverity.Error || m.severity === monaco.MarkerSeverity.Warning ||
+                   m.severity === monaco.MarkerSeverity.Info;
+        });
+        list.sort(function (a, b) {
+            return (a.startLineNumber - b.startLineNumber) || (a.startColumn - b.startColumn) || (b.severity - a.severity);
+        });
+        return list;
+    }
+    function renderDiagPopup() {
+        if (!diagPopupOpen) return;
+        var listEl = document.getElementById('diagPopupList'), titleEl = document.getElementById('diagPopupTitle');
+        if (!listEl || !titleEl) return;
+        var ed = activeEd(), model = ed && ed.getModel();
+        var prev = diagPopupItems[diagPopupSel];
+        diagPopupItems = diagSortedMarkers(model);
+        var errs = 0, warns = 0, infos = 0;
+        diagPopupItems.forEach(function (m) {
+            if (m.severity === monaco.MarkerSeverity.Error) errs++;
+            else if (m.severity === monaco.MarkerSeverity.Warning) warns++;
+            else infos++;
+        });
+        function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+        var parts = ['Problems'];
+        if (errs || warns || infos) {
+            parts.push(plural(errs, 'error'), plural(warns, 'warning'));
+            if (infos) parts.push(infos + ' info');
+        }
+        titleEl.textContent = parts.join('  ·  ');
+        // Keep the selection on the same problem across a live re-render (matched by line + message).
+        diagPopupSel = -1;
+        if (prev) {
+            for (var k = 0; k < diagPopupItems.length; k++) {
+                if (diagPopupItems[k].startLineNumber === prev.startLineNumber && diagPopupItems[k].message === prev.message) { diagPopupSel = k; break; }
+            }
+        }
+        var scroll = listEl.scrollTop;
+        listEl.textContent = '';
+        if (diagPopupItems.length === 0) {
+            var empty = document.createElement('div'); empty.className = 'dp-empty';
+            empty.textContent = diagStatusAnswered ? 'No problems in this text.' : 'Waiting for the language server…';
+            listEl.appendChild(empty);
+            return;
+        }
+        var n = Math.min(diagPopupItems.length, DIAG_POPUP_MAX_ROWS);
+        for (var i = 0; i < n; i++) {
+            var m = diagPopupItems[i];
+            var row = document.createElement('div');
+            row.className = 'dp-row' + (i === diagPopupSel ? ' sel' : '');
+            row.setAttribute('role', 'option');
+            row.dataset.index = String(i);
+            row.title = m.message;
+            var sev = m.severity === monaco.MarkerSeverity.Error ? ['error', 'sd-err']
+                    : m.severity === monaco.MarkerSeverity.Warning ? ['warning', 'sd-warn'] : ['info', 'sd-unknown'];
+            var ic = document.createElement('span'); ic.className = 'codicon codicon-' + sev[0] + ' ' + sev[1];
+            var msg = document.createElement('span'); msg.className = 'dp-msg'; msg.textContent = m.message;
+            var ln = document.createElement('span'); ln.className = 'dp-ln'; ln.textContent = 'Ln ' + m.startLineNumber;
+            row.appendChild(ic); row.appendChild(msg); row.appendChild(ln);
+            listEl.appendChild(row);
+        }
+        if (diagPopupItems.length > n) {
+            var more = document.createElement('div'); more.className = 'dp-empty';
+            more.textContent = '…and ' + (diagPopupItems.length - n) + ' more (fix the first ones: later errors are often follow-on errors)';
+            listEl.appendChild(more);
+        }
+        listEl.scrollTop = scroll;
+    }
+    function selectDiagRow(i, preview) {
+        if (i < 0 || i >= Math.min(diagPopupItems.length, DIAG_POPUP_MAX_ROWS)) return;
+        var listEl = document.getElementById('diagPopupList');
+        var old = listEl.querySelector('.dp-row.sel'); if (old) old.classList.remove('sel');
+        diagPopupSel = i;
+        var row = listEl.querySelector('.dp-row[data-index="' + i + '"]');
+        if (row) { row.classList.add('sel'); row.scrollIntoView({ block: 'nearest' }); }
+        if (preview) revealDiag(diagPopupItems[i], false);
+    }
+    // A preview (click, Up/Down) moves the cursor without recording Back/Forward history: the position the
+    // pop-up was opened from is pinned instead. Going there (Enter, double-click) pins the target, as the
+    // page's other explicit jumps do (recordNavAt).
+    function revealDiag(m, go) {
+        try {
+            var ed = activeEd(); if (!ed || !m) return;
+            var pos = { lineNumber: m.startLineNumber, column: m.startColumn };
+            if (_navRecordTimer) { clearTimeout(_navRecordTimer); _navRecordTimer = null; }
+            navSuppress = true;
+            try { ed.setPosition(pos); ed.revealPositionInCenterIfOutsideViewport(pos); }
+            finally { navSuppress = false; }
+            if (go) { recordNavAt(pos.lineNumber, pos.column); ed.focus(); }
+            else diagPreviewMoved = true;
+        } catch (e) { }
+    }
+    function openDiagPopup() {
+        if (!diagStatusAsked) return;
+        try { var p0 = activeEd().getPosition(); if (p0) recordNavAt(p0.lineNumber, p0.column); } catch (e) { }   // Navigate Back returns here
+        diagPopupOpen = true; diagPopupSel = -1; diagPopupItems = []; diagPreviewMoved = false;
+        document.getElementById('diagPopup').classList.remove('hidden');
+        document.getElementById('statusDiag').classList.add('open');
+        var listEl = document.getElementById('diagPopupList');
+        listEl.scrollTop = 0;
+        renderDiagPopup();
+        try { listEl.focus({ preventScroll: true }); } catch (e) { }
+    }
+    function closeDiagPopup(focusEditor) {
+        if (!diagPopupOpen) return;
+        diagPopupOpen = false;
+        // Closed after a preview: the cursor sits on a line the previews did not record. Record it once, so
+        // the first Navigate Back returns to where the pop-up was opened instead of skipping past it.
+        if (diagPreviewMoved) {
+            diagPreviewMoved = false;
+            try { var p = activeEd().getPosition(); if (p) recordNavAt(p.lineNumber, p.column); } catch (e) { }
+        }
+        document.getElementById('diagPopup').classList.add('hidden');
+        document.getElementById('statusDiag').classList.remove('open');
+        if (focusEditor) { try { activeEd().focus(); } catch (e) { } }
+    }
+    function wireDiagPopup() {
+        var listEl = document.getElementById('diagPopupList');
+        var closeBtn = document.getElementById('diagPopupClose');
+        if (!listEl) return;
+        listEl.addEventListener('click', function (ev) {
+            var row = ev.target.closest && ev.target.closest('.dp-row');
+            if (row) selectDiagRow(parseInt(row.dataset.index, 10), true);
+        });
+        listEl.addEventListener('dblclick', function (ev) {
+            var row = ev.target.closest && ev.target.closest('.dp-row');
+            if (!row) return;
+            var m = diagPopupItems[parseInt(row.dataset.index, 10)];
+            closeDiagPopup(false); revealDiag(m, true);
+        });
+        listEl.addEventListener('keydown', function (ev) {
+            var last = Math.min(diagPopupItems.length, DIAG_POPUP_MAX_ROWS) - 1;
+            if (ev.key === 'ArrowDown') { selectDiagRow(Math.min(diagPopupSel + 1, last), true); ev.preventDefault(); }
+            else if (ev.key === 'ArrowUp') { selectDiagRow(Math.max(diagPopupSel - 1, 0), true); ev.preventDefault(); }
+            else if (ev.key === 'Home') { selectDiagRow(0, true); ev.preventDefault(); }
+            else if (ev.key === 'End') { selectDiagRow(last, true); ev.preventDefault(); }
+            else if (ev.key === 'Enter') {
+                var m = diagPopupItems[diagPopupSel];
+                if (m) { closeDiagPopup(false); revealDiag(m, true); }
+                ev.preventDefault();
+            }
+            else if (ev.key === 'Escape') { closeDiagPopup(true); ev.preventDefault(); ev.stopPropagation(); }
+        });
+        if (closeBtn) closeBtn.addEventListener('click', function () { closeDiagPopup(true); });
+        // A press anywhere outside the pop-up and the count closes it (capture phase: Monaco may stop the
+        // event before it bubbles to the document).
+        document.addEventListener('mousedown', function (ev) {
+            if (!diagPopupOpen) return;
+            var t = ev.target;
+            if (t.closest && (t.closest('#diagPopup') || t.closest('#statusDiag'))) return;
+            closeDiagPopup(false);
+        }, true);
+    }
+    var diagStatusWired = false;
+    function wireDiagStatus() {
+        if (diagStatusWired) return;
+        diagStatusWired = true;
+        // Repaint whenever any owner's markers change on the model on screen.
+        if (monaco.editor.onDidChangeMarkers) {
+            monaco.editor.onDidChangeMarkers(function (uris) {
+                try {
+                    var ed = activeEd(), model = ed && ed.getModel();
+                    if (!model) return;
+                    var key = model.uri.toString();
+                    for (var i = 0; i < uris.length; i++) { if (uris[i].toString() === key) { updateDiagStatus(model); renderDiagPopup(); return; } }
+                } catch (e) { }
+            });
+        }
+        // Click = show/hide the Problems pop-up; Shift+Click = next problem (Monaco's own F8 navigation).
+        var el = document.getElementById('statusDiag');
+        if (el) el.addEventListener('click', function (ev) {
+            try {
+                if (ev.shiftKey) {
+                    closeDiagPopup(false);
+                    var ed = activeEd();
+                    if (!ed) return;
+                    ed.focus();
+                    ed.trigger('statusBar', 'editor.action.marker.next', null);
+                    return;
+                }
+                if (diagPopupOpen) closeDiagPopup(true); else openDiagPopup();
+            } catch (e) { }
+        });
+        wireDiagPopup();
     }
     function scheduleNavRecord() {
         if (_navRecordTimer) clearTimeout(_navRecordTimer);
@@ -5398,6 +5700,7 @@
         // The old source's slot squiggles go now; its late slot replies are dropped by the diagGen check.
         slotAskedKey = null;
         if (editor && editor.getModel()) monaco.editor.setModelMarkers(editor.getModel(), SLOT_MARKER_OWNER, []);
+        diagStatusReset();   // the new source has no answer yet: back to hidden until its first pass is asked
     }
 
     // ----- Slot checks, painted apart from the LSP pass (1c685f2e item 7) -----
@@ -5509,6 +5812,7 @@
         catch (e) { return; }
         var myGen = diagGen;
         diagInFlight = true;
+        if (!diagStatusAsked) { diagStatusAsked = true; diagStatusRefresh(); }   // status bar: hidden -> unknown
         requestFromHost('diagnostics', payload, timeoutMs)
             .then(function (resp) {
                 // An older source's request (setSource since): the slot and any rerun belong to the new one.
@@ -5551,7 +5855,9 @@
                 }
                 // Minus what the slot checks already squiggle on screen (1c685f2e item 7).
                 var markers = (resp.markers || []).map(toMarkerData);
+                diagStatusAnswered = true;   // before the paint, so the marker-change repaint can say "OK" for a clean file
                 monaco.editor.setModelMarkers(model, 'clarion', withoutDuplicatesOf(markers, markersOnScreen(model, SLOT_MARKER_OWNER)));
+                diagStatusRefresh();   // an empty set on an already-empty model fires no marker change
             })
             .catch(function () { if (myGen === diagGen) diagInFlight = false; /* never let a failed diagnostics round-trip disrupt editing */ });
     }
