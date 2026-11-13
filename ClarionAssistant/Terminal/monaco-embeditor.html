@@ -4985,6 +4985,10 @@
         var q = diagStatusAnswered ? { resource: model.uri } : { owner: SLOT_MARKER_OWNER, resource: model.uri };
         return monaco.editor.getModelMarkers(q) || [];
     }
+    // Counts are cached and recomputed only when the markers or the asked/answered state change, never on
+    // a cursor move: updateStatusBar calls updateDiagStatus on every keystroke, and a broken generated
+    // module can carry tens of thousands of markers (PR #310 review).
+    var diagCountsDirty = true, diagCounts = { errs: 0, warns: 0, infos: 0 };
     function updateDiagStatus(model) {
         var el = document.getElementById('statusDiag');
         if (!el) return;
@@ -4992,14 +4996,18 @@
             if (diagStatusSig !== 'hidden') { el.classList.add('hidden'); el.textContent = ''; diagStatusSig = 'hidden'; }
             return;
         }
-        var errs = 0, warns = 0, infos = 0;
-        if (model) {
-            diagCurrentMarkers(model).forEach(function (m) {
-                if (m.severity === monaco.MarkerSeverity.Error) errs++;
-                else if (m.severity === monaco.MarkerSeverity.Warning) warns++;
-                else if (m.severity === monaco.MarkerSeverity.Info) infos++;
-            });
+        if (diagCountsDirty) {
+            diagCountsDirty = false;
+            diagCounts = { errs: 0, warns: 0, infos: 0 };
+            if (model) {
+                diagCurrentMarkers(model).forEach(function (m) {
+                    if (m.severity === monaco.MarkerSeverity.Error) diagCounts.errs++;
+                    else if (m.severity === monaco.MarkerSeverity.Warning) diagCounts.warns++;
+                    else if (m.severity === monaco.MarkerSeverity.Info) diagCounts.infos++;
+                });
+            }
         }
+        var errs = diagCounts.errs, warns = diagCounts.warns, infos = diagCounts.infos;
         var total = errs + warns + infos;
         var state = (total === 0 && !diagStatusAnswered) ? 'unknown' : (total === 0 ? 'ok' : 'counts');
         var sig = state + '|' + errs + '|' + warns + '|' + infos;
@@ -5019,8 +5027,20 @@
         item('warning', warns ? 'sd-warn' : 'sd-unknown', String(warns));
         if (infos) item('info', 'sd-unknown', String(infos));
     }
-    function diagStatusRefresh() { try { var ed = activeEd(); updateDiagStatus(ed && ed.getModel()); renderDiagPopup(); } catch (e) { } }
-    function diagStatusReset() { closeDiagPopup(false); diagStatusAsked = false; diagStatusAnswered = false; diagStatusSig = null; diagStatusRefresh(); }
+    function diagStatusRefresh() { try { diagCountsDirty = true; var ed = activeEd(); updateDiagStatus(ed && ed.getModel()); renderDiagPopup(); } catch (e) { } }
+    // A burst of marker changes (the slot pass and the LSP pass land back to back) repaints once.
+    var diagRepaintTimer = null;
+    function scheduleDiagRepaint() {
+        diagCountsDirty = true;
+        if (diagRepaintTimer) return;
+        diagRepaintTimer = setTimeout(function () { diagRepaintTimer = null; diagStatusRefresh(); }, 100);
+    }
+    function diagStatusReset() {
+        // The text was just replaced (setSource): a preview's cursor line belongs to the old source, so it must
+        // not be recorded in Back/Forward history as the pop-up closes.
+        diagPreviewMoved = false;
+        closeDiagPopup(false); diagStatusAsked = false; diagStatusAnswered = false; diagStatusSig = null; diagStatusRefresh();
+    }
 
     // ----- Problems pop-up over the status bar count -----
     // Up/Down select AND preview (the editor scrolls to the line, focus stays in the list); Enter or a
@@ -5173,6 +5193,12 @@
             else if (ev.key === 'Escape') { closeDiagPopup(true); ev.preventDefault(); ev.stopPropagation(); }
         });
         if (closeBtn) closeBtn.addEventListener('click', function () { closeDiagPopup(true); });
+        // Only the list takes focus. A press on the header or title would otherwise move focus to <body>, and
+        // Esc (handled on the list) would stop closing the pop-up. Keep focus where it is; clicks still fire.
+        var popupEl = document.getElementById('diagPopup');
+        if (popupEl) popupEl.addEventListener('mousedown', function (ev) {
+            if (!(ev.target.closest && ev.target.closest('#diagPopupList'))) ev.preventDefault();
+        });
         // A press anywhere outside the pop-up and the count closes it (capture phase: Monaco may stop the
         // event before it bubbles to the document).
         document.addEventListener('mousedown', function (ev) {
@@ -5193,7 +5219,7 @@
                     var ed = activeEd(), model = ed && ed.getModel();
                     if (!model) return;
                     var key = model.uri.toString();
-                    for (var i = 0; i < uris.length; i++) { if (uris[i].toString() === key) { updateDiagStatus(model); renderDiagPopup(); return; } }
+                    for (var i = 0; i < uris.length; i++) { if (uris[i].toString() === key) { scheduleDiagRepaint(); return; } }
                 } catch (e) { }
             });
         }
