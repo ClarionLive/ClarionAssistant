@@ -398,15 +398,27 @@
         border: 1px solid var(--toolbar-border); border-bottom: none; border-radius: 6px 6px 0 0;
         box-shadow: 0 -6px 18px rgba(0,0,0,0.25); font-size: 12px;
         transform-origin: bottom right; animation: diagPopIn 0.14s ease-out;
+        --dp-row-h: 20px;
     }
+    /* Dark theme: softer than the toolbar palette - the editor's own background, dimmer message text, a
+       softer red and a quieter selection/shadow. Light theme keeps the palette above. */
+    body:not(.light) #diagPopup { background: var(--bg); color: #bac2de; box-shadow: 0 -4px 14px rgba(0,0,0,0.35); }
+    body:not(.light) #diagPopup .sd-err { color: #eba0ac; }
+    body:not(.light) #diagPopup .dp-row.sel { background: rgba(137,180,250,0.12); }
     #diagPopup.hidden { display: none; }
     @keyframes diagPopIn { from { opacity: 0; transform: translateY(8px) scale(0.97); } to { opacity: 1; transform: none; } }
     @media (prefers-reduced-motion: reduce) { #diagPopup { animation: none; } }
     #diagPopupHeader { display: flex; align-items: center; gap: 6px; padding: 4px 4px 4px 10px; flex-shrink: 0;
         border-bottom: 1px solid var(--toolbar-border); color: var(--title-color); font-weight: 600; }
     #diagPopupTitle { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #diagPopupList { flex: 1 1 auto; overflow: auto; outline: none; padding: 2px 0; }
-    #diagPopup .dp-row { display: flex; align-items: center; gap: 8px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+    /* At most 10 rows tall (then it scrolls); the pop-up's own 45% cap still applies in a small window. */
+    #diagPopupList { flex: 1 1 auto; overflow: auto; outline: none; padding: 2px 0;
+        max-height: calc(10 * var(--dp-row-h) + 4px);
+        /* A thin, translucent scrollbar in the editor's own style; the browser default ignores the theme. */
+        scrollbar-width: thin; scrollbar-color: rgba(127,127,127,0.45) transparent; }
+    body.light #diagPopupList { scrollbar-color: rgba(100,100,100,0.40) transparent; }
+    #diagPopup .dp-row { display: flex; align-items: center; gap: 8px; height: var(--dp-row-h); box-sizing: border-box;
+        padding: 0 10px; cursor: pointer; white-space: nowrap; }
     #diagPopup .dp-row:hover { background: var(--toolbar-border); }
     #diagPopup .dp-row.sel { background: rgba(137,180,250,0.20); }
     body.light #diagPopup .dp-row.sel { background: rgba(30,102,245,0.14); }
