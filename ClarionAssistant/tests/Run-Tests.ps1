@@ -151,6 +151,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\CaAgentIdentity.Test.cs", "Services\CaAgentIdentity.cs")
                Refs = @("System.dll")
                Args = @($RepoDir) }
+            # b17d528b: "Remote Control for every Claude tab" - the flag, the setting, and where the launch puts it.
+            @{ Name = "ClaudeRemoteControl.Test"
+               Sources = @("tests\ClaudeRemoteControl.Test.cs", "Services\ClaudeRemoteControl.cs", "Services\PwshCommandQuoter.cs")
+               Refs = @("System.dll")
+               Args = @($RepoDir) }
             # f9843525: the Home tab's resume list. Fixture transcripts in %TEMP%; gets the project dir for
             # the check that BuildInitialPrompt's greetings come from the catalog.
             @{ Name = "ClaudeSessionCatalog.Test"
