@@ -282,6 +282,61 @@ for (const command of [
   expect('not-dynamic', command, P, 'allow', '', NO_TABLE);
 }
 
+// PowerShell aliases to a built name.
+for (const command of [
+  "$n='Stop-'+'Process'; Set-Alias zap $n; zap -Name ('Multi'+'Terminal')",
+  "$n='Stop-'+'Process'; Set-Alias zap $n; zap -Name ('cla'+'ude')",
+  "New-Alias zap ('Stop-'+'Process')",
+  'sal zap "$x"',
+  'nal -Name zap -Value $v',
+]) {
+  expect('ps-alias', command, P, 'ask', DYNAMIC, NO_TABLE);
+}
+for (const command of [
+  'Set-Alias ll Get-ChildItem',
+  "Set-Alias -Name np -Value 'notepad.exe'",
+  'New-Alias g git',
+]) {
+  expect('ps-alias-literal', command, P, 'allow', '', NO_TABLE);
+}
+
+// ── Bash commands whose name is built at run time ─────────────────────
+// None of these holds a kill word, so only the dynamic-command rule can ask.
+for (const command of [
+  '$(printf task)$(printf ki)ll /IM $(printf MultiTerminal).exe /F',
+  '$(printf task)$(printf ki)ll /IM $(printf claude).exe /F',
+  '`printf tsk` /IM x.exe',
+  '${K} /IM x.exe',
+  '$CMD /IM x.exe',
+  'X=1 $(printf sto) 1',
+  'cd x && "$(printf sto)" 1',
+  "echo ok; $'\\x6bi'll 1",
+  'x=$( $(printf sto) 1 )',
+  'echo $( $(printf sto) 1 )',
+  'if true; then $k 1; fi',
+  'echo a | $(printf sh)',
+]) {
+  expect('bash-dynamic', command, B, 'ask', DYNAMIC, NO_TABLE);
+}
+for (const command of [
+  'VAR=$(git rev-parse HEAD)',
+  'X=$(date) && echo $X',
+  'echo $(date)',
+  "git commit -m \"$(cat <<'EOF'\nmsg $(x)\nEOF\n)\"",
+  'cat <<EOF > f\n$(whoami) $HOME\nEOF',
+  'for f in $(ls); do echo $f; done',
+  '[ -n "$X" ] && echo yes',
+  'export PATH="$HOME/bin:$PATH"',
+  'ls $HOME',
+  'node -e "console.log(1)" 2>&1 | tail -3',
+  'echo $((1+2))',
+  'test -f x || echo $(pwd)',
+  'echo hi # ; $(printf x) later',
+  'local x=${1:-default}',
+]) {
+  expect('bash-not-dynamic', command, B, 'allow', '', NO_TABLE);
+}
+
 // A table read that runs out of time asks (the 3 s cap, here 1 ms).
 {
   const { _internals } = require(hookPath);

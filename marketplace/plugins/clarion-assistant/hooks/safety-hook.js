@@ -45,6 +45,13 @@
  *
  * Not checked: the Monitor tool and the build-runner MCP run tools (MT
  * follow-up ticket 6b133f05).
+ *
+ * What it is for: catching accidents, and refusing to end MultiTerminal or a
+ * Claude Code session, in commands written the normal way. It reads the text of
+ * a command. A command deliberately built to hide what it runs (a name pieced
+ * together, an alias, an encoding) can still get past a text check, and that is
+ * out of scope. The dynamic-command rules ask for the common constructions so
+ * they are not silent, but they are not a guarantee.
  */
 
 // ── Process-kill detection (ticket 24a72aa1) ────────────────────────
@@ -445,7 +452,9 @@ function isPowerShellKill(command) {
 //     or a pipe into it;
 //   - [scriptblock]::Create, NewScriptBlock, InvokeScript, .InvokeCommand.;
 //   - Start-Process / saps whose program is a ( expression, a $variable or such
-//     an interpolated string.
+//     an interpolated string;
+//   - Set-Alias / New-Alias / sal / nal given a definition that is not literal
+//     ($n = 'Stop-'+'Process'; Set-Alias zap $n; zap ...): a $, ( or +.
 // A literal & 'C:\path\tool.exe' args stays silent, and so does any of these
 // written inside a simple quoted string. Comments are kept as written (see
 // removePowerShellSimpleQuotes), so a mention in a comment asks.
@@ -455,15 +464,17 @@ const PS_CALLED_STRING = /(?:^|[\s;|({=])(?<!&)(?:&(?!&)|\.|\b(?:Start-Process|s
 const PS_START_DYNAMIC = /\b(?:Start-Process|saps)\s+(?:-F\w*\s+)?[($]/i;
 const PS_BUILDS_CODE = /\[scriptblock\]::Create\b|\bNewScriptBlock\b|\bInvokeScript\b|\.InvokeCommand\./i;
 const PS_IEX = /\b(?:Invoke-Expression|iex)\b/i;
+const PS_ALIAS = /(?:^|[\s;|({])(?:Set-Alias|New-Alias|sal|nal)\b/i;
 const ENV_ONLY_STRING = /^(?:[^$`]|\$env:\w+|\$\{env:[^}$`]+\})*$/i;
 
 function psDynamicInvocation(command) {
-  if (!/[&.$@]|\biex\b|Invoke-Expression|scriptblock|InvokeScript|InvokeCommand/i.test(command)) return false;
+  if (!/[&.$@]|\biex\b|Invoke-Expression|scriptblock|InvokeScript|InvokeCommand|alias|\bs?al\b|\bnal\b/i.test(command)) return false;
   const text = removePowerShellSimpleQuotes(command);
   if (PS_DYNAMIC_CALL.test(text) || PS_START_DYNAMIC.test(text) || PS_BUILDS_CODE.test(text)) return true;
   for (const m of text.matchAll(PS_CALLED_STRING)) if (!ENV_ONLY_STRING.test(m[1])) return true;
   return text.split(/[;\n]/).some((segment) =>
-    PS_IEX.test(segment) && (/[$(+]/.test(segment) || /\|\s*(?:Invoke-Expression|iex)\b/i.test(segment)));
+    (PS_IEX.test(segment) && (/[$(+]/.test(segment) || /\|\s*(?:Invoke-Expression|iex)\b/i.test(segment))) ||
+    (PS_ALIAS.test(segment) && /[$(+]/.test(segment)));
 }
 
 // ── Heredocs that are data (ticket b5d8ecdf) ────────────────────────
@@ -581,6 +592,180 @@ function removeDataHeredocs(command) {
     i = end + 1;
   }
   return out.join('\n');
+}
+
+// ── Bash commands whose name is built at run time (review of b5d8ecdf) ─
+//
+// $(printf task)$(printf ki)ll /IM x.exe /F holds no kill word, so the kill
+// rule let it through. A simple command whose COMMAND WORD bash cannot know
+// until it runs therefore ASKS, kill word or not: the word holds $( , a
+// backtick, ${ , $NAME (or $1, $@ ...) or $'...' outside single quotes.
+// Command words are the first word at the start, after ; & && | || ( { or a
+// newline, and after if/then/do/else/elif/while/until/time/!, skipping
+// NAME=value assignments in front. Commands inside $( ) and backticks are read
+// the same way, wherever they stand.
+// Silent: an assignment (VAR=$(git rev-parse HEAD)), $( ) or $VAR as an
+// argument (echo $(date), ls $HOME), a heredoc body, a # comment.
+// Unreadable input (an unclosed quote) is left to the other rules; nesting
+// deeper than BASH_MAX_DEPTH asks.
+
+const BASH_KEYWORDS = new Set(['if', 'then', 'do', 'else', 'elif', 'while', 'until', 'time', '!', '{']);
+const BASH_NAME_NEXT = new Set(['for', 'case', 'select', 'function']);
+const BASH_ASSIGNMENT = /^[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=/;
+const BASH_WORD_END = ' \t\n;&|<>()';
+const BASH_MAX_DEPTH = 32;
+
+// The index just past the ) closing a $( that opened before `from`; nested
+// $( ), quotes and backticks are skipped. text.length when it never closes.
+function bashSubstitutionEnd(text, from) {
+  let depth = 1;
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') { i++; continue; }
+    if (c === "'") { const e = text.indexOf("'", i + 1); i = e < 0 ? text.length : e; continue; }
+    if (c === '"') { const e = findClosingDoubleQuote(text, i + 1); i = e < 0 ? text.length : e; continue; }
+    if (c === '`') { const e = text.indexOf('`', i + 1); i = e < 0 ? text.length : e; continue; }
+    if (c === '(') depth++;
+    else if (c === ')' && --depth === 0) return i + 1;
+  }
+  return text.length;
+}
+
+// Reads one word from `pos`: { raw, end, subs } where subs are the bodies of
+// the $( ) and backtick commands inside it, to be read as commands too.
+function readBashWord(text, pos) {
+  const subs = [];
+  let i = pos;
+  while (i < text.length && !BASH_WORD_END.includes(text[i])) {
+    const c = text[i];
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'") {
+      if (text[i - 1] === '$') {
+        let j = i + 1;
+        for (; j < text.length && text[j] !== "'"; j++) if (text[j] === '\\') j++;
+        i = j + 1;
+      } else {
+        const e = text.indexOf("'", i + 1);
+        i = e < 0 ? text.length : e + 1;
+      }
+      continue;
+    }
+    if (c === '"') {
+      const e = findClosingDoubleQuote(text, i + 1);
+      const end = e < 0 ? text.length : e;
+      for (let j = i + 1; j < end; j++) {
+        if (text[j] === '\\') { j++; continue; }
+        if (text[j] === '$' && text[j + 1] === '(' && text[j + 2] !== '(') {
+          const close = bashSubstitutionEnd(text, j + 2);
+          subs.push(text.slice(j + 2, close - 1));
+          j = close - 1;
+        } else if (text[j] === '`') {
+          const close = text.indexOf('`', j + 1);
+          subs.push(text.slice(j + 1, close < 0 ? end : close));
+          j = close < 0 ? end : close;
+        }
+      }
+      i = end + 1;
+      continue;
+    }
+    if (c === '$' && text[i + 1] === '(') {
+      const arithmetic = text[i + 2] === '(';
+      const close = bashSubstitutionEnd(text, i + 2);
+      if (!arithmetic) subs.push(text.slice(i + 2, close - 1));
+      i = close;
+      continue;
+    }
+    if (c === '`') {
+      const close = text.indexOf('`', i + 1);
+      subs.push(text.slice(i + 1, close < 0 ? text.length : close));
+      i = close < 0 ? text.length : close + 1;
+      continue;
+    }
+    if (c === '$' && text[i + 1] === '{') {
+      const close = text.indexOf('}', i + 2);
+      i = close < 0 ? text.length : close + 1;
+      continue;
+    }
+    i++;
+  }
+  return { raw: text.slice(pos, i), end: Math.max(i, pos + 1), subs };
+}
+
+// Whether a command word is built at run time (see above).
+function bashWordIsDynamic(raw) {
+  if (raw.includes("$'")) return true;
+  const outsideSingle = raw.replace(/'[^']*'/g, '');
+  return /\$\(|`|\$\{|\$[A-Za-z_0-9@*#?!$-]/.test(outsideSingle);
+}
+
+function bashDynamicIn(text, depth) {
+  if (depth > BASH_MAX_DEPTH) return true;
+  let expecting = true;
+  let pendingHeredocs = [];
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === ' ' || c === '\t') { i++; continue; }
+    if (c === '\n') {
+      i++;
+      for (const { delimiter, tabs } of pendingHeredocs) {
+        for (;;) {
+          if (i >= text.length) break;
+          const lineEnd = text.indexOf('\n', i);
+          const line = text.slice(i, lineEnd < 0 ? text.length : lineEnd).replace(/\r$/, '');
+          i = lineEnd < 0 ? text.length : lineEnd + 1;
+          if ((tabs ? line.replace(/^\t+/, '') : line) === delimiter) break;
+        }
+      }
+      pendingHeredocs = [];
+      expecting = true;
+      continue;
+    }
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(text[i - 1]))) {
+      const lineEnd = text.indexOf('\n', i);
+      i = lineEnd < 0 ? text.length : lineEnd;
+      continue;
+    }
+    if (';&|({'.includes(c)) { expecting = true; i++; continue; }
+    if (c === ')' || c === '}') { expecting = false; i++; continue; }
+    const redirect = /^\d*(?:<<<|<<-?|<>|>>|>&|<&|>\||[<>])/.exec(text.slice(i, i + 6));
+    if (redirect) {
+      i += redirect[0].length;
+      while (text[i] === ' ' || text[i] === '\t') i++;
+      const target = readBashWord(text, i);
+      for (const sub of target.subs) if (bashDynamicIn(sub, depth + 1)) return true;
+      if (redirect[0].replace(/^\d+/, '').startsWith('<<') && redirect[0].replace(/^\d+/, '') !== '<<<') {
+        pendingHeredocs.push({
+          delimiter: target.raw.replace(/['"\\]/g, ''),
+          tabs: redirect[0].endsWith('-'),
+        });
+      }
+      i = target.end;
+      continue;
+    }
+    const word = readBashWord(text, i);
+    for (const sub of word.subs) if (bashDynamicIn(sub, depth + 1)) return true;
+    i = word.end;
+    if (!expecting) continue;
+    if (BASH_ASSIGNMENT.test(word.raw) || BASH_KEYWORDS.has(word.raw)) continue;
+    if (bashWordIsDynamic(word.raw)) return true;
+    expecting = false;
+    if (BASH_NAME_NEXT.has(word.raw)) {
+      // for NAME / case WORD / function NAME: the next word is not a command.
+      while (text[i] === ' ' || text[i] === '\t') i++;
+      i = readBashWord(text, i).end;
+    }
+  }
+  return false;
+}
+
+function bashDynamicCommand(command) {
+  if (!/[$`]/.test(command)) return false;
+  try {
+    return bashDynamicIn(command, 0);
+  } catch {
+    return true;
+  }
 }
 
 // ── Which processes a kill hits (ticket b5d8ecdf) ───────────────────
@@ -1308,6 +1493,13 @@ const BASH_RULES = [
   {
     decide: (command, ctx) => decideKill(command, 'bash', ctx)
   },
+  // A command whose name is built at run time (see bashDynamicCommand).
+  {
+    test: bashDynamicCommand,
+    action: 'ask',
+    reason: 'Dynamic command detected: a command name in this shell command is built as it runs ($(...), a ' +
+      'backtick, ${...} or $VAR), so the safety hook cannot tell whether it ends MultiTerminal or another app. Are you sure?'
+  },
   // Gate Windows registry operations — system-level changes
   {
     pattern: /\breg\s+(add|delete|import)\b/i,
@@ -1447,7 +1639,7 @@ const POWERSHELL_RULES = [
     action: 'ask',
     reason: 'Dynamic command detected: this PowerShell command runs a command whose name is built as it runs ' +
       '(& or . with an expression, a variable or an interpolated string; Invoke-Expression on built text; ' +
-      '[scriptblock]::Create), so the safety hook cannot tell whether it ends MultiTerminal or another app. Are you sure?'
+      '[scriptblock]::Create; Set-Alias to a built name), so the safety hook cannot tell whether it ends MultiTerminal or another app. Are you sure?'
   },
 ];
 
