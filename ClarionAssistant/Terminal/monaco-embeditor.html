@@ -421,6 +421,9 @@
         padding: 0 10px; cursor: pointer; white-space: nowrap; }
     #diagPopup .dp-row:hover { background: var(--toolbar-border); }
     #diagPopup .dp-row.sel { background: rgba(137,180,250,0.20); }
+    /* The line a Problems-list jump lands on, for a moment (flashDiagTarget). */
+    .diag-jump-flash { background: rgba(249,226,175,0.35); }
+    body:not(.light) .diag-jump-flash { background: rgba(249,226,175,0.18); }
     body.light #diagPopup .dp-row.sel { background: rgba(30,102,245,0.14); }
     #diagPopup .dp-msg { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
     #diagPopup .dp-ln { flex: 0 0 auto; color: var(--muted-fg); font-family: var(--mono, monospace); font-size: 11px; }
@@ -5137,8 +5140,39 @@
             navSuppress = true;
             try { ed.setPosition(pos); ed.revealPositionInCenterIfOutsideViewport(pos); }
             finally { navSuppress = false; }
-            if (go) { recordNavAt(pos.lineNumber, pos.column); ed.focus(); }
+            if (go) {
+                recordNavAt(pos.lineNumber, pos.column);
+                flashDiagTarget(ed, m);
+                // Live test 2026-11-13: focusing inside the pop-up's keydown did not stick (the list was being
+                // hidden under it), so the caret and the current-line highlight never showed. Focus once the
+                // pop-up is gone.
+                ed.focus();
+                setTimeout(function () { try { ed.focus(); } catch (e2) { } }, 0);
+            }
             else diagPreviewMoved = true;
+        } catch (e) { }
+    }
+    // Going to a problem selects its text and flashes the whole line for a moment, so the jump is visible
+    // even where the problem is only a squiggle (live test 2026-11-13: only the line number turned bold).
+    var diagFlashIds = [], diagFlashTimer = null;
+    function flashDiagTarget(ed, m) {
+        try {
+            var model = ed.getModel(); if (!model) return;
+            var sl = m.startLineNumber, sc = m.startColumn, el = m.endLineNumber || sl, ec = m.endColumn || sc;
+            // navSuppress: the selection is part of this one jump, not a cursor move for the Back history.
+            if (el > sl || ec > sc) {
+                navSuppress = true;
+                try { ed.setSelection(new monaco.Selection(sl, sc, el, ec)); } finally { navSuppress = false; }
+            }
+            if (diagFlashTimer) { clearTimeout(diagFlashTimer); diagFlashTimer = null; }
+            diagFlashIds = model.deltaDecorations(diagFlashIds, [{
+                range: new monaco.Range(sl, 1, sl, 1),
+                options: { isWholeLine: true, className: 'diag-jump-flash' }
+            }]);
+            diagFlashTimer = setTimeout(function () {
+                diagFlashTimer = null;
+                try { diagFlashIds = model.deltaDecorations(diagFlashIds, []); } catch (e2) { diagFlashIds = []; }
+            }, 1500);
         } catch (e) { }
     }
     function openDiagPopup() {
