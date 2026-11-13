@@ -176,11 +176,27 @@ static class TabManagerOverflowTest
         Check(over.Areas().Count < 6, "overflow: the tabs that do not fit are not drawn");
         Check(over.Areas().Count >= 3, "overflow: more than one tab is shown in a normal-width pad");
 
-        // Reported after the second version: a gap between the last tab and the ⋯ button, and no sign
-        // that more tabs were hidden.
+        // Reported after the second version: no sign that more tabs were hidden (the arrows now say so).
+        // Live test 2026-11-13: the third version stretched the shown tabs to fill the band, so a short
+        // title took a third of the strip. Each tab now keeps its own width (title, up to MinTabWidth),
+        // and the band holds as many as fit: the gap before › is narrower than the next hidden tab.
         Rectangle lastRect = Rectangle.Empty;
         foreach (var a in over.Areas()) if (!((TerminalTab)a[0]).IsHome) lastRect = (Rectangle)a[1];
-        Check(!over.RightArrow.IsEmpty && lastRect.Right == over.RightArrow.Left - 2, "overflow: the shown tabs fill the band up to the › arrow");
+        Check(!over.RightArrow.IsEmpty && lastRect.Right <= over.RightArrow.Left - 2, "overflow: the shown tabs end at or before the › arrow");
+        Check(over.RightArrow.Left - 2 - lastRect.Right < 130 + 2, "overflow: the gap before › is too narrow for another tab");
+
+        var shortTitles = new Rig(600, new[] { "CA1", "CA2", "CA3", "CA4", "CA5", "CA6", "CA7", "CA8", "CA9", "CA10", "CA11", "CA12" });
+        bool noneStretched = true; int shortShown = 0;
+        foreach (var a in shortTitles.Areas())
+        {
+            var t = (TerminalTab)a[0];
+            if (t.IsHome) continue;
+            shortShown++;
+            if (((Rectangle)a[1]).Width > 100) noneStretched = false;
+        }
+        Check(shortTitles.Areas().Count < 13, "short titles: the strip still overflows (test precondition)");
+        Check(noneStretched, "short titles: an overflowing tab is not stretched past its title (live test 2026-11-13)");
+        Check(shortShown >= 4, "short titles: more short tabs fit than wide ones");
         Check(!over.LeftArrow.IsEmpty && over.LeftArrow.Left > ((Rectangle)homeArea[1]).Right, "overflow: the ‹ arrow sits right of Home");
 
         var arrows = new Rig(600, five);   // last tab active: tabs hidden to the left only

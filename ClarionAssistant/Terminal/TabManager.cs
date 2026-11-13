@@ -362,32 +362,63 @@ namespace ClarionAssistant.Terminal
             int band = Math.Max(0, _rightArrowRect.Left - TabGap - bandLeft);
             viewport = new Rectangle(bandLeft, 0, band, stripH);
 
+            // Each tab keeps its own width, as when they fit: its title, shrunk to MinTabWidth at most (the
+            // shrink step has already failed at that cap). The first version stretched the shown tabs to
+            // fill the band, so a short title such as "CA2" took a third of the strip (live test 2026-11-13).
+            // A gap before › is the price, and more tabs fit.
             int count = scrolling.Count;
-            int shown = Math.Max(1, Math.Min(count, (band + TabGap) / (MinTabWidth + TabGap)));
-            _maxFirstVisible = count - shown;
+            var widths = new int[count];
+            // A band too narrow for one tab still shows one (squeezed), as before.
+            for (int i = 0; i < count; i++) widths[i] = Math.Min(Math.Min(natural[i], MinTabWidth), Math.Max(1, band));
+
+            // The furthest scroll: the first index from which every remaining tab fits.
+            _maxFirstVisible = count - 1;
+            int used = widths[count - 1];
+            while (_maxFirstVisible > 0 && used + TabGap + widths[_maxFirstVisible - 1] <= band)
+            {
+                _maxFirstVisible--;
+                used += TabGap + widths[_maxFirstVisible];
+            }
 
             int active = _activeTab != null ? scrolling.IndexOf(_activeTab) : -1;
             if (_revealActive && active >= 0)
             {
                 if (active < _firstVisible) _firstVisible = active;
-                else if (active >= _firstVisible + shown) _firstVisible = active - shown + 1;
+                else if (active > LastShown(widths, Math.Min(_firstVisible, count - 1), band))
+                {
+                    // Scroll just far enough that the active tab is the last whole one shown.
+                    int first = active, w = widths[active];
+                    while (first > 0 && w + TabGap + widths[first - 1] <= band)
+                    {
+                        first--;
+                        w += TabGap + widths[first];
+                    }
+                    _firstVisible = first;
+                }
             }
             _revealActive = false;
             _firstVisible = Math.Max(0, Math.Min(_firstVisible, _maxFirstVisible));
 
-            // The shown tabs share the band equally (the remainder pixel by pixel), so it ends flush with ›,
-            // a short title included: a tab narrower than its share left a gap before the arrow.
-            int share = Math.Max(0, band - TabGap * (shown - 1));
-            int each = share / shown, extra = share - each * shown;
+            int last = LastShown(widths, _firstVisible, band);
             int x2 = bandLeft;
-            for (int k = 0; k < shown; k++)
+            for (int i = _firstVisible; i <= last; i++)
             {
-                int i = _firstVisible + k;
-                int w = each + (k < extra ? 1 : 0);
-                slots.Add(new TabSlot { Tab = scrolling[i], X = x2, Width = w, Truncated = w < natural[i] });
-                x2 += w + TabGap;
+                slots.Add(new TabSlot { Tab = scrolling[i], X = x2, Width = widths[i], Truncated = widths[i] < natural[i] });
+                x2 += widths[i] + TabGap;
             }
             return slots;
+        }
+
+        // The index of the last whole tab that fits the band when the strip starts at first (at least first).
+        private static int LastShown(int[] widths, int first, int band)
+        {
+            int last = first, used = widths[first];
+            while (last + 1 < widths.Length && used + TabGap + widths[last + 1] <= band)
+            {
+                last++;
+                used += TabGap + widths[last];
+            }
+            return last;
         }
 
         // Scroll the overflowing strip by whole tabs (negative = towards the first tab).
