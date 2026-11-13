@@ -148,7 +148,7 @@ if (hooks) {
   check('one PreToolUse entry', pre.length === 1, `${pre.length} entries`);
   const entry = pre[0] || {};
   const matcher = entry.matcher || '';
-  check('PreToolUse matcher is the combined list', matcher === 'Bash|Read|Write|Edit|mcp__sqlite__write_query|mcp__mssql__query', matcher);
+  check('PreToolUse matcher is the combined list', matcher === 'Bash|PowerShell|Read|Write|Edit|mcp__sqlite__write_query|mcp__mssql__query', matcher);
   // Claude Code reads a matcher made only of letters, digits, _ - space , |
   // as an exact list of tool names; any other character makes it a regex.
   check('PreToolUse matcher is in exact-list form', /^[A-Za-z0-9_|]+$/.test(matcher), matcher);
