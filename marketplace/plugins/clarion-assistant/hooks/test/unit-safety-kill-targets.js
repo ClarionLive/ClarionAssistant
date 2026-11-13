@@ -98,15 +98,49 @@ for (const [command, tool] of [
   ['Get-Process claude | Stop-Process', P],
   ['Get-Process -Name multiterminal -ea 0 | Stop-Process -Force', P],
   ['taskkill /F /IM MultiTerminal.exe', P],
-  // Shapes the reader does not follow still deny on the name.
-  ['pkill -f claude', B],
-  ['killall MultiTerminal.exe', B],
-  ['(Get-Process MultiTerminal).Kill()', P],
-  ["Get-Process | Where-Object Name -eq 'claude' | Stop-Process", P],
-  ['powershell -Command "Stop-Process -Name MultiTerminal"', B],
-  ['ssh pos-server "pkill claude"', B],
 ]) {
   expect('deny-name', command, tool, 'deny', DENY, NO_TABLE);
+}
+// Shapes the reader does not follow ASK, naming what they may hit: text the
+// hook could not read never denies (live rollback of b5d8ecdf).
+for (const [command, tool, why] of [
+  ['pkill -f claude', B, 'it may name claude'],
+  ['killall MultiTerminal.exe', B, 'it may name MultiTerminal.exe'],
+  ['(Get-Process MultiTerminal).Kill()', P, 'it may name MultiTerminal'],
+  ["Get-Process | Where-Object Name -eq 'claude' | Stop-Process", P, 'it may name claude'],
+  ['powershell -Command "Stop-Process -Name MultiTerminal"', B, 'it may name MultiTerminal'],
+  ['ssh pos-server "pkill claude"', B, 'another machine'],
+  ['Stop-Process -Id 100 -ErrorVariable e', P, 'cannot tell'],
+  // A heredoc that is not data: its body is not read as commands.
+  ['cat <<EOF\ntaskkill /IM claude.exe\nEOF\ntaskkill /PID 120', B, 'it may name claude.exe'],
+  // A kill word in a multi-line message plus a real kill: unreadable, so ask.
+  ['git commit -m "kill race\n\nCo-Authored-By: Claude Opus" && taskkill /PID 121 /F', B, 'it may name Claude'],
+]) {
+  expect('unread-asks', command, tool, 'ask', why);
+}
+
+// ── Regressions from the live rollback: data that names claude ────────
+for (const [command, tool] of [
+  ['git commit -q -m "kill rule\n\nCo-Authored-By: Claude Opus" && echo ok', B],
+  ["git commit -m 'kill rule\n\nCo-Authored-By: Claude Opus'", B],
+  ['git commit -q -m "kill rule, by Claude"', B],
+  ["cat > \"$TEMP/probe.js\" <<'EOF'\nconst x = 1; // kill the Claude helper\nprocess.kill(1);\nEOF\nnode \"$TEMP/probe.js\" --flag", B],
+  ["cat > $TEMP/p.js <<'EOF'\nkill claude\nEOF", B],
+  ["cat > '/tmp/my notes.md' <<'EOF'\nStop-Process -Name MultiTerminal\nEOF", B],
+  ['git commit -m "fix\n\nCo-Authored-By: Claude Opus" && taskkill /PID 121 /F', B],   // own kill, readable
+  ["git commit -m 'kill rule\n\nCo-Authored-By: Claude'", P],
+]) {
+  expect('rollback-data', command, tool, 'allow');
+}
+// The one-line limit still holds after a comment or a heredoc, where a quote
+// could pair across lines and hide a kill.
+for (const command of [
+  "echo hi # it's\nkill 1\necho 'done'",
+  'echo hi # a 12" pipe\nkill 1\necho "done"',
+  "cat <<EOF\nit's\nEOF\nkill 1\necho 'x'",
+  "echo a \\\nb 'x\nkill 1\n'",
+]) {
+  expect('murky-asks', command, B, 'ask', ASK, NO_TABLE);
 }
 // By PID or tree: needs the table.
 for (const [command, tool] of [
@@ -120,8 +154,6 @@ for (const [command, tool] of [
   ['kill 200', P],
   ['Stop-Process -Id 121,100', P],            // one of two
   ['Get-Process -Id 1 | Stop-Process', P],
-  // Not followed by the reader (-ErrorVariable), but the PID is still looked up.
-  ['Stop-Process -Id 100 -ErrorVariable e', P],
 ]) {
   expect('deny-pid', command, tool, 'deny', DENY);
 }
@@ -224,7 +256,7 @@ expect('ask-walk', 'taskkill /PID 210 /F', B, 'ask', 'did not start', { readTabl
   const throwing = { readTable: () => { throw new Error('forced by the test'); }, anchorPid: 100 };
   expect('throw-asks', 'taskkill /PID 120 /F', B, 'ask', 'hit an error', throwing);
   expect('throw-asks', 'Stop-Process -Id 121', P, 'ask', 'hit an error', throwing);
-  expect('throw-asks', 'Stop-Process -Id 100 -ErrorVariable e', P, 'ask', 'hit an error', throwing);
+  expect('throw-asks', 'taskkill //F //T //PID 120', B, 'ask', 'hit an error', throwing);
   expect('throw-deny', 'Stop-Process -Name claude', P, 'deny', DENY, throwing);   // decided before the table
   expect('throw-none', 'git status', B, 'allow', '', throwing);
   expect('throw-none', 'Get-ChildItem -Recurse src', P, 'allow', '', throwing);
@@ -256,9 +288,87 @@ for (const command of [
   // No kill word here: with one (('task'+'kill')) the kill rule asks first.
   "Start-Process ('note'+'pad') -ArgumentList x.txt",
   'Start-Process $exe -ArgumentList /IM, x',
-  'Start-Process -FilePath "$dir\\tool.exe"',
+  'Start-Process -FilePath "$dir\\$tool"',
+  // A variable set to something other than a literal, or a literal file name
+  // still holding an unknown.
+  '$x = Get-ChildItem x.exe | Select-Object -First 1; & $x',
+  "$a = 'C:\\t'; & \"$a\\$b\"",
 ]) {
   expect('dynamic', command, P, 'ask', DYNAMIC, NO_TABLE);
+}
+// Variables the command sets to a literal are resolved; a variable folder is fine.
+for (const command of [
+  '$gh = "C:\\Program Files\\GitHub CLI\\gh.exe"; & $gh issue list',
+  "$s='C:\\x\\run.ps1'; & $s -Label a",
+  "$wt='H:\\w'; $exe=\"$wt\\bin\\app.exe\"; & $exe --version",
+  '& "$PSScriptRoot\\build.ps1"',
+  'Start-Process -FilePath "$dir\\tool.exe"',
+  "$ps5=\"$env:windir\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\"; & $ps5 -NoProfile -File x.ps1",
+]) {
+  expect('ps-resolved', command, P, 'allow', '', NO_TABLE);
+}
+expect('ps-resolved-kill', "$k='taskkill'; & $k /IM x.exe", P, 'ask', '', NO_TABLE);
+for (const command of [
+  'GH="/c/Program Files/GitHub CLI/gh.exe"; "$GH" pr list',
+  'P="python -I $TEMP/res.py"; $P x.cs o',
+  'EDGE="/c/x/msedge.exe"; "$EDGE" --headless',
+  '"$TEMP/tool.sh" run',
+  'APP=src/bin/app.exe; $APP --version',
+]) {
+  expect('bash-resolved', command, B, 'allow', '', NO_TABLE);
+}
+for (const command of [
+  'for c in a b; do $c 1; done',
+  'X=$(which tool); $X run',
+  'D=/tmp; "$D/$T" run',
+]) {
+  expect('bash-unresolved', command, B, 'ask', DYNAMIC, NO_TABLE);
+}
+expect('bash-resolved-kill', 'A=task; B="${A}kill"; $B /IM x.exe', B, 'ask', '', NO_TABLE);
+
+// ── PowerShell deny rules: data never denies (replay of b5d8ecdf) ─────
+for (const command of [
+  '$focus = "Review only. Focus: the fresh-base check; shutdown handling in the card loop; done"',
+  "Write-Output 'never run Format-Volume; Stop-Computer; Send-MailMessage'",
+  "# later: shutdown /s\nGet-Date",
+  "git ls-files | Select-String -Pattern '(^|/)(secrets\\.json|.*\\.env|authkey)$' | Select-Object -First 15",
+]) {
+  expect('ps-data-no-deny', command, P, 'allow', '', NO_TABLE);
+}
+for (const [command, why] of [
+  ['Stop-Computer -Force', 'Blocked: system shutdown'],
+  ["Remove-Item -Recurse -Force 'C:\\'", 'Blocked: recursive delete'],
+  ['Get-Date; shutdown /r /t 0', 'Blocked: system shutdown'],
+  ['Get-Content .env', 'Blocked: reading .env'],
+  ['Select-String -Pattern api -Path .env', 'Blocked: reading .env'],
+]) {
+  expect('ps-deny', command, P, 'deny', why, NO_TABLE);
+}
+// After a string the reader cannot follow, the same cmdlet asks instead.
+expect('ps-unread-asks', 'Write-Host "a $x"; Stop-Computer', P, 'ask', 'could not read all of it', NO_TABLE);
+
+// ── PowerShell: a process this same command started ───────────────────
+// No process table: the kill is the agent's own by construction.
+for (const command of [
+  '$p = Start-Process notepad -PassThru; Start-Sleep 1; $p.Kill()',
+  '$p = Start-Process app.exe -ArgumentList x -PassThru; Stop-Process -Id $p.Id -Force',
+  '$p = Start-Process app.exe -PassThru\nif (!$p.HasExited) { $p.Kill() }',
+  '$p = Start-Process app.exe -PassThru; $p | Stop-Process -Force',
+  '$p = Start-Process app.exe -PassThru; Stop-Process -InputObject $p',
+  '$p = Start-Process app.exe -PassThru; try { Wait-Process -Id $p.Id -Timeout 5 } finally { $p.Kill() }',
+  '$p = Start-Process app.exe -ArgumentList "a;b|c" -NoNewWindow -PassThru; if (-not $p.WaitForExit(1000)) { $p.Kill(); "TIMEOUT" }',
+]) {
+  expect('own-started', command, P, 'allow', '', NO_TABLE);
+}
+for (const [command, want, why] of [
+  ['$p = Get-Process node; $p.Kill()', 'ask', ASK],                                   // not started here
+  ['$p = Start-Process app.exe; $p.Kill()', 'ask', ASK],                              // no -PassThru
+  ['$p = Start-Process a -PassThru; $p = Get-Process claude; $p.Kill()', 'ask', ASK], // reassigned
+  ['Stop-Process -Id $pid', 'ask', ASK],
+  ['foreach ($p in $list) { $p.Kill() }', 'ask', ASK],
+  ['$p = Start-Process a -PassThru; Stop-Process -Id $p.Id; Stop-Process -Name claude', 'deny', DENY],
+]) {
+  expect('not-own', command, P, want, why, NO_TABLE);
 }
 for (const command of [
   "& 'C:\\Program Files\\Git\\bin\\git.exe' status",
@@ -293,6 +403,7 @@ for (const command of [
   expect('ps-alias', command, P, 'ask', DYNAMIC, NO_TABLE);
 }
 for (const command of [
+  'Select-String -Path $f -Pattern "USE\\(SAL:SaleDate|%Range"',
   'Set-Alias ll Get-ChildItem',
   "Set-Alias -Name np -Value 'notepad.exe'",
   'New-Alias g git',
@@ -404,7 +515,7 @@ for (const command of [
   "cat > f <<'EOF'\nkill 1",                              // never closed
   "echo 'a\ncat > f <<'EOF'\n'; kill 1\nEOF",              // the << sits inside a quote
   "git commit -m \"$(cat <<'EOF'\nok\nEOF\n)\"; kill 1",
-  "cat > \"my file\" <<'EOF'\nkill 1\nEOF",                // quoted file name: not followed
+  "cat > \"$(pick)\" <<'EOF'\nkill 1\nEOF",                // a file name that runs code: not data
 ]) {
   expect('heredoc-code', command, B, 'ask', ASK, NO_TABLE);
 }

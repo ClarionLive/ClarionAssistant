@@ -75,6 +75,16 @@
 // the command stays as it is. A misread therefore makes the rule ask, never
 // stay silent.
 //
+// Spanning a line is allowed (ticket b5d8ecdf) while the text read so far
+// holds no #, no << and no backslash-newline, and the string has nothing bash
+// expands (for "...", no $ or backtick at all). The one-line limit existed
+// because this reader does not understand comments or heredoc bodies: a quote
+// character there (# a 12" pipe, it's) could pair with a quote on a later line
+// and hide a kill between them. Before any of those appear, every quote seen
+// was read correctly, so a quote that opens is a real one and its body is
+// data. A multi-line commit message (git commit -m "...<newline>Co-Authored-By:
+// ...") is therefore data, not a command that names claude.
+//
 // A simple quoted string that IS a kill program is not data, because bash runs
 // it: a path or .exe name ending in a kill word ("C:/Windows/System32/
 // taskkill.exe", "/usr/bin/kill") wherever it stands — quoting a full path is
@@ -227,13 +237,22 @@ function removeSimpleQuotes(command) {
   const seen = new Map();
   const out = []; // one character per element (see atCommandStart)
   const append = (s) => { for (let n = 0; n < s.length; n++) out.push(s[n]); };
+  // Set once the text read holds a #, a << or a backslash-newline: from then
+  // on a quote may not span a line (see the note under FAIL SAFE).
+  let murky = false;
   let i = 0;
   while (i < command.length) {
     const c = command[i];
-    if (c === '\\') { append(command.slice(i, i + 2)); i += 2; continue; }
+    if (c === '\\') {
+      if (command[i + 1] === '\n' || command[i + 1] === '\r') murky = true;
+      append(command.slice(i, i + 2));
+      i += 2;
+      continue;
+    }
+    if (c === '#' || (c === '<' && command[i + 1] === '<')) murky = true;
     if (c === "'") {
       const close = command.indexOf("'", i + 1);
-      if (command[i - 1] === '$' || close < 0 || command.slice(i + 1, close).includes('\n')) {
+      if (command[i - 1] === '$' || close < 0 || (murky && command.slice(i + 1, close).includes('\n'))) {
         return out.join('') + command.slice(i);
       }
       const body = command.slice(i + 1, close);
@@ -244,7 +263,8 @@ function removeSimpleQuotes(command) {
     if (c === '"') {
       const close = findClosingDoubleQuote(command, i + 1);
       const body = close < 0 ? '' : command.slice(i + 1, close);
-      if (close < 0 || body.includes('\n') || /\$[({]|`/.test(body)) {
+      const multiLine = body.includes('\n');
+      if (close < 0 || /\$[({]|`/.test(body) || (multiLine && (murky || /[$\\]/.test(body)))) {
         return out.join('') + command.slice(i);
       }
       append(isQuotedKillProgram(body, out, seen) ? `"${body}"` : '""');
@@ -348,8 +368,12 @@ const CURLY_QUOTE = /[‘’‚‛“”„]/;
  * runs, which is kept as written. Comments are kept as written. Stops at the
  * first quote that is not simple and keeps the rest as it is (see FAIL SAFE
  * above).
+ *
+ * `mask`, when given (a Uint8Array as long as the command), is filled in for
+ * the raw command: 0 code, 1 data (inside a removed string, or a comment),
+ * 2 not read (after reading stopped). See psStartRule.
  */
-function removePowerShellSimpleQuotes(command) {
+function removePowerShellSimpleQuotes(command, mask) {
   const out = [];
   // The last non-blank character written, and the character (blank or not)
   // just before it, kept as we go so finding the call operator costs nothing
@@ -368,7 +392,11 @@ function removePowerShellSimpleQuotes(command) {
   const isRun = () =>
     (lastSolid === '&' && charBeforeSolid !== '&') ||
     (lastSolid === '.' && (charBeforeSolid === undefined || /[\s;|{(]/.test(charBeforeSolid)));
-  const rest = (from) => out.join('') + command.slice(from);
+  const rest = (from) => {
+    if (mask) mask.fill(2, from);
+    return out.join('') + command.slice(from);
+  };
+  const data = (from, to) => { if (mask) mask.fill(1, from, to); };
   // Index of the quote closing a string that opened before `from`, treating a
   // doubled quote as one quote inside the string; -1 if it never closes.
   const closing = (quote, from) => {
@@ -399,6 +427,7 @@ function removePowerShellSimpleQuotes(command) {
       const lineEnd = command.indexOf('\n', i);
       const end = lineEnd < 0 ? command.length : lineEnd;
       append(command.slice(i, end));
+      data(i, end);
       i = end;
       continue;
     }
@@ -411,7 +440,8 @@ function removePowerShellSimpleQuotes(command) {
       const body = command.slice(lineEnd + 1, close);
       if (CURLY_QUOTE.test(body)) return rest(i);
       if (quote === '"' && /[$`]/.test(body)) return rest(i);
-      append(isRun() ? command.slice(i, close + 3) : '@' + quote + quote + '@');
+      if (isRun()) append(command.slice(i, close + 3));
+      else { append('@' + quote + quote + '@'); data(i + 2, close + 1); }
       i = close + 3;
       continue;
     }
@@ -421,7 +451,8 @@ function removePowerShellSimpleQuotes(command) {
       const body = command.slice(i + 1, close);
       if (CURLY_QUOTE.test(body)) return rest(i);
       if (c === '"' && /[$`]/.test(body)) return rest(i);
-      append(isRun() ? command.slice(i, close + 1) : c + c);
+      if (isRun()) append(command.slice(i, close + 1));
+      else { append(c + c); data(i + 1, close); }
       i = close + 1;
       continue;
     }
@@ -445,9 +476,9 @@ function isPowerShellKill(command) {
 // isPowerShellKill let it through. A command that runs a command it builds as
 // it runs therefore ASKS, kill word or not:
 //   - & or . followed by ( (an expression), a $variable, @ (splatting), or a
-//     "..." string that interpolates anything other than $env:NAME / ${env:NAME}
-//     (& "$env:ProgramFiles\Git\bin\git.exe" status stays silent: only the
-//     folder comes from the environment, and the file name is still read);
+//     "..." string whose FILE NAME holds an expansion (& "$env:ProgramFiles\
+//     Git\bin\git.exe" status and & "$PSScriptRoot\build.ps1" stay silent:
+//     only the folder is a variable, and the file name is still read);
 //   - Invoke-Expression / iex given anything but one literal string: a $, (, +
 //     or a pipe into it;
 //   - [scriptblock]::Create, NewScriptBlock, InvokeScript, .InvokeCommand.;
@@ -458,23 +489,82 @@ function isPowerShellKill(command) {
 // A literal & 'C:\path\tool.exe' args stays silent, and so does any of these
 // written inside a simple quoted string. Comments are kept as written (see
 // removePowerShellSimpleQuotes), so a mention in a comment asks.
+//
+// A $variable the command itself sets to a literal is resolved first (see
+// "Variables the command itself sets to a literal" for the Bash side, which
+// this mirrors): $s = '...\run.ps1'; & $s, $exe = "$wt\bin\app.exe"; & $exe
+// and $gh = "C:\Program Files\GitHub CLI\gh.exe"; & $gh ... stay silent. The
+// name is dynamic only when its file name still holds an expansion, or it
+// names a kill program.
 
-const PS_DYNAMIC_CALL = /(?:^|[\s;|({=])(?<!&)[&.](?!&)\s*(?:\(|\$|@(?!['"]))/;
+const PS_CALL = /(?:^|[\s;|({=])(?<!&)[&.](?!&)\s*(?=[($@])/g;
 const PS_CALLED_STRING = /(?:^|[\s;|({=])(?<!&)(?:&(?!&)|\.|\b(?:Start-Process|saps)\b(?:\s+-F\w*)?)\s*"((?:[^"`]|`.)*)"/gi;
-const PS_START_DYNAMIC = /\b(?:Start-Process|saps)\s+(?:-F\w*\s+)?[($]/i;
+const PS_START_CALL = /\b(?:Start-Process|saps)\s+(?:-F\w*\s+)?(?=[($])/gi;
 const PS_BUILDS_CODE = /\[scriptblock\]::Create\b|\bNewScriptBlock\b|\bInvokeScript\b|\.InvokeCommand\./i;
 const PS_IEX = /\b(?:Invoke-Expression|iex)\b/i;
-const PS_ALIAS = /(?:^|[\s;|({])(?:Set-Alias|New-Alias|sal|nal)\b/i;
-const ENV_ONLY_STRING = /^(?:[^$`]|\$env:\w+|\$\{env:[^}$`]+\})*$/i;
+// At a command start and followed by a blank, so -Pattern "USE\(SAL:Date" is not one.
+const PS_ALIAS = /(?:^|[|({])\s*(?:Set-Alias|New-Alias|sal|nal)\s/i;
+const PS_VARIABLE = /\$\{(?!env:)(\w+)\}|\$(?!env:)(\w+)(?![\w\[.:(])/gi;
+
+// name (lower case) -> literal value, for variables every assignment of which
+// is a literal: '...' or "..." with no $( or backtick, ending the statement.
+function psLiteralVars(command) {
+  const vars = new Map();
+  const unknown = new Set();
+  for (const m of command.matchAll(/(?:^|[\s;|({])\$(\w+)\s*=(?!=)\s*/g)) {
+    const name = m[1].toLowerCase();
+    const rest = command.slice(m.index + m[0].length);
+    const literal = /^(?:'((?:[^']|'')*)'|"((?:[^"`$]|\$(?!\()(?:env:)?\w+|\$\{[^}$`]+\})*)")\s*(?=$|[;\n|)}]|#)/.exec(rest);
+    const value = literal ? (literal[1] !== undefined ? literal[1].replace(/''/g, "'") : literal[2]) : null;
+    if (value === null) unknown.add(name);
+    else if (vars.has(name) && vars.get(name) !== value) unknown.add(name);
+    else vars.set(name, value);
+  }
+  for (const m of command.matchAll(/\bforeach\s*\(\s*\$(\w+)\s+in\b/gi)) unknown.add(m[1].toLowerCase());
+  for (const name of unknown) vars.delete(name);
+  return vars;
+}
+
+function resolvePsVars(text, vars, depth = 0) {
+  if (depth > 8) return text;
+  return text.replace(PS_VARIABLE, (whole, braced, plain) => {
+    const name = (braced || plain).toLowerCase();
+    return vars.has(name) ? resolvePsVars(vars.get(name), vars, depth + 1) : whole;
+  });
+}
+
+// Whether a program name (a string body, or a resolved variable's value) is
+// still unknown in its file name, or names a kill program.
+function psNameIsDynamic(name, vars) {
+  const resolved = resolvePsVars(name, vars);
+  const fileName = resolved.slice(Math.max(resolved.lastIndexOf('/'), resolved.lastIndexOf('\\')) + 1);
+  return /\$|`/.test(fileName) || namesPowerShellKill(resolved);
+}
+
+// What follows & . or Start-Process at `rest`: an expression or splat is
+// dynamic; a $variable is dynamic unless it resolves (see above).
+function psTargetIsDynamic(rest, vars) {
+  if (rest[0] === '(') return true;
+  if (rest[0] === '@') return !/^@['"]/.test(rest);
+  const m = /^\$(\w+)(?![\w\[.:(])/.exec(rest);
+  if (!m) return true;
+  const name = m[1].toLowerCase();
+  return !vars.has(name) || psNameIsDynamic(vars.get(name), vars);
+}
 
 function psDynamicInvocation(command) {
   if (!/[&.$@]|\biex\b|Invoke-Expression|scriptblock|InvokeScript|InvokeCommand|alias|\bs?al\b|\bnal\b/i.test(command)) return false;
   const text = removePowerShellSimpleQuotes(command);
-  if (PS_DYNAMIC_CALL.test(text) || PS_START_DYNAMIC.test(text) || PS_BUILDS_CODE.test(text)) return true;
-  for (const m of text.matchAll(PS_CALLED_STRING)) if (!ENV_ONLY_STRING.test(m[1])) return true;
+  if (PS_BUILDS_CODE.test(text)) return true;
+  const vars = psLiteralVars(command);
+  for (const re of [PS_CALL, PS_START_CALL]) {
+    for (const m of text.matchAll(re)) if (psTargetIsDynamic(text.slice(m.index + m[0].length), vars)) return true;
+  }
+  for (const m of text.matchAll(PS_CALLED_STRING)) if (psNameIsDynamic(m[1], vars)) return true;
   return text.split(/[;\n]/).some((segment) =>
     (PS_IEX.test(segment) && (/[$(+]/.test(segment) || /\|\s*(?:Invoke-Expression|iex)\b/i.test(segment))) ||
-    (PS_ALIAS.test(segment) && /[$(+]/.test(segment)));
+    (PS_ALIAS.test(segment) && (/[(+]/.test(segment) ||
+      [...segment.matchAll(/\$(\w+)/g)].some((v) => !vars.has(v[1].toLowerCase()) || psNameIsDynamic(vars.get(v[1].toLowerCase()), vars)))));
 }
 
 // ── Heredocs that are data (ticket b5d8ecdf) ────────────────────────
@@ -491,18 +581,23 @@ function psDynamicInvocation(command) {
 //     git commit|tag|merge ... -F - / --file=-, gh <noun> <verb> ...
 //     --body-file - / -F -, or cat inside "$(...)" that is an argument of
 //     git commit|tag|merge or gh <noun> <verb>;
-//   - nothing pipes the heredoc on (cat <<'EOF' | sh is code), the consumer
-//     line holds no quote, backtick or backslash, and the text before that
-//     line is outside every quote, so the << really is an operator;
+//   - nothing pipes the heredoc on (cat <<'EOF' | sh is code), the consumer's
+//     words are plain, '...', or "..." / unquoted words whose only expansion
+//     is $NAME or ${NAME} (cat > "$TEMP/probe.js" <<'EOF': a variable only
+//     says where the data goes), there is no backtick, and the text before
+//     the << is outside every quote, so the << really is an operator;
 //   - the closing delimiter is found.
 // Otherwise reading stops there and the rest is kept (FAIL SAFE, as above). A
 // heredoc fed to an interpreter (python - <<'EOF', node, bash, sh, pwsh) is
-// never a sink, so a kill in it still asks. Only the body goes: the consumer
-// line and everything after the closing delimiter are still checked.
+// never a sink, so a kill in it still asks. The body, the << operator and the
+// closing line go; the rest of the consumer line and everything after the
+// closing delimiter are still checked, with no << left to make the later
+// readers stop.
 
 const HEREDOC_ANY = /(?<!<)<<(?!<)/g;
 const HEREDOC_OP = /(?<!<)<<(-?)[ \t]*(?:'([A-Za-z_][\w.-]*)'|"([A-Za-z_][\w.-]*)"|\\([A-Za-z_][\w.-]*))/;
-const SINK_WORD = String.raw`[^\s;&|<>()$'"` + '`' + String.raw`\\]+`;
+const SINK_WORD =
+  String.raw`(?:[^\s;&|<>()$'"` + '`' + String.raw`\\]|\$\{?\w+\}?|'[^'\n]*'|"(?:[^"$` + '`' + String.raw`\\\n]|\$\{?\w+\}?)*")+`;
 const CAT_SINK = new RegExp(String.raw`^cat(?:\s+\d?>>?\s*` + SINK_WORD + String.raw`)*$`);
 const TEE_SINK = new RegExp(String.raw`^tee(?:\s+-a)?(?:\s+` + SINK_WORD + String.raw`)+$`);
 const PLAIN_WORDS = new RegExp(String.raw`^` + SINK_WORD + String.raw`(?:\s+` + SINK_WORD + String.raw`)*$`);
@@ -548,7 +643,7 @@ function bashQuotesClosed(text) {
 
 // Whether the heredoc whose operator follows `prefix` (on its line) and is
 // followed by `suffix` feeds a data sink (see above).
-function isDataSink(prefix, suffix) {
+function isDataSink(prefix, suffix, textBefore = '') {
   const separators = [...prefix.matchAll(/&&|\|\||;|\$\(|\||\(/g)];
   const last = separators[separators.length - 1];
   const consumer = prefix.slice(last ? last.index + last[0].length : 0).trim();
@@ -559,7 +654,7 @@ function isDataSink(prefix, suffix) {
     const parts = outer.split(/&&|\|\||;/);
     return MESSAGE_COMMAND.test(parts[parts.length - 1].trim());
   }
-  if (/['"`\\]/.test(prefix)) return false;
+  if (/[`\\]/.test(prefix) || !bashQuotesClosed(textBefore + prefix)) return false;
   if (last && (last[0] === '|' || last[0] === '(')) return false;
   if (!HEREDOC_SUFFIX.test(suffix)) return false;
   if (CAT_SINK.test(consumer) || TEE_SINK.test(consumer)) return true;
@@ -567,9 +662,9 @@ function isDataSink(prefix, suffix) {
 }
 
 /**
- * Returns the bash command with the body of every data heredoc removed (the
- * operator line and the closing delimiter line are kept). Stops at the first
- * heredoc that is not data and keeps the rest as it is.
+ * Returns the bash command with every data heredoc removed: its body, its <<
+ * operator and its closing line (the rest of the operator's line is kept).
+ * Stops at the first heredoc that is not data and keeps the rest as it is.
  */
 function removeDataHeredocs(command) {
   if (!command.includes('<<')) return command;
@@ -581,14 +676,15 @@ function removeDataHeredocs(command) {
     const operators = line.match(HEREDOC_ANY);
     if (!operators) { out.push(line); i++; continue; }
     const m = operators.length === 1 ? HEREDOC_OP.exec(line) : null;
-    if (!m || !bashQuotesClosed(out.length ? out.join('\n') + '\n' : '')) return keepRest(i);
-    if (!isDataSink(line.slice(0, m.index), line.slice(m.index + m[0].length))) return keepRest(i);
+    const before = out.length ? out.join('\n') + '\n' : '';
+    if (!m || !bashQuotesClosed(before)) return keepRest(i);
+    if (!isDataSink(line.slice(0, m.index), line.slice(m.index + m[0].length), before)) return keepRest(i);
     const delimiter = m[2] || m[3] || m[4];
     const closes = (l) => (m[1] === '-' ? l.replace(/^\t+/, '') : l).replace(/\r$/, '') === delimiter;
     let end = i + 1;
     while (end < lines.length && !closes(lines[end])) end++;
     if (end >= lines.length) return keepRest(i);
-    out.push(line, lines[end]);
+    out.push(line.slice(0, m.index) + line.slice(m.index + m[0].length));
     i = end + 1;
   }
   return out.join('\n');
@@ -691,14 +787,70 @@ function readBashWord(text, pos) {
   return { raw: text.slice(pos, i), end: Math.max(i, pos + 1), subs };
 }
 
-// Whether a command word is built at run time (see above).
-function bashWordIsDynamic(raw) {
-  if (raw.includes("$'")) return true;
-  const outsideSingle = raw.replace(/'[^']*'/g, '');
-  return /\$\(|`|\$\{|\$[A-Za-z_0-9@*#?!$-]/.test(outsideSingle);
+// ── Variables the command itself sets to a literal ──
+// The replay of a month of transcripts (b5d8ecdf) found the dynamic rules
+// asking about 740 times for one ordinary shape: a path put in a variable and
+// run from it (GH="/c/Program Files/GitHub CLI/gh.exe"; "$GH" pr list, or
+// $s='...\run.ps1'; & $s). Such a name is known. A variable counts as known
+// when every assignment to it in the command is a literal (quoted with no $(
+// or backtick, or a plain word); its value may use other variables, resolved
+// the same way. A loop or read variable is never known. After resolving, the
+// command name is dynamic only when its FILE NAME (after the last / or \)
+// still holds an expansion, or it names a kill program. An unknown variable
+// for a folder ("$TEMP/res.py", "$env:ProgramFiles\Git\bin\git.exe") is fine:
+// the file name is still read.
+
+const BASH_EXPANSION = /\$\(|`|\$\{|\$[A-Za-z_0-9@*#?!$-]/;
+
+function bashLiteralVars(command) {
+  const vars = new Map();
+  const unknown = new Set();
+  for (const m of command.matchAll(/(?:^|[\s;&|(])([A-Za-z_]\w*)=/g)) {
+    const name = m[1];
+    let at = m.index + m[0].length;
+    let value = null;
+    if (command[at] === '"') {
+      const close = findClosingDoubleQuote(command, at + 1);
+      const body = close < 0 ? null : command.slice(at + 1, close);
+      if (body !== null && !/\$\(|`/.test(body)) { value = body; at = close + 1; }
+    } else if (command[at] === "'") {
+      const close = command.indexOf("'", at + 1);
+      if (close >= 0) { value = command.slice(at + 1, close); at = close + 1; }
+    } else {
+      const word = /^[^\s;&|<>()'"`\\]*/.exec(command.slice(at))[0];
+      if (!/\$\(/.test(word)) { value = word; at += word.length; }
+    }
+    if (value === null || (at < command.length && !/[\s;&|)]/.test(command[at]))) unknown.add(name);
+    else if (vars.has(name) && vars.get(name) !== value) unknown.add(name);
+    else vars.set(name, value);
+  }
+  for (const m of command.matchAll(/\b(?:for|select)\s+([A-Za-z_]\w*)\s+in\b|\bread\s+(?:-\w+\s+)*([A-Za-z_]\w*)/g)) {
+    unknown.add(m[1] || m[2]);
+  }
+  for (const name of unknown) vars.delete(name);
+  return vars;
 }
 
-function bashDynamicIn(text, depth) {
+function resolveBashVars(text, vars, depth = 0) {
+  if (depth > 8) return text;
+  return text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (whole, braced, plain) => {
+    const name = braced || plain;
+    return vars.has(name) ? resolveBashVars(vars.get(name), vars, depth + 1) : whole;
+  });
+}
+
+// Whether a command word is built at run time (see above).
+function bashWordIsDynamic(raw, vars = new Map()) {
+  if (raw.includes("$'")) return true;
+  const outsideSingle = raw.replace(/'[^']*'/g, '');
+  if (!BASH_EXPANSION.test(outsideSingle)) return false;
+  let name = resolveBashVars(outsideSingle, vars).replace(/"/g, '');
+  if (!raw.includes('"')) name = name.trim().split(/\s+/)[0] || ''; // unquoted: word splitting
+  const fileName = name.slice(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
+  return BASH_EXPANSION.test(fileName) || KILL_WORD.test(name);
+}
+
+function bashDynamicIn(text, depth, vars) {
   if (depth > BASH_MAX_DEPTH) return true;
   let expecting = true;
   let pendingHeredocs = [];
@@ -733,7 +885,7 @@ function bashDynamicIn(text, depth) {
       i += redirect[0].length;
       while (text[i] === ' ' || text[i] === '\t') i++;
       const target = readBashWord(text, i);
-      for (const sub of target.subs) if (bashDynamicIn(sub, depth + 1)) return true;
+      for (const sub of target.subs) if (bashDynamicIn(sub, depth + 1, vars)) return true;
       if (redirect[0].replace(/^\d+/, '').startsWith('<<') && redirect[0].replace(/^\d+/, '') !== '<<<') {
         pendingHeredocs.push({
           delimiter: target.raw.replace(/['"\\]/g, ''),
@@ -744,11 +896,11 @@ function bashDynamicIn(text, depth) {
       continue;
     }
     const word = readBashWord(text, i);
-    for (const sub of word.subs) if (bashDynamicIn(sub, depth + 1)) return true;
+    for (const sub of word.subs) if (bashDynamicIn(sub, depth + 1, vars)) return true;
     i = word.end;
     if (!expecting) continue;
     if (BASH_ASSIGNMENT.test(word.raw) || BASH_KEYWORDS.has(word.raw)) continue;
-    if (bashWordIsDynamic(word.raw)) return true;
+    if (bashWordIsDynamic(word.raw, vars)) return true;
     expecting = false;
     if (BASH_NAME_NEXT.has(word.raw)) {
       // for NAME / case WORD / function NAME: the next word is not a command.
@@ -762,7 +914,7 @@ function bashDynamicIn(text, depth) {
 function bashDynamicCommand(command) {
   if (!/[$`]/.test(command)) return false;
   try {
-    return bashDynamicIn(command, 0);
+    return bashDynamicIn(command, 0, bashLiteralVars(command));
   } catch {
     return true;
   }
@@ -901,6 +1053,8 @@ function splitStages(command, shell) {
       continue;
     }
     if (c === '\n' || c === ';') { endPipeline(); continue; }
+    // PowerShell braces open and close statement blocks (if (...) { $p.Kill() }).
+    if (shell === 'powershell' && (c === '{' || c === '}')) { endPipeline(); continue; }
     if ((c === '&' && next === '&') || (c === '|' && next === '|')) { endPipeline(); i++; continue; }
     if (c === '|') { endStage(); continue; }
     if (c === '&' && shell === 'bash' && command[i - 1] !== '>' && next !== '>') { endPipeline(); continue; }
@@ -913,8 +1067,10 @@ function splitStages(command, shell) {
 // Reads one stage as plain words: unquoted letters, digits and _ . : / \ , * ?
 // - plus simple quoted strings. Redirections to null (2>&1, >/dev/null,
 // 2>$null, *>$null) are dropped first. $true, $false and $null are allowed
-// (-Confirm:$false); any other $, and every other character (braces, brackets,
-// parentheses, ` # % @ ! ~ < > = & and bash's \), makes it return null.
+// (-Confirm:$false), and so is a bare $name or $name.Id, which only the
+// Start-Process -PassThru rule accepts as a target (see psOwnStartedVars);
+// any other $, and every other character (braces, brackets, parentheses,
+// ` # % @ ! ~ < > = & and bash's \), makes it return null.
 function readWords(stage, shell) {
   const text = stage
     .replace(/(^|\s)(?:\d|\*)?>>?\s*(?:\/dev\/null|\$null|nul)(?=\s|$)/gi, '$1')
@@ -924,7 +1080,7 @@ function readWords(stage, shell) {
   let dollar = false;
   const finish = () => {
     if (word === null) return true;
-    if (dollar && !/^(?:-\w+:)?\$(?:true|false|null)$/i.test(word.text)) return false;
+    if (dollar && !/^(?:-\w+:)?\$(?:true|false|null)$|^\$\w+(?:\.Id)?$/i.test(word.text)) return false;
     words.push(word);
     word = null;
     dollar = false;
@@ -1011,10 +1167,36 @@ function powerShellParameter(written, known) {
   return hits.length === 1 ? hits[0] : null;
 }
 
+// ── Processes this same command started (PowerShell) ──
+// $p = Start-Process app.exe -PassThru ... then $p.Kill(), Stop-Process -Id
+// $p.Id, Stop-Process -InputObject $p or $p | Stop-Process: the process was
+// started by this command, so it is the agent's own whatever it is called,
+// and the kill is allowed without reading the process table. The replay of a
+// month of transcripts found this shape in about 190 of the PowerShell kill
+// prompts. A variable counts only when every assignment to it is
+// $v = Start-Process ... -PassThru, and it is never a foreach variable.
+function psOwnStartedVars(command) {
+  const started = new Set();
+  const other = new Set();
+  // Quoted arguments emptied first, so a ; or | inside one (-ArgumentList
+  // "a;b") does not cut the assignment short before its -PassThru.
+  const unquoted = command.replace(/'(?:[^']|'')*'|"(?:[^"`]|`.)*"/g, '""');
+  for (const m of unquoted.matchAll(/(?:^|[\s;|({])\$(\w+)\s*=(?!=)\s*([^;\n|}]*)/g)) {
+    const name = m[1].toLowerCase();
+    if (/^(?:Start-Process|saps)\b.*\s-PassThru\b/i.test(m[2])) started.add(name);
+    else other.add(name);
+  }
+  for (const m of command.matchAll(/\bforeach\s*\(\s*\$(\w+)\s+in\b/gi)) other.add(m[1].toLowerCase());
+  for (const name of other) started.delete(name);
+  return started;
+}
+const OWN_METHOD_KILL = /^\s*\$(\w+)\.(?:Kill|CloseMainWindow)\(\s*(?:\$true|\$false)?\s*\)\s*$/i;
+
 // Reads the arguments of Stop-Process (positional = Id) or Get-Process
 // (positional = Name) into targets; null when anything is not understood.
-function readProcessCmdlet(args, positional) {
-  const known = ['Id', 'PID', 'Name', 'ProcessName', ...SWITCHES, ...VALUED];
+// `ownVars` names variables holding a process this command started.
+function readProcessCmdlet(args, positional, ownVars = new Set()) {
+  const known = ['Id', 'PID', 'Name', 'ProcessName', 'InputObject', ...SWITCHES, ...VALUED];
   const targets = [];
   let positionalUsed = false;
   const listFrom = (first, i) => {
@@ -1022,9 +1204,17 @@ function readProcessCmdlet(args, positional) {
     while (i + 1 < args.length && (text.endsWith(',') || args[i + 1].text.startsWith(','))) text += args[++i].text;
     return { items: text.split(',').filter((s) => s !== ''), i };
   };
+  const isOwn = (item, suffix) => {
+    const m = new RegExp(String.raw`^\$(\w+)` + suffix + '$', 'i').exec(item);
+    return Boolean(m && ownVars.has(m[1].toLowerCase()));
+  };
   const add = (kind, items) => {
     for (const item of items) {
-      if (kind === 'Id') {
+      if (kind === 'InputObject' || (kind === 'Id' && item.startsWith('$') && !item.includes('.'))) {
+        if (!isOwn(item, '')) return false;
+        targets.push({ own: true });
+      } else if (kind === 'Id') {
+        if (isOwn(item, String.raw`\.Id`)) { targets.push({ own: true }); continue; }
         if (!/^\d+$/.test(item)) return false;
         targets.push({ pid: Number(item) });
       } else {
@@ -1052,7 +1242,8 @@ function readProcessCmdlet(args, positional) {
       if (VALUED.has(name)) continue;
       const list = listFrom(value, i);
       i = list.i;
-      if (!add(name === 'Id' || name === 'PID' ? 'Id' : 'Name', list.items)) return null;
+      const kind = name === 'Id' || name === 'PID' ? 'Id' : name === 'InputObject' ? 'InputObject' : 'Name';
+      if (!add(kind, list.items)) return null;
       continue;
     }
     if (positionalUsed) return null;
@@ -1071,14 +1262,25 @@ function readProcessCmdlet(args, positional) {
  */
 function readKillTargets(command, shell) {
   if (REMOTE_KILL.test(command)) return null;
+  // Constructs splitStages does not understand: a heredoc (its body would be
+  // read as commands), a comment, $'...', a backslash-newline, a here-string.
+  if (/<<|(?:^|[\s;&|(])#|\$'|\\\r?\n/.test(command)) return null;
+  if (shell === 'powershell' && /<#|@['"]/.test(command)) return null;
   const pipelines = splitStages(command, shell);
   if (!pipelines) return null;
   const namesKill = shell === 'bash' ? (s) => KILL_WORD.test(s) : namesPowerShellKill;
+  const ownVars = shell === 'powershell' ? psOwnStartedVars(command) : new Set();
   const targets = [];
   for (const stages of pipelines) {
     const killAt = stages.findIndex(namesKill);
     if (killAt < 0) continue;
     if (stages.some((s, i) => i !== killAt && namesKill(s))) return null;
+    const method = shell === 'powershell' && killAt === 0 && OWN_METHOD_KILL.exec(stages[0]);
+    if (method) {
+      if (!ownVars.has(method[1].toLowerCase())) return null;
+      targets.push({ own: true, tree: false });
+      continue;
+    }
     const words = readWords(stages[killAt], shell);
     if (!words || !words.length) return null;
     if (shell === 'powershell' && words[0].quoted) return null; // a quoted string is not run without &
@@ -1089,14 +1291,18 @@ function readKillTargets(command, shell) {
       found = readTaskkill(args);
     } else if (shell === 'powershell' && STOP_PROCESS_NAMES.has(program) && words[0].text.toLowerCase() === program) {
       if (killAt === 0) {
-        found = readProcessCmdlet(args, 'Id');
+        found = readProcessCmdlet(args, 'Id', ownVars);
         if (found && !found.length) found = null;
       } else if (killAt === 1) {
         const source = readWords(stages[0], shell);
-        const own = readProcessCmdlet(args, 'Id');
-        if (source && source.length && GET_PROCESS_NAMES.has(source[0].text.toLowerCase()) && own && !own.length) {
-          found = readProcessCmdlet(source.slice(1), 'Name');
-          if (found && !found.length) found = null;
+        const own = readProcessCmdlet(args, 'Id', ownVars);
+        if (source && source.length && own && !own.length) {
+          if (GET_PROCESS_NAMES.has(source[0].text.toLowerCase())) {
+            found = readProcessCmdlet(source.slice(1), 'Name');
+            if (found && !found.length) found = null;
+          } else if (source.length === 1 && /^\$\w+$/.test(source[0].text) && ownVars.has(source[0].text.slice(1).toLowerCase())) {
+            found = [{ own: true }]; // $p | Stop-Process
+          }
         }
       }
     }
@@ -1284,23 +1490,21 @@ function decideKillUnchecked(command, shell, ctx) {
   const text = shell === 'bash' ? removeDataHeredocs(command) : command;
   if (!(shell === 'bash' ? isProcessKill(text) : isPowerShellKill(text))) return null;
 
-  const targets = readKillTargets(text, shell);
-  if (!targets) {
-    const loose = looseKillWords(text, shell);
-    if (loose.names.length) return killDeny(`names ${listSome(loose.names)}`);
+  // Text the reader could not follow never DENIES (live rollback of
+  // b5d8ecdf: a multi-line commit message holding "kill" and "Co-Authored-By:
+  // Claude" was refused). It asks, naming what it saw.
+  const readTargets = readKillTargets(text, shell);
+  if (!readTargets) {
     if (REMOTE_KILL.test(text)) return killAsk('it runs on another machine');
-    if (loose.pids.length) {
-      const table = tableFor(ctx);
-      if (table) {
-        for (const pid of loose.pids) {
-          const tree = loose.tree ? processTree(table, pid) : [pid];
-          const hit = tree.find((p) => table.has(p) && DENY_PROCESS_NAMES.has(baseProcessName(table.get(p).name)));
-          if (hit !== undefined) return killDeny(describe(table, hit));
-        }
-      }
+    const loose = looseKillWords(text, shell);
+    if (loose.names.length) {
+      return killAsk(`it may name ${listSome(loose.names)}, and the hook cannot read it fully`);
     }
     return killAsk('the hook cannot tell which processes it would end');
   }
+  // A process this same command started is its own (see psOwnStartedVars).
+  const targets = readTargets.filter((t) => !t.own);
+  if (!targets.length) return null;
 
   const named = targets.filter((t) => t.name !== undefined).map((t) => deniedName(t.name) && t.name).filter(Boolean);
   if (named.length) return killDeny(`names ${listSome(named)}`);
@@ -1566,11 +1770,46 @@ const PS_ENV_REDIRECT = /\d?>>?\s*['"]?(?:[^\s;|'"<>]*[\\/])?\.env(?:[.*?][\w.*?
 // reads a .env file. A test, not one regex, so no input makes it backtrack.
 // A ; | or newline inside a simple quoted string does not end a segment
 // (pipeline run 2: Select-String -Pattern 'A|B' -Path .env was allowed).
+// Select-String's search pattern (-Pattern x, or its first quoted argument) is
+// not a file, so -Pattern '...|.*\.env|...' is not a .env read (replay of
+// b5d8ecdf).
 function psEnvFileAccess(command, verb) {
   const unsplit = command.replace(/'[^']*'|"[^"]*"/g, (q) => q.replace(/[;|\n]/g, ' '));
-  return unsplit.split(/[;|\n]/).some((segment) =>
-    (verb === PS_ENV_WRITE && PS_ENV_REDIRECT.test(segment)) ||
-    (verb.test(segment) && PS_ENV_FILE.test(segment)));
+  return unsplit.split(/[;|\n]/).some((raw) => {
+    const segment = raw
+      .replace(/\s-Pattern\s+(?:'(?:[^']|'')*'|"[^"]*"|\S+)/gi, ' ')
+      .replace(/\b(Select-String|sls)\s+(?:'(?:[^']|'')*'|"[^"]*")/gi, '$1');
+    return (verb === PS_ENV_WRITE && PS_ENV_REDIRECT.test(segment)) ||
+      (verb.test(segment) && PS_ENV_FILE.test(segment));
+  });
+}
+
+// A deny rule anchored at a command start (PS_START), as a decide: it denies
+// when the matched cmdlet stands in code the reader followed, asks when it
+// stands in text the reader could not follow, and ignores a match inside a
+// quoted string or a comment (replay of b5d8ecdf: "...; shutdown handling in
+// the card loop; ..." inside a message was denied). A quoted TARGET still
+// counts (Remove-Item -Recurse 'C:\'): only the cmdlet's position is checked.
+function psStartRule(pattern, reason) {
+  const re = new RegExp(pattern.source, 'gi');
+  return {
+    decide: (command) => {
+      const mask = new Uint8Array(command.length);
+      removePowerShellSimpleQuotes(command, mask);
+      let unread = false;
+      for (const m of command.matchAll(re)) {
+        const at = m.index + /^[;|&{(\n]?\s*/.exec(m[0])[0].length;
+        if (mask[at] === 0) return { action: 'deny', reason };
+        if (mask[at] === 2) unread = true;
+      }
+      if (!unread) return null;
+      return {
+        action: 'ask',
+        reason: reason.replace(/^Blocked: /, 'This command may do something agents must not: ') +
+          ' The safety hook could not read all of it, so it asks. Are you sure?',
+      };
+    },
+  };
 }
 
 // A drive root or the user's home, as Remove-Item's target: C:\ C:/ C: \ / ~
@@ -1586,29 +1825,20 @@ const PS_ROOT_TARGET = String.raw`\s['"]?(?:(?:[A-Za-z]:|~|\$HOME|\$env:(?:USERP
 const POWERSHELL_RULES = [
   // Remove-Item (or an alias) with -Recurse on a drive root or the home folder.
   // -r, -rec, -Recurse and bash-style -rf all start with -r.
-  {
-    pattern: new RegExp(
-      PS_START + String.raw`(?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b(?=[^;|\n]*\s-r)[^;|\n]*?` + PS_ROOT_TARGET,
-      'i'
-    ),
-    action: 'deny',
-    reason: 'Blocked: recursive delete of a drive root or the home folder is not allowed.'
-  },
+  psStartRule(
+    new RegExp(PS_START + String.raw`(?:Remove-Item|rm|ri|del|erase|rd|rmdir)\b(?=[^;|\n]*\s-r)[^;|\n]*?` + PS_ROOT_TARGET),
+    'Blocked: recursive delete of a drive root or the home folder is not allowed.'
+  ),
   // Disk formatting and partitioning
-  {
-    pattern: new RegExp(
-      PS_START + String.raw`(?:Format-Volume|Format-Disk|Clear-Disk|Initialize-Disk|Remove-Partition|diskpart(?:\.exe)?|format(?:\.com)?\s+[A-Za-z]:)(?=\s|$|[;|])`,
-      'i'
-    ),
-    action: 'deny',
-    reason: 'Blocked: disk formatting/partitioning is not allowed.'
-  },
+  psStartRule(
+    new RegExp(PS_START + String.raw`(?:Format-Volume|Format-Disk|Clear-Disk|Initialize-Disk|Remove-Partition|diskpart(?:\.exe)?|format(?:\.com)?\s+[A-Za-z]:)(?=\s|$|[;|])`),
+    'Blocked: disk formatting/partitioning is not allowed.'
+  ),
   // Shutdown / restart
-  {
-    pattern: new RegExp(PS_START + String.raw`(?:Stop-Computer|Restart-Computer|shutdown(?:\.exe)?)(?=\s|$|[;|])`, 'i'),
-    action: 'deny',
-    reason: 'Blocked: system shutdown/reboot is not allowed from agents.'
-  },
+  psStartRule(
+    new RegExp(PS_START + String.raw`(?:Stop-Computer|Restart-Computer|shutdown(?:\.exe)?)(?=\s|$|[;|])`),
+    'Blocked: system shutdown/reboot is not allowed from agents.'
+  ),
   // .env files: reading or writing one (see psEnvFileAccess). These replace the
   // Bash .env rules for PowerShell, whose .* would cross a ; and whose \.env\b
   // matches process.env in a search pattern.
@@ -1623,11 +1853,7 @@ const POWERSHELL_RULES = [
     reason: 'Blocked: writing to .env files via shell is not allowed.'
   },
   // Email
-  {
-    pattern: new RegExp(PS_START + String.raw`Send-MailMessage\b`, 'i'),
-    action: 'deny',
-    reason: 'Blocked: agents must not send real emails.'
-  },
+  psStartRule(new RegExp(PS_START + String.raw`Send-MailMessage\b`), 'Blocked: agents must not send real emails.'),
   ...BASH_RULES.filter((rule) => rule.powershell),
   // Process killing (see isPowerShellKill and decideKill).
   {
