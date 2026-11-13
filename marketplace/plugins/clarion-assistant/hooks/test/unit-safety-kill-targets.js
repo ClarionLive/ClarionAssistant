@@ -42,6 +42,8 @@ const ROWS = [
   [130, 100, 4, 'node.exe'],        // its own MCP server
   [140, 100, 4, 'dotnet.exe'],      // its build
   [150, 110, 7, 'explorer.exe'],    // an explorer it started: still a system process
+  [123, 110, 6, 'vite.exe'],        // its dev server...
+  [212, 200, 4, 'vite.exe'],        // ...and another agent's, by the same (not shared-runtime) name
   [200, 50, 3, 'claude.exe'],       // another agent
   [210, 200, 4, 'node.exe'],
   [211, 200, 4, 'dotnet.exe'],
@@ -150,9 +152,14 @@ for (const [command, tool] of [
 
 // ── 3. ASK: everything else ───────────────────────────────────────────
 for (const [command, tool, why] of [
-  ['taskkill /F /IM node.exe', B, 'did not start'],         // also another agent's node and MCP servers
-  ['Stop-Process -Name dotnet', P, 'did not start'],
-  ['Get-Process node | Stop-Process', P, 'did not start'],
+  // Shared runtimes by name ask whoever runs them (snapshot-to-kill race).
+  ['taskkill /F /IM node.exe', B, 'other agents and tools also run'],
+  ['Stop-Process -Name dotnet', P, 'other agents and tools also run'],
+  ['Get-Process node | Stop-Process', P, 'other agents and tools also run'],
+  ['taskkill /IM python3.exe', B, 'other agents and tools also run'],
+  ['Stop-Process -Name testhost*', P, 'other agents and tools also run'],
+  // Another name: the descendant rule decides.
+  ['taskkill /F /IM vite.exe', B, 'did not start'],
   ['taskkill /PID 210 /F', B, 'did not start'],
   ['taskkill /PID 120 /PID 210', B, 'did not start'],
   ['taskkill /PID 610', B, 'did not start'],                // under the claude it started
@@ -200,6 +207,93 @@ expect('ask-no-anchor', 'taskkill /PID 120 /F', B, 'ask', 'was not found', { rea
 // The anchor found the live way: walking up from the hook (700) to claude.exe 100.
 expect('allow-walk', 'taskkill /PID 121 /F', B, 'allow', '', { readTable: table, startPid: 700 });
 expect('ask-walk', 'taskkill /PID 210 /F', B, 'ask', 'did not start', { readTable: table, startPid: 700 });
+
+// A shared runtime asks by name even when every instance is this agent's own;
+// a PID kill of the same process is allowed.
+{
+  const ownNodeOnly = { readTable: () => { const t = table(); t.delete(210); t.delete(610); return t; }, anchorPid: 100 };
+  expect('shared-own', 'taskkill /F /IM node.exe', B, 'ask', 'other agents and tools also run', ownNodeOnly);
+  expect('shared-own', 'Stop-Process -Name node', P, 'ask', 'other agents and tools also run', ownNodeOnly);
+  expect('shared-own', 'Stop-Process -Id 120', P, 'allow', '', ownNodeOnly);
+  const ownViteOnly = { readTable: () => { const t = table(); t.delete(212); return t; }, anchorPid: 100 };
+  expect('own-name', 'taskkill /F /IM vite.exe', B, 'allow', '', ownViteOnly);
+}
+
+// Any error while deciding a kill asks; a command with no kill word is untouched.
+{
+  const throwing = { readTable: () => { throw new Error('forced by the test'); }, anchorPid: 100 };
+  expect('throw-asks', 'taskkill /PID 120 /F', B, 'ask', 'hit an error', throwing);
+  expect('throw-asks', 'Stop-Process -Id 121', P, 'ask', 'hit an error', throwing);
+  expect('throw-asks', 'Stop-Process -Id 100 -ErrorVariable e', P, 'ask', 'hit an error', throwing);
+  expect('throw-deny', 'Stop-Process -Name claude', P, 'deny', DENY, throwing);   // decided before the table
+  expect('throw-none', 'git status', B, 'allow', '', throwing);
+  expect('throw-none', 'Get-ChildItem -Recurse src', P, 'allow', '', throwing);
+  // A throw before anything is read: a kill word asks, no kill word stays silent.
+  const first = { throwFirst: true, readTable: table, anchorPid: 100 };
+  expect('throw-first', 'taskkill /PID 121 /F', B, 'ask', 'hit an error', first);
+  expect('throw-first', 'Stop-Process -Id 121', P, 'ask', 'hit an error', first);
+  expect('throw-first-none', 'git status', B, 'allow', '', first);
+  expect('throw-first-none', 'Get-ChildItem -Recurse src', P, 'allow', '', first);
+}
+
+// ── PowerShell commands whose name is built at run time ───────────────
+const DYNAMIC = 'Dynamic command detected';
+for (const command of [
+  "& ('Stop-'+'Process') -Name MultiTerminal",
+  "& ('task'+'kill.exe') /IM claude.exe /F",
+  "$c = 'Stop-' + 'Process'; & $c -Name x",
+  ". ('Stop-Process') -Id 1",
+  "& \"Stop-$('Process')\" -Id 1",
+  '& "$tool" /PID 1',
+  '& $tools[0] /PID 1',
+  '& @cmd',
+  "iex ('Stop-'+'Process -Name x')",
+  '$s | iex',
+  'Get-Content run.ps1 | Invoke-Expression',
+  'Invoke-Expression $cmd',
+  '[scriptblock]::Create($s).Invoke()',
+  "$ExecutionContext.InvokeCommand.InvokeScript($s)",
+  // No kill word here: with one (('task'+'kill')) the kill rule asks first.
+  "Start-Process ('note'+'pad') -ArgumentList x.txt",
+  'Start-Process $exe -ArgumentList /IM, x',
+  'Start-Process -FilePath "$dir\\tool.exe"',
+]) {
+  expect('dynamic', command, P, 'ask', DYNAMIC, NO_TABLE);
+}
+for (const command of [
+  "& 'C:\\Program Files\\Git\\bin\\git.exe' status",
+  '& "C:\\Program Files\\dotnet\\dotnet.exe" build x.sln',
+  '& "$env:ProgramFiles\\Git\\bin\\git.exe" status',
+  '& "${env:ProgramFiles(x86)}\\MSBuild\\msbuild.exe" x.sln',
+  '. .\\build.ps1 -Configuration Release',
+  '.\\build.ps1',
+  "iex 'Get-Date'",
+  "dotnet test 2>&1 | Select-String 'Passed'",
+  "Write-Host 'use & $x to run it'",
+  '$x = @(1, 2); $x.Count',
+  'Get-ChildItem . | Select-Object Name',
+  'cd ..; git status',
+  "Start-Process -FilePath 'notepad.exe'",
+  'Start-Process "https://example.com"',
+  'git log --format="%h %s" -5',
+  '$p = Get-Process -Id $PID; $p.Name',
+  '& { Get-Date }',
+]) {
+  expect('not-dynamic', command, P, 'allow', '', NO_TABLE);
+}
+
+// A table read that runs out of time asks (the 3 s cap, here 1 ms).
+{
+  const { _internals } = require(hookPath);
+  const started = Date.now();
+  const short = _internals.readProcessTable(1);
+  checked++;
+  if (short !== null) failures.push('[table-timeout] a 1 ms read returned a table, want null');
+  checked++;
+  if (Date.now() - started > 2500) failures.push(`[table-timeout] a 1 ms read took ${Date.now() - started} ms`);
+  expect('table-timeout', 'taskkill /PID 120 /F', B, 'ask', 'could not be read',
+    { readTable: () => _internals.readProcessTable(1), anchorPid: 100 });
+}
 
 // The process table is read once per hook call, and not at all when a name
 // already denies or the command is not a kill.
@@ -304,12 +398,12 @@ child.on('spawn', () => {
     if (elapsed > 5000) failures.push(`[real-time] one kill decision took ${elapsed} ms`);
     expect('real-allow', `Stop-Process -Id ${child.pid} -Force`, P, 'allow', '', own);
     expect('real-allow', `taskkill //F //T //PID ${child.pid}`, B, 'allow', '', own);
-    // Not this test's: its parent.
-    expect('real-ask', `taskkill /PID ${process.ppid} /F`, B, 'ask', 'did not start', own);
-    expect('real-ask', `Stop-Process -Id ${process.ppid}`, P, 'ask', 'did not start', own);
-    // By name: node.exe also matches node processes this test did not start
-    // (this test's own node is not one of its descendants).
-    expect('real-ask', 'taskkill /F /IM node.exe', B, 'ask', 'did not start', own);
+    // Not this test's own child: the test process itself, which is not its own
+    // descendant. (Its parent could be claude.exe, which would deny instead.)
+    expect('real-ask', `taskkill /PID ${process.pid} /F`, B, 'ask', 'did not start', own);
+    expect('real-ask', `Stop-Process -Id ${process.pid}`, P, 'ask', 'did not start', own);
+    // By name: node is a shared runtime.
+    expect('real-ask', 'taskkill /F /IM node.exe', B, 'ask', 'other agents and tools also run', own);
     expect('real-deny', 'Stop-Process -Name MultiTerminal', P, 'deny', DENY, own);
 
     // With nothing overridden, the hook finds claude.exe above itself, as it

@@ -28,8 +28,8 @@
  * The cases are kept identical to the MultiTerminal plugin's copy of this test
  * (multiterminal-marketplace, hooks/dispatch-test/unit-safety-powershell.js),
  * whose hook carries the same rules; the falsification figures above are that
- * copy's. This hook has no run() export, so each case is run through the CLI
- * with a JSON payload on stdin, as Claude Code runs it.
+ * copy's. This hook exports decide(), not run(), and each case here is run
+ * through the CLI with a JSON payload on stdin, as Claude Code runs it.
  *
  * Run: node marketplace/plugins/clarion-assistant/hooks/test/unit-safety-powershell.js [hook path]
  * This file collects every failing case before exiting.

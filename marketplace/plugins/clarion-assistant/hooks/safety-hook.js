@@ -432,6 +432,40 @@ function isPowerShellKill(command) {
   return PS_RUNS_VARIABLE.test(stripped) || PS_RUNS_CODE.test(command);
 }
 
+// ── PowerShell commands whose name is built at run time (review of b5d8ecdf) ─
+//
+// & ('Stop-'+'Process') -Name MultiTerminal holds no kill word, so
+// isPowerShellKill let it through. A command that runs a command it builds as
+// it runs therefore ASKS, kill word or not:
+//   - & or . followed by ( (an expression), a $variable, @ (splatting), or a
+//     "..." string that interpolates anything other than $env:NAME / ${env:NAME}
+//     (& "$env:ProgramFiles\Git\bin\git.exe" status stays silent: only the
+//     folder comes from the environment, and the file name is still read);
+//   - Invoke-Expression / iex given anything but one literal string: a $, (, +
+//     or a pipe into it;
+//   - [scriptblock]::Create, NewScriptBlock, InvokeScript, .InvokeCommand.;
+//   - Start-Process / saps whose program is a ( expression, a $variable or such
+//     an interpolated string.
+// A literal & 'C:\path\tool.exe' args stays silent, and so does any of these
+// written inside a simple quoted string. Comments are kept as written (see
+// removePowerShellSimpleQuotes), so a mention in a comment asks.
+
+const PS_DYNAMIC_CALL = /(?:^|[\s;|({=])(?<!&)[&.](?!&)\s*(?:\(|\$|@(?!['"]))/;
+const PS_CALLED_STRING = /(?:^|[\s;|({=])(?<!&)(?:&(?!&)|\.|\b(?:Start-Process|saps)\b(?:\s+-F\w*)?)\s*"((?:[^"`]|`.)*)"/gi;
+const PS_START_DYNAMIC = /\b(?:Start-Process|saps)\s+(?:-F\w*\s+)?[($]/i;
+const PS_BUILDS_CODE = /\[scriptblock\]::Create\b|\bNewScriptBlock\b|\bInvokeScript\b|\.InvokeCommand\./i;
+const PS_IEX = /\b(?:Invoke-Expression|iex)\b/i;
+const ENV_ONLY_STRING = /^(?:[^$`]|\$env:\w+|\$\{env:[^}$`]+\})*$/i;
+
+function psDynamicInvocation(command) {
+  if (!/[&.$@]|\biex\b|Invoke-Expression|scriptblock|InvokeScript|InvokeCommand/i.test(command)) return false;
+  const text = removePowerShellSimpleQuotes(command);
+  if (PS_DYNAMIC_CALL.test(text) || PS_START_DYNAMIC.test(text) || PS_BUILDS_CODE.test(text)) return true;
+  for (const m of text.matchAll(PS_CALLED_STRING)) if (!ENV_ONLY_STRING.test(m[1])) return true;
+  return text.split(/[;\n]/).some((segment) =>
+    PS_IEX.test(segment) && (/[$(+]/.test(segment) || /\|\s*(?:Invoke-Expression|iex)\b/i.test(segment)));
+}
+
 // ── Heredocs that are data (ticket b5d8ecdf) ────────────────────────
 //
 // Two thirds of the kill prompts the Owner answered were not kills: the word
@@ -587,11 +621,27 @@ function removeDataHeredocs(command) {
 // trusted only when the parent started no later than the child, so a reused
 // PID cannot make a stranger look like the agent's own process.
 //
+// A kill BY NAME of a runtime many agents and tools share (SHARED_RUNTIME_NAMES:
+// node, dotnet, python, pwsh, git, ...) always asks, even when every instance
+// running at the snapshot is this agent's own: another agent can start one in
+// the moment between the snapshot and the kill, and the name would hit it
+// (review of b5d8ecdf). Other names, such as the agent's own test exe, keep
+// the descendant rule.
+//
 // Accepted: a process can start or end between this check and the kill (a
-// window of milliseconds), and like the rest of this file this guards against
-// accidents, not evasion.
+// window of milliseconds). For a PID kill that means Windows could, in that
+// window, end the agent's process and hand its PID to a new one, which the kill
+// would then hit; PID kills stay allowed with that limit. Like the rest of this
+// file, this guards against accidents, not evasion.
+//
+// Any error while deciding a kill ASKS (see decideKillSafely): the dispatcher
+// and the CLI both treat a thrown hook as "no answer", which lets the call run.
 
 const DENY_PROCESS_NAMES = new Set(['multiterminal', 'claude']);
+const SHARED_RUNTIME_NAMES = [
+  'node', 'dotnet', 'python', 'python3', 'py', 'pwsh', 'powershell', 'cmd', 'bash', 'sh', 'git', 'conhost',
+  'java', 'msbuild', 'testhost', 'vstest.console',
+];
 const SYSTEM_PROCESS_NAMES = new Set([
   'system', 'system idle process', '[system process]', 'secure system', 'registry', 'memory compression',
   'smss', 'csrss', 'wininit', 'winlogon', 'services', 'lsass', 'lsaiso', 'svchost', 'explorer', 'dwm',
@@ -939,7 +989,8 @@ function parseProcessTable(text) {
 }
 
 // Reads this machine's process table, or null (not Windows, timeout, error).
-function readProcessTable() {
+// `timeoutMs` is for the tests, which prove a read that runs out asks.
+function readProcessTable(timeoutMs = PROCESS_TABLE_TIMEOUT_MS) {
   if (process.platform !== 'win32') return null;
   try {
     const { execFileSync } = require('child_process');
@@ -948,7 +999,7 @@ function readProcessTable() {
     const out = execFileSync(
       powershell,
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(PROCESS_TABLE_SCRIPT, 'utf16le').toString('base64')],
-      { encoding: 'utf8', timeout: PROCESS_TABLE_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
+      { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }
     );
     return parseProcessTable(out);
   } catch {
@@ -1028,8 +1079,23 @@ function agentClaudeFor(ctx, table) {
  * The kill rule for both shells: null (allow), or { action, reason }.
  * `command` is the Bash or PowerShell command; ctx carries the per-call
  * process table (and, from tests only, killEnv).
+ *
+ * An error while deciding ASKS when the command names a kill word, and is
+ * left alone (null) otherwise, so a command with no kill word is never changed
+ * by this: the dispatcher and the CLI would both turn a thrown hook into "no
+ * answer", which runs the call.
  */
 function decideKill(command, shell, ctx = {}) {
+  try {
+    return decideKillUnchecked(command, shell, ctx);
+  } catch {
+    const namesKill = shell === 'bash' ? KILL_WORD.test(command) : namesPowerShellKill(command);
+    return namesKill ? killAsk('the safety hook hit an error while checking it') : null;
+  }
+}
+
+function decideKillUnchecked(command, shell, ctx) {
+  if (ctx.killEnv && ctx.killEnv.throwFirst) throw new Error('killEnv.throwFirst (tests only)');
   const text = shell === 'bash' ? removeDataHeredocs(command) : command;
   if (!(shell === 'bash' ? isProcessKill(text) : isPowerShellKill(text))) return null;
 
@@ -1053,6 +1119,13 @@ function decideKill(command, shell, ctx = {}) {
 
   const named = targets.filter((t) => t.name !== undefined).map((t) => deniedName(t.name) && t.name).filter(Boolean);
   if (named.length) return killDeny(`names ${listSome(named)}`);
+  const shared = targets
+    .filter((t) => t.name !== undefined)
+    .filter((t) => SHARED_RUNTIME_NAMES.some((name) => processNameMatcher(t.name)(name)))
+    .map((t) => t.name);
+  if (shared.length) {
+    return killAsk(`by name, ${listSome(shared)} is a runtime other agents and tools also run; end your own by PID instead`);
+  }
 
   const table = tableFor(ctx);
   if (!table) return killAsk('the process table could not be read');
@@ -1367,6 +1440,14 @@ const POWERSHELL_RULES = [
   // Process killing (see isPowerShellKill and decideKill).
   {
     decide: (command, ctx) => decideKill(command, 'powershell', ctx)
+  },
+  // A command whose name is built at run time (see psDynamicInvocation).
+  {
+    test: psDynamicInvocation,
+    action: 'ask',
+    reason: 'Dynamic command detected: this PowerShell command runs a command whose name is built as it runs ' +
+      '(& or . with an expression, a variable or an interpolated string; Invoke-Expression on built text; ' +
+      '[scriptblock]::Create), so the safety hook cannot tell whether it ends MultiTerminal or another app. Are you sure?'
   },
 ];
 
