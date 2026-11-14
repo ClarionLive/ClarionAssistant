@@ -133,6 +133,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "TabManager.Close.Test"
                Sources = @("tests\TabManager.Close.Test.cs", "tests\TabManager.Close.Stubs.cs", "Terminal\TerminalTab.cs", "Terminal\TabManager.cs")
                Refs = @("System.dll", "System.Drawing.dll", "System.Windows.Forms.dll") }
+            # Tabs wider than the strip: they shrink, then scroll behind an overflow menu, so every tab's
+            # close button stays reachable (it was drawn off-screen). Also the middle-click close.
+            @{ Name = "TabManager.Overflow.Test"
+               Sources = @("tests\TabManager.Overflow.Test.cs", "tests\TabManager.Close.Stubs.cs", "Terminal\TerminalTab.cs", "Terminal\TabManager.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Drawing.dll", "System.Windows.Forms.dll") }
             # 0f928849: models.json went stale (no Opus 5.5, retired Copilot/Codex ids). Checks the
             # registry's internal consistency and the retired-model remap. Gets the project dir to
             # read the shipped models.json and the Codex launcher's hard-coded default.
