@@ -108,6 +108,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
             @{ Name = "TextLines.Test"
                Sources = @("tests\TextLines.Test.cs", "Services\TextLines.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # DocGraph Markdown ingest: a section's heading carries its parents ("FooInitialize Function >
+            # Parameters"); nothing but the heading changes, checked on every .md in this repo too.
+            @{ Name = "MarkdownChunker.Test"
+               Sources = @("tests\MarkdownChunker.Test.cs", "Services\MarkdownChunker.cs", "Services\DocGraphModels.cs")
+               Refs = @("System.dll", "System.Core.dll")
+               Args = @($RootDir) }
             # 1d8d1c49: streamed LSP text messages must parse identically to Serialize+GetBytes, far cheaper.
             @{ Name = "JsonTextStream.Test"
                Sources = @("tests\JsonTextStream.Test.cs", "Services\JsonTextStream.cs")

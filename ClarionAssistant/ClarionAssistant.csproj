@@ -277,6 +277,8 @@
     <Compile Include="Services\ClaudePluginLocator.cs" />
     <Compile Include="Services\ClaudeSessionCatalog.cs" />
     <Compile Include="Services\DocGraphService.cs" />
+    <Compile Include="Services\DocGraphModels.cs" />
+    <Compile Include="Services\MarkdownChunker.cs" />
     <Compile Include="Services\InstanceCoordinationService.cs" />
     <Compile Include="Services\ClarionTraceService.cs" />
     <Compile Include="Services\EverythingService.cs" />

@@ -155,6 +155,8 @@
     <Compile Include="..\Services\ClarionClassParser.cs"><Link>Services\ClarionClassParser.cs</Link></Compile>
     <Compile Include="..\Services\ClarionTraceService.cs"><Link>Services\ClarionTraceService.cs</Link></Compile>
     <Compile Include="..\Services\DocGraphService.cs"><Link>Services\DocGraphService.cs</Link></Compile>
+    <Compile Include="..\Services\DocGraphModels.cs"><Link>Services\DocGraphModels.cs</Link></Compile>
+    <Compile Include="..\Services\MarkdownChunker.cs"><Link>Services\MarkdownChunker.cs</Link></Compile>
     <Compile Include="..\Services\EverythingService.cs"><Link>Services\EverythingService.cs</Link></Compile>
     <Compile Include="..\Services\McpPathPolicy.cs"><Link>Services\McpPathPolicy.cs</Link></Compile>
     <Compile Include="..\Services\McpPathGate.cs"><Link>Services\McpPathGate.cs</Link></Compile>
