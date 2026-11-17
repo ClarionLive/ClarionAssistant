@@ -798,6 +798,51 @@
     .monaco-editor .monaco-hover .hover-row-contents > .markdown-hover:not(:first-child):last-child a:last-child {
         margin-right: 0;
     }
+    /* CASE quick-navigation list (the server's CASE / OF / END cards): a table whose line links carry the
+       title "Go to branch". It shows --ca-branch-rows rows and scrolls the rest, its header row pinned.
+       Every row is one fixed-height line (no wrapping), so the height is rows x row height.
+       - Vertical scrolling only: a scroller in one direction scrolls in the other too unless told not to,
+         and a long branch line (a comment) then got a horizontal bar. A line wider than the card is cut
+         with an ellipsis instead (the code rule below).
+       - margin-right keeps the list's scrollbar clear of the card's resize edge (Monaco's sash on the
+         right border), which otherwise took the mouse before the scrollbar could. The scrollbar takes the
+         theme's scrollbar colours, so a dark card does not get a light one.
+       - The mouse wheel over the list scrolls the list and never reaches Monaco (see branchListWheel):
+         Monaco reads a wheel over the card as an editor scroll and closes the card. */
+    .monaco-editor .monaco-hover table:has(a[title="Go to branch"]) {
+        --ca-branch-rows: 7;
+        --ca-branch-row-h: 1.6em;
+        display: block;
+        max-height: calc((var(--ca-branch-rows) + 1) * var(--ca-branch-row-h));
+        overflow-x: hidden;
+        overflow-y: auto;
+        margin-right: 12px;
+        border-collapse: collapse;
+        scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(100, 100, 100, 0.4)) transparent;
+    }
+    .monaco-editor .monaco-hover table:has(a[title="Go to branch"]) th,
+    .monaco-editor .monaco-hover table:has(a[title="Go to branch"]) td {
+        height: var(--ca-branch-row-h);
+        padding: 0 8px 0 4px;
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+    /* At most 72 characters, and never wider than Monaco lets the card be (--vscode-hover-maxWidth, less the
+       line-number column and padding), so a narrow editor also gets the ellipsis rather than a cut glyph. */
+    .monaco-editor .monaco-hover table:has(a[title="Go to branch"]) code {
+        padding: 0;
+        display: inline-block;
+        max-width: min(72ch, calc(var(--vscode-hover-maxWidth, 500px) - 90px));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: bottom;
+    }
+    .monaco-editor .monaco-hover table:has(a[title="Go to branch"]) thead th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background-color: var(--vscode-editorHoverWidget-background, #f3f3f3);
+    }
 </style>
 </head>
 <body>
@@ -6142,7 +6187,10 @@
         if (fileMode || !embedDocPath || md.indexOf('](file:') < 0) return md;
         return md.replace(SELF_LINK_MD_RX, function (all, label, href, query, line, title) {
             if ((query && ONDISK_QUERY_RX.test(query)) || !isEmbedSelfHref(href)) return all;
-            return '[line ' + line + '](' + href + (query || '') + '#L' + line + title + ')';
+            // A bare line-number label (the CASE branch list) stays a bare number, but THIS text's number:
+            // the host shifted the #L target past the MEMBER header, not the label the server wrote.
+            var shown = /^\d+$/.test(label) ? line : 'line ' + line;
+            return '[' + shown + '](' + href + (query || '') + '#L' + line + title + ')';
         });
     }
     // A local card's links come from the solution index: lines of the files on disk. Own-document ones are
@@ -6159,6 +6207,39 @@
     function prepareServerCard(markdown, model, position) {
         return prepareSelfLinks(prepareAttributeLinks(markdown, model, position));
     }
+
+    // ---- CASE quick-navigation list: the mouse wheel scrolls the list, never the editor ----
+    // The server's CASE / OF / END cards carry a branch table (line links titled "Go to branch") that the CSS
+    // caps at --ca-branch-rows rows. Monaco reads a wheel over a hover card as an editor scroll and closes the
+    // card, so the list could only be scrolled by its scrollbar. Taken in the capture phase, before Monaco
+    // sees it: a wheel over a list that has more rows than it shows scrolls the list and goes no further, even
+    // at either end, so the card stays open. A list that shows all its rows, Ctrl+wheel (the editor zoom) and
+    // everything else pass untouched.
+    // Distance: Chromium reports a mouse-wheel notch as 100px (more under Windows display scaling), so pixels
+    // scale in proportion, 100px = 3 rows: a notch moves 3 rows, a touchpad glides, and a scaled notch moves
+    // a little more rather than jumping a whole step. A line is a row; a page is the rows on show (the list
+    // less its pinned header). The row height is measured unrounded (1.6em is fractional) so steps stay on rows.
+    var BRANCH_LIST_ROWS_PER_NOTCH = 3;
+    function branchListOf(target) {
+        var t = target && target.closest ? target.closest('.monaco-hover table') : null;
+        return t && t.querySelector('a[title="Go to branch"]') ? t : null;
+    }
+    function branchListWheel(ev) {
+        if (!ev || ev.ctrlKey) return;
+        var list = branchListOf(ev.target);
+        if (!list || list.scrollHeight <= list.clientHeight) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        var heightOf = function (el) { return el ? el.getBoundingClientRect().height : 0; };
+        var rowH = heightOf(list.querySelector('tbody tr')) || 20;
+        var dy = ev.deltaY || 0;
+        if (ev.deltaMode === 1) dy = dy * rowH;                                                        // lines
+        else if (ev.deltaMode === 2) dy = dy * (list.clientHeight - heightOf(list.querySelector('thead tr')));   // pages
+        else dy = dy / 100 * BRANCH_LIST_ROWS_PER_NOTCH * rowH;                                        // pixels
+        list.scrollTop += dy;
+    }
+    if (typeof document !== 'undefined' && document.addEventListener)
+        document.addEventListener('wheel', branchListWheel, { capture: true, passive: false });
 
     // ---- H1-b: Back from a hover link returns to the HOVERED position, not the caret ----
     // A hover is shown for the mouse position, which is usually NOT the caret: hover "DO PrepareProcedure"
