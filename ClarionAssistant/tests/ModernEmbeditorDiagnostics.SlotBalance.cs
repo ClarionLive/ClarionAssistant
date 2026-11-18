@@ -187,6 +187,207 @@ static class SlotBalance
             Ok("While:Count (prefixed name) is a statement, not a closer", ms.Count == 0, Show(ms));
         }
 
+        // --- an END inside a statement line closes the enclosing structure ---
+        {
+            // The reported shape: the OF line's END ends the CASE. Counted only at line start, the CASE
+            // stayed open, took the LOOP's END, and the LOOP was reported unterminated.
+            var ms = Diag(
+                "LOOP a = 1 TO 12",
+                "  CASE a",
+                "  OF 5 OROF 7 TO 11; CYCLE END",
+                "  b = 1",
+                "END");
+            Ok("OF ..; CYCLE END closes the CASE (LOOP not flagged)", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "LOOP a = 1 TO 12",
+                "  CASE a",
+                "  OF 5; CYCLE END");
+            Ok("...and the LOOP left without its own END is still flagged",
+                ms.Count == 1 && (int)ms[0]["line"] == 1 &&
+                ((string)ms[0]["message"]).StartsWith("LOOP is not terminated"), Show(ms));
+        }
+        {
+            // The END belongs to the IF opened on the same line, so it closes nothing outer: the LOOP's
+            // own END must still find the LOOP (no "END has no matching structure").
+            var ms = Diag(
+                "LOOP",
+                "  x# += 1; IF x# > 5 THEN BREAK END",
+                "END");
+            Ok("x; IF .. THEN BREAK END closes only its own IF", ms.Count == 0, Show(ms));
+        }
+        {
+            // Same for a trailing '.': it ends the IF opened on the line, not the LOOP.
+            var ms = Diag(
+                "LOOP",
+                "  x# += 1; IF x# > 5 THEN BREAK.",
+                "END");
+            Ok("x; IF .. THEN BREAK. closes only its own IF", ms.Count == 0, Show(ms));
+        }
+        {
+            // Names, strings and comments spelled END never close the CASE early.
+            var ms = Diag(
+                "CASE a",
+                "OF 1; Loop:End = 1",
+                "OF 2; SELF.End = 2",
+                "OF 3; ?End{PROP:Hide} = 1",
+                "OF 4; s = 'END' ! END",
+                "OF 5; x = y{PROP:End}",
+                "END");
+            Ok("Loop:End / SELF.End / ?End / PROP:End / 'END' / ! END are not closers", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "loop a = 1 to 12",
+                "  case a",
+                "  of 5; cycle end",
+                "end");
+            Ok("lowercase of ..; cycle end closes the case", ms.Count == 0, Show(ms));
+        }
+        {
+            // An IF opened mid-line and continued with '|': the END on the next line is the IF's, so the
+            // CASE's own END must still find the CASE.
+            var ms = Diag(
+                "CASE a",
+                "OF 1; IF b = 1 |",
+                "        AND c = 2 THEN d = 1 END",
+                "END");
+            Ok("OF 1; IF .. | continued, its END on the next line closes the IF only", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "CASE a",
+                "OF 1; IF b",
+                "  c = 1",
+                "ELSE; d = 1 END",
+                "END");
+            Ok("OF 1; IF b over several lines, closed by ELSE; .. END", ms.Count == 0, Show(ms));
+        }
+        {
+            // Before the inline opener was tracked, the first END closed the CASE and the second was stray.
+            var ms = Diag(
+                "CASE a",
+                "OF 1; IF b",
+                "  c = 1",
+                "  END",
+                "END");
+            Ok("OF 1; IF b closed by an END line of its own", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag("x# = 1; LOOP");
+            Ok("an inline opener left open is never reported", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "IF a = 1",
+                "  x = 1",
+                "ELSIF a = 2 THEN x = 2 END");
+            Ok("ELSIF .. THEN x END closes the IF", ms.Count == 0, Show(ms));
+        }
+        {
+            // An IF/ELSIF ladder of THEN one-liners closed on its last line: that END is the ladder's,
+            // so the enclosing IF's own END must still find it.
+            var ms = Diag(
+                "IF a",
+                "  IF    b = 1 THEN x = 1",
+                "  ELSIF b = 2 THEN x = 2",
+                "  ELSIF b = 3 THEN x = 3 END",
+                "END");
+            Ok("IF .. THEN / ELSIF .. THEN .. END ladder closes only itself", ms.Count == 0, Show(ms));
+        }
+        {
+            // The IF's '.' sits mid-line before ';': it closes that IF, which must not take the outer END.
+            var ms = Diag(
+                "IF a",
+                "  p = 1; IF b THEN PEEK(p,p).; q = p",
+                "  IF c THEN PEEK(q,q).; r = q",
+                "END");
+            Ok("x; IF .. THEN stmt.; y closes the IF at its mid-line '.'", ms.Count == 0, Show(ms));
+        }
+        {
+            // UNTIL/WHILE must see the inline LOOP, not an earlier structure word on its line.
+            var ms = Diag(
+                "IF a",
+                "  OPEN(Window); LOOP",
+                "    x# += 1",
+                "  UNTIL x# > 3",
+                "END");
+            Ok("OPEN(Window); LOOP .. UNTIL: the UNTIL closes the inline LOOP", ms.Count == 0, Show(ms));
+            ms = Diag(
+                "CASE a",
+                "OF 1; CLEAR(Cus:Record); LOOP",
+                "    x# += 1",
+                "  WHILE x# < 3",
+                "END");
+            Ok("CLEAR(Cus:Record); LOOP .. WHILE: the WHILE closes the inline LOOP", ms.Count == 0, Show(ms));
+        }
+        {
+            // Decimal points are not terminators; only the final '.' of "x = 1.5." is.
+            var ms = Diag(
+                "IF a",
+                "  x = 1.5",
+                "  y = .5; z = 2.25",
+                "  w = FORMAT(y,@N10.)",
+                "  v = 1.5.");
+            Ok("decimals never close; '1.5.' closes once", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag("IF a THEN b = 1");
+            Ok("a lone IF .. THEN stmt is never reported", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "LOOP",
+                "  CASE a",
+                "  OF 1",
+                "    IF b",
+                "      c = 1...");
+            Ok("'...' closes three", ms.Count == 0, Show(ms));
+        }
+        {
+            // The IF line's second dot closes the ELSE's IF ladder; the LOOP's END must still find it.
+            var ms = Diag(
+                "LOOP",
+                "  IF a THEN b = 1",
+                "  ELSE",
+                "    IF c THEN d = 1..",
+                "END");
+            Ok("IF c THEN d = 1.. also closes the enclosing IF", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "LOOP",
+                "  IF a THEN IF b THEN c = 1 END",
+                "  END",
+                "END");
+            Ok("IF a THEN IF b THEN c END: the END closes the inner IF only", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "LOOP",
+                "  CASE a",
+                "  OF 1; CYCLE END.");
+            Ok("CYCLE END. closes the CASE and the LOOP", ms.Count == 0, Show(ms));
+        }
+        {
+            // ".." closes two: here the inline IF and the CASE.
+            var ms = Diag(
+                "LOOP",
+                "  CASE a",
+                "  OF 1; IF b THEN c = 1..",
+                "  d = 1",
+                "END");
+            Ok("OF 1; IF .. THEN c = 1.. closes the IF and the CASE", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "LOOP",
+                "  IF a",
+                "    x = 1..");
+            Ok("x = 1.. closes the IF and the LOOP", ms.Count == 0, Show(ms));
+        }
+
         // --- 1c685f2e 8.6: [diag-timing] names WHY the LSP pass did not run (skip=) ---
         {
             var one = new List<int[]> { new[] { 1, 1 } };

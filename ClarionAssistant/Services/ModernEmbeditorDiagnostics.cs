@@ -137,6 +137,19 @@ namespace ClarionAssistant.Services
             @"(?:^|\s|;)DO\s+([A-Za-z_][A-Za-z0-9_:]*)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex TrailingDot = new Regex(@"\.\s*$", RegexOptions.Compiled);
         private static readonly Regex InlineEnd = new Regex(@"\bEND\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Openers and closers anywhere on a statement line, in order, for a line that does NOT open a
+        // structure itself: "OF 5; CYCLE END" closes the enclosing CASE, while "OF 1; IF a THEN b END"
+        // and "x; IF a THEN PEEK(p,p).; y" open and close their own IF and close nothing outer.
+        // Group 1: an opener or END, whole keywords only, so a prefixed or qualified name (Loop:End,
+        // SELF.End, ?End, PROP:End) is never one. Group 2: a run of terminator dots, the ones ending a
+        // statement (followed by ';' or the end of the line), each closing one structure. Runs on the
+        // Sanitize()d line, so strings and comments are already blank.
+        private static readonly Regex InlineKeyword = new Regex(
+            @"(?<![A-Za-z0-9_:.?])(IF|LOOP|CASE|EXECUTE|BEGIN|ACCEPT|END)(?![A-Za-z0-9_:])|(?<!\.)(\.+)(?=\s*(?:;|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // Third element of an open-stack entry: an opener started mid-line (part 3 in CheckSlot), which
+        // takes closes in nesting order but is never reported as unterminated.
+        private const int Silent = 1;
 
         /// <summary>
         /// Pass 1 ONLY: the Clarion LSP's diagnostics, clamped to the editable ranges. <paramref name="ranges"/>
@@ -325,7 +338,7 @@ namespace ClarionAssistant.Services
                 // class, so this can only remove false positives (same reasoning as the trailing-'.'
                 // close below).
                 if (PostCondClose.IsMatch(u) && open.Count > 0 &&
-                    StructWord(lines[open.Peek()[0] - first]) == "LOOP")
+                    EntryWord(lines, first, open.Peek()) == "LOOP")
                 {
                     open.Pop();
                     continue;
@@ -339,6 +352,18 @@ namespace ClarionAssistant.Services
                     string afterThen = thenIdx >= 0 ? trimmed.Substring(thenIdx + 5).Trim() : "";
                     bool oneLiner = afterThen.Length > 0 || TrailingDot.IsMatch(trimmed);
                     if (!oneLiner) open.Push(new[] { ln, FirstNonWs(code) + 1 });
+                    else
+                    {
+                        // The rest of the line is walked as in part 3 below, with this IF already open:
+                        // 'IF a THEN b END' / 'IF a THEN b.' close it, 'IF c THEN d = 1..' closes it and
+                        // one outer structure. 'IF a THEN stmt' with no closer still needs one (an ELSIF
+                        // ladder of such lines ends with '... THEN stmt END'), so what stays open is pushed
+                        // SILENT: the next END or '.' closes it, and it is never reported itself.
+                        var pending = new List<int> { 0 };
+                        int outer = WalkClosers(u, thenIdx >= 0 ? thenIdx + 5 : 2, pending);
+                        for (; outer > 0 && open.Count > 0; outer--) open.Pop();
+                        foreach (int idx in pending) open.Push(new[] { ln, FirstNonWs(code) + idx + 1, Silent });
+                    }
                     // fall through so a 'DO' on the same line is still checked
                 }
                 else
@@ -416,11 +441,9 @@ namespace ClarionAssistant.Services
                 // spends its trailing '.' terminating ITSELF (already handled as the IF one-liner /
                 // selfTerminated cases above), so it closes nothing further here.
                 //
-                // Deliberately closes AT MOST ONE structure per line. Clarion's ".." / "..." close two and
-                // three respectively, but that shape did not occur anywhere in the surveyed corpus, so
-                // honouring it would mean shipping untested counting logic to buy a case that may not
-                // arise; a multi-dot line simply keeps the old under-closing behaviour until a real
-                // occurrence justifies it.
+                // Each '.' of a trailing run closes one structure: ".." and "..." close two and three, the
+                // way the compiler reads them. They first close what the line itself opened (part 3 below:
+                // "x; IF a THEN b." ends its own IF, not the enclosing LOOP).
                 //
                 // Guards, matching the discipline of the two existing TrailingDot call sites:
                 //   * Sanitize() has already blanked '!' comments and string-literal interiors, so a
@@ -433,9 +456,26 @@ namespace ClarionAssistant.Services
                 //   * When nothing is open this stays SILENT rather than reporting "END has no matching
                 //     structure" — deliberately no new warning class, so the change can only remove false
                 //     positives, never add one. The pre-existing lone-'.' branch above keeps its warning.
-                if (!lineOpensStructure && TrailingDot.IsMatch(trimmed) && open.Count > 0)
+                //
+                // Close (part 3): an END inside the statement line closes the enclosing structure the same
+                // way — "OF 5 OROF 7 TO 11; CYCLE END" ends its CASE. Only lines starting with END were
+                // counted, so the CASE stayed open, took the LOOP's END, and the LOOP was reported as
+                // unterminated. Keywords are walked in order: an IF/LOOP/CASE/... opened on this line is
+                // closed first by the END (or '.') that follows it, and only an END with nothing of the
+                // line's own left to close closes an outer structure.
+                //
+                // An opener the line leaves open ("OF 1; IF b = 1 |" continued, or "OF 1; IF b" with its
+                // END lines below) is pushed as a SILENT entry: it takes the next END or '.' in nesting
+                // order, as the compiler does, but is never reported when nothing closes it. An inline
+                // "IF a THEN stmt" is pushed the same way: Clarion ends every IF with END or '.', and an
+                // ELSIF ladder of such lines closes on its last line. With nothing open, an END here
+                // stays silent too, so this can only remove false positives.
+                if (!lineOpensStructure)
                 {
-                    open.Pop();
+                    var pending = new List<int>();
+                    int outer = WalkClosers(u, 0, pending);
+                    for (; outer > 0 && open.Count > 0; outer--) open.Pop();
+                    foreach (int idx in pending) open.Push(new[] { ln, FirstNonWs(code) + idx + 1, Silent });
                 }
 
                 // Undefined routine: DO <name>
@@ -459,6 +499,7 @@ namespace ClarionAssistant.Services
             while (open.Count > 0)
             {
                 var o = open.Pop();
+                if (o.Length > 2 && o[2] == Silent) continue; // an inline opener (part 3): never reported
                 string word = StructWord(lines[o[0] - first]);
                 markers.Add(Marker(o[0], o[1], o[0], o[1] + Math.Max(1, word.Length),
                     word + " is not terminated with END or '.' in this embed slot.", SevError));
@@ -573,6 +614,34 @@ namespace ClarionAssistant.Services
         {
             var m = StructWordRx.Match(Sanitize(rawLine ?? "").Trim());
             return m.Success ? m.Value.ToUpperInvariant() : "Structure";
+        }
+
+        // Walks the openers and closers of a sanitized, upper-cased line from 'start', in order (see
+        // InlineKeyword). 'pending' holds the column offsets of the openers still open on this line; a
+        // closer (END, or each dot of a terminator run) closes the last of them first. Returns how many
+        // closers were left over for the enclosing structures; 'pending' keeps what stays open.
+        private static int WalkClosers(string upper, int start, List<int> pending)
+        {
+            int outer = 0;
+            foreach (Match k in InlineKeyword.Matches(upper, Math.Min(start, upper.Length)))
+            {
+                if (k.Groups[1].Success && k.Groups[1].Value != "END") { pending.Add(k.Index); continue; }
+                for (int c = k.Groups[2].Success ? k.Groups[2].Length : 1; c > 0; c--)
+                {
+                    if (pending.Count > 0) pending.RemoveAt(pending.Count - 1);
+                    else outer++;
+                }
+            }
+            return outer;
+        }
+
+        // The structure keyword of an open-stack entry, read from the entry's own column: an inline
+        // opener's line can hold an earlier structure word ("OPEN(Window); LOOP").
+        private static string EntryWord(string[] lines, int first, int[] entry)
+        {
+            string line = lines[entry[0] - first] ?? "";
+            int col = Math.Max(0, Math.Min(line.Length, entry[1] - 1));
+            return StructWord(line.Substring(col));
         }
 
         private static string[] SplitLines(string text)
