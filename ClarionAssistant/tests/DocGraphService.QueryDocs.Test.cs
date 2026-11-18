@@ -144,6 +144,19 @@ static class DocGraphQueryDocsTest
             var g = Headings(svc, "Parameters", 2);
             Check(g.Count == 2 && g.All(h => h.EndsWith("> Parameters")), "G",
                   "'Parameters' limit 2 -> two '> Parameters' sections (got: " + Show(g) + ")");
+
+            // H. An oversized query (pipeline review, Run 1): every other word used to become a SQL parameter and a
+            //    LIKE term, so thousands of words went past SQLite's limits and threw. It must answer normally.
+            string huge = "HttpSubmitRequest Parameters " + string.Join(" ", Enumerable.Range(0, 3000).Select(i => "w" + i));
+            string hOut = null; Exception hEx = null;
+            try { hOut = svc.QueryDocs(huge, null, null, 1); } catch (Exception ex) { hEx = ex; }
+            Check(hEx == null && hOut != null && !hOut.StartsWith("Error"), "H",
+                  "3002-word query answers without an exception (got: " + (hEx != null ? hEx.GetType().Name + ": " + hEx.Message.Split('\n')[0] : (hOut ?? "null").Split('\n')[0]) + ")");
+
+            // I. A repeated word counts once: 'Parameters' x3 must not outweigh a section naming two different words.
+            var i1 = Headings(svc, "HttpSubmitRequest Return Value Parameters Parameters Parameters", 1);
+            Check(i1.Count == 1 && i1[0] == "HttpSubmitRequest Function > Return Value", "I",
+                  "repeated 'Parameters' counts once -> Return Value (2 words) first (got: " + Show(i1) + ")");
         }
         catch (Exception ex)
         {

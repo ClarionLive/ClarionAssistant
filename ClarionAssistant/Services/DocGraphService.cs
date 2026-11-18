@@ -1791,13 +1791,22 @@ namespace ClarionAssistant.Services
                 parameters.Add(new SQLiteParameter("@exactLike", exactLike));
 
                 // One "heading contains word N" term per remaining query word (parameter names only are
-                // concatenated into the SQL, never the words themselves).
+                // concatenated into the SQL, never the words themselves). Distinct words only, and at most
+                // MaxHeadingRankWords of them: query_docs takes the query from an MCP caller, and every term is a
+                // parameter plus a LIKE per candidate row, so a query of thousands of words must not become an
+                // ORDER BY past SQLite's variable / expression-depth limits. Real queries are a handful of words;
+                // the FTS query itself still uses every word.
                 var headingHits = new List<string>();
-                for (int i = 1; i < queryWords.Length; i++)
+                var rankWords = queryWords.Skip(1)
+                    .Where(w => !string.Equals(w, firstWord, StringComparison.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(MaxHeadingRankWords)
+                    .ToArray();
+                for (int i = 0; i < rankWords.Length; i++)
                 {
                     string name = "@w" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     headingHits.Add("(dc.heading LIKE '%' || " + name + " || '%' ESCAPE '\\')");
-                    parameters.Add(new SQLiteParameter(name, EscapeLike(queryWords[i])));
+                    parameters.Add(new SQLiteParameter(name, EscapeLike(rankWords[i])));
                 }
                 // No other words: no extra key at all. (Not a constant 0: SQLite reads an integer constant in
                 // ORDER BY as a result-column NUMBER, so "(0) DESC" is an error, not a no-op.)
@@ -2236,7 +2245,7 @@ namespace ClarionAssistant.Services
         /// them kept when every word is a stop word). SanitizeFtsQuery builds the FTS query from this list and
         /// QueryDocs ranks headings by it (GH #313), so the two always agree on what the words are.
         /// </summary>
-        private string[] GetQueryWords(string query)
+        private static string[] GetQueryWords(string query)
         {
             if (string.IsNullOrEmpty(query))
                 return new string[0];
@@ -2256,6 +2265,9 @@ namespace ClarionAssistant.Services
             }
             return words;
         }
+
+        /// <summary>How many of a query's other words QueryDocs ranks headings by (GH #313). See QueryDocs.</summary>
+        private const int MaxHeadingRankWords = 8;
 
         /// <summary>Escape a value for a LIKE pattern with ESCAPE '\': \, % and _ match themselves.</summary>
         private static string EscapeLike(string value)
