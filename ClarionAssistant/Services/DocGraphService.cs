@@ -1737,7 +1737,16 @@ namespace ClarionAssistant.Services
                 // 1. Exact method/heading matches get priority tier (low number = better)
                 // 2. Within a tier, FTS5 BM25 rank scores by term frequency & doc length
                 // 3. Bonus for content-rich chunks (penalize thin TOC/nav chunks)
-                string firstWord = query.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? query;
+                //
+                // GH #313: the tier is decided by ONE word, and it used to be the raw first token, so "the X" tiered
+                // on "the". It is now the first word SanitizeFtsQuery searches for (stop words gone). The other
+                // words only fed the FTS OR query, where a word that is in every section ("Parameters") counts for
+                // next to nothing, so "HttpSubmitRequest Parameters" ranked that function's Parameters section
+                // LAST of its sections. Within a tier, a heading containing more of those other words now sorts
+                // first; with no other words there is no such key and the order is exactly what it was.
+                string[] queryWords = GetQueryWords(query);
+                string firstWord = queryWords.Length > 0 ? queryWords[0] : query;
+                string exactLike = EscapeLike(firstWord);
 
                 string sql = @"
                     SELECT
@@ -1760,10 +1769,12 @@ namespace ClarionAssistant.Services
                             -- a page number is occasionally what you want -- just never above prose.
                             WHEN dc.topic = 'index' THEN 9
                             WHEN dc.method_name = @exact THEN 0
-                            WHEN dc.method_name LIKE '%' || @exact || '%' THEN 1
-                            WHEN dc.heading = @exact THEN 2
-                            WHEN dc.heading LIKE '%' || @exact || '%' THEN 3
-                            WHEN dc.signature LIKE '%' || @exact || '%' THEN 4
+                            WHEN dc.method_name LIKE '%' || @exactLike || '%' ESCAPE '\' THEN 1
+                            -- A heading is 'Parent > Section' since PR #312 (and PDF/HTML headings were already),
+                            -- so a query naming the section matches the LAST segment exactly, not just the whole.
+                            WHEN dc.heading = @exact OR dc.heading LIKE '% > ' || @exactLike ESCAPE '\' THEN 2
+                            WHEN dc.heading LIKE '%' || @exactLike || '%' ESCAPE '\' THEN 3
+                            WHEN dc.signature LIKE '%' || @exactLike || '%' ESCAPE '\' THEN 4
                             ELSE 5
                         END as tier,
                         rank as bm25_score,
@@ -1776,6 +1787,21 @@ namespace ClarionAssistant.Services
                 var parameters = new List<SQLiteParameter>();
                 parameters.Add(new SQLiteParameter("@query", ftsQuery));
                 parameters.Add(new SQLiteParameter("@exact", firstWord));
+                // LIKE treats % and _ as wildcards: a query word containing them must match them literally.
+                parameters.Add(new SQLiteParameter("@exactLike", exactLike));
+
+                // One "heading contains word N" term per remaining query word (parameter names only are
+                // concatenated into the SQL, never the words themselves).
+                var headingHits = new List<string>();
+                for (int i = 1; i < queryWords.Length; i++)
+                {
+                    string name = "@w" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    headingHits.Add("(dc.heading LIKE '%' || " + name + " || '%' ESCAPE '\\')");
+                    parameters.Add(new SQLiteParameter(name, EscapeLike(queryWords[i])));
+                }
+                // No other words: no extra key at all. (Not a constant 0: SQLite reads an integer constant in
+                // ORDER BY as a result-column NUMBER, so "(0) DESC" is an error, not a no-op.)
+                string headingHitKey = headingHits.Count == 0 ? "" : "(" + string.Join(" + ", headingHits) + ") DESC, ";
 
                 if (!string.IsNullOrEmpty(library))
                 {
@@ -1802,9 +1828,9 @@ namespace ClarionAssistant.Services
                     parameters.Add(new SQLiteParameter("@class", className));
                 }
 
-                // Sort by: tier first, then BM25 within tier (rank is negative, lower = better),
-                // then prefer longer content as tiebreaker
-                sql += " ORDER BY tier, bm25_score, content_len DESC LIMIT @limit";
+                // Sort by: tier first, then (GH #313) how many of the other query words the heading contains,
+                // then BM25 within that (rank is negative, lower = better), then prefer longer content.
+                sql += " ORDER BY tier, " + headingHitKey + "bm25_score, content_len DESC LIMIT @limit";
                 parameters.Add(new SQLiteParameter("@limit", limit));
 
                 using (var cmd = new SQLiteCommand(sql, conn))
@@ -2205,12 +2231,16 @@ namespace ClarionAssistant.Services
             "but", "or", "if", "while", "because", "until", "although"
         };
 
-        private string SanitizeFtsQuery(string query)
+        /// <summary>
+        /// The words a query searches for: split on whitespace, double quotes removed, stop words dropped (all of
+        /// them kept when every word is a stop word). SanitizeFtsQuery builds the FTS query from this list and
+        /// QueryDocs ranks headings by it (GH #313), so the two always agree on what the words are.
+        /// </summary>
+        private string[] GetQueryWords(string query)
         {
             if (string.IsNullOrEmpty(query))
-                return null;
+                return new string[0];
 
-            // Split into words, remove stop words, wrap each in quotes for safe FTS5 matching
             var words = query.Split(new[] { ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(w => w.Replace("\"", "").Trim())
                 .Where(w => w.Length > 0 && !_stopWords.Contains(w))
@@ -2224,6 +2254,23 @@ namespace ClarionAssistant.Services
                     .Where(w => w.Length > 0)
                     .ToArray();
             }
+            return words;
+        }
+
+        /// <summary>Escape a value for a LIKE pattern with ESCAPE '\': \, % and _ match themselves.</summary>
+        private static string EscapeLike(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return value ?? "";
+            return value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+        }
+
+        private string SanitizeFtsQuery(string query)
+        {
+            if (string.IsNullOrEmpty(query))
+                return null;
+
+            // Split into words, remove stop words, wrap each in quotes for safe FTS5 matching
+            var words = GetQueryWords(query);
 
             if (words.Length == 0)
                 return null;

@@ -475,6 +475,16 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86"
                Args = @((Join-Path $TestDir "fixtures\schemagraph-gh267\attrs.dctx")) }
+            # GH #313 (bb480461): query_docs ranks the section a multi-word query names first - the heading tier
+            # used only the first word - with LIKE wildcards literal and single-word order unchanged.
+            @{ Name = "DocGraphService.QueryDocs.Test"
+               Sources = @("tests\DocGraphService.QueryDocs.Test.cs", "tests\DocGraphService.QueryDocs.Stubs.cs",
+                           "Services\DocGraphService.cs", "Services\MarkdownChunker.cs", "Services\DocGraphModels.cs",
+                           "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Data.dll", "System.Xml.dll", "System.Web.Extensions.dll")
+               RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
+               Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
+               Platform = "x86" }
             # PR #237: the active tab re-selected on solution reopen - a view opening before the reopen loop
             # (the .app tab from Recent Applications) neither gives up the restore nor lets the loop record
             # over the saved choice; the store's temp file is per process and never left behind. IDE stubbed.
