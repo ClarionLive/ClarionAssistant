@@ -1478,7 +1478,7 @@ namespace ClarionAssistant.Services
             if (string.IsNullOrWhiteSpace(text))
                 return 0;
 
-            var chunks = ChunkMarkdown(text, source.Library);
+            var chunks = MarkdownChunker.Chunk(text, source.Library);
             if (chunks.Count == 0)
                 return 0;
 
@@ -1490,160 +1490,6 @@ namespace ClarionAssistant.Services
             }
 
             return chunks.Count;
-        }
-
-        /// <summary>
-        /// Chunks Markdown text by ATX heading (# .. ######). Each heading starts
-        /// a new chunk that runs until the next heading or end of file. The first
-        /// fenced code block in each section is extracted as CodeExample; the
-        /// remaining prose has markdown syntax markers stripped for cleaner FTS.
-        /// </summary>
-        private List<DocChunk> ChunkMarkdown(string text, string library)
-        {
-            var chunks = new List<DocChunk>();
-            // Normalise line endings so the splitter works on any platform.
-            string normalised = text.Replace("\r\n", "\n").Replace('\r', '\n');
-            string[] lines = normalised.Split('\n');
-
-            string currentHeading = null;
-            int currentLevel = 0;
-            var buffer = new StringBuilder();
-            bool inFence = false;
-
-            Action flush = () =>
-            {
-                string body = buffer.ToString().Trim();
-                if (string.IsNullOrEmpty(body) && string.IsNullOrEmpty(currentHeading))
-                    return;
-
-                string heading = currentHeading ?? library;
-                string codeExample = ExtractFirstFencedCodeBlock(body);
-                string prose = StripMarkdownSyntax(body);
-
-                if (string.IsNullOrWhiteSpace(prose) && string.IsNullOrWhiteSpace(codeExample))
-                    return;
-
-                chunks.Add(new DocChunk
-                {
-                    ClassName = library,
-                    MethodName = null,
-                    Topic = currentLevel > 0 ? ("h" + currentLevel) : "section",
-                    Heading = heading,
-                    Content = prose,
-                    CodeExample = codeExample,
-                    Signature = null,
-                    Anchor = SlugifyHeading(heading)
-                });
-            };
-
-            var headingRegex = new Regex(@"^(#{1,6})\s+(.*?)\s*#*\s*$");
-
-            foreach (string rawLine in lines)
-            {
-                string line = rawLine;
-
-                // Track fenced code blocks so headings inside them are not treated as chunk boundaries.
-                if (Regex.IsMatch(line, @"^\s{0,3}(```|~~~)"))
-                {
-                    inFence = !inFence;
-                    buffer.AppendLine(line);
-                    continue;
-                }
-
-                if (!inFence)
-                {
-                    var m = headingRegex.Match(line);
-                    if (m.Success)
-                    {
-                        flush();
-                        buffer.Length = 0;
-                        currentLevel = m.Groups[1].Value.Length;
-                        currentHeading = m.Groups[2].Value.Trim();
-                        continue;
-                    }
-                }
-
-                buffer.AppendLine(line);
-            }
-
-            flush();
-
-            // Fallback: if the file had no headings at all, store the whole file as a single chunk.
-            if (chunks.Count == 0)
-            {
-                string body = normalised.Trim();
-                string codeExample = ExtractFirstFencedCodeBlock(body);
-                string prose = StripMarkdownSyntax(body);
-                if (!string.IsNullOrWhiteSpace(prose) || !string.IsNullOrWhiteSpace(codeExample))
-                {
-                    chunks.Add(new DocChunk
-                    {
-                        ClassName = library,
-                        MethodName = null,
-                        Topic = "document",
-                        Heading = library,
-                        Content = prose,
-                        CodeExample = codeExample,
-                        Signature = null,
-                        Anchor = SlugifyHeading(library)
-                    });
-                }
-            }
-
-            return chunks;
-        }
-
-        private static string ExtractFirstFencedCodeBlock(string body)
-        {
-            if (string.IsNullOrEmpty(body)) return null;
-            var m = Regex.Match(body, @"(?:```|~~~)[^\n]*\n(.*?)\n\s{0,3}(?:```|~~~)", RegexOptions.Singleline);
-            if (!m.Success) return null;
-            string code = m.Groups[1].Value.TrimEnd();
-            return string.IsNullOrWhiteSpace(code) ? null : code;
-        }
-
-        private static string StripMarkdownSyntax(string body)
-        {
-            if (string.IsNullOrEmpty(body)) return body;
-
-            // Remove fenced code blocks entirely (already captured separately).
-            body = Regex.Replace(body, @"(?:```|~~~)[^\n]*\n.*?\n\s{0,3}(?:```|~~~)", "", RegexOptions.Singleline);
-            // HTML comments.
-            body = Regex.Replace(body, @"<!--.*?-->", "", RegexOptions.Singleline);
-            // Images ![alt](url) → alt
-            body = Regex.Replace(body, @"!\[([^\]]*)\]\([^\)]*\)", "$1");
-            // Links [text](url) → text
-            body = Regex.Replace(body, @"\[([^\]]+)\]\([^\)]*\)", "$1");
-            // Reference-style link definitions: [label]: url → drop the line
-            body = Regex.Replace(body, @"^\s*\[[^\]]+\]:\s*\S+.*$", "", RegexOptions.Multiline);
-            // Bold / italic markers (keep the text).
-            body = Regex.Replace(body, @"\*\*([^*]+)\*\*", "$1");
-            body = Regex.Replace(body, @"__([^_]+)__", "$1");
-            body = Regex.Replace(body, @"(?<![*\w])\*([^*\n]+)\*(?!\w)", "$1");
-            body = Regex.Replace(body, @"(?<![_\w])_([^_\n]+)_(?!\w)", "$1");
-            // Inline code `text` → text
-            body = Regex.Replace(body, @"`([^`]+)`", "$1");
-            // Blockquote markers at start of line.
-            body = Regex.Replace(body, @"^\s{0,3}>\s?", "", RegexOptions.Multiline);
-            // List bullets / ordered list numbers at start of line.
-            body = Regex.Replace(body, @"^\s*[-*+]\s+", "", RegexOptions.Multiline);
-            body = Regex.Replace(body, @"^\s*\d+\.\s+", "", RegexOptions.Multiline);
-            // Horizontal rules.
-            body = Regex.Replace(body, @"^\s*([-*_])\1{2,}\s*$", "", RegexOptions.Multiline);
-            // Collapse runs of blank lines.
-            body = Regex.Replace(body, @"\n{3,}", "\n\n");
-
-            return body.Trim();
-        }
-
-        private static string SlugifyHeading(string heading)
-        {
-            if (string.IsNullOrEmpty(heading)) return null;
-            string s = heading.ToLowerInvariant();
-            s = Regex.Replace(s, @"[^a-z0-9\s-]", "");
-            s = Regex.Replace(s, @"\s+", "-");
-            s = s.Trim('-');
-            return string.IsNullOrEmpty(s) ? null : s;
         }
 
         #endregion
@@ -2570,28 +2416,4 @@ namespace ClarionAssistant.Services
 
         #endregion
     }
-
-    #region Models
-
-    public class DocSource
-    {
-        public string Vendor { get; set; }
-        public string Library { get; set; }
-        public string FilePath { get; set; }
-        public string Format { get; set; }
-    }
-
-    public class DocChunk
-    {
-        public string ClassName { get; set; }
-        public string MethodName { get; set; }
-        public string Topic { get; set; }
-        public string Heading { get; set; }
-        public string Content { get; set; }
-        public string CodeExample { get; set; }
-        public string Signature { get; set; }
-        public string Anchor { get; set; }
-    }
-
-    #endregion
 }
