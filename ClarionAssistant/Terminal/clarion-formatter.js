@@ -149,6 +149,9 @@
         if (first && KEYWORD_SET[first] && !labelLikeStructKeyword(first, code)) return false;
         var sp = splitLabel(rtrim(code));
         if (!sp) return false;
+        // A label followed by a control keyword ("Loop:Top LOOP", "Retry IF x") is a labelled statement,
+        // not a declaration -- the keyword guard above cannot see it when the label is prefixed.
+        if (labelledControl(raw)) return false;
         var r = sp.rest.charAt(0);
         return r !== '=' && r !== '(';
     }
@@ -268,7 +271,8 @@
                 var eligiblePos = (tokenIdx === 0 && kwPos) || (prevNonSpace === ',' && depth === 0);
                 // A word that is part of a NAME is never a keyword (46506010): a prefix (While:Count — the
                 // word is followed by ':'), a field after a prefix or a dot (Cus:End, Q.Loop, SELF.Case), or a
-                // control equate (?If). Only the character right next to the word counts.
+                // control equate (?If). Only the character right next to the word counts, deliberately: the
+                // built-in check below uses prevNonSpace, which also skips spaces ("x. Open(").
                 var before = i > 0 ? code.charAt(i - 1) : '';
                 var namePart = code.charAt(i + word.length) === ':' || before === ':' || before === '.' || before === '?';
                 var isKeyword = !namePart && (ALWAYS_CASE[upper] || (POSITIONAL_CASE[upper] && eligiblePos));

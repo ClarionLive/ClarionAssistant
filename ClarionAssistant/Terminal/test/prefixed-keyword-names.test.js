@@ -51,6 +51,10 @@ notOutdent.forEach(l => check('no outdent: ' + l.trim(), !dec.test(l)));
 const notIndent = ['    Loop:Idx = 1', '    Case:Id = 2', '    Group:Name = x', '    If:Flag = 1', '    Of:Value = 2',
     '    Begin:Date = TODAY()', '    Queue:Browse:1.ResetSort(1)', '    Window:Opened = TRUE'];
 notIndent.forEach(l => check('no indent after: ' + l.trim(), !inc.test(l)));
+// GROUP/QUEUE/WINDOW/CLASS... may be labels (only the reserved words may not), so a structure label used as a
+// qualifier is a name too (pipeline Run 1, Codex).
+['    Queue.Id = 3', '    Group.Name = 2', '    Window.Opened = TRUE', '    Class.Init()', '    File.Record = 1']
+    .forEach(l => check('no indent after dotted label: ' + l.trim(), !inc.test(l)));
 // The real keywords still work.
 ['    END', '    WHILE x < 5', '    OF 1', '    ELSE', '    UNTIL done', '    .'].forEach(l => check('still outdents: ' + l.trim(), dec.test(l)));
 ['    LOOP', '    IF x = 1', '    CASE a', '    OF 1', '    GROUP', '    LOOP i = 1 TO 3'].forEach(l => check('still indents after: ' + l.trim(), inc.test(l)));
@@ -88,6 +92,16 @@ function lead(s) { return /^ */.exec(s)[0].length; }
     const out = fmt(['MyProc PROCEDURE', '  CODE', 'Scan:Top LOOP i = 1 TO 3', '  if x then break.', '  end', '  RETURN']);
     check('prefix-style label + LOOP still opens a level', lead(out[3]) > lead(out[2].replace(/^Scan:Top\s*/, '')) || /^\s+IF/.test(out[3]), JSON.stringify(out.slice(2, 5)));
     check('keywords still cased (IF/BREAK/END)', /\bIF\b/.test(out[3]) && /\bBREAK\b/.test(out[3]) && /\bEND\b/.test(out[4]), JSON.stringify(out.slice(3, 5)));
+})();
+
+(function () {
+    // A prefixed label + control keyword at module scope is a labelled statement, not a data declaration
+    // (pipeline Run 1, debugger): it must be left as it was before the fix, not laid out at the data column.
+    const src = ['  MEMBER()', 'Loop:Top LOOP'];
+    const out = fmt(src);
+    check('module-scope "Loop:Top LOOP" is not laid out as a declaration', out[1] === 'Loop:Top LOOP', JSON.stringify(out[1]));
+    const decl = fmt(['  MEMBER()', 'Loop:Idx LONG']);
+    check('module-scope "Loop:Idx LONG" is still a declaration', /^Loop:Idx\s{2,}LONG$/.test(decl[1]), JSON.stringify(decl[1]));
 })();
 
 // ---------- 3. live keyword casing ----------

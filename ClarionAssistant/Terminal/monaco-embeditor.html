@@ -3876,17 +3876,16 @@
             var m = /([A-Za-z_][A-Za-z0-9_]*)$/.exec(before);
             if (!m) return;
             var word = m[1];
-            // Always-safe keywords case at any boundary; built-in FUNCTIONS only when the boundary
-            // just typed is '(' (a call) and the word isn't a method/prefixed field (.Open / Cus:Name) — #61.
+            // A word right after ':', '.' or '?' is part of a name -- a prefixed field (Cus:End), a member
+            // (Q.Loop, SELF.Case, .Open) or a control equate (?If) -- and keeps the developer's casing, keyword
+            // or built-in alike (#61, 46506010). A word BEFORE a ':' is never seen here: ':' is not a boundary.
             var wu = word.toUpperCase();
-            // A keyword-named field or control equate is a name, not a keyword (46506010): Cus:End, Q.Loop,
-            // SELF.Case, ?If keep the developer's casing.
             var chPrev = before.charAt(before.length - word.length - 1);
             if (chPrev === ':' || chPrev === '.' || chPrev === '?') return;
+            // Always-safe keywords case at any boundary; built-in FUNCTIONS only when the boundary just typed
+            // is '(' (a call).
             if (!alwaysKwSet()[wu]) {
                 if (boundaryCh !== '(' || !builtinFnSet()[wu]) return;
-                var chBefore = before.charAt(before.length - word.length - 1);
-                if (chBefore === '.' || chBefore === ':') return;
             }
             var canonical = keywordCaseMode === 'lower' ? word.toLowerCase() : word.toUpperCase();
             if (word === canonical) return;
