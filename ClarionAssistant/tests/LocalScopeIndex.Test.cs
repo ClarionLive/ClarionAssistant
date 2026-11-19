@@ -301,6 +301,12 @@ static class LocalScopeIndexTest
                   "a full path -> the escaped file name only: " + Md(hPath));
             Check(LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw") == "a\\[1\\]\\`b\\*.clw", "1.fn2",
                   "markdown characters in a file name are escaped: " + LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw"));
+            // A name .NET Framework's Path.GetFileName rejects still shows as the escaped file name only.
+            string bad = LocalScopeIndex.Scope.CardFileName("C:\\_src\\My_App\\a|b_c.clw");
+            Check(bad == "a|b\\_c.clw", "1.fn4", "a path GetFileName rejects -> the escaped file name only: " + bad);
+            // A path that ends in a separator names no file: the card has no empty trailing segment.
+            var hDir = LocalScopeIndex.Hover(_two, fl, fc, @"C:\_src\My_App\");
+            Check(hDir != null && !hDir.Markdown.TrimEnd().EndsWith("·"), "1.fn5", "a folder path -> no dangling separator: " + Md(hDir));
             var hBare = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
             Check(hBare != null && hBare.Markdown.EndsWith(" · two-procs.clw"), "1.fn3", "a bare file name is shown as it was: " + Md(hBare));
         }

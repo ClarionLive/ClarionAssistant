@@ -993,7 +993,8 @@ namespace ClarionAssistant.Services
             private static LocalHoverResult Card(string sig, string what, string fileName, string kind)
             {
                 var bits = new List<string> { what };
-                if (!string.IsNullOrEmpty(fileName)) bits.Add(CardFileName(fileName));
+                string shown = string.IsNullOrEmpty(fileName) ? "" : CardFileName(fileName);
+                if (shown.Length > 0) bits.Add(shown);   // a path ending in a separator names no file: no dangling " · "
                 return new LocalHoverResult
                 {
                     Markdown = "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits),
@@ -1009,7 +1010,13 @@ namespace ClarionAssistant.Services
             {
                 string name;
                 try { name = System.IO.Path.GetFileName(fileName); }
-                catch (ArgumentException) { name = fileName; }   // .NET Framework rejects some characters: keep the card
+                catch (ArgumentException)
+                {
+                    // .NET Framework rejects some characters (< > | " control chars): keep the card, still name the
+                    // file only, and escape it like any other -- the raw full path would bring back "C:\_src" -> "C:_src".
+                    int cut = fileName.LastIndexOfAny(new[] { '\\', '/' });
+                    name = cut >= 0 ? fileName.Substring(cut + 1) : fileName;
+                }
                 var sb = new StringBuilder(name.Length + 4);
                 foreach (char ch in name)
                 {
