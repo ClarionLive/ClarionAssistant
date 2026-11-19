@@ -286,6 +286,20 @@ static class LocalScopeIndexTest
         Check(hOwner != null && !hOwner.Authoritative && hOwner.Fallback && hOwner.Markdown.Contains("LONG"), "1.fb6",
               "pId (ProcA's parameter, seen from ThisWindow.Init) -> fallback: " + Md(hOwner));
 
+        // The hosts pass the file's full path. The card's detail line names the file only, escaped for markdown:
+        // pasted as it was, "C:\_src\..." rendered as "C:_src\..." ("\_" is an escaped "_").
+        {
+            int fl = Line(_two, "ReturnValue = LocalHelper(pMode)");
+            int fc = LineText(_two, fl).IndexOf("pMode", StringComparison.Ordinal) + 1;
+            var hPath = LocalScopeIndex.Hover(_two, fl, fc, @"C:\_src\My_App\two_procs.clw");
+            Check(hPath != null && hPath.Markdown.EndsWith(" · two\\_procs.clw") && !hPath.Markdown.Contains("My_App"), "1.fn1",
+                  "a full path -> the escaped file name only: " + Md(hPath));
+            Check(LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw") == "a\\[1\\]\\`b\\*.clw", "1.fn2",
+                  "markdown characters in a file name are escaped: " + LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw"));
+            var hBare = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
+            Check(hBare != null && hBare.Markdown.EndsWith(" · two-procs.clw"), "1.fn3", "a bare file name is shown as it was: " + Md(hBare));
+        }
+
         // Local class member access (SELF.Init inside ThisWindow.Init): non-authoritative member hover.
         string cm = WithLine(_two, "SELF.", "  SELF.Kill()");
         var hm = HoverOn(cm, "SELF.Kill()", "Kill");
