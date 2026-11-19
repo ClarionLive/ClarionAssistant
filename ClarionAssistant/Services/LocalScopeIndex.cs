@@ -992,13 +992,30 @@ namespace ClarionAssistant.Services
             private static LocalHoverResult Card(string sig, string what, string fileName, string kind)
             {
                 var bits = new List<string> { what };
-                if (!string.IsNullOrEmpty(fileName)) bits.Add(fileName);
+                if (!string.IsNullOrEmpty(fileName)) bits.Add(CardFileName(fileName));
                 return new LocalHoverResult
                 {
                     Markdown = "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits),
                     Fallback = true,
                     Kind = kind
                 };
+            }
+
+            // The detail line names the file as the index card's location link does: the file name, not its folder.
+            // The hosts pass a full path, and pasted into the markdown as it was, "C:\_src\..." lost its first
+            // backslash ("\_" is an escaped "_"). What markdown reads in a name is escaped.
+            internal static string CardFileName(string fileName)
+            {
+                string name;
+                try { name = System.IO.Path.GetFileName(fileName); }
+                catch (ArgumentException) { name = fileName; }   // .NET Framework rejects some characters: keep the card
+                var sb = new StringBuilder(name.Length + 4);
+                foreach (char ch in name)
+                {
+                    if ("\\`*_[]".IndexOf(ch) >= 0) sb.Append('\\');
+                    sb.Append(ch);
+                }
+                return sb.ToString();
             }
         }
 
