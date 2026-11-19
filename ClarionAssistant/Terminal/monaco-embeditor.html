@@ -3879,6 +3879,10 @@
             // Always-safe keywords case at any boundary; built-in FUNCTIONS only when the boundary
             // just typed is '(' (a call) and the word isn't a method/prefixed field (.Open / Cus:Name) — #61.
             var wu = word.toUpperCase();
+            // A keyword-named field or control equate is a name, not a keyword (46506010): Cus:End, Q.Loop,
+            // SELF.Case, ?If keep the developer's casing.
+            var chPrev = before.charAt(before.length - word.length - 1);
+            if (chPrev === ':' || chPrev === '.' || chPrev === '?') return;
             if (!alwaysKwSet()[wu]) {
                 if (boundaryCh !== '(' || !builtinFnSet()[wu]) return;
                 var chBefore = before.charAt(before.length - word.length - 1);

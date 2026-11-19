@@ -37,8 +37,12 @@ function registerClarionLanguage() {
             // WINDOW/REPORT bodies, legitimately bare — e.g. "OPTION,USE(?opt)") and are split
             // out alongside it for the same reason (e.g. "option     LONG(0)", a plain local
             // variable named "option", was misread as opening a block).
-            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b|(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$)))(?![^!]*\.\s*$).*$/i,
-            decreaseIndentPattern: /^\s*(END\b|\.\s*$|OF\b|OROF\b|ELSE\b|ELSIF\b|UNTIL\b|WHILE\b)/i
+            // (?!:) after a keyword (46506010): a keyword followed by ':' is a PREFIX, not the keyword --
+            // While:Count, Loop:Idx, End:Date, Case:Id are names. \b alone matches before ':' and so outdented
+            // 'While:Count += 1' and indented the line after 'Loop:Idx = 1'. TOOLBAR..OPTION already require
+            // '(', ',', '!' or end of line after the keyword, which excludes ':'.
+            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b(?!:)|(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$)))(?![^!]*\.\s*$).*$/i,
+            decreaseIndentPattern: /^\s*(?:(?:END|OF|OROF|ELSE|ELSIF|UNTIL|WHILE)\b(?!:)|\.\s*$)/i
         }
     });
     monaco.languages.setMonarchTokensProvider('clarion', {
