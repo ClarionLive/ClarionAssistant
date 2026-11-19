@@ -15,10 +15,10 @@ namespace ClarionAssistant.Services
         public bool Authoritative;
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
-        /// deadline. Set for every buffer card but a local class member: DATA labels (procedure and routine locals,
-        /// module data, GROUP/QUEUE/CLASS structures), routines, parameters and procedures, whose server card
-        /// carries scope, field count, the owning procedure or the prototype, and a link to the declaration - a
-        /// slice's line is not the file's, so this card cannot link it. Never set together with
+        /// deadline. Set for every buffer card: DATA labels (procedure and routine locals, module data,
+        /// GROUP/QUEUE/CLASS structures), routines, parameters, procedures and local class members, whose server
+        /// card carries scope, field count, the owning procedure, class or prototype, and a link to the declaration -
+        /// a slice's line is not the file's, so this card cannot link it. Never set together with
         /// <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
@@ -981,9 +981,10 @@ namespace ClarionAssistant.Services
                 foreach (var kv in cls.Members)
                     if (string.Equals(kv.Key, member, StringComparison.OrdinalIgnoreCase))
                     {
-                        var r = Card(kv.Key + "  " + kv.Value, "member of " + cls.Name, fileName, "member");
-                        r.Fallback = false;   // shown with the server's: inherited overrides/docs may still come from the LSP
-                        return r;
+                        // A FALLBACK, as every buffer card is: the server's card names the same member, so shown
+                        // side by side the page's same-symbol rule dropped the server's (its class, prototype link
+                        // and docs) and only this one was ever seen.
+                        return Card(kv.Key + "  " + kv.Value, "member of " + cls.Name, fileName, "member");
                     }
                 return null;
             }

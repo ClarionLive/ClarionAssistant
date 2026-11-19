@@ -274,8 +274,13 @@ static class LocalScopeIndexTest
         Check(hCls != null && !hCls.Authoritative && hCls.Fallback, "1.fb3",
               "ThisWindow (local CLASS) -> fallback, not authoritative: " + Md(hCls));
         var hMember = HoverOn(WithLine(_two, "SELF.", "  SELF.Kill()"), "SELF.Kill()", "Kill");
-        Check(hMember != null && !hMember.Authoritative && !hMember.Fallback, "1.fb4",
-              "a local CLASS member -> neither authoritative nor a fallback (shown with the server's card): " + Md(hMember));
+        Check(hMember != null && !hMember.Authoritative && hMember.Fallback && hMember.Kind == "member", "1.fb4",
+              "a local CLASS member -> a fallback, not authoritative: " + Md(hMember));
+        // The method name in an implementation header: the same member card, also the server's fallback (shown
+        // beside the server's, the page's same-symbol rule dropped the server's card).
+        var hImpl = HoverOn(_two, "ThisWindow.Init      PROCEDURE(BYTE pMode)", "Init");
+        Check(hImpl != null && !hImpl.Authoritative && hImpl.Fallback && hImpl.Kind == "member" && hImpl.Markdown.Contains("member of ThisWindow"), "1.fb4a",
+              "Init in 'ThisWindow.Init PROCEDURE' -> the member card, a fallback: " + Md(hImpl));
         // Parameters: the server's card names the procedure and links its PROCEDURE line - a method's own
         // parameter, and the owning procedure's parameter seen from a local class method, both fall back.
         var hOwn = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");

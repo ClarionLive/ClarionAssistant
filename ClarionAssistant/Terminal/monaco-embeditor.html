@@ -6070,7 +6070,7 @@
     // that answer before it asks, and the host decides which of three ways the local card plays:
     //   authoritative (a dictionary card, an index card that is not a procedure): no LSP request at all;
     //   fallback (a keyword card, GH #250; a DATA label - local, module data, structure; a routine; a
-    //       parameter; a procedure, from the buffer or the index): the local provider shows nothing; the LSP provider asks the
+    //       parameter; a procedure, from the buffer or the index; a local class member): the local provider shows nothing; the LSP provider asks the
     //       server and shows ITS card, or the local card when the server has nothing, is down, or misses
     //       FALLBACK_LSP_DEADLINE_MS - one card either way;
     //   otherwise: both, and the LSP card is dropped when it names the same symbol as the local card, so
