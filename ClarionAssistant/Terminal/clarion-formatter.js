@@ -105,7 +105,9 @@
     function isFullComment(t) { return t.charAt(0) === '!'; }
     function isCol1Comment(raw) { return raw.charAt(0) === '!'; }
     function startsInCol1(raw) { var c = raw.charAt(0); return c !== '' && c !== ' ' && c !== '\t'; }
-    function leadingKeyword(code) { var m = /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(code); return m ? m[1].toUpperCase() : ''; }
+    // The first word of a code string, uppercased, or '' when that word is a PREFIX (followed by ':'):
+    // While:Count, Loop:Idx and End:Date are names, not WHILE/LOOP/END (46506010).
+    function leadingKeyword(code) { var m = /^\s*([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_:])/.exec(code); return m ? m[1].toUpperCase() : ''; }
 
     // The structure/keyword driving a line (uppercased) or ''. If the line begins (column 1) with a
     // non-keyword identifier followed by whitespace, that's a LABEL and the keyword is the next token;
@@ -138,13 +140,18 @@
     // A label + type/structure declaration (column 1, non-keyword label, not an assignment/call).
     function isDataDecl(raw) {
         if (!startsInCol1(raw)) return false;
-        var code = stripComment(raw), first = leadingKeyword(code);
-        if (!first) return false;
+        var code = stripComment(raw);
+        if (!/^[A-Za-z_]/.test(code)) return false;
         // A keyword-led line is not a declaration UNLESS it's a struct-keyword-spelled LABEL
-        // followed by a type (ABC's "Toolbar ToolbarClass") — that IS a decl.
-        if (KEYWORD_SET[first] && !labelLikeStructKeyword(first, code)) return false;
+        // followed by a type (ABC's "Toolbar ToolbarClass") — that IS a decl. A prefixed label
+        // (l:LocalOrShare, Loop:Idx) has no leading keyword at all, so it goes straight on (46506010).
+        var first = leadingKeyword(code);
+        if (first && KEYWORD_SET[first] && !labelLikeStructKeyword(first, code)) return false;
         var sp = splitLabel(rtrim(code));
         if (!sp) return false;
+        // A label followed by a control keyword ("Loop:Top LOOP", "Retry IF x") is a labelled statement,
+        // not a declaration -- the keyword guard above cannot see it when the label is prefixed.
+        if (labelledControl(raw)) return false;
         var r = sp.rest.charAt(0);
         return r !== '=' && r !== '(';
     }
@@ -262,7 +269,13 @@
                 tokenIdx++;
                 var upper = word.toUpperCase();
                 var eligiblePos = (tokenIdx === 0 && kwPos) || (prevNonSpace === ',' && depth === 0);
-                var isKeyword = ALWAYS_CASE[upper] || (POSITIONAL_CASE[upper] && eligiblePos);
+                // A word that is part of a NAME is never a keyword (46506010): a prefix (While:Count — the
+                // word is followed by ':'), a field after a prefix or a dot (Cus:End, Q.Loop, SELF.Case), or a
+                // control equate (?If). Only the character right next to the word counts, deliberately: the
+                // built-in check below uses prevNonSpace, which also skips spaces ("x. Open(").
+                var before = i > 0 ? code.charAt(i - 1) : '';
+                var namePart = code.charAt(i + word.length) === ':' || before === ':' || before === '.' || before === '?';
+                var isKeyword = !namePart && (ALWAYS_CASE[upper] || (POSITIONAL_CASE[upper] && eligiblePos));
                 // Built-in function CALL (#61): word( anywhere, unless it's a method (.Open) or a
                 // prefixed field (Cus:Name) — those keep the user's casing.
                 if (!isKeyword && BUILTIN_FUNC_SET[upper] && prevNonSpace !== '.' && prevNonSpace !== ':') {
