@@ -15,10 +15,10 @@ namespace ClarionAssistant.Services
         public bool Authoritative;
         /// <summary>True when the card is only a FALLBACK for the language server's (GH #250): the page asks the
         /// server first and shows this card only when the server has nothing, is down, or misses its short
-        /// deadline. Set for every buffer card but a local class member: DATA labels (procedure and routine locals,
-        /// module data, GROUP/QUEUE/CLASS structures), routines, parameters and procedures, whose server card
-        /// carries scope, field count, the owning procedure or the prototype, and a link to the declaration - a
-        /// slice's line is not the file's, so this card cannot link it. Never set together with
+        /// deadline. Set for every buffer card: DATA labels (procedure and routine locals, module data,
+        /// GROUP/QUEUE/CLASS structures), routines, parameters, procedures and local class members, whose server
+        /// card carries scope, field count, the owning procedure, class or prototype, and a link to the declaration -
+        /// a slice's line is not the file's, so this card cannot link it. Never set together with
         /// <see cref="Authoritative"/>.</summary>
         public bool Fallback;
         /// <summary>"local", "parameter", "routine", "procedure" or "member" - what resolved it.</summary>
@@ -981,9 +981,10 @@ namespace ClarionAssistant.Services
                 foreach (var kv in cls.Members)
                     if (string.Equals(kv.Key, member, StringComparison.OrdinalIgnoreCase))
                     {
-                        var r = Card(kv.Key + "  " + kv.Value, "member of " + cls.Name, fileName, "member");
-                        r.Fallback = false;   // shown with the server's: inherited overrides/docs may still come from the LSP
-                        return r;
+                        // A FALLBACK, as every buffer card is: the server's card names the same member, so shown
+                        // side by side the page's same-symbol rule dropped the server's (its class, prototype link
+                        // and docs) and only this one was ever seen.
+                        return Card(kv.Key + "  " + kv.Value, "member of " + cls.Name, fileName, "member");
                     }
                 return null;
             }
@@ -992,13 +993,37 @@ namespace ClarionAssistant.Services
             private static LocalHoverResult Card(string sig, string what, string fileName, string kind)
             {
                 var bits = new List<string> { what };
-                if (!string.IsNullOrEmpty(fileName)) bits.Add(fileName);
+                string shown = string.IsNullOrEmpty(fileName) ? "" : CardFileName(fileName);
+                if (shown.Length > 0) bits.Add(shown);   // a path ending in a separator names no file: no dangling " · "
                 return new LocalHoverResult
                 {
                     Markdown = "```clarion\n" + sig + "\n```\n\n" + string.Join(" · ", bits),
                     Fallback = true,
                     Kind = kind
                 };
+            }
+
+            // The detail line names the file as the index card's location link does: the file name, not its folder.
+            // The hosts pass a full path, and pasted into the markdown as it was, "C:\_src\..." lost its first
+            // backslash ("\_" is an escaped "_"). What markdown reads in a name is escaped.
+            internal static string CardFileName(string fileName)
+            {
+                string name;
+                try { name = System.IO.Path.GetFileName(fileName); }
+                catch (ArgumentException)
+                {
+                    // .NET Framework rejects some characters (< > | " control chars): keep the card, still name the
+                    // file only, and escape it like any other -- the raw full path would bring back "C:\_src" -> "C:_src".
+                    int cut = fileName.LastIndexOfAny(new[] { '\\', '/' });
+                    name = cut >= 0 ? fileName.Substring(cut + 1) : fileName;
+                }
+                var sb = new StringBuilder(name.Length + 4);
+                foreach (char ch in name)
+                {
+                    if ("\\`*_[]".IndexOf(ch) >= 0) sb.Append('\\');
+                    sb.Append(ch);
+                }
+                return sb.ToString();
             }
         }
 

@@ -274,8 +274,13 @@ static class LocalScopeIndexTest
         Check(hCls != null && !hCls.Authoritative && hCls.Fallback, "1.fb3",
               "ThisWindow (local CLASS) -> fallback, not authoritative: " + Md(hCls));
         var hMember = HoverOn(WithLine(_two, "SELF.", "  SELF.Kill()"), "SELF.Kill()", "Kill");
-        Check(hMember != null && !hMember.Authoritative && !hMember.Fallback, "1.fb4",
-              "a local CLASS member -> neither authoritative nor a fallback (shown with the server's card): " + Md(hMember));
+        Check(hMember != null && !hMember.Authoritative && hMember.Fallback && hMember.Kind == "member", "1.fb4",
+              "a local CLASS member -> a fallback, not authoritative: " + Md(hMember));
+        // The method name in an implementation header: the same member card, also the server's fallback (shown
+        // beside the server's, the page's same-symbol rule dropped the server's card).
+        var hImpl = HoverOn(_two, "ThisWindow.Init      PROCEDURE(BYTE pMode)", "Init");
+        Check(hImpl != null && !hImpl.Authoritative && hImpl.Fallback && hImpl.Kind == "member" && hImpl.Markdown.Contains("member of ThisWindow"), "1.fb4a",
+              "Init in 'ThisWindow.Init PROCEDURE' -> the member card, a fallback: " + Md(hImpl));
         // Parameters: the server's card names the procedure and links its PROCEDURE line - a method's own
         // parameter, and the owning procedure's parameter seen from a local class method, both fall back.
         var hOwn = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
@@ -285,6 +290,26 @@ static class LocalScopeIndexTest
         var hOwner = HoverOn(cOwner, "x = pId", "pId");
         Check(hOwner != null && !hOwner.Authoritative && hOwner.Fallback && hOwner.Markdown.Contains("LONG"), "1.fb6",
               "pId (ProcA's parameter, seen from ThisWindow.Init) -> fallback: " + Md(hOwner));
+
+        // The hosts pass the file's full path. The card's detail line names the file only, escaped for markdown:
+        // pasted as it was, "C:\_src\..." rendered as "C:_src\..." ("\_" is an escaped "_").
+        {
+            int fl = Line(_two, "ReturnValue = LocalHelper(pMode)");
+            int fc = LineText(_two, fl).IndexOf("pMode", StringComparison.Ordinal) + 1;
+            var hPath = LocalScopeIndex.Hover(_two, fl, fc, @"C:\_src\My_App\two_procs.clw");
+            Check(hPath != null && hPath.Markdown.EndsWith(" · two\\_procs.clw") && !hPath.Markdown.Contains("My_App"), "1.fn1",
+                  "a full path -> the escaped file name only: " + Md(hPath));
+            Check(LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw") == "a\\[1\\]\\`b\\*.clw", "1.fn2",
+                  "markdown characters in a file name are escaped: " + LocalScopeIndex.Scope.CardFileName(@"C:\x\a[1]`b*.clw"));
+            // A name .NET Framework's Path.GetFileName rejects still shows as the escaped file name only.
+            string bad = LocalScopeIndex.Scope.CardFileName("C:\\_src\\My_App\\a|b_c.clw");
+            Check(bad == "a|b\\_c.clw", "1.fn4", "a path GetFileName rejects -> the escaped file name only: " + bad);
+            // A path that ends in a separator names no file: the card has no empty trailing segment.
+            var hDir = LocalScopeIndex.Hover(_two, fl, fc, @"C:\_src\My_App\");
+            Check(hDir != null && !hDir.Markdown.TrimEnd().EndsWith("·"), "1.fn5", "a folder path -> no dangling separator: " + Md(hDir));
+            var hBare = HoverOn(_two, "ReturnValue = LocalHelper(pMode)", "pMode");
+            Check(hBare != null && hBare.Markdown.EndsWith(" · two-procs.clw"), "1.fn3", "a bare file name is shown as it was: " + Md(hBare));
+        }
 
         // Local class member access (SELF.Init inside ThisWindow.Init): non-authoritative member hover.
         string cm = WithLine(_two, "SELF.", "  SELF.Kill()");
