@@ -277,8 +277,9 @@ namespace ClarionAssistant.Services
         // REPORT band structures (HEADER/FOOTER/FORM/DETAIL/BREAK), which the data-pad parse never needs
         // but the designer-extraction MUST count or a band's END pops the enclosing REPORT early. \b lets
         // it match a keyword glued to its attributes ("HEADER,AT(…)") since Clarion bands carry no label.
+        // APPLICATION (an MDI frame) is a designable structure too: the window designer opens it.
         private static readonly Regex StructOrBandKwRx = new Regex(
-            @"^(WINDOW|REPORT|MENUBAR|TOOLBAR|SHEET|TAB|MENU|OPTION|GROUP|QUEUE|RECORD|CLASS|VIEW|JOIN|MAP|MODULE|ITEMIZE|HEADER|FOOTER|FORM|DETAIL|BREAK)\b",
+            @"^(WINDOW|APPLICATION|REPORT|MENUBAR|TOOLBAR|SHEET|TAB|MENU|OPTION|GROUP|QUEUE|RECORD|CLASS|VIEW|JOIN|MAP|MODULE|ITEMIZE|HEADER|FOOTER|FORM|DETAIL|BREAK)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static string StructOrBandKw(string s)
@@ -421,23 +422,24 @@ namespace ClarionAssistant.Services
         }
 
         /// <summary>
-        /// The WINDOW or REPORT structure that encloses a caret line — the designable structure the
-        /// native Clarion structure designer would open. <see cref="Found"/> is false when the line is
-        /// not inside any WINDOW/REPORT.
+        /// The WINDOW, APPLICATION or REPORT structure that encloses a caret line — the designable
+        /// structure the native Clarion structure designer would open. <see cref="Found"/> is false when
+        /// the line is not inside any WINDOW/APPLICATION/REPORT.
         /// </summary>
         public sealed class StructureHit
         {
             public bool Found;
-            public string Type;     // "WINDOW" or "REPORT"
+            public string Type;     // "WINDOW", "APPLICATION" or "REPORT"
             public string Name;     // structure label, or "" if anonymous
             public int StartLine;   // 1-based line of the structure opener
             public int EndLine;     // 1-based line of the structure's closing END (last source line if unterminated)
         }
 
         /// <summary>
-        /// Locate the WINDOW or REPORT structure that encloses <paramref name="line1"/> (1-based) in
-        /// <paramref name="source"/>. Walks the structure-nesting stack (every structure opener pushes,
-        /// every bare END pops) and returns the OUTERMOST enclosing WINDOW/REPORT — the structure the
+        /// Locate the WINDOW, APPLICATION or REPORT structure that encloses <paramref name="line1"/>
+        /// (1-based) in <paramref name="source"/>. Walks the structure-nesting stack (every structure
+        /// opener pushes, every bare END pops) and returns the OUTERMOST enclosing WINDOW/APPLICATION/
+        /// REPORT — the structure the
         /// Clarion designer designs. A caret on the opener line or on the closing END line still counts
         /// as inside. Used by the CA Embeditor Ctrl+D handler to (a) toast when the caret is not in a
         /// designable structure and (b) pick the line to place the native ClarionEditor caret on before
@@ -504,7 +506,7 @@ namespace ClarionAssistant.Services
                 if (hit == null && i + 1 == line1)
                 {
                     for (int s = 0; s < stack.Count; s++)
-                        if (stack[s].Kw == "WINDOW" || stack[s].Kw == "REPORT")
+                        if (stack[s].Kw == "WINDOW" || stack[s].Kw == "APPLICATION" || stack[s].Kw == "REPORT")
                         {
                             hit = new StructureHit { Found = true, Type = stack[s].Kw, Name = stack[s].Label ?? "", StartLine = stack[s].Start, EndLine = lines.Length };
                             hitDepth = s;
