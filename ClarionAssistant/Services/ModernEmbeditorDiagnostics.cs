@@ -49,7 +49,23 @@ namespace ClarionAssistant.Services
         // The lookahead (not [,(]|$ like BandOpen) deliberately allows code structures that take an
         // expression: LOOP I = 1 TO 10, CASE SomeVar, EXECUTE n.
         private static readonly Regex StructOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(QUEUE|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(QUEUE|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|LOOP|CASE|BEGIN|EXECUTE|ACCEPT)(?=\s|,|\(|$)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        // MAP, MODULE and JOIN never take a label, and ITEMIZE may but needn't. None of the four is a
+        // reserved word, so each is also a legal data label: a QUEUE/GROUP/CLASS field declared as
+        // "Module LONG", "Map &MapType" or "Itemize LONG". In StructOpen the optional label group
+        // backtracked to empty on such a line, the label was read as the keyword, and the phantom
+        // opener took the structure's real END, so the enclosing QUEUE was reported "not terminated".
+        // The cure is GroupOpen / NestedBandOpen's tight lookahead, which also admits ';' here: the
+        // keyword must be followed by '(', ',', '!', ';' or end-of-line. MODULE and JOIN always take
+        // '(', and ITEMIZE takes '(', ',' or nothing. A real MAP ends its line, is followed by ';'
+        // (SoftVelocity's own "MAP; MODULE('x.clw')" ... "END; END"), or is an empty "MAP." - so
+        // MAP alone also admits a terminating '.', one that ends the statement, never "Map.Init()".
+        private static readonly Regex UnlabeledBlockOpen = new Regex(
+            @"^\s*(MAP|MODULE|JOIN)\b(?=\s*(?:[(,!;]|$)|(?<=MAP)\s*\.\s*(?:;|$))",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex ItemizeOpen = new Regex(
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(ITEMIZE)(?=\s*(?:[(,!;]|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // TOOLBAR is nested inside WINDOW/APPLICATION bodies and legitimately written bare
         // ("TOOLBAR,USE(?Toolbar1)"), so StructOpen's generic lookahead (which accepts any
@@ -107,8 +123,9 @@ namespace ClarionAssistant.Services
         // ALWAYS take a label are gated here. Excluded on purpose — these are legitimately written
         // BARE, with no preceding label, and gating them caused a real regression (confirmed live:
         // "MAP" / "MODULE('')" in a plain MAP...END prototype block):
-        //   MAP, MODULE       — namespace-like scoping constructs, never labeled.
-        //   ITEMIZE, JOIN     — nested inside LIST/VIEW bodies, never labeled.
+        //   MAP, MODULE, JOIN — never labeled; ITEMIZE — label optional. All four get their own
+        //                       tight-lookahead regex (UnlabeledBlockOpen / ItemizeOpen), so a
+        //                       data label of the same name never reaches this set.
         //   HEADER, FOOTER, FORM, DETAIL
         //                     — nested inside WINDOW/REPORT bodies; identified by an optional
         //                       ?field-equate via USE(), not a plain leading label.
@@ -369,6 +386,12 @@ namespace ClarionAssistant.Services
                 else
                 {
                     Match structMatch = StructOpen.Match(u);
+                    // A declaration keyword in the label position is the label itself (see the label
+                    // gate below). Let the later patterns read the rest of the line, so a structure
+                    // labelled with such a word ("Window ITEMIZE(1)", "File GROUP,PRE(F)") still opens.
+                    if (structMatch.Success && structMatch.Groups[1].Index == 0 &&
+                        DeclarationStructKeywords.Contains(structMatch.Groups[1].Value))
+                        structMatch = Match.Empty;
                     Match bandMatch = structMatch.Success ? null : BandOpen.Match(u);
                     Match openMatch = structMatch.Success ? structMatch : bandMatch;
                     if (openMatch == null || !openMatch.Success)
@@ -401,6 +424,15 @@ namespace ClarionAssistant.Services
                         // (none of these five are in that set).
                         Match nestedMatch = NestedBandOpen.Match(u);
                         if (nestedMatch.Success) openMatch = nestedMatch;
+                    }
+                    if (openMatch == null || !openMatch.Success)
+                    {
+                        // MAP/MODULE/JOIN and ITEMIZE (see UnlabeledBlockOpen's comment). Neither
+                        // keyword set is in DeclarationStructKeywords, so the label gate below
+                        // never skips them.
+                        Match blockMatch = UnlabeledBlockOpen.Match(u);
+                        if (!blockMatch.Success) blockMatch = ItemizeOpen.Match(u);
+                        if (blockMatch.Success) openMatch = blockMatch;
                     }
 
                     if (openMatch != null && openMatch.Success)
@@ -613,6 +645,13 @@ namespace ClarionAssistant.Services
         private static string StructWord(string rawLine)
         {
             var m = StructWordRx.Match(Sanitize(rawLine ?? "").Trim());
+            // "Window ITEMIZE(1)": a declaration keyword first on the line is the label, so name the
+            // structure after the keyword that follows it.
+            if (m.Success && m.Index == 0 && DeclarationStructKeywords.Contains(m.Value))
+            {
+                var next = m.NextMatch();
+                if (next.Success) m = next;
+            }
             return m.Success ? m.Value.ToUpperInvariant() : "Structure";
         }
 
