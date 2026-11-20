@@ -151,6 +151,16 @@ section('6. Formatter (clarion-formatter.js): a reference-typed label is a decla
     check('module MAP still sits at the preferred column', lead(out[3]) === lead(out[0]) && /^\s+MAP$/.test(out[3]), JSON.stringify(out[3]));
     check('module MAP END aligns with MAP', lead(out[4]) === lead(out[3]), JSON.stringify(out[4]));
     check('module "Queue &MyQueue" is a declaration', /^Queue\s+&MyQueue$/.test(out[2]), JSON.stringify(out[2]));
+
+    // Code review notes: 'Map = x' (named in the formatter's comment), tab-separated labels, and an empty "MAP.".
+    out = fmt(['MyProc PROCEDURE', '  CODE', '  Map = 5', '  x = 1', '  RETURN']);
+    check('"Map = 5" is a statement in the CODE body', lead(out[2]) === lead(out[3]), JSON.stringify(out.slice(2, 4)));
+    out = fmt(['  MEMBER()', 'G  GROUP', 'Module\tLONG', 'Queue\t&MyQueue', 'X  LONG', '  END']);
+    check('tab-separated "Module<TAB>LONG" / "Queue<TAB>&MyQueue" stay column-1 declarations',
+        /^Module\s+LONG$/.test(out[2]) && /^Queue\s+&MyQueue$/.test(out[3]), JSON.stringify(out.slice(2, 4)));
+    out = fmt(['  MEMBER()', '  MAP.', 'MyProc PROCEDURE', '  CODE', '  RETURN']);
+    check('an empty module "MAP." stays at the preferred column and closes itself',
+        /^\s+MAP\.$/.test(out[1]) && lead(out[1]) === lead(out[0]) && /^MyProc\s+PROCEDURE$/.test(out[2]), JSON.stringify(out.slice(0, 3)));
 })();
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed.');

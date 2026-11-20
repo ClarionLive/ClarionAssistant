@@ -431,7 +431,9 @@
             // mapDepth tracking, pinned everything after it to column 1 as "prototypes".
             // The keyword must also be followed by '(' ',' ';' '|', an ending '.' ("MAP.") or the end of the
             // line, as in the Monaco indent rule: an indented "map &= nameMap" or "Map = x" in CODE is an
-            // assignment to a variable named Map, not a MAP (b13bc411).
+            // assignment to a variable named Map, not a MAP (b13bc411). Same character set as that rule;
+            // the "MAP." one-liner is accepted here in the lookahead, where the indent rule instead
+            // excludes any line ending in '.' with its separate (?![^!]*\.\s*$) clause.
             if (PREFERRED_SET[first] && stack.length === 0 && !labelLikeStructKeyword(first, code) &&
                 /^\s*[A-Za-z_]+(?=\s*(?:[(,!;|]|\.\s*;?\s*$|$))/.test(code)) {
                 var pkCol = opts.preferredKeywordIndent ? codeBase : P;   // one indent vs preferred column

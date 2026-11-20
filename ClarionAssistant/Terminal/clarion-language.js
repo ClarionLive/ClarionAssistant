@@ -41,10 +41,12 @@ function registerClarionLanguage() {
             //    'option  LONG(0)'. A real header puts '(' ',' '!' ';' '|' or the end of the line
             //    right after the keyword (optional spaces between): 'GROUP', 'GROUP,PRE(G)',
             //    'CLASS(WindowManager)', "MODULE('x.clw')", 'MAP; MODULE(...)', 'QUEUE |',
-            //    'GROUP ! c'. A label is followed by its data type, '&', '=', '.', ':' or '{', so it
-            //    never matches (b13bc411). Same shape as UnlabeledBlockOpen / ItemizeOpen in
-            //    ModernEmbeditorDiagnostics.cs (PR #316) and Clarion-Extension's TokenPatterns.ts
-            //    (PR #378, TOOLBAR).
+            //    'GROUP ! c'. A label is normally followed by its data type, '&', '=', '.', ':' or
+            //    '{', so it does not match (b13bc411). Known limit: a call or array access through a
+            //    label, 'Module(x)' or 'Queue(1) = 2', still matches -- after the keyword, '(' looks
+            //    exactly like 'CLASS(Base)' or "MODULE('x')", and one line cannot tell them apart.
+            //    Same shape as UnlabeledBlockOpen / ItemizeOpen in ModernEmbeditorDiagnostics.cs and
+            //    Clarion-Extension's TokenPatterns.ts (TOOLBAR).
             //    A column-1 LABELLED header ('Rec  GROUP', 'ThisWindow  CLASS(WindowManager)') does
             //    not match on purpose: its fields and methods are labels, which must stay in column 1,
             //    so the next line must not indent.
