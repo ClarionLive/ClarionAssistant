@@ -4454,7 +4454,7 @@ namespace ClarionAssistant.Terminal
         }
 
         /// <summary>
-        /// Ctrl+D from Monaco — open the NATIVE structure designer for the WINDOW/REPORT at the caret
+        /// Ctrl+D from Monaco — open the NATIVE structure designer for the WINDOW/APPLICATION/REPORT at the caret
         /// (task 0a2ac0cb, literal-source mode). Validates here (structure detection + editable-slot
         /// guard + edit-vs-create mode), responds immediately so Monaco can arm its tracked splice
         /// target, then defers the designer open off this reentrant WebView2 stack (same rule as save).
@@ -4486,13 +4486,15 @@ namespace ClarionAssistant.Terminal
                 }
                 string structureText = string.Join("\n", lines.Skip(hit.StartLine - 1).Take(hit.EndLine - hit.StartLine + 1));
                 string label = string.IsNullOrEmpty(hit.Name) ? "CAWindow" : hit.Name;
-                bool isWindow = hit.Type == "WINDOW";
+                // APPLICATION (MDI frame) goes to the window designer as a non-WINDOW window, like create-new.
+                bool isWindowDesigner = hit.Type != "REPORT";
+                bool isWindowWindow = hit.Type == "WINDOW";
                 PostResponse(reqId, new Dictionary<string, object>
                 {
                     { "ok", true }, { "mode", "edit" },
                     { "startLine", hit.StartLine }, { "endLine", hit.EndLine }, { "type", hit.Type }
                 });
-                OpenDesignerDeferred(structureText, label, isWindow, isWindow);
+                OpenDesignerDeferred(structureText, label, isWindowDesigner, isWindowWindow);
                 return;
             }
 
@@ -4583,7 +4585,7 @@ namespace ClarionAssistant.Terminal
             bool lineBlank = line >= 1 && line <= lines.Length && lines[line - 1].Trim().Length == 0;
             if (lineEditable && lineBlank) return null;
             return lineEditable
-                ? "Put the caret inside a WINDOW/REPORT, or on a blank line to create a new structure."
+                ? "Put the caret inside a WINDOW/APPLICATION/REPORT, or on a blank line to create a new structure."
                 : "The designer only works in editable embed code.";
         }
 

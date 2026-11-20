@@ -1645,7 +1645,7 @@ namespace ClarionAssistant
             catch { }
         }
 
-        // Ctrl+D — open the native structure designer on the WINDOW/REPORT at the caret, in ANY source
+        // Ctrl+D — open the native structure designer on the WINDOW/APPLICATION/REPORT at the caret, in ANY source
         // file (.clw/.inc/.tpl/.tpw). Reuses the embeditor's proven path: parse the structure, hand the
         // text to StructureDesignerService (it spins its own scratch editor), splice merges back into
         // Monaco. The user then saves to disk (Monaco owns the file). The native editor is NOT involved.
@@ -1682,7 +1682,7 @@ namespace ClarionAssistant
                     bool lineBlank = line >= 1 && line <= blines.Length && blines[line - 1].Trim().Length == 0;
                     if (!lineBlank)
                     {
-                        editor.PostResponse(reqId, Refusal("Put the caret on a WINDOW/REPORT structure, or on a blank line to create a new one."));
+                        editor.PostResponse(reqId, Refusal("Put the caret on a WINDOW/APPLICATION/REPORT structure, or on a blank line to create a new one."));
                         return;
                     }
                     var templates = DefaultStructuresReader.Load();
@@ -1710,7 +1710,9 @@ namespace ClarionAssistant
                 for (int i = s; i <= e; i++) { if (i > s) sb.Append('\n'); sb.Append(lines[i - 1]); }
                 string structureText = sb.ToString();
                 string label = string.IsNullOrEmpty(hit.Name) ? "CAWindow" : hit.Name;
-                bool isWindow = hit.Type == "WINDOW";
+                // APPLICATION (MDI frame) goes to the window designer as a non-WINDOW window, like create-new.
+                bool isWindowDesigner = hit.Type != "REPORT";
+                bool isWindowWindow = hit.Type == "WINDOW";
 
                 editor.PostResponse(reqId, new Dictionary<string, object>
                 {
@@ -1719,7 +1721,7 @@ namespace ClarionAssistant
                 });
 
                 // Run the open OFF this WebView2 message-handler stack (the embeditor's reentrancy rule).
-                OpenDesignerOverlay(structureText, label, isWindow, isWindow);
+                OpenDesignerOverlay(structureText, label, isWindowDesigner, isWindowWindow);
             }
             catch (Exception ex)
             {
