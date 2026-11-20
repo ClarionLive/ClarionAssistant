@@ -11,6 +11,8 @@
 #   - Records that are not JSON objects, or bytes that are not valid UTF-8, are skipped/replaced
 #     instead of stopping the run.
 #   - An all-digit short id (e.g. 12345678) is looked up as an id when it is not a list number.
+#   - `render --out`: writes the transcript as a Markdown file whose name carries the first and
+#     last day of the session, so it can be opened in an editor instead of read in the chat.
 """
 render_session.py - List and render Claude Code session transcripts in human-readable form.
 
@@ -27,6 +29,11 @@ Usage:
     python render_session.py render <id-or-index> [--project <path>]
         Render one session as a readable transcript. <id-or-index> may be the
         list number (1,2,3...), the short 8-char id, or the full uuid.
+
+    python render_session.py render <id-or-index> --out <folder-or-file> [--project <path>]
+        Write the transcript to a Markdown file instead of printing it. The name gets the
+        first and last day of the session: Archivo.md -> Archivo_2026-11-19_to_2026-11-20.md;
+        a folder gets session_<id8>_<first>_to_<last>.md.
 
     python render_session.py resume <id-or-index> [--project <path>]
         Print (never run) the `claude --resume <uuid>` command for a session.
@@ -237,25 +244,97 @@ def find_session(proj: Path, ref: str) -> Path | None:
     return None
 
 
-def render(path: Path):
-    print(f"### Transcript: {path.name}\n")
+def _parse_ts(ts):
+    # CA: ISO timestamp -> timezone-aware local datetime, or None when it is missing or unreadable.
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+    except Exception:
+        return None
+
+
+def session_span(path: Path):
+    # CA: (first, last) local datetimes of the records in a session; the file's mtime for both
+    # when no record carries a readable timestamp.
+    first = last = None
+    for o in iter_records(path):
+        dt = _parse_ts(o.get("timestamp"))
+        if dt is None:
+            continue
+        if first is None or dt < first:
+            first = dt
+        if last is None or dt > last:
+            last = dt
+    if first is None:
+        first = last = datetime.fromtimestamp(path.stat().st_mtime).astimezone()
+    return first, last
+
+
+def out_path_for(out: str, session: Path, first, last) -> Path:
+    # CA: where `render --out` writes. The first and last day of the session are part of the
+    # name, so a transcript says what period it covers without being opened.
+    #   folder (existing, or ending in / or \)  -> <folder>/session_<id8>_<first>_to_<last>.md
+    #   file name                                -> <name>_<first>_to_<last><ext>   (.md when no extension)
+    span = f"{first:%Y-%m-%d}_to_{last:%Y-%m-%d}"
+    p = Path(out).expanduser()
+    if p.is_dir() or out.endswith(("/", "\\")):
+        return p / f"session_{session.stem[:8]}_{span}.md"
+    if p.suffix.lower() in (".md", ".markdown", ".txt"):
+        return p.with_name(f"{p.stem}_{span}{p.suffix}")
+    return p.with_name(f"{p.name}_{span}.md")
+
+
+def render(path: Path, emit=print, md=False):
+    # CA: `emit` receives one line at a time (print by default, so stdout is unchanged). With md=True
+    # the output is Markdown meant for a file: headings, a time on each of your messages, and the
+    # original line breaks kept (the plain-text form collapses every message onto one line).
+    def clean(t: str) -> str:
+        if not md:
+            return " ".join(t.split())
+        return "\n".join(line.rstrip() for line in t.replace("\r\n", "\n").replace("\r", "\n").strip().split("\n"))
+
+    if not md:
+        emit(f"### Transcript: {path.name}\n")
     for o in iter_records(path):
         ty = o.get("type")
         content = _message_content(o)
         if ty == "user":
-            t = " ".join(_text(content).split())
-            if _is_noise(t):
+            t = clean(_text(content))
+            if _is_noise(" ".join(t.split())):
                 continue
-            print("\n===== USER =====")
-            print(t)
+            if md:
+                dt = _parse_ts(o.get("timestamp"))
+                emit("\n### USER" + (f" - {dt:%Y-%m-%d %H:%M}" if dt else "") + "\n")
+            else:
+                emit("\n===== USER =====")
+            emit(t)
         elif ty == "assistant":
-            t = " ".join(_text(content).split())
+            t = clean(_text(content))
             calls = _tool_calls(content)
             if t:
-                print("\n-- CLAUDE --")
-                print(t)
+                emit("\n### CLAUDE\n" if md else "\n-- CLAUDE --")
+                emit(t)
             for name, key in calls:
-                print(f"    -> [{name}] {key}")
+                emit(f"- `[{name}]` {key}" if md else f"    -> [{name}] {key}")
+
+
+def render_to_file(path: Path, proj: Path, out: str) -> Path:
+    # CA: render one session to a Markdown file named with its first and last day; returns the path.
+    first, last = session_span(path)
+    target = out_path_for(out, path, first, last)
+    lines = [
+        f"# Session transcript - {proj.name}",
+        "",
+        f"- Session: `{path.stem}`",
+        f"- From: {first:%Y-%m-%d %H:%M}   To: {last:%Y-%m-%d %H:%M}  (local time)",
+        "",
+        "---",
+    ]
+    render(path, emit=lines.append, md=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return target
 
 
 def resume_cmd(proj: Path, ref: str):
@@ -273,7 +352,13 @@ def main():
     ap.add_argument("mode", choices=["list", "render", "path", "resume"])
     ap.add_argument("ref", nargs="?", help="session index, short id, or uuid (render/resume mode)")
     ap.add_argument("--project", help="project path (default: cwd)")
+    # CA: render only. Writes a Markdown file instead of printing the transcript.
+    ap.add_argument("--out", help="render: write a Markdown file instead of printing; a folder, or a "
+                                  "file name that gets the first and last day of the session added")
     args = ap.parse_args()
+    if args.out and args.mode != "render":
+        print("--out only applies to 'render'.")
+        sys.exit(2)
 
     proj = resolve_project_dir(args.project)
     if _resolve_note:
@@ -295,6 +380,10 @@ def main():
         if not f:
             print(f"No session matching '{args.ref}' in {proj}. Run 'list' to see options.")
             sys.exit(1)
+        if args.out:
+            target = render_to_file(f, proj, args.out)
+            print(f"Wrote {target}  ({target.stat().st_size / 1024:.0f} KB)")
+            return
         render(f)
         return
     if args.mode == "resume":

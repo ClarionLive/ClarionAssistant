@@ -23,6 +23,9 @@ namespace ClarionAssistant.Services
     ///      even a stuck kill can't stall the IDE.
     ///   3. KILL the LSP node.exe tree FAST (skip the graceful handshake) — a leaked node handle can keep the
     ///      IDE alive after its windows are gone. Bounded.
+    ///   3b. Only when the developer turned on "Save each chat as a Markdown file": write the chats that were
+    ///      still open in CA tabs (listed in 1b, before step 2 kills them) to the solution's .CAChats. Bounded
+    ///      to 3 s, so it can never hold the IDE; what is not finished in time is not saved.
     ///   4. Dispose every WebView2 instance ON THE UI THREAD before native IDE teardown (the WebView2 &lt;-&gt;
     ///      native focus-deadlock precedent: the embeditor Discard hang). Covers ALL live WebView2 owners:
     ///      embeditor, diff, monaco-diff, lifecycle board, the Modern Data/Explorer pad, and the chat pad
@@ -137,6 +140,13 @@ namespace ClarionAssistant.Services
             try { if (_mcpServer != null) _mcpServer.Stop(); ShutdownLog.Log("step 1: MCP stop done"); }
             catch (Exception ex) { Debug.WriteLine("[Shutdown] MCP stop: " + ex.Message); ShutdownLog.Log("step 1: MCP stop failed: " + ex.Message); }
 
+            // 1b. Note which Claude sessions are still open in CA tabs. It has to happen HERE: step 2 kills the
+            //     terminals WITHOUT raising ProcessExited (so the tab-exit save never runs on this path), and
+            //     step 4 disposes the pads that hold the tabs. Only a list of ids and folders, no file work.
+            System.Collections.Generic.List<SessionExportRequest> chats = null;
+            try { chats = AssistantChatControl.CollectSessionsForShutdown(); }
+            catch (Exception ex) { Debug.WriteLine("[Shutdown] chat list: " + ex.Message); ShutdownLog.Log("step 1b: chat list failed: " + ex.Message); }
+
             // 2. Kill all ConPty child-process trees FAST, bounded so a stuck kill can't stall shutdown.
             ShutdownLog.Log("step 2: ConPty kill ...");
             try { RunBounded(ConPtyTerminal.KillAllForShutdown, 2500); ShutdownLog.Log("step 2: ConPty kill returned"); }
@@ -147,6 +157,22 @@ namespace ClarionAssistant.Services
             ShutdownLog.Log("step 3: LSP kill ...");
             try { RunBounded(Services.LspClient.KillForShutdown, 2000); ShutdownLog.Log("step 3: LSP kill returned"); }
             catch (Exception ex) { Debug.WriteLine("[Shutdown] LSP kill: " + ex.Message); ShutdownLog.Log("step 3: LSP kill failed: " + ex.Message); }
+
+            // 3b. Save those chats as Markdown, when the developer turned that on (the list is empty otherwise).
+            //     Bounded like the kills: a transcript is read once (about 250 ms for 10 MB, measured), and a
+            //     slow disk must not stall the IDE - what is not finished in the time is simply not saved.
+            //     Claude is dead by now (step 2), so each transcript is complete.
+            if (chats != null && chats.Count > 0)
+            {
+                ShutdownLog.Log("step 3b: chat transcripts (" + chats.Count + " tab(s)) ...");
+                var toSave = chats;
+                try
+                {
+                    RunBounded(() => SessionTranscriptExporter.ExportAll(ClaudeSessionCatalog.DefaultProjectsRoot(), toSave), 3000);
+                    ShutdownLog.Log("step 3b: chat transcripts returned");
+                }
+                catch (Exception ex) { Debug.WriteLine("[Shutdown] chat transcripts: " + ex.Message); ShutdownLog.Log("step 3b: chat transcripts failed: " + ex.Message); }
+            }
 
             // 4. Dispose all WebView2 instances on the UI thread (this call runs on it) BEFORE native teardown,
             //    to avoid the WebView2 <-> native focus deadlock. Each is independently guarded + marked; the

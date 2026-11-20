@@ -122,6 +122,8 @@
                    class="ClarionAssistant.Options.CAEditorSurfacesOptionPanel"/>
       <DialogPanel id="CAFindOptions" label="Find / Replace"
                    class="ClarionAssistant.Options.CAFindOptionPanel"/>
+      <DialogPanel id="CAChatTranscripts" label="Chat Transcripts"
+                   class="ClarionAssistant.Options.CAChatTranscriptsOptionPanel"/>
     </DialogPanel>
   </Path>
 </AddIn>
