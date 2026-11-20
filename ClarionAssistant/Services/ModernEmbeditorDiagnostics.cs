@@ -61,8 +61,9 @@ namespace ClarionAssistant.Services
         // '(', and ITEMIZE takes '(', ',' or nothing. A real MAP ends its line, is followed by ';'
         // (SoftVelocity's own "MAP; MODULE('x.clw')" ... "END; END"), or is an empty "MAP." - so
         // MAP alone also admits a terminating '.', one that ends the statement, never "Map.Init()".
+        // Both admit '|' too: a header continued on the next line ("MAP |", "Clr ITEMIZE |") still opens
+        // (PR #316 review). GroupOpen/NestedBandOpen/TOOLBAR do not yet (3f73e51c).
         private static readonly Regex UnlabeledBlockOpen = new Regex(
-            // '|' too: a header continued on the next line ("MAP |") still opens (PR #316 review).
             @"^\s*(MAP|MODULE|JOIN)\b(?=\s*(?:[(,!;|]|$)|(?<=MAP)\s*\.\s*(?:;|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex ItemizeOpen = new Regex(
