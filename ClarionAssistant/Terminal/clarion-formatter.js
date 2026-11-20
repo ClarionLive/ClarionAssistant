@@ -119,8 +119,10 @@
     // DATASTRUCT keywords so statement/control keywords (IF x, LOOP i) are unaffected. Without this,
     // ABC's "Toolbar ToolbarClass" opens a phantom TOOLBAR structure that never closes, cascading
     // every following ROUTINE/statement out to the data column (GitHub: keyword-named data labels).
+    // The type may also be a reference ('&'): "Queue &MyQueue", "Window &Window", "Map &MapClass"
+    // (b13bc411). A real header never has whitespace then '&' after its keyword.
     function labelLikeStructKeyword(firstTok, code) {
-        return DATASTRUCT_SET[firstTok] && /^[A-Za-z_][A-Za-z0-9_:.]*\s+[A-Za-z_]/.test(code);
+        return DATASTRUCT_SET[firstTok] && /^[A-Za-z_][A-Za-z0-9_:.]*\s+[A-Za-z_&]/.test(code);
     }
     function structureWord(raw) {
         var code = stripComment(raw);
@@ -427,7 +429,11 @@
             // variable named like a preferred struct keyword ("Map MapClass") is a DECLARATION, not
             // the MAP keyword — without this it opened a phantom MAP struct (never closed) and, with
             // mapDepth tracking, pinned everything after it to column 1 as "prototypes".
-            if (PREFERRED_SET[first] && stack.length === 0 && !labelLikeStructKeyword(first, code)) {
+            // The keyword must also be followed by '(' ',' ';' '|', an ending '.' ("MAP.") or the end of the
+            // line, as in the Monaco indent rule: an indented "map &= nameMap" or "Map = x" in CODE is an
+            // assignment to a variable named Map, not a MAP (b13bc411).
+            if (PREFERRED_SET[first] && stack.length === 0 && !labelLikeStructKeyword(first, code) &&
+                /^\s*[A-Za-z_]+(?=\s*(?:[(,!;|]|\.\s*;?\s*$|$))/.test(code)) {
                 var pkCol = opts.preferredKeywordIndent ? codeBase : P;   // one indent vs preferred column
                 rec.cat = 'plain'; rec.col = pkCol;
                 if (DATASTRUCT_SET[first] && !isOneLineStructure(code)) {
