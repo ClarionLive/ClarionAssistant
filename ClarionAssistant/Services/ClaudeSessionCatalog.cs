@@ -498,15 +498,28 @@ namespace ClarionAssistant.Services
         /// <summary>The text cleaned and cut to <see cref="SummaryMaxChars"/>, or null when it is not a prompt the developer typed.</summary>
         internal static string Genuine(string text)
         {
+            text = GenuineFull(text);
+            if (text == null) return null;
+            if (FileRefOnly.IsMatch(text)) return null; // "@C:\...\PASTE-~1.TXT" says nothing about the session
+            text = Whitespace.Replace(text, " ");
+            if (text.Length > SummaryMaxChars) text = text.Substring(0, SummaryMaxChars - 1).TrimEnd() + "\u2026";
+            return text;
+        }
+
+        /// <summary>
+        /// The same test as <see cref="Genuine"/> for "is this something the developer typed", but the text
+        /// comes back whole: system reminders removed and trimmed, with its line breaks, not cut. A pasted-file
+        /// reference ("@C:\...\PASTE.TXT") is kept: it says nothing for a one-line summary but it is a real
+        /// message in a transcript. Used by <see cref="SessionTranscriptExporter"/>.
+        /// </summary>
+        internal static string GenuineFull(string text)
+        {
             if (string.IsNullOrWhiteSpace(text)) return null;
             text = SystemReminder.Replace(text, " ").Trim();
             if (text.Length == 0 || text[0] == '<') return null; // <command-name>, <cross-session-message>, ...
             foreach (var p in NotAPromptPrefixes)
                 if (text.StartsWith(p, StringComparison.OrdinalIgnoreCase)) return null;
             if (IsCaGreeting(text)) return null;
-            if (FileRefOnly.IsMatch(text)) return null; // "@C:\...\PASTE-~1.TXT" says nothing about the session
-            text = Whitespace.Replace(text, " ");
-            if (text.Length > SummaryMaxChars) text = text.Substring(0, SummaryMaxChars - 1).TrimEnd() + "\u2026";
             return text;
         }
 

@@ -4225,6 +4225,7 @@ namespace ClarionAssistant
             bool keepTitle = resumeId != null && tab.ResumeKeepsTitle;
             tab.ResumeKeepsTitle = false;
             tab.ClaudeSessionId = resumeId ?? Guid.NewGuid().ToString("D");
+            tab.ClaudeWorkDir = ctx.WorkDir;
             string sessionFlag = resumeId != null
                 ? $" --resume '{resumeId}'"
                 : $" --session-id '{tab.ClaudeSessionId}'";
@@ -4848,6 +4849,78 @@ namespace ClarionAssistant
         }
 
         /// <summary>
+        /// The Claude sessions one tab ran, and the folder they ran in, for the Markdown export; null when
+        /// the tab runs no claude. Two ids can count, as in <see cref="GetLiveClaudeSessionIds"/>: the one it
+        /// launched with, and the one its statusline last reported (/clear and an in-session /resume move a
+        /// running claude to another session). A chat that was /clear-ed away earlier is not tracked.
+        /// Cheap: no transcript is read.
+        /// </summary>
+        private static Services.SessionExportRequest SessionExportRequestFor(TerminalTab tab)
+        {
+            if (tab == null || string.IsNullOrEmpty(tab.ClaudeSessionId) || string.IsNullOrEmpty(tab.ClaudeWorkDir)) return null;
+            var req = new Services.SessionExportRequest { WorkDir = tab.ClaudeWorkDir };
+            req.Ids.Add(tab.ClaudeSessionId);
+            try
+            {
+                string status = Path.Combine(Path.GetTempPath(), "ca-statusline-" + tab.Id + ".json");
+                if (File.Exists(status))
+                {
+                    var m = StatusLineSessionId.Match(File.ReadAllText(status));
+                    string now = m.Success ? Services.ClaudeSessionCatalog.NormalizeId(m.Groups[1].Value) : null;
+                    if (now != null && !string.Equals(now, tab.ClaudeSessionId, StringComparison.OrdinalIgnoreCase)) req.Ids.Add(now);
+                }
+            }
+            catch { }   // a statusline file mid-write: the launch id still counts
+            return req;
+        }
+
+        /// <summary>
+        /// A tab's claude has ended (it exited, or the tab was closed): write its chat as Markdown to the
+        /// solution folder's .CAChats, when the developer turned that on in Options. Off the UI thread: the
+        /// transcript is complete by now. Never throws.
+        /// </summary>
+        private static void SaveEndedChat(TerminalTab tab)
+        {
+            try
+            {
+                if (!Services.CaChatTranscriptSettings.Enabled) return;
+                var req = SessionExportRequestFor(tab);
+                if (req == null) return;
+                string root = Services.ClaudeSessionCatalog.DefaultProjectsRoot();
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try { Services.SessionTranscriptExporter.ExportAll(root, new[] { req }); }
+                    catch { }   // ExportAll does not throw; belt and braces on a worker thread
+                });
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// The chats still open in any CA tab of this IDE, for ShutdownService to save as Markdown. Called on the
+        /// UI thread BEFORE the terminals are killed and the pads disposed: the shutdown path kills the terminals
+        /// without raising their exit event, so <see cref="SaveEndedChat"/> never runs for them. Empty when saving
+        /// is off. Only lists ids and folders; the transcripts are read later, bounded.
+        /// </summary>
+        internal static List<Services.SessionExportRequest> CollectSessionsForShutdown()
+        {
+            var list = new List<Services.SessionExportRequest>();
+            if (!Services.CaChatTranscriptSettings.Enabled) return list;
+            List<AssistantChatControl> pads;
+            lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
+            foreach (var pad in pads)
+            {
+                if (pad._tabManager == null) continue;
+                foreach (var t in pad._tabManager.Tabs)
+                {
+                    var req = SessionExportRequestFor(t);
+                    if (req != null) list.Add(req);
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
         /// Give a Copilot or Codex tab its CP&lt;n&gt; / CX&lt;n&gt; name and label it like a Claude
         /// tab ("CP1", or "CP1 · MySolution"), so the tab strip says which assistant is in each
         /// terminal (ticket cfb63b58). Stored in tab.AgentName, so the exit signal and
@@ -4968,6 +5041,9 @@ namespace ClarionAssistant
         /// </summary>
         private void ReleaseAgentName(TerminalTab tab)
         {
+            // The chat is over: save it as Markdown (when that is turned on) BEFORE the session id is forgotten.
+            // Reached when claude exits in the tab and when the tab is closed; the IDE closing is ShutdownService's.
+            SaveEndedChat(tab);
             // No session runs here any more, so the Home tab may offer it for resume again (f9843525).
             tab.ClaudeSessionId = null;
             if (tab.AgentName == null) return;

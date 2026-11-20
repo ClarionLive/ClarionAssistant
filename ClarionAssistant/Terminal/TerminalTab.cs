@@ -89,6 +89,13 @@ namespace ClarionAssistant.Terminal
         public string ClaudeSessionId { get; set; }
 
         /// <summary>
+        /// The folder Claude was launched in: where its transcript is kept (~/.claude/projects/&lt;this
+        /// folder, encoded&gt;) and where the chat is saved as Markdown (&lt;folder&gt;\.CAChats). Set with
+        /// <see cref="ClaudeSessionId"/> at launch.
+        /// </summary>
+        public string ClaudeWorkDir { get; set; }
+
+        /// <summary>
         /// One-shot: the Claude session the next launch resumes, set by the Home tab's resume
         /// buttons. BuildClaudeCommand consumes it. Null starts a new session.
         /// </summary>

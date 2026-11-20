@@ -55,6 +55,26 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+<!-- release-docs: covered=chat-transcripts -->
+### Save each chat as a Markdown file when its tab closes or Clarion does
+
+A CA chat lives in Claude Code's own transcript (`~/.claude/projects/...`), a JSON file that is not made to be read. With **Options > Clarion Assistant > Chat Transcripts > Save each chat as a Markdown file in the solution folder (.CAChats)** ticked, the conversation is written to `<solution folder>\.CAChats\session_<id>_<first day>_to_<last day>.md` when claude exits in the tab, when the tab is closed, and when Clarion closes. Open it in any editor, or in the IDE, to read an earlier chat without resuming it or asking Claude for a summary.
+
+The file has a heading with the session id, the tab name and the period, then each of your messages with its time and Claude's replies, with one line for each tool Claude called. Tool output, Claude's reasoning and sub-agents' conversations are left out. A chat where you never typed a message is not saved. One chat is one file: a chat saved again after it reached another day takes the new end date in its name, and the earlier file for that chat is removed. Nothing else in the folder is touched.
+
+It is **off by default**. The file holds everything typed or shown in the chat, passwords and keys included, so Clarion Assistant writes a `.gitignore` containing `*` into `.CAChats` and git never offers its files for commit. Saving when Clarion closes is a separate step with a 3-second limit, so it cannot hold the IDE open: a 10 MB chat takes about a quarter of a second. If Clarion crashes or is killed, chats still open at that moment are not saved; chats of tabs closed earlier already were. A chat you `/clear` away from inside a tab is not tracked after the `/clear`.
+
+<!-- release-docs: covered=session-viewer -->
+### The `session-viewer` skill can write a chat to a file: `render <n> --out`
+
+`render_session.py render <number-or-id> --out <folder-or-file>` writes the transcript as Markdown instead of printing it into the chat, so it can be opened in the IDE. The first and last day of the session are added to the file name: `--out Charla.md` writes `Charla_2026-11-19_to_2026-11-20.md`, and a folder gets `session_<id8>_<first>_to_<last>.md`. The skill tells Claude to open the file with `open_file` and not paste it. It reaches you with the next plugin update.
+
+---
+
 ## What's New in v6.3
 
 6.3 lets you resume an earlier Claude session from the Home tab, ships UltimateCOM 4.1 (each control's handler gets only its own events, and Before/After COM Registration code is no longer dropped), opens INCLUDE files with Ctrl+Click through the `.red`, and corrects the bundled `clarion`, `stringtheory` and `jfiles` skills against the compiler and library sources. The plugin is version 2.1.2: update it as described below. Full notes: **[docs/releases/v6.3.0.md](docs/releases/v6.3.0.md)**.
