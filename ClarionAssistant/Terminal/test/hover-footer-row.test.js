@@ -8,7 +8,7 @@
 //   * a line that is only location links ([File.clw:12](file:///...#L12), optionally "→" a second one or led
 //     by 📍) leaves the card and becomes the footer; a link inside a code block, or in a line with other
 //     text, stays in the card; a card with no such line is returned as it was, one entry
-//   * a control card (Attributes/Available/With value) and a WINDOW/REPORT header card get
+//   * a control card (Attributes/Available/With value) and a WINDOW/APPLICATION/REPORT header card get
 //     "Open Structure Designer (<key>)", the key read from the page's key bindings; the footer is trusted
 //     for that one command only, and the card keeps its own trust (chips)
 //   * the action is not offered where the command would refuse: a plain file without the designer
@@ -124,7 +124,7 @@ async function main() {
         check('a REPORT header card gets the action', c && c.length === 2 && /Open Structure Designer/.test(c[1].value), JSON.stringify(c));
         const a = load({ lines: LINES }); rig(a);
         c = await lspHover(a, '**Main APPLICATION**\n\nframe');
-        check('an APPLICATION header does not (the designer lookup takes WINDOW/REPORT)', c && c.length === 1, JSON.stringify(c));
+        check('an APPLICATION (MDI frame) header card gets the action', c && c.length === 2 && /Open Structure Designer/.test(c[1].value), JSON.stringify(c));
         const v = load({ lines: LINES }); rig(v);
         c = await lspHover(v, VAR_CARD);
         check('a variable card gets its link only', c && c.length === 2 && c[1].value === LINK && !c[1].isTrusted, JSON.stringify(c));
@@ -203,14 +203,13 @@ async function main() {
     }
 
     // ---- integration on top of the patch (GH #270) ----
-    section('cards that list attributes but are not designed: FILE, KEY, MEMO, APPLICATION');
+    section('cards that list attributes but are not designed: FILE, KEY, MEMO');
     {
         const chip = '[PRE](command:clarion.applyAttributeEdit?%5B%5D "Remove PRE")';
         for (const [what, md] of [
             ['a FILE card', '**Customer FILE** — Declares a data file\n\n**Attributes:** `DRIVER` ' + chip],
             ['a KEY card', '**KeyId KEY** — Declares a key\n\n**Attributes:** [NOCASE](command:clarion.applyAttributeEdit?%5B%5D "Remove NOCASE")'],
             ['a MEMO card', '**Notes MEMO** — Declares a variable-length text field\n\n**Available:** [BINARY](command:clarion.applyAttributeEdit?%5B%5D "Add BINARY")'],
-            ['an APPLICATION header card with chips', '**Main APPLICATION**\n\n**Attributes:** [MDI](command:clarion.applyAttributeEdit?%5B%5D "Remove MDI")'],
             ['a keyword card that names a control but lists no attributes', '**BUTTON** — Declares a pushbutton control'],
         ]) {
             const e = load({ lines: LINES }); rig(e);
