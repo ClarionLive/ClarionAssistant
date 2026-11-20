@@ -62,10 +62,11 @@ namespace ClarionAssistant.Services
         // (SoftVelocity's own "MAP; MODULE('x.clw')" ... "END; END"), or is an empty "MAP." - so
         // MAP alone also admits a terminating '.', one that ends the statement, never "Map.Init()".
         private static readonly Regex UnlabeledBlockOpen = new Regex(
-            @"^\s*(MAP|MODULE|JOIN)\b(?=\s*(?:[(,!;]|$)|(?<=MAP)\s*\.\s*(?:;|$))",
+            // '|' too: a header continued on the next line ("MAP |") still opens (PR #316 review).
+            @"^\s*(MAP|MODULE|JOIN)\b(?=\s*(?:[(,!;|]|$)|(?<=MAP)\s*\.\s*(?:;|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex ItemizeOpen = new Regex(
-            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(ITEMIZE)(?=\s*(?:[(,!;]|$))",
+            @"^\s*(?:[A-Za-z_][A-Za-z0-9_:]*\s+)?(ITEMIZE)(?=\s*(?:[(,!;|]|$))",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
         // TOOLBAR is nested inside WINDOW/APPLICATION bodies and legitimately written bare
         // ("TOOLBAR,USE(?Toolbar1)"), so StructOpen's generic lookahead (which accepts any

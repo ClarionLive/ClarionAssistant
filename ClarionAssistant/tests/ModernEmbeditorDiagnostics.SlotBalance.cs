@@ -488,6 +488,17 @@ static class SlotBalance
             Ok("MAP. and Map.Init() inside a LOOP: no markers", ms.Count == 0, Show(ms));
         }
         {
+            // A header continued on the next line still opens its block (PR #316 review): '|' counts.
+            var ms = Diag(
+                "  MAP |",
+                "  END",
+                "Clr  ITEMIZE |",
+                "       ,PRE(C)",
+                "Red    EQUATE",
+                "     END");
+            Ok("MAP | and ITEMIZE | (continued headers): balanced", ms.Count == 0, Show(ms));
+        }
+        {
             // A structure whose label is itself a declaration keyword still opens.
             var ms = Diag(
                 "Window       ITEMIZE(1),PRE(W)",
