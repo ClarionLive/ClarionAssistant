@@ -42,6 +42,7 @@ namespace ClarionAssistant.Services
         /// What the list shows for the session: the LAST prompt, else the first. Measured on real CA
         /// transcripts (2026-11-05): CA's start-up output fills the 256 KB head, so the first prompt
         /// is usually out of reach, and the last one is the better clue to where the work stopped.
+        /// Null for a session listed only by its <see cref="Title"/> (renamed before any prompt).
         /// </summary>
         public string Summary { get { return LastPrompt ?? FirstPrompt; } }
     }
@@ -203,7 +204,7 @@ namespace ClarionAssistant.Services
         /// <summary>
         /// The newest resumable sessions for <paramref name="workDir"/>, newest first, at most
         /// <paramref name="max"/>. Sessions whose id is in <paramref name="liveIds"/> (open in a CA
-        /// tab) are left out, as are sessions with no prompt of the developer's and sessions that
+        /// tab) are left out, as are sessions with neither a prompt of the developer's nor a title, and sessions that
         /// started in another folder whose name encodes the same (H:\a-b and H:\a\b share a folder).
         /// Never throws: an unreadable folder or transcript is skipped. With
         /// <paramref name="agentFilter"/>, only sessions whose agent name it accepts are listed (CA
@@ -332,7 +333,6 @@ namespace ClarionAssistant.Services
                 lastWrite = File.GetLastWriteTimeUtc(path);
 
                 var info = new ClaudeSessionInfo { Id = id, TranscriptPath = path, LastWriteUtc = lastWrite };
-                bool hasAssistant = false;
                 string firstCwd = null, customTitle = null, tailAgent = null, tailTitle = null;
                 // The newest CA tab name in the head, then in the tail: what a renamed session ran under.
                 string headCaName = null, tailCaName = null;
@@ -346,17 +346,15 @@ namespace ClarionAssistant.Services
                     string line = headLines[n].Trim();
                     if (line.Length == 0 || line[0] != '{') continue;
                     bool user = line.Contains("\"type\":\"user\"");
-                    bool asst = line.Contains("\"type\":\"assistant\"");
                     bool name = line.Contains("\"agent-name\"") || line.Contains("\"custom-title\"");
                     bool cwdHere = firstCwd == null && line.Contains("\"cwd\":");
-                    if (!user && !asst && !name && !cwdHere) continue;
+                    if (!user && !name && !cwdHere) continue;
 
                     var obj = Parse(ser, line);
                     if (obj == null) continue;
                     if (firstCwd == null) firstCwd = GetString(obj, "cwd");
                     string type = GetString(obj, "type");
-                    if (type == "assistant") hasAssistant = true;
-                    else if (type == "user" && info.FirstPrompt == null) info.FirstPrompt = PromptText(obj);
+                    if (type == "user" && info.FirstPrompt == null) info.FirstPrompt = PromptText(obj);
                     else if (type == "agent-name")
                     {
                         string an = Clean(GetString(obj, "agentName"));
@@ -370,7 +368,6 @@ namespace ClarionAssistant.Services
                 {
                     string line = raw.Trim();
                     if (line.Length == 0 || line[0] != '{') continue;
-                    if (!hasAssistant && line.Contains("\"type\":\"assistant\"")) hasAssistant = true;
                     bool lp = line.Contains("\"last-prompt\"");
                     bool nm = line.Contains("\"agent-name\"") || line.Contains("\"custom-title\"");
                     if (!lp && !nm) continue;
@@ -409,8 +406,14 @@ namespace ClarionAssistant.Services
                     info.Title = title;
                     info.AgentName = caName;
                 }
-                // A session only CA's greeting ever reached is not worth resuming.
-                if (info.Summary == null || !hasAssistant) return null;
+                // Worth resuming: a prompt the developer typed, or a name they gave it. A session only CA's
+                // greeting ever reached has neither. Claude's reply is NOT required: it cannot be found in the
+                // head and tail any more. Measured 2026-11-22 on a solution folder: CA's start-up records put
+                // the first assistant line 440-462 KB into every one of the 40 newest transcripts (past
+                // HeadMaxBytes), and a session that ends in a ~48 KB skill_listing/attachment block has none in
+                // the last TailBytes either, so long renamed sessions dropped out of the list. The cost: a
+                // session whose prompt never got an answer (tab closed at once, API error) is listed too.
+                if (info.Summary == null && info.Title == null) return null;
                 // Same folder name, different folder: H:\a-b and H:\a\b encode alike.
                 if (firstCwd == null || !SameDir(firstCwd, workDir)) return null;
                 info.Cwd = NormalizeDir(firstCwd);
