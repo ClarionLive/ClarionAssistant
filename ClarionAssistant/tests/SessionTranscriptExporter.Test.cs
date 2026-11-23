@@ -2,13 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using ClarionAssistant.Services;
 
-// Harness for the chat transcript export: a Claude session is written to <solution folder>\.CAChats as a Markdown file
-// named with its first and last day, when its tab closes or the IDE does. Compiles the REAL
-// Services\SessionTranscriptExporter.cs and Services\ClaudeSessionCatalog.cs (no IDE coupling)
-// against fixture transcripts written to %TEMP%.
+// Harness for the chat transcript export: a Claude session is written to <solution folder>\.CAChats as
+// Markdown named with its first and last day (and the chat's name), when its tab closes or the IDE does.
+// Compiles the REAL Services\SessionTranscriptExporter.cs and Services\ClaudeSessionCatalog.cs (no IDE
+// coupling) against fixture transcripts written to %TEMP%.
 //
 // Run:  tests\Run-Tests.ps1
 //
@@ -23,19 +24,29 @@ static class SessionTranscriptExporterTest
         else { fail++; Console.WriteLine("  [FAIL] " + name + (detail != null ? "  -> " + detail : "")); }
     }
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferSize);
+
     static string J(string s) { return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n"); }
 
     // Transcript lines in Claude Code's compact JSON. Times are noon UTC so the local day is the same one
     // in every time zone from UTC-11 to UTC+11.
     static string Ts(string day) { return ",\"timestamp\":\"" + day + "T12:00:00.000Z\""; }
-    static string AgentName(string n) { return "{\"type\":\"agent-name\",\"agentName\":\"" + n + "\"}"; }
+    static string Uuid(string u) { return ",\"uuid\":\"" + u + "\""; }
+    static string AgentName(string n) { return "{\"type\":\"agent-name\",\"agentName\":\"" + J(n) + "\"}"; }
+    static string Title(string n) { return "{\"type\":\"custom-title\",\"customTitle\":\"" + J(n) + "\"}"; }
     static string User(string day, string text, string extra = "")
     {
         return "{\"isSidechain\":false" + extra + ",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"" + J(text) + "\"}" + Ts(day) + "}";
     }
-    static string UserBlocks(string day, string blocks)
+    static string UserBlocks(string day, string blocks, string extra = "")
     {
-        return "{\"isSidechain\":false,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":" + blocks + "}" + Ts(day) + "}";
+        return "{\"isSidechain\":false" + extra + ",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":" + blocks + "}" + Ts(day) + "}";
+    }
+    static string Queued(string day, string prompt, string origin = "human", string mode = "prompt")
+    {
+        return "{\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"" + J(prompt) + "\",\"commandMode\":\"" + mode +
+               "\",\"origin\":{\"kind\":\"" + origin + "\"},\"timestamp\":\"" + day + "T12:30:00.000Z\"},\"type\":\"attachment\"" + Ts(day) + "}";
     }
     static string Asst(string day, string text, bool sidechain = false)
     {
@@ -46,25 +57,31 @@ static class SessionTranscriptExporterTest
         return "{\"isSidechain\":false,\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":" + blocks + "}" + Ts(day) + "}";
     }
 
+    static string TranscriptPath(string projectsRoot, string workDir, string id)
+    {
+        return Path.Combine(projectsRoot, ClaudeSessionCatalog.EncodeProjectPath(workDir), id + ".jsonl");
+    }
+
     static void WriteTranscript(string projectsRoot, string workDir, string id, params string[] lines)
     {
-        string dir = Path.Combine(projectsRoot, ClaudeSessionCatalog.EncodeProjectPath(workDir));
-        Directory.CreateDirectory(dir);
-        File.WriteAllText(Path.Combine(dir, id + ".jsonl"), string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+        string path = TranscriptPath(projectsRoot, workDir, id);
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllText(path, string.Join("\n", lines) + "\n", new UTF8Encoding(false));
     }
 
     static void AppendTranscript(string projectsRoot, string workDir, string id, params string[] lines)
     {
-        string dir = Path.Combine(projectsRoot, ClaudeSessionCatalog.EncodeProjectPath(workDir));
-        File.AppendAllText(Path.Combine(dir, id + ".jsonl"), string.Join("\n", lines) + "\n", new UTF8Encoding(false));
+        File.AppendAllText(TranscriptPath(projectsRoot, workDir, id), string.Join("\n", lines) + "\n", new UTF8Encoding(false));
     }
 
     static string[] SessionFiles(string workDir)
     {
         string folder = SessionTranscriptExporter.FolderFor(workDir);
         if (!Directory.Exists(folder)) return new string[0];
-        return Directory.GetFiles(folder, "session_*.md").Select(Path.GetFileName).OrderBy(x => x).ToArray();
+        return Directory.GetFiles(folder, "*.md").Select(Path.GetFileName).OrderBy(x => x).ToArray();
     }
+
+    static readonly byte[] Png = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4, 5, 6, 7, 8 };
 
     static int Main(string[] args)
     {
@@ -93,12 +110,14 @@ static class SessionTranscriptExporterTest
                 AsstBlocks("2026-11-20", "[{\"type\":\"text\",\"text\":\"Hay 3 commits nuevos.\"}]"));
             var r = SessionTranscriptExporter.Export(projects, work, id1);
             Ok("exported", r.Path != null && File.Exists(r.Path), r.Reason);
-            string name1 = SessionTranscriptExporter.FileName(id1, new DateTime(2026, 11, 19), new DateTime(2026, 11, 20));
-            Ok("named with the first and last day", r.Path != null && Path.GetFileName(r.Path) == name1 && name1 == "session_11111111_2026-11-19_to_2026-11-20.md", r.Path);
+            string name1 = SessionTranscriptExporter.FileName(id1, new DateTime(2026, 11, 19), new DateTime(2026, 11, 20), null);
+            Ok("named with the first and last day, first day first",
+               name1 == "2026-11-19_to_2026-11-20_11111111.md" && r.Path != null && Path.GetFileName(r.Path) == name1, r.Path);
             Ok("written to <solution>\\.CAChats", r.Path != null && Path.GetDirectoryName(r.Path) == Path.Combine(work, ".CAChats"), r.Path);
             string md = r.Path != null ? File.ReadAllText(r.Path) : "";
             Ok("header names the session, the tab and the period",
                md.Contains("`" + id1 + "`") && md.Contains("- Tab: CA1") && md.Contains("From: 2026-11-19") && md.Contains("To: 2026-11-20"));
+            Ok("a plain CA tab name is not the chat's name", !md.Contains("- Name:"));
             Ok("the developer's message keeps its line breaks", md.Contains("Hola.\r\nPodes revisar el repositorio?"));
             Ok("headed USER with its day", md.Contains("### USER - 2026-11-19"));
             Ok("Claude's reply and the tool line are in", md.Contains("### CLAUDE") && md.Contains("Reviso el repo.") && md.Contains("- `[Bash]` git fetch upstream"));
@@ -116,17 +135,133 @@ static class SessionTranscriptExporterTest
 
             Console.WriteLine("A session that grows into another day");
             AppendTranscript(projects, work, id1, User("2026-11-21", "Una pregunta mas"));
-            File.WriteAllText(Path.Combine(work, ".CAChats", "session_11111111_notes.md"), "mine");
-            File.WriteAllText(Path.Combine(work, ".CAChats", "other.md"), "mine");
+            string chats = Path.Combine(work, ".CAChats");
+            File.WriteAllText(Path.Combine(chats, "session_11111111_2026-11-19_to_2026-11-20.md"), "the first version's name");
+            File.WriteAllText(Path.Combine(chats, "session_11111111_notes.md"), "mine");
+            File.WriteAllText(Path.Combine(chats, "other.md"), "mine");
+            File.WriteAllText(Path.Combine(chats, "2026-11-19_to_2026-11-20_22222222.md"), "another session's");
             var r2 = SessionTranscriptExporter.Export(projects, work, id1);
-            Ok("re-exported under the new end date", r2.Path != null && Path.GetFileName(r2.Path) == "session_11111111_2026-11-19_to_2026-11-21.md", r2.Path + " " + r2.Reason);
+            Ok("re-exported under the new end date", r2.Path != null && Path.GetFileName(r2.Path) == "2026-11-19_to_2026-11-21_11111111.md", r2.Path + " " + r2.Reason);
             var files = SessionFiles(work);
-            Ok("one file per session: the earlier one is gone",
-               files.Contains("session_11111111_2026-11-19_to_2026-11-21.md") && !files.Contains(name1), string.Join(",", files));
-            Ok("files that are not this class's are left alone",
-               File.Exists(Path.Combine(work, ".CAChats", "session_11111111_notes.md")) && File.Exists(Path.Combine(work, ".CAChats", "other.md")));
+            Ok("one file per session: the earlier ones, in either naming, are gone",
+               files.Contains("2026-11-19_to_2026-11-21_11111111.md") && !files.Contains(name1)
+               && !files.Contains("session_11111111_2026-11-19_to_2026-11-20.md"), string.Join(",", files));
+            Ok("files that are not this session's are left alone",
+               File.Exists(Path.Combine(chats, "session_11111111_notes.md")) && File.Exists(Path.Combine(chats, "other.md"))
+               && File.Exists(Path.Combine(chats, "2026-11-19_to_2026-11-20_22222222.md")));
             var r3 = SessionTranscriptExporter.Export(projects, work, id1);
-            Ok("exporting again changes nothing", r3.Path == r2.Path && SessionFiles(work).Length == 2 /* the export + the notes file */);
+            Ok("exporting again changes nothing", r3.Path == r2.Path && SessionFiles(work).Length == 4, string.Join(",", SessionFiles(work)));
+
+            Console.WriteLine("A chat the developer named");
+            const string id7 = "77777777-1111-4111-8111-111111111111";
+            string work7 = Path.Combine(root, "Named");
+            Directory.CreateDirectory(work7);
+            WriteTranscript(projects, work7, id7,
+                AgentName("CA1"),
+                User("2026-11-23", "Arreglar el dialogo de login"),
+                Asst("2026-11-23", "Voy a revisarlo."),
+                Title("Fix login/dialog: ñ"),
+                AgentName("Fix login/dialog: ñ"));
+            var r10 = SessionTranscriptExporter.Export(projects, work7, id7);
+            Ok("the name is in the file name, between the days and the id",
+               r10.Path != null && Path.GetFileName(r10.Path) == "2026-11-23_to_2026-11-23_Fix login-dialog- ñ_77777777.md", r10.Path + " " + r10.Reason);
+            string md7 = r10.Path != null ? File.ReadAllText(r10.Path) : "";
+            Ok("the heading has the name as typed, and the tab", md7.Contains("- Name: Fix login/dialog: ñ") && md7.Contains("- Tab: CA1"));
+            AppendTranscript(projects, work7, id7, Title("Otro nombre"));
+            var r11 = SessionTranscriptExporter.Export(projects, work7, id7);
+            Ok("renamed: the new name replaces the old file",
+               r11.Path != null && SessionFiles(work7).Length == 1 && Path.GetFileName(r11.Path) == "2026-11-23_to_2026-11-23_Otro nombre_77777777.md", string.Join(",", SessionFiles(work7)));
+            string longTitle = new string('a', 200) + " b";
+            string safe = SessionTranscriptExporter.FileName(id7, new DateTime(2026, 11, 23), new DateTime(2026, 11, 23), longTitle);
+            Ok("a long name is cut", safe == "2026-11-23_to_2026-11-23_" + new string('a', SessionTranscriptExporter.MaxTitleChars) + "_77777777.md", safe);
+            Ok("a name that is only invalid characters leaves no hole",
+               SessionTranscriptExporter.FileName(id7, new DateTime(2026, 11, 23), new DateTime(2026, 11, 23), " . ") == "2026-11-23_to_2026-11-23_77777777.md");
+
+            Console.WriteLine("Messages typed while Claude was working");
+            const string id8 = "88888888-2222-4222-8222-222222222222";
+            string work8 = Path.Combine(root, "Queued");
+            Directory.CreateDirectory(work8);
+            WriteTranscript(projects, work8, id8,
+                User("2026-11-23", "Primera pregunta"),
+                AsstBlocks("2026-11-23", "[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"description\":\"Trabajando\"}}]"),
+                Queued("2026-11-23", "Pará, usá la otra carpeta"),
+                Queued("2026-11-23", "TASK-NOTIFICATION-TEXT", origin: "task-notification"),
+                Queued("2026-11-23", "echo bash-mode-text", mode: "bash"),
+                Asst("2026-11-23", "Entendido."));
+            var r12 = SessionTranscriptExporter.Export(projects, work8, id8);
+            string md8 = r12.Path != null ? File.ReadAllText(r12.Path) : "";
+            Ok("a message typed while Claude was working is kept, marked, with its own time",
+               md8.Contains("### USER - 2026-11-23 ") && md8.Contains("(while Claude was working)") && md8.Contains("Pará, usá la otra carpeta"), r12.Reason);
+            Ok("one that did not come from the developer is left out", !md8.Contains("TASK-NOTIFICATION-TEXT"));
+            Ok("a queued command that is not a prompt is left out", !md8.Contains("bash-mode-text"));
+            Ok("it comes after the tool line and before Claude's answer",
+               md8.IndexOf("[Bash]", StringComparison.Ordinal) < md8.IndexOf("Pará", StringComparison.Ordinal)
+               && md8.IndexOf("Pará", StringComparison.Ordinal) < md8.IndexOf("Entendido.", StringComparison.Ordinal));
+            const string id9 = "99999999-3333-4333-8333-333333333333";
+            WriteTranscript(projects, work8, id9, Queued("2026-11-23", "Solo esto"));
+            Ok("a chat whose only message was typed while Claude worked counts as a chat",
+               SessionTranscriptExporter.Export(projects, work8, id9).Path != null);
+
+            Console.WriteLine("Pictures");
+            const string idA = "aaaaaaaa-4444-4444-8444-444444444444";
+            string workA = Path.Combine(root, "Pics");
+            Directory.CreateDirectory(workA);
+            string cache = Path.Combine(root, "AppData", "ClarionAssistant", "paste-cache");
+            Directory.CreateDirectory(cache);
+            string shot = Path.Combine(cache, "paste-20261123-075637-607.png");
+            File.WriteAllBytes(shot, Png);
+            string elsewhere = Path.Combine(root, "docs", "foo.png");
+            Directory.CreateDirectory(Path.GetDirectoryName(elsewhere));
+            File.WriteAllBytes(elsewhere, Png);
+            string gone = Path.Combine(cache, "paste-20261101-010101-001.png");   // never existed: pruned long ago
+            string b64 = Convert.ToBase64String(Png);
+            WriteTranscript(projects, workA, idA,
+                User("2026-11-23", "@" + shot + " que dice este error?", Uuid("abcd1234-0001-4000-8000-000000000000")),
+                Asst("2026-11-23", "Es un aviso de Trayslate."),
+                User("2026-11-23", "@" + gone + " y esta?", Uuid("abcd1234-0002-4000-8000-000000000000")),
+                User("2026-11-23", "mira @" + elsewhere + " tambien", Uuid("abcd1234-0003-4000-8000-000000000000")),
+                UserBlocks("2026-11-23", "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"" + b64 + "\"}},{\"type\":\"text\",\"text\":\"y esta otra\"}]", Uuid("abcd1234-0004-4000-8000-000000000000")),
+                UserBlocks("2026-11-23", "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"" + b64 + "\"}}]", Uuid("abcd1234-0005-4000-8000-000000000000")));
+            var r13 = SessionTranscriptExporter.Export(projects, workA, idA);
+            string mdA = r13.Path != null ? File.ReadAllText(r13.Path) : "";
+            string picFolder = Path.Combine(workA, ".CAChats", "aaaaaaaa");
+            Ok("a pasted screenshot is copied to <id8>\\ and linked", File.Exists(Path.Combine(picFolder, "abcd12340001-p0.png"))
+               && mdA.Contains("![](aaaaaaaa/abcd12340001-p0.png) que dice este error?"), r13.Reason + " " + mdA.Substring(0, Math.Min(400, mdA.Length)));
+            Ok("the copy is the same picture", File.Exists(Path.Combine(picFolder, "abcd12340001-p0.png")) && File.ReadAllBytes(Path.Combine(picFolder, "abcd12340001-p0.png")).SequenceEqual(Png));
+            Ok("a screenshot that is gone and was never copied stays as its path", mdA.Contains("@" + gone));
+            Ok("a picture that is not one of CA's pastes is not copied", mdA.Contains("@" + elsewhere) && Directory.GetFiles(picFolder).Length == 3, string.Join(",", Directory.GetFiles(picFolder).Select(Path.GetFileName)));
+            Ok("a picture sent in the message is decoded and linked, with its text",
+               File.Exists(Path.Combine(picFolder, "abcd12340004-b0.png")) && mdA.Contains("![](aaaaaaaa/abcd12340004-b0.png)") && mdA.Contains("y esta otra"));
+            Ok("a message that is only a picture is kept", mdA.Contains("![](aaaaaaaa/abcd12340005-b0.png)") && mdA.Split(new[] { "### USER" }, StringSplitOptions.None).Length - 1 == 5,
+               (mdA.Split(new[] { "### USER" }, StringSplitOptions.None).Length - 1) + " USER headings");
+
+            Console.WriteLine("Pictures: the original is pruned, the chat is exported again");
+            File.Delete(shot);   // CA prunes its paste cache after 24 h
+            AppendTranscript(projects, workA, idA, Asst("2026-11-24", "Sigo."));
+            var r14 = SessionTranscriptExporter.Export(projects, workA, idA);
+            string mdA2 = r14.Path != null ? File.ReadAllText(r14.Path) : "";
+            Ok("the link survives: the copy made earlier is found again", mdA2.Contains("![](aaaaaaaa/abcd12340001-p0.png) que dice este error?"), r14.Reason);
+            Ok("and the copy is still there", File.Exists(Path.Combine(picFolder, "abcd12340001-p0.png")));
+            Ok("the picture folder is not mistaken for an old export", Directory.Exists(picFolder) && SessionFiles(workA).Length == 1, string.Join(",", SessionFiles(workA)));
+
+            Console.WriteLine("Pictures: a path CA sent in its 8.3 form");
+            const string idB = "bbbbbbbb-5555-4555-8555-555555555555";
+            string workB = Path.Combine(root, "Short");
+            Directory.CreateDirectory(workB);
+            string shot2 = Path.Combine(cache, "paste-20261123-080000-001.png");
+            File.WriteAllBytes(shot2, Png);
+            var sb83 = new StringBuilder(1024);
+            uint n83 = GetShortPathName(shot2, sb83, 1024);
+            string shortForm = n83 > 0 ? sb83.ToString() : shot2;
+            if (string.Equals(shortForm, shot2, StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine("  [skip] this volume makes no 8.3 names, so the short form cannot be built here");
+            else
+            {
+                WriteTranscript(projects, workB, idB, User("2026-11-23", "@" + shortForm + " mira", Uuid("feedbeef-0001-4000-8000-000000000000")));
+                var r15 = SessionTranscriptExporter.Export(projects, workB, idB);
+                Ok("the long name is read back from the short one before it is judged",
+                   r15.Path != null && File.Exists(Path.Combine(workB, ".CAChats", "bbbbbbbb", "feedbeef0001-p0.png")), r15.Reason);
+            }
 
             Console.WriteLine("Nothing to write");
             const string id2 = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -184,7 +319,7 @@ static class SessionTranscriptExporterTest
     {
         const string id = "55555555-eeee-4eee-8eee-eeeeeeeeeeee";
         WriteTranscript(projects, work, id, User("2026-11-19", "Hola, esto es una prueba"), Asst("2026-11-19", "Respuesta"));
-        string path = Path.Combine(projects, ClaudeSessionCatalog.EncodeProjectPath(work), id + ".jsonl");
+        string path = TranscriptPath(projects, work, id);
         using (var held = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
         {
             var r = SessionTranscriptExporter.Export(projects, work, id);

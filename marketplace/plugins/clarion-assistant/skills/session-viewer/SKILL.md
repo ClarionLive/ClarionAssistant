@@ -81,29 +81,6 @@ for assistant replies, and indented `-> [Tool] key-arg` lines for each tool call
 Relay the rendered transcript to the user. For very long sessions, offer a short summary
 of the key decisions/outcomes in addition to (or instead of) the full dump.
 
-### 2b. Write the transcript to a file and open it in the IDE
-
-When the user wants to read a session in an editor window rather than in the chat, or the
-session is too long to relay, write it to a Markdown file:
-
-```
-python -I "<base-dir>/render_session.py" render <number-or-id> --out "<folder-or-file>"
-```
-
-The first and last day of the session are added to the file name, so it says what period it
-covers: `--out "D:\Docs\Charla.md"` writes `D:\Docs\Charla_2026-11-19_to_2026-11-20.md`, and a
-folder (an existing one, or a path ending in `\`) gets `session_<id8>_<first>_to_<last>.md`.
-Without an extension `.md` is added. The file has a heading, the session id and period, a
-time on each of the user's messages, and the original line breaks.
-
-The script prints `Wrote <path>`. Open that file with `open_file` so the user sees it in the
-IDE, and do not paste its contents into the chat. Rendering the same session again overwrites
-the file, unless the session grew past a new day, in which case the new end date names a new file.
-
-The file holds the whole conversation, including anything typed or shown in it, secrets
-included. Tell the user where it is, and do not write it inside a folder that is committed or
-shared.
-
 ### 3. Resume a session by list number (no UUID memorizing)
 
 When the user wants to **resume** a past session without hunting for its UUID in the

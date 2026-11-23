@@ -56,11 +56,14 @@ namespace ClarionAssistant.Options
             var lblNote = new Label
             {
                 Text = "When a CA chat tab closes, or Clarion closes, the conversation is written to\r\n" +
-                       "<solution folder>\\.CAChats\\session_<id>_<first day>_to_<last day>.md.\r\n" +
+                       "<solution folder>\\.CAChats\\<first day>_to_<last day>[_<name>]_<id>.md,\r\n" +
+                       "where <name> is what you gave the chat with /rename. Screenshots pasted into the chat\r\n" +
+                       "are copied next to it, into .CAChats\\<id>\\.\r\n" +
                        "A chat where you never typed a message is not saved. One chat is one file: saving it\r\n" +
-                       "again after it reached another day replaces the earlier file.\r\n\r\n" +
-                       "The file holds everything typed or shown in the chat, passwords and keys included.\r\n" +
-                       "A .gitignore with * is written into the folder so it is not committed by accident.\r\n\r\n" +
+                       "again after it reached another day, or was renamed, replaces the earlier file.\r\n\r\n" +
+                       "The file holds everything typed or shown in the chat, passwords and keys included,\r\n" +
+                       "and screenshots can show as much. A .gitignore with * is written into the folder so\r\n" +
+                       "it is not committed by accident.\r\n\r\n" +
                        "Takes effect the next time a chat tab closes. If Clarion crashes or is killed, chats still\r\n" +
                        "open at that moment are not saved.",
                 AutoSize = true,

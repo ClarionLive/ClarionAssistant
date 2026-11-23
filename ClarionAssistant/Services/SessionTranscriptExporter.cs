@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Web.Script.Serialization;
@@ -33,15 +34,23 @@ namespace ClarionAssistant.Services
     ///
     /// A transcript is ~/.claude/projects/&lt;encoded cwd&gt;/&lt;session-guid&gt;.jsonl, one JSON object per
     /// line, and Claude Code appends to it as the conversation goes, so it can be read after claude has
-    /// exited, or been killed with the IDE. This file turns it into: a heading with the session id and
-    /// period, then each of the developer's messages (with its time) and Claude's replies, and one line
-    /// for each tool Claude called. Tool output and Claude's reasoning are left out.
+    /// exited, or been killed with the IDE. This file turns it into: a heading with the session id, name and
+    /// period, then each of the developer's messages (with its time) and Claude's replies, and one line for
+    /// each tool Claude called. Tool output and Claude's reasoning are left out. A message typed while Claude
+    /// was working is Claude Code's "queued_command" attachment, not a user record: it is kept and marked.
     ///
-    /// Files go to &lt;solution folder&gt;\.CAChats\session_&lt;id8&gt;_&lt;first day&gt;_to_&lt;last day&gt;.md. A
-    /// session exported again after it grew into another day gets a new name, and the file the earlier export
-    /// wrote for the same session is removed, so one session is one file. A .gitignore holding * is written
-    /// into the folder: a transcript holds everything typed or shown in the session, secrets included, and
-    /// must not be committed by accident.
+    /// Files go to &lt;solution folder&gt;\.CAChats\&lt;first day&gt;_to_&lt;last day&gt;[_&lt;name&gt;]_&lt;id8&gt;.md, the name
+    /// being the developer's /rename, when the session has one that is not a plain CA tab name. A session
+    /// exported again after it grew into another day, or was renamed, gets a new name, and the file the
+    /// earlier export wrote for the same session is removed, so one session is one file. A .gitignore holding
+    /// * is written into the folder: a transcript holds everything typed or shown in the session, secrets
+    /// included, and must not be committed by accident.
+    ///
+    /// Pictures: a screenshot pasted into a CA tab is saved by CA as paste-&lt;time&gt;.png in its paste-cache folder
+    /// (pruned after 24 h) and sent as "@&lt;path&gt;"; one pasted straight into claude is an image block in the
+    /// message. Both are copied to &lt;folder&gt;\&lt;id8&gt;\ and linked from the message, named from the message's
+    /// own id, so exporting again finds the copy even after the original is gone, and never loses a link.
+    /// An image that cannot be found stays in the text as its path.
     ///
     /// No IDE coupling and C# 7.3, like <see cref="ClaudeSessionCatalog"/>, so the harness in
     /// tests\SessionTranscriptExporter.Test.cs compiles this file as it is. Never throws.
@@ -51,9 +60,20 @@ namespace ClarionAssistant.Services
         public const string FolderName = ".CAChats";
         /// <summary>One message is cut here, so a pasted log of many MB cannot make the file unreadable.</summary>
         internal const int MaxMessageChars = 100000;
+        /// <summary>The longest part of a chat's name used in a file name.</summary>
+        internal const int MaxTitleChars = 60;
+        /// <summary>A picture bigger than this is left as its path / left out, so one paste cannot fill the folder.</summary>
+        internal const int MaxImageBytes = 25 * 1024 * 1024;
         private const string IgnoreFileText = "# Clarion Assistant chat transcripts hold everything typed or shown in the chats, secrets included.\r\n# Keep them out of git.\r\n*\r\n";
 
         private static readonly Regex Whitespace = new Regex(@"\s+", RegexOptions.Compiled);
+        // "@<path>.png" as CA's paste puts it in a message.
+        private static readonly Regex PasteToken = new Regex(@"(?<![\w])@(\S+?\.png)(?=\s|$|[,.;:)\]])", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // The name CA gives a pasted screenshot, in the cache folder named paste-cache.
+        private static readonly Regex PasteFileName = new Regex(@"^paste-\d{8}-\d{6}-\d{3}\.png$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferSize);
 
         /// <summary>The folder a session run in <paramref name="workDir"/> is exported to.</summary>
         public static string FolderFor(string workDir)
@@ -97,25 +117,25 @@ namespace ClarionAssistant.Services
                 string transcript = FindTranscript(projectsRoot, workDir, id);
                 if (transcript == null) { res.Reason = "no transcript"; return res; }
 
-                string agentName;
-                DateTime first, last;
-                int prompts;
-                string body = Render(transcript, out agentName, out first, out last, out prompts);
-                if (prompts == 0) { res.Reason = "no prompt from the developer"; return res; }
+                string folder = FolderFor(workDir);
+                string id8 = id.Substring(0, 8);
+                var sink = new ImageSink(id8, Path.Combine(folder, id8));
+                Rendered r = Render(transcript, sink);
+                if (r.Prompts == 0) { res.Reason = "no prompt from the developer"; return res; }
 
                 var sb = new StringBuilder();
                 sb.Append("# Chat transcript - ").Append(Path.GetFileName(workDir)).Append("\r\n\r\n");
                 sb.Append("- Session: `").Append(id).Append("`\r\n");
-                if (!string.IsNullOrEmpty(agentName)) sb.Append("- Tab: ").Append(agentName).Append("\r\n");
-                sb.Append("- From: ").Append(Stamp(first)).Append("   To: ").Append(Stamp(last)).Append("  (local time)\r\n\r\n---\r\n");
-                sb.Append(body);
+                if (!string.IsNullOrEmpty(r.Title)) sb.Append("- Name: ").Append(r.Title).Append("\r\n");
+                if (!string.IsNullOrEmpty(r.TabName)) sb.Append("- Tab: ").Append(r.TabName).Append("\r\n");
+                sb.Append("- From: ").Append(Stamp(r.First)).Append("   To: ").Append(Stamp(r.Last)).Append("  (local time)\r\n\r\n---\r\n");
+                sb.Append(r.Body);
 
-                string folder = FolderFor(workDir);
                 Directory.CreateDirectory(folder);
                 string ignore = Path.Combine(folder, ".gitignore");
                 if (!File.Exists(ignore)) File.WriteAllText(ignore, IgnoreFileText, new UTF8Encoding(false));
 
-                string name = FileName(id, first, last);
+                string name = FileName(id, r.First, r.Last, r.Title);
                 string target = Path.Combine(folder, name);
                 RemoveOlderFilesOf(folder, id, name);
 
@@ -134,10 +154,25 @@ namespace ClarionAssistant.Services
             }
         }
 
-        /// <summary>session_&lt;first 8 of the id&gt;_&lt;first day&gt;_to_&lt;last day&gt;.md</summary>
-        public static string FileName(string id, DateTime first, DateTime last)
+        /// <summary>&lt;first day&gt;_to_&lt;last day&gt;[_&lt;name&gt;]_&lt;first 8 of the id&gt;.md; the day the chat started comes first, so the folder sorts by it.</summary>
+        public static string FileName(string id, DateTime first, DateTime last, string title)
         {
-            return "session_" + id.Substring(0, 8) + "_" + Day(first) + "_to_" + Day(last) + ".md";
+            string t = SafeTitle(title);
+            return Day(first) + "_to_" + Day(last) + (t.Length > 0 ? "_" + t : "") + "_" + id.Substring(0, 8) + ".md";
+        }
+
+        /// <summary>The chat's name made fit for a file name: no invalid characters, one space between words, cut to
+        /// <see cref="MaxTitleChars"/>, no trailing dot or space. Empty when nothing is left.</summary>
+        internal static string SafeTitle(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return "";
+            var bad = new HashSet<char>(Path.GetInvalidFileNameChars());
+            var sb = new StringBuilder(title.Length);
+            foreach (char c in title)
+                sb.Append(bad.Contains(c) || char.IsControl(c) ? '-' : c);
+            string s = Whitespace.Replace(sb.ToString(), " ").Trim();
+            if (s.Length > MaxTitleChars) s = s.Substring(0, MaxTitleChars);
+            return s.TrimEnd(' ', '.').TrimStart(' ');
         }
 
         private static string Day(DateTime d) { return d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture); }
@@ -153,16 +188,18 @@ namespace ClarionAssistant.Services
             return null;
         }
 
-        // The file an earlier export of this session wrote under another end date. Only names this class
-        // produces for this id are touched, never anything else in the folder.
+        // The file an earlier export of this session wrote under another end date or name, and the ones the first
+        // version wrote (session_<id8>_<first>_to_<last>.md). Only names this class produces for this id are
+        // touched, never anything else in the folder, and never the <id8> folder of pictures.
         private static void RemoveOlderFilesOf(string folder, string id, string keepName)
         {
-            string id8 = id.Substring(0, 8);
-            var ours = new Regex("^session_" + id8 + @"_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.md$", RegexOptions.IgnoreCase);
-            foreach (var f in Directory.GetFiles(folder, "session_" + id8 + "_*.md"))
+            string id8 = Regex.Escape(id.Substring(0, 8));
+            var current = new Regex(@"^\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}(_.+)?_" + id8 + @"\.md$", RegexOptions.IgnoreCase);
+            var first = new Regex(@"^session_" + id8 + @"_\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.md$", RegexOptions.IgnoreCase);
+            foreach (var f in Directory.GetFiles(folder, "*.md"))
             {
                 string n = Path.GetFileName(f);
-                if (ours.IsMatch(n) && !string.Equals(n, keepName, StringComparison.OrdinalIgnoreCase))
+                if ((current.IsMatch(n) || first.IsMatch(n)) && !string.Equals(n, keepName, StringComparison.OrdinalIgnoreCase))
                 {
                     try { File.Delete(f); } catch { }
                 }
@@ -171,14 +208,23 @@ namespace ClarionAssistant.Services
 
         // ── The transcript ───────────────────────────────────
 
-        private static string Render(string path, out string agentName, out DateTime first, out DateTime last, out int prompts)
+        private sealed class Rendered
         {
-            agentName = null;
+            public string Body = "";
+            public string TabName, Title;
+            public DateTime First, Last;
+            public int Prompts;
+        }
+
+        private static Rendered Render(string path, ImageSink sink)
+        {
+            var res = new Rendered();
+            string tabName = null, title = null;
             DateTime? firstTs = null, lastTs = null;
-            prompts = 0;
             var sb = new StringBuilder();
             string lastRole = null;
             bool lastWasCall = false;   // consecutive tool lines form one list, with no blank line between them
+            int anonymous = 0;
             var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue, RecursionLimit = 256 };
 
             using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -190,8 +236,9 @@ namespace ClarionAssistant.Services
                     if (line.Length == 0 || line[0] != '{') continue;
                     bool user = line.Contains("\"type\":\"user\"");
                     bool asst = line.Contains("\"type\":\"assistant\"");
-                    bool name = line.Contains("\"agent-name\"");
-                    if (!user && !asst && !name) continue;
+                    bool name = line.Contains("\"agent-name\"") || line.Contains("\"custom-title\"");
+                    bool queued = line.Contains("\"queued_command\"");
+                    if (!user && !asst && !name && !queued) continue;
 
                     IDictionary<string, object> obj;
                     try { obj = ser.DeserializeObject(line) as IDictionary<string, object>; }
@@ -199,23 +246,46 @@ namespace ClarionAssistant.Services
                     if (obj == null) continue;
 
                     string type = Str(obj, "type");
-                    if (type == "agent-name")
+                    if (type == "agent-name" || type == "custom-title")
                     {
-                        string an = Str(obj, "agentName");
-                        if (!string.IsNullOrWhiteSpace(an)) agentName = an.Trim();
+                        string n = Str(obj, type == "agent-name" ? "agentName" : "customTitle");
+                        if (string.IsNullOrWhiteSpace(n)) continue;
+                        n = n.Trim();
+                        // The last CA tab name is the tab; the last name that is not one is what the developer called the chat.
+                        if (ClaudeSessionCatalog.IsCaTabName(n)) tabName = n; else title = n;
                         continue;
                     }
                     if (IsTrue(obj, "isSidechain")) continue;   // a sub-agent's own conversation
 
                     DateTime? at = Time(Str(obj, "timestamp"));
-                    if (type == "user")
+                    if (type == "user" || type == "attachment")
                     {
-                        string text = UserText(obj);
-                        if (text == null) continue;
-                        prompts++;
+                        string text;
+                        var images = new List<IDictionary<string, object>>();
+                        bool whileWorking = false;
+                        if (type == "user")
+                        {
+                            if (!UserContent(obj, out text, images)) continue;
+                        }
+                        else
+                        {
+                            // A message typed while Claude was working: not a user record but an attachment.
+                            text = QueuedPrompt(obj, ref at);
+                            if (text == null) continue;
+                            whileWorking = true;
+                        }
+
+                        res.Prompts++;
                         Note(ref firstTs, ref lastTs, at);
-                        sb.Append("\r\n### USER").Append(at.HasValue ? " - " + Stamp(at.Value) : "").Append("\r\n\r\n");
-                        sb.Append(Cut(text)).Append("\r\n");
+                        string key = MessageKey(obj, ref anonymous);
+                        sb.Append("\r\n### USER").Append(at.HasValue ? " - " + Stamp(at.Value) : "")
+                          .Append(whileWorking ? " (while Claude was working)" : "").Append("\r\n\r\n");
+                        if (text != null && text.Length > 0) sb.Append(Cut(LinkPastes(text, key, sink))).Append("\r\n");
+                        for (int b = 0; b < images.Count; b++)
+                        {
+                            string link = LinkImageBlock(images[b], key, b, sink);
+                            if (link != null) sb.Append("\r\n").Append(link).Append("\r\n");
+                        }
                         lastRole = "user";
                         lastWasCall = false;
                     }
@@ -242,9 +312,12 @@ namespace ClarionAssistant.Services
                 }
             }
 
-            if (firstTs.HasValue) { first = firstTs.Value; last = lastTs.Value; }
-            else { first = last = File.GetLastWriteTime(path); }
-            return sb.ToString();
+            res.Body = sb.ToString();
+            res.TabName = tabName;
+            res.Title = title;
+            if (firstTs.HasValue) { res.First = firstTs.Value; res.Last = lastTs.Value; }
+            else { res.First = res.Last = File.GetLastWriteTime(path); }
+            return res;
         }
 
         private static void Note(ref DateTime? first, ref DateTime? last, DateTime? at)
@@ -273,18 +346,22 @@ namespace ClarionAssistant.Services
             return text;
         }
 
-        /// <summary>The developer's message in a user line, or null for tool results, meta lines, hook output and CA's greeting.</summary>
-        private static string UserText(IDictionary<string, object> obj)
+        /// <summary>
+        /// The developer's message in a user line: its text (null when it has none) and its image blocks. False for
+        /// tool results, meta lines, hook output, CA's greeting, and a message with neither text nor a picture.
+        /// </summary>
+        private static bool UserContent(IDictionary<string, object> obj, out string text, List<IDictionary<string, object>> images)
         {
-            if (IsTrue(obj, "isMeta")) return null;
+            text = null;
+            if (IsTrue(obj, "isMeta")) return false;
             object m;
             var message = obj.TryGetValue("message", out m) ? m as IDictionary<string, object> : null;
-            if (message == null) return null;
+            if (message == null) return false;
             object content;
-            if (!message.TryGetValue("content", out content)) return null;
+            if (!message.TryGetValue("content", out content)) return false;
 
-            string text;
-            if (content is string) text = (string)content;
+            string raw;
+            if (content is string) raw = (string)content;
             else if (content is IEnumerable)
             {
                 var sb = new StringBuilder();
@@ -293,13 +370,170 @@ namespace ClarionAssistant.Services
                     var block = b as IDictionary<string, object>;
                     if (block == null) continue;
                     string bt = Str(block, "type");
-                    if (bt == "tool_result") return null;
+                    if (bt == "tool_result") { images.Clear(); return false; }
                     if (bt == "text") sb.Append(Str(block, "text")).Append("\n");
+                    else if (bt == "image") images.Add(block);
                 }
-                text = sb.ToString();
+                raw = sb.ToString();
             }
-            else return null;
-            return ClaudeSessionCatalog.GenuineFull(text);
+            else return false;
+            text = ClaudeSessionCatalog.GenuineFull(raw);
+            return text != null || images.Count > 0;
+        }
+
+        /// <summary>
+        /// The text of a message typed while Claude was working ({"type":"attachment","attachment":{"type":"queued_command",
+        /// "prompt":...}}), or null when the attachment is something else: another kind, a slash command, or not from the
+        /// developer (a background task's notification also arrives queued). <paramref name="at"/> becomes the time the
+        /// attachment carries, when it has one.
+        /// </summary>
+        private static string QueuedPrompt(IDictionary<string, object> obj, ref DateTime? at)
+        {
+            object a;
+            var att = obj.TryGetValue("attachment", out a) ? a as IDictionary<string, object> : null;
+            if (att == null || Str(att, "type") != "queued_command") return null;
+            string mode = Str(att, "commandMode");
+            if (mode != null && mode != "prompt") return null;
+            object o;
+            var origin = att.TryGetValue("origin", out o) ? o as IDictionary<string, object> : null;
+            string kind = origin == null ? null : Str(origin, "kind");
+            if (kind != null && kind != "human") return null;
+            DateTime? own = Time(Str(att, "timestamp"));
+            if (own.HasValue) at = own;
+            return ClaudeSessionCatalog.GenuineFull(Str(att, "prompt"));
+        }
+
+        // The message's own id, first 12 hex characters (48 bits: a collision inside one chat is not a real risk): what the copies of its pictures are named from, so a
+        // second export finds them again. A record with no id gets a counter (stable while the transcript only grows).
+        private static string MessageKey(IDictionary<string, object> obj, ref int anonymous)
+        {
+            string u = Str(obj, "uuid");
+            if (!string.IsNullOrEmpty(u))
+            {
+                var sb = new StringBuilder();
+                foreach (char c in u)
+                {
+                    if (Uri.IsHexDigit(c)) sb.Append(char.ToLowerInvariant(c));
+                    if (sb.Length == 12) break;
+                }
+                if (sb.Length >= 8) return sb.ToString();
+            }
+            anonymous++;
+            return "m" + anonymous.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // ── Pictures ─────────────────────────────────────────
+
+        /// <summary>Where the pictures of one session are copied to: &lt;.CAChats&gt;\&lt;id8&gt;\, created only when the first one is.</summary>
+        private sealed class ImageSink
+        {
+            private readonly string _id8, _folder;
+            public ImageSink(string id8, string folder) { _id8 = id8; _folder = folder; }
+
+            public string Link(string destName) { return "![](" + _id8 + "/" + destName + ")"; }
+            public bool Has(string destName) { return File.Exists(Path.Combine(_folder, destName)); }
+
+            public bool CopyFrom(string source, string destName)
+            {
+                try
+                {
+                    Directory.CreateDirectory(_folder);
+                    File.Copy(source, Path.Combine(_folder, destName), true);
+                    return true;
+                }
+                catch { return false; }
+            }
+
+            public bool Put(string destName, byte[] bytes)
+            {
+                try
+                {
+                    Directory.CreateDirectory(_folder);
+                    File.WriteAllBytes(Path.Combine(_folder, destName), bytes);
+                    return true;
+                }
+                catch { return false; }
+            }
+        }
+
+        /// <summary>
+        /// The text with each "@&lt;path&gt;.png" that is a screenshot CA pasted (paste-&lt;time&gt;.png, in a folder named
+        /// paste-cache) replaced by a link to its copy in &lt;id8&gt;\. The copy is made now when the original still exists;
+        /// when it does not, an earlier export's copy of the same message and position is linked, and when there is none
+        /// the path stays in the text.
+        /// </summary>
+        private static string LinkPastes(string text, string key, ImageSink sink)
+        {
+            int n = 0;
+            return PasteToken.Replace(text, m =>
+            {
+                string dest = key + "-p" + (n++).ToString(CultureInfo.InvariantCulture) + ".png";
+                if (sink.Has(dest)) return sink.Link(dest);
+                string source = PasteCacheFile(m.Groups[1].Value);
+                if (source != null && sink.CopyFrom(source, dest)) return sink.Link(dest);
+                return m.Value;
+            });
+        }
+
+        // The existing file a message's @path names, when it is one of CA's pasted screenshots and not too big; else null.
+        // CA sends a path with spaces in its 8.3 form (PASTE-~1.PNG), so the long name is read back before it is judged.
+        private static string PasteCacheFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                string full = LongPath(path);
+                string name = Path.GetFileName(full);
+                string dir = Path.GetFileName(Path.GetDirectoryName(full) ?? "");
+                if (!PasteFileName.IsMatch(name) || !string.Equals(dir, "paste-cache", StringComparison.OrdinalIgnoreCase)) return null;
+                if (new FileInfo(full).Length > MaxImageBytes) return null;
+                return full;
+            }
+            catch { return null; }
+        }
+
+        private static string LongPath(string path)
+        {
+            try
+            {
+                var sb = new StringBuilder(1024);
+                uint n = GetLongPathName(path, sb, (uint)sb.Capacity);
+                if (n > 0 && n < sb.Capacity) return sb.ToString();
+            }
+            catch { }
+            return path;
+        }
+
+        // An image block sent in the message itself ({"type":"image","source":{"type":"base64",...}}): decoded into
+        // <id8>\<message id>-b<n>.<ext> and linked. Null when it cannot be (another source type, too big, unreadable).
+        private static string LinkImageBlock(IDictionary<string, object> block, string key, int index, ImageSink sink)
+        {
+            try
+            {
+                object s;
+                var source = block.TryGetValue("source", out s) ? s as IDictionary<string, object> : null;
+                if (source == null || Str(source, "type") != "base64") return null;
+                string ext = ImageExtension(Str(source, "media_type"));
+                string data = Str(source, "data");
+                if (ext == null || string.IsNullOrEmpty(data)) return null;
+                string dest = key + "-b" + index.ToString(CultureInfo.InvariantCulture) + ext;
+                if (sink.Has(dest)) return sink.Link(dest);
+                if ((long)data.Length * 3 / 4 > MaxImageBytes) return null;
+                return sink.Put(dest, Convert.FromBase64String(data)) ? sink.Link(dest) : null;
+            }
+            catch { return null; }
+        }
+
+        private static string ImageExtension(string mediaType)
+        {
+            switch ((mediaType ?? "").ToLowerInvariant())
+            {
+                case "image/png": return ".png";
+                case "image/jpeg": return ".jpg";
+                case "image/gif": return ".gif";
+                case "image/webp": return ".webp";
+                default: return null;
+            }
         }
 
         private static void AssistantParts(IDictionary<string, object> obj, out string text, List<string> calls)
