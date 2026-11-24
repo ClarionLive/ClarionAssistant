@@ -49,8 +49,9 @@ namespace ClarionCodeGraph.Parsing
             @"\bDO\s+(\w+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex EndRegex = new Regex(
             @"^\s*END\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // A '.' terminator may carry a trailing comment, as END may ("  .  ! end of Pair").
         private static readonly Regex PeriodTermRegex = new Regex(
-            @"^\s*\.\s*$", RegexOptions.Compiled);
+            @"^\s*\.\s*([!].*)?$", RegexOptions.Compiled);
         private static readonly Regex CodeRegex = new Regex(
             @"^\s*CODE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         // A ROUTINE's explicit DATA statement — opens the routine's own declaration section,
@@ -161,6 +162,14 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex GroupQueueDeclRegex = new Regex(
             @"^([\w:]+)\s+(GROUP|QUEUE)\s*(\([^)]*\))?\s*(?:(,.*)|(?<term>END\b\s*|\.\s*))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>True when a <see cref="GroupQueueDeclRegex"/> match closes on its own line, so it opens no
+        /// level that a later END or '.' closes (see the DATA-section caller for the attrs+terminator case).</summary>
+        private static bool IsSelfClosingGroupDecl(Match gqMatch)
+        {
+            return gqMatch.Groups["term"].Success ||
+                Regex.IsMatch(gqMatch.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+        }
 
         // CLASS member that is itself a GROUP/QUEUE/RECORD instantiation (also allows RECORD,
         // unlike GroupQueueDeclRegex above, which only ever needed GROUP/QUEUE for DATA-section
@@ -928,8 +937,17 @@ namespace ClarionCodeGraph.Parsing
                         continue;
                     }
 
-                    // Skip lines inside GROUP/QUEUE bodies (member fields)
-                    if (dataGroupDepth > 0) continue;
+                    // Skip lines inside GROUP/QUEUE bodies (member fields). A GROUP/QUEUE nested in the body
+                    // opens a level of its own: skipped without counting it, its END closed the OUTER
+                    // structure, and every field after it was emitted as data of the enclosing scope
+                    // ("Stamp GROUP ... END" inside "ErrQType QUEUE,TYPE" turned the queue's later fields
+                    // into globals).
+                    if (dataGroupDepth > 0)
+                    {
+                        var nestedMatch = GroupQueueDeclRegex.Match(StripInlineComment(trimmedData));
+                        if (nestedMatch.Success && !IsSelfClosingGroupDecl(nestedMatch)) dataGroupDepth++;
+                        continue;
+                    }
 
                     // Skip MAP, WINDOW, REPORT, TOOLBAR, MENUBAR blocks inside DATA sections
                     if (MapStartRegex.IsMatch(line) ||
@@ -1026,8 +1044,7 @@ namespace ClarionCodeGraph.Parsing
                         // "...,DIM(2)."), the ",.*" attrs alternative swallows the terminator into itself
                         // and "term" never matches -- so ALSO re-check the end of the line to cover the
                         // attrs+same-line-terminator form (GitHub #97, mirroring ae9805b's CLASS-body fix).
-                        bool gqSelfClosing = gqMatch.Groups["term"].Success ||
-                            Regex.IsMatch(gqMatch.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                        bool gqSelfClosing = IsSelfClosingGroupDecl(gqMatch);
                         if (!gqSelfClosing)
                         {
                             dataGroupDepth++;
