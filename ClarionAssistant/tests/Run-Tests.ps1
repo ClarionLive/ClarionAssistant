@@ -412,7 +412,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
-                           "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "CodeGraph\Parsing\ClarionBuiltins.cs", "Services\BuiltinCallSite.cs",
                            "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll", "System.Web.Extensions.dll")
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")

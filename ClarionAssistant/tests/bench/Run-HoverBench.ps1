@@ -61,7 +61,7 @@ $sources = @('tests\bench\HoverBench.cs', 'tests\LocalLayer.Handlers.Stubs.cs', 
              'Services\LocalScopeIndex.cs', 'Services\LiveDictionaryIndex.cs', 'Services\SymbolIndex.cs', 'Services\IndexRunGate.cs',
              'CodeGraph\Graph\CodeGraphProvider.cs', 'CodeGraph\Graph\CodeGraphDatabase.cs',
              'CodeGraph\Parsing\Models\ClarionSymbol.cs', 'CodeGraph\Parsing\Models\ClarionRelationship.cs',
-             'CodeGraph\Parsing\Models\SolutionProject.cs', 'CodeGraph\Parsing\Models\ParseResult.cs', 'CodeGraph\Parsing\ClarionBuiltins.cs',
+             'CodeGraph\Parsing\Models\SolutionProject.cs', 'CodeGraph\Parsing\Models\ParseResult.cs', 'CodeGraph\Parsing\ClarionBuiltins.cs', 'Services\BuiltinCallSite.cs',
              'Services\LspClient.cs', 'Services\LspTextDiff.cs', 'Services\JsonTextStream.cs', 'Services\LspTrace.cs', 'Services\EncodingHelper.cs',
              'Services\ClarionVersionService.cs', 'Services\ClarionIdeProcess.cs', 'Services\ClarionConfigDirectory.cs') | ForEach-Object { Join-Path $repo $_ }
 Copy-Item (Join-Path $repo 'lib\sqlite-fts5\System.Data.SQLite.dll'), (Join-Path $repo 'lib\sqlite-fts5\SQLite.Interop.dll') $out -Force

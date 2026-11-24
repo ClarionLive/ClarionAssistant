@@ -574,6 +574,61 @@ static class LocalLayerHandlersTest
         }
     }
 
+    // A built-in call (ERRORCODE() in IF ERRORCODE() = 0) must not get the card of a same-named index row: the index
+    // is searched by name alone, and an ErrorCode LONG declared in another module came back as the FINAL card, so the
+    // page never asked the server, whose card names the built-in.
+    static void BuiltinCallHover(List<string> log)
+    {
+        Console.WriteLine("\nhover: a built-in call never gets a same-named variable's index card");
+        string work = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ca-locallayer-builtin-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        System.IO.Directory.CreateDirectory(work);
+        string proj = System.IO.Path.Combine(work, "proj.codegraph.db"), lib = System.IO.Path.Combine(work, "ClarionGraph_t.db");
+        BuildDb(proj, true);
+        BuildDb(lib, true);
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + proj + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "ErrorCode", "variable", @"C:\src\other.clw", "module", "LONG");
+            Sym(cn, "Update", "procedure", @"C:\src\upd.clw", "global", "(LONG pX)");   // UPDATE is a built-in too
+        }
+        string[] lines = {
+            "  MEMBER('app')",              // 1
+            "TestProc PROCEDURE",           // 2
+            "  CODE",                       // 3
+            "  IF ERRORCODE() = 0",         // 4
+            "  END",                        // 5
+            "  x = ErrorCode + 1",          // 6
+            "  Update(1)" };                // 7
+        string buffer = string.Join("\r\n", lines);
+        var o = new LocalLayerOptions { Log = log.Add, FileName = System.IO.Path.Combine(work, "mod.clw") };
+        Func<int, string, Dictionary<string, object>> hover = (ln, w) =>
+            LocalLayerHandlers.Handle("localHover", buffer,
+                Req("{\"line\":" + ln + ",\"column\":" + (lines[ln - 1].IndexOf(w, StringComparison.Ordinal) + 2) + "}"), o);
+        LocalLayerHandlers.ProjectDbPath = () => proj;
+        LocalLayerHandlers.LibraryDbPath = () => lib;
+        try
+        {
+            LocalLayerHandlers.ResetPathCache();
+            var hCall = hover(4, "ERRORCODE");
+            Check("IF ERRORCODE() = 0 -> not the index card of the variable ErrorCode",
+                Kind(hCall) != "index" && !Contents(hCall).Contains("other.clw"), Json(hCall));
+            var hBare = hover(6, "ErrorCode");
+            Check("x = ErrorCode + 1 (no '(') -> still the index card: a label may share a built-in's name",
+                Kind(hBare) == "index" && Contents(hBare).Contains("LONG"), Json(hBare));
+            var hProc = hover(7, "Update");
+            Check("Update(1) with a procedure Update in the index -> its card, as a fallback the server may replace",
+                Kind(hProc) == "index" && (bool)hProc["fallback"] && !(bool)hProc["authoritative"], Json(hProc));
+        }
+        finally
+        {
+            LocalLayerHandlers.ProjectDbPath = null;
+            LocalLayerHandlers.LibraryDbPath = null;
+            LocalLayerHandlers.ResetPathCache();
+            SymbolIndex.ReleaseAll();
+            try { System.IO.Directory.Delete(work, true); } catch { }
+        }
+    }
+
     // ------------------------------------------------------------------ R11b: span map + slice requests
 
     static string Lines(int first, int last) { return string.Join("\r\n", ModLines.Skip(first - 1).Take(last - first + 1)); }
@@ -754,6 +809,7 @@ static class LocalLayerHandlersTest
 
         CompletionAndHover(log);
         KeywordSlotAndEquateScope(log);
+        BuiltinCallHover(log);
 
         Console.WriteLine("\n4.8 one [local-timing] line per call");
         {

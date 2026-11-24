@@ -424,6 +424,9 @@ namespace ClarionAssistant.Services
                 // or variable (PASSWORD in PRM002). L3: a word followed by '(' is a call, so a procedure of that
                 // name wins over any other symbol (and, below, over the attribute card).
                 bool call = FollowedByParen(lineText, col, word);
+                // A built-in call (ERRORCODE(), CLIP(x)) cannot be a same-named variable or field: such a row found by
+                // name (an ErrorCode LONG in another module) must not answer, let alone as the final card.
+                bool builtinCall = call && BuiltinCallSite.IsBuiltinCallAt(lineText, col);
                 string projectDb = ProjectDb(options), libraryDb = LibraryDb();
                 HashSet<string> includedFiles = null;
                 bool closureBuilt = false;
@@ -458,6 +461,7 @@ namespace ClarionAssistant.Services
                         // its FALLBACK, as a keyword card is (GH #250).
                         bool proc = string.Equals(s.Type, "procedure", StringComparison.OrdinalIgnoreCase) ||
                                     string.Equals(s.Type, "function", StringComparison.OrdinalIgnoreCase);
+                        if (builtinCall && !proc) continue;
                         return new LocalHoverResult { Markdown = SymbolCard(s), Authoritative = !proc, Fallback = proc, Kind = "index" };
                     }
                 }
