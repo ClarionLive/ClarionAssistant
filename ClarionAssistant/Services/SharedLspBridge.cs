@@ -360,7 +360,8 @@ namespace ClarionAssistant.Services
         {
             // The file name in INCLUDE('x.inc') / MODULE / MEMBER / LINK: a file, not a symbol. Never the
             // member-access preempt ("CWSyncHM.inc" looks like instance.member) nor the CodeGraph name lookup.
-            string fileRef = FileRefTarget.FileNameAt(CgLineAt(bufferText, filePath, line), character);
+            string lineText = CgLineAt(bufferText, filePath, line);
+            string fileRef = FileRefTarget.FileNameAt(lineText, character);
 
             // Library/ABC member access → PREEMPT the LSP with our precise member definition. The LSP resolves
             // libsrc member access only to the containing CLASS, so F12/Ctrl+Click lands on the class's first
@@ -381,6 +382,10 @@ namespace ClarionAssistant.Services
                 string target = ResolveFileRef(fileRef, filePath);
                 return target != null ? WrapResult(new System.Collections.ArrayList { CgLocation(target, 1) }) : primary;
             }
+
+            // A built-in call (ERRORCODE(), CLIP(x)) has no source declaration: the name lookup below would only
+            // find an unrelated symbol of the same name, such as an ErrorCode field in some QUEUE.
+            if (BuiltinCallSite.IsBuiltinCallAt(lineText, character)) return primary;
 
             var cgResult = CodeGraphDefinition(filePath, line, character, bufferText);
             if (IsSelfReferential(cgResult, filePath, line)) return primary;
@@ -522,6 +527,8 @@ namespace ClarionAssistant.Services
                 ? (LspClient.Active != null ? LspClient.Active.GetReferences(filePath, line, character) : null)
                 : SharedGetReferences(c, filePath, line, character);
             if (!IsEmptyResult(primary)) return primary;
+            // A built-in call has no declaration to collect references for (see GetDefinition).
+            if (BuiltinCallSite.IsBuiltinCallAt(CgLineAt(null, filePath, line), character)) return primary;
             return CodeGraphReferences(filePath, line, character) ?? primary;
         }
 
