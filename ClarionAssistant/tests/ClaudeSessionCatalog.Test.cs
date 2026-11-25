@@ -379,6 +379,50 @@ static class ClaudeSessionCatalogTest
                parked != null && parked.Title == "parked" && parked.Summary == null && parked.AgentName == "CA2",
                parked == null ? "hidden" : parked.AgentName + " / " + parked.Title + " / " + parked.Summary);
 
+            // ---- First prompt past the start-up records (PR #319 review) ----
+            // Measured 2026-11-24: the first prompt sits 82-330 lines and up to ~1.4 MB into real transcripts, so
+            // neither the 256 KB head nor a 200-line cap reaches it; and a session that ends in a big attachment
+            // block has no last-prompt in the 64 KB tail. Such a session must still be listed, by its first prompt.
+            Func<bool, string[]> deepShape = withPrompt =>
+            {
+                var deep = new List<string> { AgentName("CA1"), User(sol, "At your service!") };
+                for (int i = 0; i < 225; i++) deep.Add(Attach(sol, "instructions", filler));   // ~450 KB, 225 lines
+                deep.Add(Asst(sol, "Ready to help."));
+                if (withPrompt)
+                {
+                    deep.Add(User(sol, "<system-reminder>hook output</system-reminder>", ",\"isMeta\":true"));
+                    deep.Add(User(sol, "This session is being continued from a previous conversation that ran out of context.", ",\"isCompactSummary\":true"));
+                    deep.Add(User(sol, "wire the invoice export into the Home tab"));
+                    deep.Add(Asst(sol, "Done."));
+                }
+                deep.Add(Attach(sol, "skill_listing", new string('s', 48 * 1024)));
+                for (int i = 0; i < 4; i++) deep.Add(Attach(sol, "deferred_tools_delta", new string('d', 6 * 1024)));
+                return deep.ToArray();   // no last-prompt record anywhere
+            };
+            string idDeep = "1b1b1b1b-0000-4000-8000-000000000019";
+            string deepPath = Write(folder, idDeep, now.AddMinutes(-18), deepShape(true));
+            string deepText = File.ReadAllText(deepPath);
+            int deepFirst = Encoding.UTF8.GetByteCount(deepText.Substring(0, deepText.IndexOf("wire the invoice export", StringComparison.Ordinal)));
+            Ok("fixture: first prompt past the head and the old line cap, no last-prompt in the tail",
+               deepFirst > ClaudeSessionCatalog.HeadMaxBytes && deepText.Split('\n').Length > 200 &&
+               !deepText.Substring(deepText.Length - ClaudeSessionCatalog.TailBytes).Contains("last-prompt"),
+               "prompt at " + deepFirst + " bytes");
+            var deepInfo = ClaudeSessionCatalog.TryGet(root, sol, idDeep, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("deep prompt: listed, summary is the first genuine prompt (compact summary and meta skipped)",
+               deepInfo != null && deepInfo.Summary == "wire the invoice export into the Home tab",
+               deepInfo == null ? "hidden" : deepInfo.Summary);
+            string idDeepGreet = "1c1c1c1c-0000-4000-8000-000000000020";
+            Write(folder, idDeepGreet, now.AddMinutes(-19), deepShape(false));
+            Ok("deep greeting-only session (nothing but CA's greeting in 2 windows) is still not listed",
+               ClaudeSessionCatalog.TryGet(root, sol, idDeepGreet, null, now, ClaudeSessionCatalog.IsCaTabName) == null);
+
+            // A /compact summary is not what the developer typed.
+            string idCompact = "1d1d1d1d-0000-4000-8000-000000000021";
+            Write(folder, idCompact, now.AddMinutes(-21),
+                AgentName("CA1"), User(sol, "This session is being continued from a previous conversation that ran out of context.", ",\"isCompactSummary\":true"), Asst(sol, "ok"));
+            Ok("compact summary: not a prompt, so a session with only that is not listed",
+               ClaudeSessionCatalog.TryGet(root, sol, idCompact, null, now, ClaudeSessionCatalog.IsCaTabName) == null);
+
             // ---- Read budget (2026-11-09) ----
             // CA tabs opened and closed without a prompt leave greeting-only transcripts. With a budget of 3 per
             // wanted session, 8 of them in front of a real session made a list of 2 come back with 0.
