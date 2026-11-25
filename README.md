@@ -55,6 +55,25 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+<!-- release-docs: covered=chat-transcripts -->
+### Save each chat as a Markdown file when its tab closes or Clarion does
+
+A CA chat lives in Claude Code's own transcript (`~/.claude/projects/...`), a JSON file that is not made to be read. With **Options > Clarion Assistant > Chat Transcripts > Save each chat as a Markdown file in the solution folder (.CAChats)** ticked, the conversation is written to `<solution folder>\.CAChats\<first day>_to_<last day>[_<name>]_<id>.md` when claude exits in the tab, when the tab is closed, and when Clarion closes. Open it in any editor, or in the IDE, to read an earlier chat without resuming it or asking Claude for a summary.
+
+The file has a heading with the session id, the chat's name, the tab and the period, then each of your messages with its time and Claude's replies, with one line for each tool Claude called. A message you typed while Claude was working is kept and marked *(while Claude was working)*. Tool output, Claude's reasoning and sub-agents' conversations are left out. A chat where you never typed a message is not saved.
+
+The name is what you gave the chat with `/rename`, when it is not a plain CA tab name (`CA1`, `CA2`): `2026-11-19_to_2026-11-20_Fix login dialog_3f9c21ab.md`. The first day comes first, so the folder sorts by when each chat started, and the last part of the session id stays in every name. One chat is one file: a chat saved again after it reached another day, or after you renamed it, takes the new name, and the earlier file for that chat is removed. Nothing else in the folder is touched.
+
+Screenshots are kept with the chat. A screenshot you paste into a CA tab is saved by CA in `%LOCALAPPDATA%\ClarionAssistant\paste-cache`, which CA empties of files older than a day, and only its path goes into the message. The export copies each one into `.CAChats\<id>\` and links it from the message (`![](3f9c21ab/<message>-p0.png)`), and does the same for an image sent in the message itself. The copies are named from the message, so saving the chat again after the original is gone still finds them. A screenshot that is already gone stays in the text as its path. Pasted text files are not copied, and neither are images from anywhere else. Your Markdown viewer must be able to show a picture next to the file: VS Code and GitHub do.
+
+It is **off by default**. The file holds everything typed or shown in the chat, passwords and keys included, and screenshots can show as much, so Clarion Assistant writes a `.gitignore` containing `*` into `.CAChats` and git never offers its files for commit. Saving when Clarion closes is a separate step with a 3-second limit, so it cannot hold the IDE open: a 10 MB chat takes about a quarter of a second. If Clarion crashes or is killed, chats still open at that moment are not saved; chats of tabs closed earlier already were. A chat you `/clear` away from inside a tab is not tracked after the `/clear`.
+
+---
+
 ## What's New in v6.3
 
 6.3 lets you resume an earlier Claude session from the Home tab, ships UltimateCOM 4.1 (each control's handler gets only its own events, and Before/After COM Registration code is no longer dropped), opens INCLUDE files with Ctrl+Click through the `.red`, and corrects the bundled `clarion`, `stringtheory` and `jfiles` skills against the compiler and library sources. The plugin is version 2.1.2: update it as described below. Full notes: **[docs/releases/v6.3.0.md](docs/releases/v6.3.0.md)**.

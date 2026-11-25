@@ -150,6 +150,8 @@
     <Compile Include="Services\CaFindSettings.cs" />
     <Compile Include="Options\CAEditorSurfacesOptionPanel.cs" />
     <Compile Include="Options\CAFindOptionPanel.cs" />
+    <Compile Include="Options\CAChatTranscriptsOptionPanel.cs" />
+    <Compile Include="Services\CaChatTranscriptSettings.cs" />
     <Compile Include="Services\McpServer.cs" />
     <Compile Include="Services\McpJsonRpc.cs" />
     <Compile Include="Services\McpDispatcher.cs" />
@@ -277,6 +279,7 @@
     <Compile Include="Services\ClaudeMdDeployer.cs" />
     <Compile Include="Services\ClaudePluginLocator.cs" />
     <Compile Include="Services\ClaudeSessionCatalog.cs" />
+    <Compile Include="Services\SessionTranscriptExporter.cs" />
     <Compile Include="Services\DocGraphService.cs" />
     <Compile Include="Services\DocGraphModels.cs" />
     <Compile Include="Services\MarkdownChunker.cs" />

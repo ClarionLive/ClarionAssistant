@@ -467,6 +467,7 @@
     <a href="#claude-chat">Overview</a>
     <a href="#claude-chat-home" class="sub">Home Tab</a>
     <a href="#claude-chat-tabs" class="sub">Tab System</a>
+    <a href="#claude-chat-transcripts" class="sub">Saving Chats</a>
     <a href="#claude-chat-solution" class="sub">Header Tabs</a>
     <a href="#claude-chat-toolbar" class="sub">Terminal Toolbar</a>
     <a href="#claude-chat-capabilities" class="sub">What Claude Can Do</a>
@@ -1527,6 +1528,56 @@
     <strong>Tip:</strong> Use multiple tabs to work on different parts of a multi-solution project.
     Each tab has its own Claude Code process with full IDE integration.
   </div>
+
+  <h3 id="claude-chat-transcripts">Saving Chats as Markdown</h3>
+  <p>
+    Claude Code keeps every conversation in its own transcript file under
+    <code>~/.claude/projects/</code>, which is JSON and not made to be read. Clarion Assistant can write
+    each chat as a Markdown file in your solution folder instead, so you can read an earlier chat in
+    any editor, or in the IDE, without resuming it and without asking Claude for a summary.
+  </p>
+  <p>
+    Tick <strong>Options &rarr; Clarion Assistant &rarr; Chat Transcripts &rarr; Save each chat as a
+    Markdown file in the solution folder (.CAChats)</strong>. It is off until you do.
+  </p>
+  <ul>
+    <li><strong>When it saves</strong> &mdash; when Claude exits in a tab, when you close the tab, and
+      when you close Clarion.</li>
+    <li><strong>Where</strong> &mdash; <code>&lt;solution folder&gt;\.CAChats\&lt;first day&gt;_to_&lt;last day&gt;[_&lt;name&gt;]_&lt;id&gt;.md</code>.
+      The first and last day of the chat are in the name, the first one first, so the folder sorts by
+      when each chat started. The name is what you gave the chat with <code>/rename</code>, when it is
+      not a plain CA tab name: <code>2026-11-19_to_2026-11-20_Fix login dialog_3f9c21ab.md</code>.</li>
+    <li><strong>What is in it</strong> &mdash; a heading with the session id, the chat's name, the tab and
+      the period, then each of your messages with its time and Claude's replies, and one line for each
+      tool Claude called. A message you typed while Claude was working is kept and marked <em>(while
+      Claude was working)</em>. Tool output, Claude's reasoning and sub-agents' conversations are left
+      out.</li>
+    <li><strong>One chat, one file</strong> &mdash; saving a chat again after it reached another day, or
+      after you renamed it, gives it the new name and removes the earlier file for that chat. Nothing
+      else in the folder is touched. A chat where you never typed a message is not saved.</li>
+    <li><strong>Screenshots</strong> &mdash; a screenshot you paste into a CA tab is saved by CA in
+      <code>%LOCALAPPDATA%\ClarionAssistant\paste-cache</code>, which CA empties of files older than a
+      day, and only its path goes into the message. The export copies each one into
+      <code>.CAChats\&lt;id&gt;\</code> and links it from the message, and does the same for an image sent
+      in the message itself. Saving the chat again after the original is gone still finds the copy. A
+      screenshot that is already gone stays in the text as its path. Pasted text files are not copied.
+      Your Markdown viewer must be able to show a picture next to the file: VS Code and GitHub do.</li>
+  </ul>
+
+  <div class="info-box info-box--warning">
+    <strong>Keep these files private.</strong> A chat holds everything typed or shown in it, passwords and
+    keys included. Clarion Assistant writes a <code>.gitignore</code> containing <code>*</code> into
+    <code>.CAChats</code> so git never offers the files for commit, but they are plain files in your
+    project folder, and a screenshot can show as much as the text: do not copy or share the folder
+    without reading them first.
+  </div>
+
+  <p>
+    Saving when Clarion closes has a 3-second limit so it can never hold the IDE open (a 10&nbsp;MB chat
+    takes about a quarter of a second). If Clarion crashes or is killed, chats still open at that moment
+    are not saved; chats of tabs closed earlier already were. A chat you <code>/clear</code> away from
+    inside a tab is not saved after the <code>/clear</code>.
+  </p>
 
   <h3 id="claude-chat-solution">Header: Solution, Schema Sources, Source Control</h3>
   <p>

@@ -163,6 +163,11 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\ClaudeSessionCatalog.Test.cs", "Services\ClaudeSessionCatalog.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll")
                Args = @($RepoDir) }
+            # Chat transcript export: a chat session is written to <solution>\.CAChats as Markdown named with its first and
+            # last day, when its tab closes or the IDE does. Real exporter + real catalog, fixture transcripts.
+            @{ Name = "SessionTranscriptExporter.Test"
+               Sources = @("tests\SessionTranscriptExporter.Test.cs", "Services\SessionTranscriptExporter.cs", "Services\ClaudeSessionCatalog.cs")
+               Refs = @("System.dll", "System.Core.dll", "System.Web.Extensions.dll") }
             # GH #263 Q2: a generated module opened as a plain file shows attribute names, not chips.
             @{ Name = "GeneratedModuleMatch.Test"
                Sources = @("tests\GeneratedModuleMatch.Test.cs", "Services\GeneratedModuleMatch.cs")
