@@ -574,6 +574,132 @@ static class LocalLayerHandlersTest
         }
     }
 
+    // A built-in call (ERRORCODE() in IF ERRORCODE() = 0) must not get the card of a same-named index row: the index
+    // is searched by name alone, and an ErrorCode LONG declared in another module came back as the FINAL card, so the
+    // page never asked the server, whose card names the built-in.
+    static void BuiltinCallHover(List<string> log)
+    {
+        Console.WriteLine("\nhover: a built-in call never gets a same-named variable's index card");
+        string work = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ca-locallayer-builtin-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        System.IO.Directory.CreateDirectory(work);
+        string proj = System.IO.Path.Combine(work, "proj.codegraph.db"), lib = System.IO.Path.Combine(work, "ClarionGraph_t.db");
+        BuildDb(proj, true);
+        BuildDb(lib, true);
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + proj + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "ErrorCode", "variable", @"C:\src\other.clw", "module", "LONG");
+            Sym(cn, "Update", "procedure", @"C:\src\upd.clw", "global", "(LONG pX)");   // UPDATE is a built-in too
+        }
+        string[] lines = {
+            "  MEMBER('app')",              // 1
+            "TestProc PROCEDURE",           // 2
+            "  CODE",                       // 3
+            "  IF ERRORCODE() = 0",         // 4
+            "  END",                        // 5
+            "  x = ErrorCode + 1",          // 6
+            "  Update(1)" };                // 7
+        string buffer = string.Join("\r\n", lines);
+        var o = new LocalLayerOptions { Log = log.Add, FileName = System.IO.Path.Combine(work, "mod.clw") };
+        Func<int, string, Dictionary<string, object>> hover = (ln, w) =>
+            LocalLayerHandlers.Handle("localHover", buffer,
+                Req("{\"line\":" + ln + ",\"column\":" + (lines[ln - 1].IndexOf(w, StringComparison.Ordinal) + 2) + "}"), o);
+        LocalLayerHandlers.ProjectDbPath = () => proj;
+        LocalLayerHandlers.LibraryDbPath = () => lib;
+        try
+        {
+            LocalLayerHandlers.ResetPathCache();
+            var hCall = hover(4, "ERRORCODE");
+            Check("IF ERRORCODE() = 0 -> not the index card of the variable ErrorCode",
+                Kind(hCall) != "index" && !Contents(hCall).Contains("other.clw"), Json(hCall));
+            var hBare = hover(6, "ErrorCode");
+            Check("x = ErrorCode + 1 (no '(') -> still the index card: a label may share a built-in's name",
+                Kind(hBare) == "index" && Contents(hBare).Contains("LONG"), Json(hBare));
+            var hProc = hover(7, "Update");
+            Check("Update(1) with a procedure Update in the index -> its card, as a fallback the server may replace",
+                Kind(hProc) == "index" && (bool)hProc["fallback"] && !(bool)hProc["authoritative"], Json(hProc));
+        }
+        finally
+        {
+            LocalLayerHandlers.ProjectDbPath = null;
+            LocalLayerHandlers.LibraryDbPath = null;
+            LocalLayerHandlers.ResetPathCache();
+            SymbolIndex.ReleaseAll();
+            try { System.IO.Directory.Delete(work, true); } catch { }
+        }
+    }
+
+    // PR #320 review: Clarion lets a MAP prototype shadow a built-in's name, so a built-in-named CALL still looks the
+    // name up and accepts only a procedure/function (never a same-named field). Hover, F12 (FirstVisibleByName) and
+    // Find References (SelectDeclarations) share that rule; the field is inserted FIRST so a first-row pick fails.
+    static void BuiltinCallShadowedByProcedure(List<string> log)
+    {
+        Console.WriteLine("\nbuilt-in named call: a user procedure of that name is found, a same-named field alone is not");
+        string work = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ca-locallayer-shadow-" + Guid.NewGuid().ToString("N").Substring(0, 8));
+        System.IO.Directory.CreateDirectory(work);
+        string proj = System.IO.Path.Combine(work, "proj.codegraph.db"), lib = System.IO.Path.Combine(work, "ClarionGraph_t.db");
+        BuildDb(proj, true);
+        BuildDb(lib, true);
+        using (var cn = new System.Data.SQLite.SQLiteConnection("Data Source=" + proj + ";Version=3;"))
+        {
+            cn.Open();
+            Sym(cn, "Message", "variable", @"C:\src\q.inc", "global", "STRING(20)");         // a QUEUE field, first
+            Sym(cn, "Message", "procedure", @"C:\src\msg.clw", "global", "(STRING pText)");   // MESSAGE is a built-in
+            Sym(cn, "ErrorCode", "variable", @"C:\src\q.inc", "global", "LONG");              // field only
+        }
+        string[] lines = {
+            "  MEMBER('app')",              // 1
+            "TestProc PROCEDURE",           // 2
+            "  CODE",                       // 3
+            "  Message('hi')",              // 4
+            "  IF ERRORCODE() = 0" };       // 5
+        string buffer = string.Join("\r\n", lines);
+        string modFile = System.IO.Path.Combine(work, "mod.clw");
+        var o = new LocalLayerOptions { Log = log.Add, FileName = modFile };
+        Func<int, string, Dictionary<string, object>> hover = (ln, w) =>
+            LocalLayerHandlers.Handle("localHover", buffer,
+                Req("{\"line\":" + ln + ",\"column\":" + (lines[ln - 1].IndexOf(w, StringComparison.Ordinal) + 2) + "}"), o);
+        LocalLayerHandlers.ProjectDbPath = () => proj;
+        LocalLayerHandlers.LibraryDbPath = () => lib;
+        try
+        {
+            LocalLayerHandlers.ResetPathCache();
+            var hMsg = hover(4, "Message");
+            Check("hover Message('hi') with a field Message and a procedure Message -> the procedure's card",
+                Kind(hMsg) == "index" && Contents(hMsg).Contains("msg.clw") && !Contents(hMsg).Contains("q.inc"), Json(hMsg));
+            var hErr = hover(5, "ERRORCODE");
+            Check("hover ERRORCODE() with only a field ErrorCode -> no index card", Kind(hErr) != "index", Json(hErr));
+
+            using (var p = new ClarionCodeGraph.Graph.CodeGraphProvider())
+            {
+                Check("provider opens", p.Open(proj));
+                var def = SymbolIndex.FirstVisibleByName(p, "Message", modFile, null, null, true);
+                Check("F12 choice: Message(...) -> the procedure, though the field comes first",
+                    def != null && def.Type == "procedure" && def.FilePath.EndsWith("msg.clw"), def == null ? "null" : def.Type + " " + def.FilePath);
+                Check("F12 choice: ERRORCODE() with only a field -> nothing",
+                    SymbolIndex.FirstVisibleByName(p, "ErrorCode", modFile, null, null, true) == null);
+                Check("F12 choice: a bare ErrorCode (not a call) still finds the field",
+                    SymbolIndex.FirstVisibleByName(p, "ErrorCode", modFile, null) != null);
+
+                var decls = p.SelectDeclarations("Message", modFile, 4, true);
+                Check("references choice: Message(...) -> only the procedure",
+                    decls.Count == 1 && decls[0].Type == "procedure", decls.Count + " rows");
+                Check("references choice: ERRORCODE() with only a field -> nothing",
+                    p.SelectDeclarations("ErrorCode", modFile, 5, true).Count == 0);
+                Check("references choice: a bare Message (not a call) is still ambiguous -> empty, as before",
+                    p.SelectDeclarations("Message", modFile, 4, false).Count == 0);
+            }
+        }
+        finally
+        {
+            LocalLayerHandlers.ProjectDbPath = null;
+            LocalLayerHandlers.LibraryDbPath = null;
+            LocalLayerHandlers.ResetPathCache();
+            SymbolIndex.ReleaseAll();
+            try { System.IO.Directory.Delete(work, true); } catch { }
+        }
+    }
+
     // ------------------------------------------------------------------ R11b: span map + slice requests
 
     static string Lines(int first, int last) { return string.Join("\r\n", ModLines.Skip(first - 1).Take(last - first + 1)); }
@@ -754,6 +880,8 @@ static class LocalLayerHandlersTest
 
         CompletionAndHover(log);
         KeywordSlotAndEquateScope(log);
+        BuiltinCallHover(log);
+        BuiltinCallShadowedByProcedure(log);
 
         Console.WriteLine("\n4.8 one [local-timing] line per call");
         {

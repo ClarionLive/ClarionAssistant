@@ -300,6 +300,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\FileRefTarget.Test.cs", "tests\EmbedLspContext.RedResolve.Stubs.cs",
                            "Services\FileRefTarget.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # F12 / Find All References on a built-in call (ERRORCODE()): the CodeGraph name fallback must not
+            # answer with a same-named field or variable when the language server returns nothing.
+            @{ Name = "BuiltinCallSite.Test"
+               Sources = @("tests\BuiltinCallSite.Test.cs", "Services\BuiltinCallSite.cs",
+                           "CodeGraph\Parsing\ClarionBuiltins.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # PR #208: a hung instance stays swept, a busy one re-registers, beats never overlap.
             # The vendored SQLite is x86-only (SQLite.Interop.dll), hence Platform and the copies.
             @{ Name = "InstanceCoordination.ReRegister.Test"
@@ -406,7 +412,7 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                            "CodeGraph\Graph\CodeGraphProvider.cs", "CodeGraph\Graph\CodeGraphDatabase.cs",
                            "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
                            "CodeGraph\Parsing\Models\SolutionProject.cs", "CodeGraph\Parsing\Models\ParseResult.cs",
-                           "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "CodeGraph\Parsing\ClarionBuiltins.cs", "Services\BuiltinCallSite.cs",
                            "Services\LspClient.cs", "Services\LspTextDiff.cs", "Services\JsonTextStream.cs", "Services\LspTrace.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll", "System.Xml.dll", "System.Data.dll", "System.Web.Extensions.dll")
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
