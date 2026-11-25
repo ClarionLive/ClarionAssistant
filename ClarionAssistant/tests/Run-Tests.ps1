@@ -511,6 +511,13 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                RepoRefs = @("lib\sqlite-fts5\System.Data.SQLite.dll")
                Copy = @("lib\sqlite-fts5\System.Data.SQLite.dll", "lib\sqlite-fts5\SQLite.Interop.dll")
                Platform = "x86" }
+            # A GROUP/QUEUE nested in a DATA-section structure must not close the outer one: the fields after it
+            # were emitted as variables (globals, through a global-data INCLUDE). Also a '.' terminator + comment.
+            @{ Name = "ClarionParser.NestedGroup.Test"
+               Sources = @("tests\ClarionParser.NestedGroup.Test.cs", "CodeGraph\Parsing\ClarionParser.cs", "CodeGraph\Parsing\ClarionBuiltins.cs",
+                           "CodeGraph\Parsing\Models\ClarionSymbol.cs", "CodeGraph\Parsing\Models\ClarionRelationship.cs",
+                           "CodeGraph\Parsing\Models\ParseResult.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # A CLASS / INTERFACE whose label contains a colon must be indexed, with its methods and
             # the instances/references typed by it (GH #246).
             @{ Name = "ClarionParser.ColonClass.Test"

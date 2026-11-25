@@ -49,8 +49,9 @@ namespace ClarionCodeGraph.Parsing
             @"\bDO\s+(\w+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex EndRegex = new Regex(
             @"^\s*END\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // A '.' terminator may carry a trailing comment, as END may ("  .  ! end of Pair").
         private static readonly Regex PeriodTermRegex = new Regex(
-            @"^\s*\.\s*$", RegexOptions.Compiled);
+            @"^\s*\.\s*([!].*)?$", RegexOptions.Compiled);
         private static readonly Regex CodeRegex = new Regex(
             @"^\s*CODE\s*([!].*)?$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         // A ROUTINE's explicit DATA statement — opens the routine's own declaration section,
@@ -161,6 +162,38 @@ namespace ClarionCodeGraph.Parsing
         private static readonly Regex GroupQueueDeclRegex = new Regex(
             @"^([\w:]+)\s+(GROUP|QUEUE)\s*(\([^)]*\))?\s*(?:(,.*)|(?<term>END\b\s*|\.\s*))?$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>True when a <see cref="GroupQueueDeclRegex"/> match closes on its own line, so it opens no
+        /// level that a later END or '.' closes (see the DATA-section caller for the attrs+terminator case).</summary>
+        private static bool IsSelfClosingGroupDecl(Match gqMatch)
+        {
+            return gqMatch.Groups["term"].Success || ClosesOnSameLine(gqMatch.Value);
+        }
+
+        /// <summary>True when a structure's opening line (comment already stripped) ends in its own END or '.'.</summary>
+        private static bool ClosesOnSameLine(string openerLine)
+        {
+            return Regex.IsMatch(openerLine.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+        }
+
+        // A structure opened INSIDE a DATA-section structure body that has an END (or '.') of its own: RECORD in a
+        // FILE, JOIN in a VIEW (JOINs nest), and in a WINDOW/APPLICATION/REPORT: OPTION, SHEET, TAB, MENU,
+        // MENUBAR, TOOLBAR, a GROUP control and the report bands. Its END must not close the OUTER structure, so
+        // the body scan counts every one of these. The keyword is the FIRST token when the line is indented
+        // (unlabelled: "  SHEET,AT(...)", "  RECORD", "  JOIN(...)") and the SECOND token when the line starts in
+        // column 1 (a label comes first: "Stamp GROUP"); that is what keeps a field merely LABELLED Tab, or a
+        // LIKE(GROUP) declaration, from counting. Controls with no END (BUTTON, ENTRY, PROMPT, STRING, LIST,
+        // ITEM ...) are deliberately absent.
+        private static readonly Regex NestedStructureOpenerRegex = new Regex(
+            @"^(?:[\w:]+\s+|\s+)(?:GROUP|QUEUE|RECORD|JOIN|OPTION|SHEET|TAB|MENUBAR|MENU|TOOLBAR|HEADER|DETAIL|FOOTER|FORM|BREAK)\s*(?:[(,]|$)",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        /// <summary>True when a line inside a DATA structure body opens a nested structure that a later END or '.'
+        /// closes. <paramref name="strippedLine"/> is the untrimmed line with any trailing comment removed.</summary>
+        private static bool OpensNestedStructure(string strippedLine)
+        {
+            return NestedStructureOpenerRegex.IsMatch(strippedLine) && !ClosesOnSameLine(strippedLine);
+        }
 
         // CLASS member that is itself a GROUP/QUEUE/RECORD instantiation (also allows RECORD,
         // unlike GroupQueueDeclRegex above, which only ever needed GROUP/QUEUE for DATA-section
@@ -928,12 +961,20 @@ namespace ClarionCodeGraph.Parsing
                         continue;
                     }
 
-                    // Skip lines inside GROUP/QUEUE bodies (member fields)
-                    if (dataGroupDepth > 0) continue;
+                    // Skip lines inside structure bodies (member fields). A structure nested in the body
+                    // (GROUP/QUEUE, RECORD, JOIN, SHEET, TAB, OPTION, MENU, report bands ...) opens a level of
+                    // its own: skipped without counting it, its END closed the OUTER structure, and every field
+                    // after it was emitted as data of the enclosing scope ("Stamp GROUP ... END" inside
+                    // "ErrQType QUEUE,TYPE" turned the queue's later fields into globals).
+                    if (dataGroupDepth > 0)
+                    {
+                        if (OpensNestedStructure(StripInlineComment(line))) dataGroupDepth++;
+                        continue;
+                    }
 
                     // Skip MAP, WINDOW, REPORT, TOOLBAR, MENUBAR blocks inside DATA sections
                     if (MapStartRegex.IsMatch(line) ||
-                        Regex.IsMatch(trimmedData, @"^\w+\s+(WINDOW|REPORT|TOOLBAR|MENUBAR|FILE|VIEW)\b", RegexOptions.IgnoreCase))
+                        Regex.IsMatch(trimmedData, @"^\w+\s+(WINDOW|APPLICATION|REPORT|TOOLBAR|MENUBAR|FILE|VIEW)\b", RegexOptions.IgnoreCase))
                     {
                         dataGroupDepth++;
                         continue;
@@ -1026,8 +1067,7 @@ namespace ClarionCodeGraph.Parsing
                         // "...,DIM(2)."), the ",.*" attrs alternative swallows the terminator into itself
                         // and "term" never matches -- so ALSO re-check the end of the line to cover the
                         // attrs+same-line-terminator form (GitHub #97, mirroring ae9805b's CLASS-body fix).
-                        bool gqSelfClosing = gqMatch.Groups["term"].Success ||
-                            Regex.IsMatch(gqMatch.Value.TrimEnd(), @"(\bEND|\.)\s*$", RegexOptions.IgnoreCase);
+                        bool gqSelfClosing = IsSelfClosingGroupDecl(gqMatch);
                         if (!gqSelfClosing)
                         {
                             dataGroupDepth++;
