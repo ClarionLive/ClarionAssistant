@@ -150,6 +150,30 @@ namespace ClarionAssistant.Services
         // Third element of an open-stack entry: an opener started mid-line (part 3 in CheckSlot), which
         // takes closes in nesting order but is never reported as unterminated.
         private const int Silent = 1;
+        // An unconditional OMIT('term') (no second argument) starting a line. Matched on the raw line,
+        // since Sanitize() blanks the terminator string. A doubled '' in the terminator is one quote.
+        private static readonly Regex UnconditionalOmit = new Regex(
+            @"^\s*OMIT\s*\(\s*'((?:[^']|'')+)'\s*\)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// When Monaco line <paramref name="ln"/> starts an unconditional OMIT block that ends in the slot
+        /// (by line <paramref name="e"/>), the last line the compiler skips; otherwise -1. The compiler skips
+        /// from the directive through the first line holding the terminator: a plain, case-sensitive
+        /// substring anywhere on the line, or after the argument on the directive line itself, which then
+        /// ends the block there. An OMIT whose terminator is not in the slot (one still being typed, say)
+        /// stays code, so this skip only ever takes markers away. A conditional OMIT, or COMPILE, stays code.
+        /// </summary>
+        private static int OmitBlockEnd(string[] lines, int first, int ln, int e)
+        {
+            string raw = lines[ln - first];
+            Match omit = UnconditionalOmit.Match(raw);
+            if (!omit.Success) return -1;
+            string term = omit.Groups[1].Value.Replace("''", "'");
+            if (raw.IndexOf(term, omit.Index + omit.Length, StringComparison.Ordinal) >= 0) return ln;
+            for (int i = ln + 1; i <= e; i++)
+                if (lines[i - first].IndexOf(term, StringComparison.Ordinal) >= 0) return i;
+            return -1;
+        }
 
         /// <summary>
         /// Pass 1 ONLY: the Clarion LSP's diagnostics, clamped to the editable ranges. <paramref name="ranges"/>
@@ -308,6 +332,11 @@ namespace ClarionAssistant.Services
             var open = new Stack<int[]>(); // [line1, col1] for each unmatched opener within this slot
             for (int ln = s; ln <= e; ln++)
             {
+                // An unconditional OMIT block is not code: its ENDs and openers must not pair with the
+                // structures around it. Skip it through its terminator line (see OmitBlockEnd).
+                int omitEnd = OmitBlockEnd(lines, first, ln, e);
+                if (omitEnd >= 0) { ln = omitEnd; continue; }
+
                 string code = Sanitize(lines[ln - first]); // blanks comments + string interiors, preserves columns
                 string trimmed = code.Trim();
                 if (trimmed.Length == 0) continue;
