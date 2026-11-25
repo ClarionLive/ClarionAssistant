@@ -97,6 +97,11 @@ namespace ClarionAssistant.Terminal
         /// page, so it is only ever meaningful for a file compare.</summary>
         public bool HasUnsavedEdits { get { return _fileContext != null && (_origDirty || _modDirty); } }
 
+        /// <summary>A read-only comparison with nothing to approve (the CA Editor's disk-vs-editor diffs): the
+        /// page hides Approve and shows Cancel as Close. Set before the view is shown. Off by default, so
+        /// show_diff keeps its Approve/Cancel result contract. Ignored for a file compare, which has its own bar.</summary>
+        public bool CompareOnly { get; set; }
+
         public MonacoDiffViewContent(string title, string originalText, string modifiedText, string language = "clarion",
             bool ignoreWhitespace = true, bool isDark = true, ClarionAssistant.Services.DiffFileContext fileContext = null)
         {
@@ -441,6 +446,7 @@ namespace ClarionAssistant.Terminal
                     "\"isDark\":" + (_isDark ? "true" : "false") + "," +
                     "\"ignoreWhitespace\":" + (_ignoreWhitespace ? "true" : "false") + "," +
                     fileCompareJson + "," +
+                    "\"compareOnly\":" + (CompareOnly && _fileContext == null ? "true" : "false") + "," +
                     "\"originalUrl\":\"https://" + VIRTUAL_HOST + "/original.txt\"," +
                     "\"modifiedUrl\":\"https://" + VIRTUAL_HOST + "/modified.txt\"}";
                 _webView.CoreWebView2.PostWebMessageAsJson(json);
@@ -490,8 +496,13 @@ namespace ClarionAssistant.Terminal
             }
         }
 
+        /// <summary>True once the tab has closed (Close, the tab's X, or a replace). Lets a host that keeps a
+        /// reference to its diff tell a live tab from one the developer already closed.</summary>
+        public bool IsDisposed { get; private set; }
+
         public override void Dispose()
         {
+            IsDisposed = true;
             lock (_instances) { _instances.Remove(this); }
             // Detach the close hook before teardown, so a queued close can't call back into a disposed view.
             if (_closingEvt != null && _wbWindow != null && _closingHandler != null)

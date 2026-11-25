@@ -834,12 +834,23 @@
         var bar = document.getElementById('filebar');
         var approve = document.getElementById('btn-approve');
         var cancel = document.getElementById('btn-cancel');
-        if (hint) hint.style.display = fileCompareMode ? 'none' : '';
+        // compareOnly: a read-only comparison with nothing to approve (the CA Editor's saved-file vs.
+        // editor diffs). Same buttons as a file compare, but the panes stay read-only.
+        var compareOnly = !fileCompareMode && msg.compareOnly === true;
+        if (hint) {
+            // The markup's text is show_diff's hint; keep it as the one copy and restore it for a normal diff.
+            if (hint.dataset.defaultText === undefined) hint.dataset.defaultText = hint.textContent;
+            hint.style.display = fileCompareMode ? 'none' : '';
+            // No "left/right": the Inline layout (and Monaco on a narrow tab) has no sides.
+            hint.textContent = compareOnly
+                ? 'Read-only comparison: the file on disk vs. the editor, unsaved edits included.'
+                : hint.dataset.defaultText;
+        }
         if (bar) bar.classList.toggle('fb-visible', fileCompareMode);
         // Approve returns text to the waiting MCP caller — there is no such caller for a file
-        // compare, so it is hidden rather than left to do something meaningless.
-        if (approve) approve.style.display = fileCompareMode ? 'none' : '';
-        if (cancel) cancel.textContent = fileCompareMode ? 'Close' : 'Cancel';
+        // compare or a compare-only view, so it is hidden rather than left to do something meaningless.
+        if (approve) approve.style.display = (fileCompareMode || compareOnly) ? 'none' : '';
+        if (cancel) cancel.textContent = (fileCompareMode || compareOnly) ? 'Close' : 'Cancel';
 
         // FULL paths, not just file names — a compare of two same-named files in different folders is
         // exactly when you most need to know which is which. Elided only if the bar runs out of room.

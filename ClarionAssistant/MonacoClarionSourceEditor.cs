@@ -2576,21 +2576,43 @@ namespace ClarionAssistant
         /// <summary>{action:"diffWithDisk"} from the external-change toast's "Show diff" button — routed
         /// via OnUnknownAction (like toggleBreakpoint) rather than a new IMonacoEditorHost method, so
         /// ModernEmbeditorViewContent (CA Embeditor) — which implements the same shared interface — is
-        /// completely untouched by this CA-Editor-only feature.</summary>
+        /// completely untouched by this CA-Editor-only feature.
+        /// Also sent with onDemand:true by the toolbar's "Compare with saved file" button: same disk-vs-live
+        /// diff, titled as a saved-vs-editor compare, one tab per editor (a second click replaces it with a
+        /// fresh one), and a toast instead of an empty diff when the editor matches the file.</summary>
         private void ShowDiskDiff(string rawJson)
         {
             try
             {
-                if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath)) return;
                 var data = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(rawJson) as Dictionary<string, object>;
+                bool onDemand = data != null && data.ContainsKey("onDemand") && data["onDemand"] is bool && (bool)data["onDemand"];
+                if (string.IsNullOrEmpty(_filePath) || !File.Exists(_filePath))
+                {
+                    if (onDemand)
+                        _editor?.PostJson("{\"type\":\"toast\",\"ok\":false,\"message\":\"The saved file is not on disk, so there is nothing to compare with.\"}");
+                    return;
+                }
                 string liveText = (data != null && data.ContainsKey("text")) ? (data["text"] as string ?? "") : (_overlayLiveText ?? "");
                 string diskText = EncodingHelper.ReadAllText(_filePath, out _);
+                if (onDemand)
+                {
+                    CloseDiffView(_onDemandDiff);   // replace this editor's previous compare, never stack them
+                    _onDemandDiff = null;
+                    // Line endings only: Monaco's getValue() and the file on disk may differ in EOL alone.
+                    if (string.Equals(diskText.Replace("\r\n", "\n"), liveText.Replace("\r\n", "\n"), StringComparison.Ordinal))
+                    {
+                        _editor?.PostJson("{\"type\":\"toast\",\"ok\":true,\"message\":\"No unsaved changes: the editor matches the saved file.\"}");
+                        return;
+                    }
+                }
                 var diff = new MonacoDiffViewContent(
-                    "External change: " + Path.GetFileName(_filePath), diskText, liveText, "clarion", false, Services.CaEditorSettings.MonacoThemeDark);
-                // This is a read-only comparison, not a code-review workflow — there's nothing to "apply"
-                // (unlike show_diff's usual Approve/Cancel meaning). Live testing confirmed both buttons were
-                // otherwise dead clicks with no wired handler; closing the tab either way is the only
-                // sensible behavior here.
+                    (onDemand ? "Saved vs. editor: " : "External change: ") + Path.GetFileName(_filePath),
+                    diskText, liveText, "clarion", false, Services.CaEditorSettings.MonacoThemeDark);
+                // A read-only comparison, not a code-review workflow: there is nothing to approve, so the page
+                // shows only Close (CompareOnly hides Approve). Close raises Cancelled and closes the tab; Applied
+                // is still wired so an older page that shows Approve closes the tab too instead of a dead click.
+                diff.CompareOnly = true;
+                if (onDemand) _onDemandDiff = diff;
                 diff.Applied += modifiedText => CloseDiffView(diff);
                 diff.Cancelled += () => CloseDiffView(diff);
                 ICSharpCode.SharpDevelop.Gui.WorkbenchSingleton.Workbench.ShowView(diff);
@@ -2599,8 +2621,11 @@ namespace ClarionAssistant
             catch (Exception ex) { MonacoSpikeLog.Write("ShowDiskDiff error: " + ex.Message); }
         }
 
+        private MonacoDiffViewContent _onDemandDiff;   // the toolbar compare's tab, replaced on the next click
+
         private static void CloseDiffView(MonacoDiffViewContent diff)
         {
+            if (diff == null || diff.IsDisposed) return;   // already closed (Close, the tab's X): nothing to do
             try { var ww = diff.WorkbenchWindow; if (ww != null) ww.CloseWindow(true); }
             catch (Exception ex) { MonacoSpikeLog.Write("CloseDiffView error: " + ex.Message); }
         }
