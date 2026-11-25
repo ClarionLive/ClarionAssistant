@@ -64,6 +64,10 @@ namespace ClarionAssistant.Services
         internal const int MaxTitleChars = 60;
         /// <summary>A picture bigger than this is left as its path / left out, so one paste cannot fill the folder.</summary>
         internal const int MaxImageBytes = 25 * 1024 * 1024;
+        // The longest line that can carry a picture of MaxImageBytes: its base64 plus the rest of the JSON.
+        private const int MaxImageLineChars = MaxImageBytes / 3 * 4 + 1024 * 1024;
+        /// <summary>A line of the transcript longer than this (characters) is not parsed unless it carries a picture: a tool's output can be many MB and the add-in is a 32-bit process.</summary>
+        internal const int MaxLineChars = 8 * 1024 * 1024;
         private const string IgnoreFileText = "# Clarion Assistant chat transcripts hold everything typed or shown in the chats, secrets included.\r\n# Keep them out of git.\r\n*\r\n";
 
         private static readonly Regex Whitespace = new Regex(@"\s+", RegexOptions.Compiled);
@@ -137,12 +141,13 @@ namespace ClarionAssistant.Services
 
                 string name = FileName(id, r.First, r.Last, r.Title);
                 string target = Path.Combine(folder, name);
-                RemoveOlderFilesOf(folder, id, name);
 
                 string tmp = target + ".tmp";
                 File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));
                 if (File.Exists(target)) File.Delete(target);
                 File.Move(tmp, target);
+                // Only now, with the new file in place: a failed write (disk full, file locked) keeps the earlier export.
+                RemoveOlderFilesOf(folder, id, name);
                 res.Path = target;
                 return res;
             }
@@ -239,6 +244,12 @@ namespace ClarionAssistant.Services
                     bool name = line.Contains("\"agent-name\"") || line.Contains("\"custom-title\"");
                     bool queued = line.Contains("\"queued_command\"");
                     if (!user && !asst && !name && !queued) continue;
+                    // A tool's result is a user line holding {"type":"tool_result"} and can be many MB; it is never
+                    // exported. The quotes inside a JSON string are escaped, so this unescaped text is the block's own
+                    // structure: a prompt that merely mentions tool_result does not match.
+                    if (user && line.Contains("\"type\":\"tool_result\"")) continue;
+                    // Too long to parse (in a 32-bit process), unless it is a picture within the size the exporter keeps.
+                    if (line.Length > MaxLineChars && !(line.Length <= MaxImageLineChars && line.Contains("\"type\":\"image\""))) continue;
 
                     IDictionary<string, object> obj;
                     try { obj = ser.DeserializeObject(line) as IDictionary<string, object>; }
@@ -481,6 +492,9 @@ namespace ClarionAssistant.Services
         {
             try
             {
+                // The path comes from the transcript: a UNC or \?\ path would make File.Exists wait on the network,
+                // and the shutdown export has only seconds. CA's pastes are on a local drive.
+                if (!IsLocalDrivePath(path)) return null;
                 if (!File.Exists(path)) return null;
                 string full = LongPath(path);
                 string name = Path.GetFileName(full);
@@ -490,6 +504,11 @@ namespace ClarionAssistant.Services
                 return full;
             }
             catch { return null; }
+        }
+
+        internal static bool IsLocalDrivePath(string path)
+        {
+            return path != null && path.Length >= 3 && path[1] == ':' && char.IsLetter(path[0]) && (path[2] == '\\' || path[2] == '/');
         }
 
         private static string LongPath(string path)

@@ -4857,22 +4857,33 @@ namespace ClarionAssistant
         /// </summary>
         private static Services.SessionExportRequest SessionExportRequestFor(TerminalTab tab)
         {
-            if (tab == null || string.IsNullOrEmpty(tab.ClaudeSessionId) || string.IsNullOrEmpty(tab.ClaudeWorkDir)) return null;
-            var req = new Services.SessionExportRequest { WorkDir = tab.ClaudeWorkDir };
-            req.Ids.Add(tab.ClaudeSessionId);
+            if (tab == null) return null;
+            return SessionExportRequestFor(tab.ClaudeSessionId, tab.ClaudeWorkDir, tab.Id);
+        }
+
+        // The tab's values are passed in, not the tab: SaveEndedChat reads them on the UI thread and builds the request
+        // on a worker, after ReleaseAgentName has cleared ClaudeSessionId.
+        private static Services.SessionExportRequest SessionExportRequestFor(string sessionId, string workDir, string tabId)
+        {
+            if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(workDir)) return null;
+            var req = new Services.SessionExportRequest { WorkDir = workDir };
+            req.Ids.Add(sessionId);
             try
             {
-                string status = Path.Combine(Path.GetTempPath(), "ca-statusline-" + tab.Id + ".json");
+                string status = Path.Combine(Path.GetTempPath(), "ca-statusline-" + tabId + ".json");
                 if (File.Exists(status))
                 {
                     var m = StatusLineSessionId.Match(File.ReadAllText(status));
                     string now = m.Success ? Services.ClaudeSessionCatalog.NormalizeId(m.Groups[1].Value) : null;
-                    if (now != null && !string.Equals(now, tab.ClaudeSessionId, StringComparison.OrdinalIgnoreCase)) req.Ids.Add(now);
+                    if (now != null && !string.Equals(now, sessionId, StringComparison.OrdinalIgnoreCase)) req.Ids.Add(now);
                 }
             }
             catch { }   // a statusline file mid-write: the launch id still counts
             return req;
         }
+
+        // Set once ShutdownService has taken the open chats: SaveEndedChat then has nothing left to save.
+        private static volatile bool _shutdownChatsCollected;
 
         /// <summary>
         /// A tab's claude has ended (it exited, or the tab was closed): write its chat as Markdown to the
@@ -4883,13 +4894,21 @@ namespace ClarionAssistant
         {
             try
             {
-                if (!Services.CaChatTranscriptSettings.Enabled) return;
-                var req = SessionExportRequestFor(tab);
-                if (req == null) return;
-                string root = Services.ClaudeSessionCatalog.DefaultProjectsRoot();
+                // ShutdownService already saved every open chat; the pads disposed after it end their tabs too.
+                if (_shutdownChatsCollected) return;
+                if (tab == null || string.IsNullOrEmpty(tab.ClaudeSessionId) || string.IsNullOrEmpty(tab.ClaudeWorkDir)) return;
+                // Read on the UI thread: ReleaseAgentName clears the session id right after this returns.
+                string sessionId = tab.ClaudeSessionId, workDir = tab.ClaudeWorkDir, tabId = tab.Id;
+                // The settings file and the statusline file are read on the worker too, not on the tab-close path.
                 System.Threading.Tasks.Task.Run(() =>
                 {
-                    try { Services.SessionTranscriptExporter.ExportAll(root, new[] { req }); }
+                    try
+                    {
+                        if (!Services.CaChatTranscriptSettings.Enabled) return;
+                        var req = SessionExportRequestFor(sessionId, workDir, tabId);
+                        if (req == null) return;
+                        Services.SessionTranscriptExporter.ExportAll(Services.ClaudeSessionCatalog.DefaultProjectsRoot(), new[] { req });
+                    }
                     catch { }   // ExportAll does not throw; belt and braces on a worker thread
                 });
             }
@@ -4906,6 +4925,7 @@ namespace ClarionAssistant
         {
             var list = new List<Services.SessionExportRequest>();
             if (!Services.CaChatTranscriptSettings.Enabled) return list;
+            _shutdownChatsCollected = true;
             List<AssistantChatControl> pads;
             lock (_instances) { pads = new List<AssistantChatControl>(_instances); }
             foreach (var pad in pads)

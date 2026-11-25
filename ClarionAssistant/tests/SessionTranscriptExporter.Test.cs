@@ -81,6 +81,19 @@ static class SessionTranscriptExporterTest
         return Directory.GetFiles(folder, "*.md").Select(Path.GetFileName).OrderBy(x => x).ToArray();
     }
 
+    // The path as CA puts it in a message: when it has a space (%TEMP% under "C:\Users\John Hickey"), CA sends the 8.3 form
+    // (ToShortPathIfPossible), which PasteToken can read. A file that does not exist has no short name: its folder's is used.
+    static string Short(string path)
+    {
+        var sb = new StringBuilder(1024);
+        if (File.Exists(path) || Directory.Exists(path))
+        {
+            uint n = GetShortPathName(path, sb, 1024);
+            return n > 0 && n < 1024 ? sb.ToString() : path;
+        }
+        return Path.Combine(Short(Path.GetDirectoryName(path)), Path.GetFileName(path));
+    }
+
     static readonly byte[] Png = { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4, 5, 6, 7, 8 };
 
     static int Main(string[] args)
@@ -215,11 +228,12 @@ static class SessionTranscriptExporterTest
             File.WriteAllBytes(elsewhere, Png);
             string gone = Path.Combine(cache, "paste-20261101-010101-001.png");   // never existed: pruned long ago
             string b64 = Convert.ToBase64String(Png);
+            string shotS = Short(shot), goneS = Short(gone), elsewhereS = Short(elsewhere);
             WriteTranscript(projects, workA, idA,
-                User("2026-11-23", "@" + shot + " que dice este error?", Uuid("abcd1234-0001-4000-8000-000000000000")),
+                User("2026-11-23", "@" + shotS + " que dice este error?", Uuid("abcd1234-0001-4000-8000-000000000000")),
                 Asst("2026-11-23", "Es un aviso de Trayslate."),
-                User("2026-11-23", "@" + gone + " y esta?", Uuid("abcd1234-0002-4000-8000-000000000000")),
-                User("2026-11-23", "mira @" + elsewhere + " tambien", Uuid("abcd1234-0003-4000-8000-000000000000")),
+                User("2026-11-23", "@" + goneS + " y esta?", Uuid("abcd1234-0002-4000-8000-000000000000")),
+                User("2026-11-23", "mira @" + elsewhereS + " tambien", Uuid("abcd1234-0003-4000-8000-000000000000")),
                 UserBlocks("2026-11-23", "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"" + b64 + "\"}},{\"type\":\"text\",\"text\":\"y esta otra\"}]", Uuid("abcd1234-0004-4000-8000-000000000000")),
                 UserBlocks("2026-11-23", "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"" + b64 + "\"}}]", Uuid("abcd1234-0005-4000-8000-000000000000")));
             var r13 = SessionTranscriptExporter.Export(projects, workA, idA);
@@ -228,8 +242,8 @@ static class SessionTranscriptExporterTest
             Ok("a pasted screenshot is copied to <id8>\\ and linked", File.Exists(Path.Combine(picFolder, "abcd12340001-p0.png"))
                && mdA.Contains("![](aaaaaaaa/abcd12340001-p0.png) que dice este error?"), r13.Reason + " " + mdA.Substring(0, Math.Min(400, mdA.Length)));
             Ok("the copy is the same picture", File.Exists(Path.Combine(picFolder, "abcd12340001-p0.png")) && File.ReadAllBytes(Path.Combine(picFolder, "abcd12340001-p0.png")).SequenceEqual(Png));
-            Ok("a screenshot that is gone and was never copied stays as its path", mdA.Contains("@" + gone));
-            Ok("a picture that is not one of CA's pastes is not copied", mdA.Contains("@" + elsewhere) && Directory.GetFiles(picFolder).Length == 3, string.Join(",", Directory.GetFiles(picFolder).Select(Path.GetFileName)));
+            Ok("a screenshot that is gone and was never copied stays as its path", mdA.Contains("@" + goneS));
+            Ok("a picture that is not one of CA's pastes is not copied", mdA.Contains("@" + elsewhereS) && Directory.GetFiles(picFolder).Length == 3, string.Join(",", Directory.GetFiles(picFolder).Select(Path.GetFileName)));
             Ok("a picture sent in the message is decoded and linked, with its text",
                File.Exists(Path.Combine(picFolder, "abcd12340004-b0.png")) && mdA.Contains("![](aaaaaaaa/abcd12340004-b0.png)") && mdA.Contains("y esta otra"));
             Ok("a message that is only a picture is kept", mdA.Contains("![](aaaaaaaa/abcd12340005-b0.png)") && mdA.Split(new[] { "### USER" }, StringSplitOptions.None).Length - 1 == 5,
@@ -262,6 +276,61 @@ static class SessionTranscriptExporterTest
                 Ok("the long name is read back from the short one before it is judged",
                    r15.Path != null && File.Exists(Path.Combine(workB, ".CAChats", "bbbbbbbb", "feedbeef0001-p0.png")), r15.Reason);
             }
+
+            Console.WriteLine("Pictures: a path on the network is not touched");
+            Ok("only a drive-letter path is looked at",
+               SessionTranscriptExporter.IsLocalDrivePath(@"C:\a\paste-cache\p.png") && SessionTranscriptExporter.IsLocalDrivePath("d:/a/p.png")
+               && !SessionTranscriptExporter.IsLocalDrivePath(@"\\host\share\p.png") && !SessionTranscriptExporter.IsLocalDrivePath(@"\\?\C:\a\p.png")
+               && !SessionTranscriptExporter.IsLocalDrivePath(@"paste-cache\p.png") && !SessionTranscriptExporter.IsLocalDrivePath(@"\a\p.png") && !SessionTranscriptExporter.IsLocalDrivePath(null));
+            const string idU = "cccccccc-6666-4666-8666-666666666666";
+            string workU = Path.Combine(root, "Unc");
+            Directory.CreateDirectory(workU);
+            string shot3 = Path.Combine(cache, "paste-20261123-090000-001.png");
+            File.WriteAllBytes(shot3, Png);
+            string shot3S = Short(shot3);
+            // The same file through the machine's own admin share: it exists, so only the path's form can keep it out.
+            string unc = @"\\localhost\" + shot3S[0] + "$" + shot3S.Substring(2);
+            WriteTranscript(projects, workU, idU, User("2026-11-23", "@" + unc + " mira", Uuid("c0c0c0c0-0001-4000-8000-000000000000")));
+            var rU = SessionTranscriptExporter.Export(projects, workU, idU);
+            string mdU = rU.Path != null ? File.ReadAllText(rU.Path) : "";
+            Ok("a UNC path is left as it is, not copied", rU.Path != null && mdU.Contains("@" + unc) && !Directory.Exists(Path.Combine(workU, ".CAChats", "cccccccc")), rU.Reason + " " + mdU);
+
+            Console.WriteLine("A failed write keeps the earlier export");
+            const string idK = "dddddddd-7777-4777-8777-777777777777";
+            string workK = Path.Combine(root, "Keep");
+            Directory.CreateDirectory(workK);
+            WriteTranscript(projects, workK, idK, User("2026-11-23", "Hola"), Asst("2026-11-23", "Que tal."));
+            var rK1 = SessionTranscriptExporter.Export(projects, workK, idK);
+            AppendTranscript(projects, workK, idK, Asst("2026-11-25", "Sigo."));   // a later last day: the next export has another name
+            string nextName = SessionTranscriptExporter.FileName(idK, new DateTime(2026, 11, 23), new DateTime(2026, 11, 25), null);
+            // A folder where the temporary file goes: the write fails like a locked or full disk would.
+            Directory.CreateDirectory(Path.Combine(workK, ".CAChats", nextName + ".tmp"));
+            var rK2 = SessionTranscriptExporter.Export(projects, workK, idK);
+            Ok("the write failed", rK2.IsError && rK2.Path == null, rK2.Reason);
+            Ok("the earlier export is still there", rK1.Path != null && File.Exists(rK1.Path), string.Join(",", SessionFiles(workK)));
+            Directory.Delete(Path.Combine(workK, ".CAChats", nextName + ".tmp"));
+            var rK3 = SessionTranscriptExporter.Export(projects, workK, idK);
+            Ok("a write that works replaces it", rK3.Path != null && SessionFiles(workK).Length == 1 && Path.GetFileName(rK3.Path) == nextName, string.Join(",", SessionFiles(workK)));
+
+            Console.WriteLine("Lines too big to read");
+            const string idL = "eeeeeeee-8888-4888-8888-888888888888";
+            string workL = Path.Combine(root, "Lines");
+            Directory.CreateDirectory(workL);
+            string huge = "HUGELINEMARK" + new string('x', SessionTranscriptExporter.MaxLineChars);
+            string bigPng = Convert.ToBase64String(new byte[SessionTranscriptExporter.MaxLineChars * 3 / 4 + 1000]);   // a line over the cap that is a picture
+            WriteTranscript(projects, workL, idL,
+                User("2026-11-23", "primero"),
+                User("2026-11-23", huge),
+                UserBlocks("2026-11-23", "[{\"tool_use_id\":\"toolu_1\",\"type\":\"tool_result\",\"content\":\"TOOLOUTMARK\"}]"),
+                User("2026-11-23", "explica {\"type\":\"tool_result\"} y tool_use_id por favor"),
+                UserBlocks("2026-11-23", "[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"" + bigPng + "\"}},{\"type\":\"text\",\"text\":\"con foto\"}]", Uuid("1a1a1a1a-0001-4000-8000-000000000000")),
+                User("2026-11-23", "ultimo"));
+            var rL = SessionTranscriptExporter.Export(projects, workL, idL);
+            string mdL = rL.Path != null ? File.ReadAllText(rL.Path) : "";
+            Ok("a line over the cap is skipped, the rest of the chat is kept", rL.Path != null && !mdL.Contains("HUGELINEMARK") && mdL.Contains("primero") && mdL.Contains("ultimo"), rL.Reason);
+            Ok("a tool result is left out", !mdL.Contains("TOOLOUTMARK"));
+            Ok("a prompt that only mentions tool_result is kept", mdL.Contains("explica {\"type\":\"tool_result\"} y tool_use_id por favor"));
+            Ok("a picture over the line cap but within the picture limit is still kept", mdL.Contains("con foto") && File.Exists(Path.Combine(workL, ".CAChats", "eeeeeeee", "1a1a1a1a0001-b0.png")));
 
             Console.WriteLine("Nothing to write");
             const string id2 = "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
