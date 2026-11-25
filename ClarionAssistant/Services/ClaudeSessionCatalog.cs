@@ -71,7 +71,8 @@ namespace ClarionAssistant.Services
         // Where the search for the first prompt gives up when the head and tail hold none. Measured 2026-11-24:
         // the first non-meta user line sits 0.9 KB to 1.4 MB into a transcript (CA's start-up records come first).
         // Worst case per file: this plus TailBytes, and only for a file with no prompt in either window.
-        internal const int PromptSearchMaxBytes = 2 * 1024 * 1024;        internal const int TailBytes = 64 * 1024;
+        internal const int PromptSearchMaxBytes = 2 * 1024 * 1024;
+        internal const int TailBytes = 64 * 1024;
         internal const int SummaryMaxChars = 160;
         /// <summary>
         /// Read at most this many transcripts per listed session, so a folder of empty sessions stays cheap.
