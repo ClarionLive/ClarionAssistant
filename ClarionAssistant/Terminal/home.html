@@ -445,9 +445,10 @@ body.light ::-webkit-scrollbar-thumb:hover { background: #acb0be; }
       row.appendChild(el('span', 'age', s.age));
       // A renamed session leads with the developer's name for it; the agent column keeps the CA name.
       var sum = el('span', 'sum');
+      // A tab renamed before any prompt has a title and no summary: no separator then.
       if (s.title) {
         sum.appendChild(el('span', 'stitle', s.title));
-        sum.appendChild(document.createTextNode(' · '));
+        if (s.summary) sum.appendChild(document.createTextNode(' · '));
       }
       sum.appendChild(document.createTextNode(s.summary));
       if (s.open) {

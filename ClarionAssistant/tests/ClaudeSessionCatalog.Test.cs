@@ -53,6 +53,12 @@ static class ClaudeSessionCatalogTest
         return "{\"isSidechain\":false,\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"" +
                J(text) + "\"}]},\"cwd\":\"" + J(cwd) + "\"}";
     }
+    // A start-up/context record Claude Code writes as it goes (instructions, skill_listing, ...): not a prompt, not a reply.
+    static string Attach(string cwd, string kind, string content)
+    {
+        return "{\"parentUuid\":\"p\",\"isSidechain\":false,\"type\":\"attachment\",\"attachment\":{\"type\":\"" + kind +
+               "\",\"content\":\"" + J(content) + "\"},\"cwd\":\"" + J(cwd) + "\"}";
+    }
     static string LastPrompt(string text) { return "{\"type\":\"last-prompt\",\"lastPrompt\":\"" + J(text) + "\",\"sessionId\":\"x\"}"; }
 
     static string Write(string folder, string id, DateTime lastWriteUtc, params string[] lines)
@@ -97,7 +103,7 @@ static class ClaudeSessionCatalogTest
             string idC = "cccccccc-0000-4000-8000-000000000003"; // live in a CA tab
             string idD = "dddddddd-0000-4000-8000-000000000004"; // other folder, same encoding
             string idE = "eeeeeeee-0000-4000-8000-000000000005"; // 1 min old -> possibly open
-            string idF = "ffffffff-0000-4000-8000-000000000006"; // no assistant turn
+            string idF = "ffffffff-0000-4000-8000-000000000006"; // a prompt, no assistant turn: still listed
             string idG = "99999999-0000-4000-8000-000000000007"; // custom-title only, prompt noise, last-prompt
             string idH = "88888888-0000-4000-8000-000000000008"; // prompt beyond the head: summary from last-prompt
 
@@ -145,11 +151,12 @@ static class ClaudeSessionCatalogTest
             var ids = new List<string>(); foreach (var s in list.Sessions) ids.Add(s.Id);
             string got = string.Join(",", ids);
 
-            Ok("list: exactly E, A, G, H, newest first", got == idE + "," + idA + "," + idG + "," + idH, got);
+            Ok("list: exactly E, A, F, G, H, newest first", got == idE + "," + idA + "," + idF + "," + idG + "," + idH, got);
             Ok("list: greeting-only session left out", Find(list, idB) == null);
             Ok("list: session live in a CA tab left out (id case ignored)", Find(list, idC) == null);
             Ok("list: same folder name, other folder -> left out", Find(list, idD) == null);
-            Ok("list: no assistant turn -> left out", Find(list, idF) == null);
+            // 2026-11-22: a reply is no longer required (it sits past the head in every real transcript).
+            Ok("list: a prompt with no assistant turn is listed", Find(list, idF) != null);
             Ok("list: non-GUID transcript ignored", list.Sessions.TrueForAll(s => s.Id.Length == 36));
 
             var a = Find(list, idA);
@@ -322,6 +329,99 @@ static class ClaudeSessionCatalogTest
             Ok("renamed: a long title is cut to TitleMaxChars with an ellipsis",
                ren6 != null && ren6.Title != null && ren6.Title.Length == ClaudeSessionCatalog.TitleMaxChars && ren6.Title.EndsWith("…"),
                ren6 == null || ren6.Title == null ? "none" : ren6.Title.Length.ToString());
+
+            // ---- Reply out of reach (2026-11-22) ----
+            // Shaped like current CA transcripts: ~475 KB of start-up attachment records (no assistant
+            // line) before Claude's first reply, so the 256 KB head has no reply; and the session ends in a
+            // skill_listing + deferred_tools_delta attachment block over 64 KB, so the tail has none either.
+            // Before the fix such a session was dropped as "greeting only". Built twice: renamed, and never
+            // renamed (listed by its tail last-prompt alone).
+            Func<string, string[]> farShape = rename =>
+            {
+                var far = new List<string> { Title("CA1"), AgentName("CA1"), User(sol, "At your service!") };
+                for (int i = 0; i < 225; i++) far.Add(Attach(sol, "instructions", filler));   // ~475 KB start-up
+                far.Add(Asst(sol, "Ready to help."));
+                far.Add(User(sol, "refactor the request handler"));
+                far.Add(Asst(sol, "Done."));
+                far.Add(User(sol, "go on with step two"));
+                far.Add(Attach(sol, "skill_listing", new string('s', 48 * 1024)));
+                for (int i = 0; i < 4; i++) far.Add(Attach(sol, "deferred_tools_delta", new string('d', 6 * 1024)));
+                far.Add(LastPrompt("go on with step two"));
+                if (rename != null) { far.Add(Title(rename)); far.Add(AgentName(rename)); }
+                return far.ToArray();
+            };
+            string idFar = "18181818-0000-4000-8000-000000000016";
+            string farPath = Write(folder, idFar, now.AddMinutes(-15), farShape("long refactoring session"));
+            string farText = File.ReadAllText(farPath);
+            int firstReply = Encoding.UTF8.GetByteCount(farText.Substring(0, farText.IndexOf("\"type\":\"assistant\"", StringComparison.Ordinal)));
+            int lastReply = Encoding.UTF8.GetByteCount(farText.Substring(0, farText.LastIndexOf("\"type\":\"assistant\"", StringComparison.Ordinal)));
+            long farLen = new FileInfo(farPath).Length;
+            Ok("fixture: no reply in the head or the tail",
+               firstReply > ClaudeSessionCatalog.HeadMaxBytes && farLen - lastReply > ClaudeSessionCatalog.TailBytes,
+               "first reply at " + firstReply + ", last reply " + (farLen - lastReply) + " bytes from the end");
+            var farInfo = ClaudeSessionCatalog.TryGet(root, sol, idFar, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("far reply: listed with its title, CA name and last prompt",
+               farInfo != null && farInfo.Title == "long refactoring session" && farInfo.AgentName == "CA1" && farInfo.Summary == "go on with step two",
+               farInfo == null ? "hidden" : farInfo.AgentName + " / " + farInfo.Title + " / " + farInfo.Summary);
+            string idFarPlain = "1a1a1a1a-0000-4000-8000-000000000018";
+            Write(folder, idFarPlain, now.AddMinutes(-17), farShape(null));
+            var farPlain = ClaudeSessionCatalog.TryGet(root, sol, idFarPlain, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("far reply, never renamed: listed by its last prompt, no title",
+               farPlain != null && farPlain.Title == null && farPlain.AgentName == "CA1" && farPlain.Summary == "go on with step two",
+               farPlain == null ? "hidden" : farPlain.AgentName + " / " + farPlain.Title + " / " + farPlain.Summary);
+
+            // Renamed before any prompt: no summary, but the developer named it, so it is listed by its title.
+            string idParked = "19191919-0000-4000-8000-000000000017";
+            Write(folder, idParked, now.AddMinutes(-16),
+                AgentName("CA2"), User(sol, "Morning!"), Asst(sol, "hi"), LastPrompt("Morning!"), Title("parked"), AgentName("parked"));
+            var parked = ClaudeSessionCatalog.TryGet(root, sol, idParked, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("renamed, no prompt: listed by its title with no summary",
+               parked != null && parked.Title == "parked" && parked.Summary == null && parked.AgentName == "CA2",
+               parked == null ? "hidden" : parked.AgentName + " / " + parked.Title + " / " + parked.Summary);
+
+            // ---- First prompt past the start-up records (PR #319 review) ----
+            // Measured 2026-11-24: the first prompt sits 82-330 lines and up to ~1.4 MB into real transcripts, so
+            // neither the 256 KB head nor a 200-line cap reaches it; and a session that ends in a big attachment
+            // block has no last-prompt in the 64 KB tail. Such a session must still be listed, by its first prompt.
+            Func<bool, string[]> deepShape = withPrompt =>
+            {
+                var deep = new List<string> { AgentName("CA1"), User(sol, "At your service!") };
+                for (int i = 0; i < 225; i++) deep.Add(Attach(sol, "instructions", filler));   // ~450 KB, 225 lines
+                deep.Add(Asst(sol, "Ready to help."));
+                if (withPrompt)
+                {
+                    deep.Add(User(sol, "<system-reminder>hook output</system-reminder>", ",\"isMeta\":true"));
+                    deep.Add(User(sol, "This session is being continued from a previous conversation that ran out of context.", ",\"isCompactSummary\":true"));
+                    deep.Add(User(sol, "wire the invoice export into the Home tab"));
+                    deep.Add(Asst(sol, "Done."));
+                }
+                deep.Add(Attach(sol, "skill_listing", new string('s', 48 * 1024)));
+                for (int i = 0; i < 4; i++) deep.Add(Attach(sol, "deferred_tools_delta", new string('d', 6 * 1024)));
+                return deep.ToArray();   // no last-prompt record anywhere
+            };
+            string idDeep = "1b1b1b1b-0000-4000-8000-000000000019";
+            string deepPath = Write(folder, idDeep, now.AddMinutes(-18), deepShape(true));
+            string deepText = File.ReadAllText(deepPath);
+            int deepFirst = Encoding.UTF8.GetByteCount(deepText.Substring(0, deepText.IndexOf("wire the invoice export", StringComparison.Ordinal)));
+            Ok("fixture: first prompt past the head and the old line cap, no last-prompt in the tail",
+               deepFirst > ClaudeSessionCatalog.HeadMaxBytes && deepText.Split('\n').Length > 200 &&
+               !deepText.Substring(deepText.Length - ClaudeSessionCatalog.TailBytes).Contains("last-prompt"),
+               "prompt at " + deepFirst + " bytes");
+            var deepInfo = ClaudeSessionCatalog.TryGet(root, sol, idDeep, null, now, ClaudeSessionCatalog.IsCaTabName);
+            Ok("deep prompt: listed, summary is the first genuine prompt (compact summary and meta skipped)",
+               deepInfo != null && deepInfo.Summary == "wire the invoice export into the Home tab",
+               deepInfo == null ? "hidden" : deepInfo.Summary);
+            string idDeepGreet = "1c1c1c1c-0000-4000-8000-000000000020";
+            Write(folder, idDeepGreet, now.AddMinutes(-19), deepShape(false));
+            Ok("deep greeting-only session (nothing but CA's greeting in 2 windows) is still not listed",
+               ClaudeSessionCatalog.TryGet(root, sol, idDeepGreet, null, now, ClaudeSessionCatalog.IsCaTabName) == null);
+
+            // A /compact summary is not what the developer typed.
+            string idCompact = "1d1d1d1d-0000-4000-8000-000000000021";
+            Write(folder, idCompact, now.AddMinutes(-21),
+                AgentName("CA1"), User(sol, "This session is being continued from a previous conversation that ran out of context.", ",\"isCompactSummary\":true"), Asst(sol, "ok"));
+            Ok("compact summary: not a prompt, so a session with only that is not listed",
+               ClaudeSessionCatalog.TryGet(root, sol, idCompact, null, now, ClaudeSessionCatalog.IsCaTabName) == null);
 
             // ---- Read budget (2026-11-09) ----
             // CA tabs opened and closed without a prompt leave greeting-only transcripts. With a budget of 3 per
