@@ -523,6 +523,113 @@ static class SlotBalance
                 ms < 1000 && bigMarkers.Any(m => ((string)m["message"]).Contains("NoSuchRoutine")), ms + " ms; " + Show(bigMarkers));
         }
 
+        // --- an unconditional OMIT block is not code: its ENDs and openers pair with nothing outside ---
+        {
+            // The reported shape: a CASE holding an OMIT body with one END too many (and a stray ELSE,
+            // as in the real code). Read as code, that END closed the CASE, the CASE's own END closed
+            // the IF, and the IF's END was reported as having no matching structure.
+            var ms = Diag(
+                "IF a = 1",
+                "  CASE b",
+                "  OF 'X'",
+                "    c# = 1",
+                "  OMIT('xxx')",
+                "    IF c# = 2",
+                "      c# = 3",
+                "    END",
+                "    ELSE  ! no structure here",
+                "      c# = 4",
+                "    END",
+                "  !xxx",
+                "  ELSE",
+                "    c# = 5",
+                "  END",
+                "END");
+            Ok("OMIT body with a stray ELSE and an extra END: no markers", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('***')",
+                "  LOOP",
+                "    x# += 1",
+                "  !***",
+                "END");
+            Ok("an opener left open in an OMIT body is not reported and closes nothing", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('ENDX')",
+                "  END  ! endx: lower case does not end the block",
+                "  END",
+                "  !ENDX",
+                "END");
+            Ok("the terminator is case-sensitive, as in the compiler", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('**')  ! ** on the OMIT line itself ends the block",
+                "END");
+            Ok("a terminator after the argument on the OMIT line ends the block there", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('zz')  ! no terminator yet: still being typed",
+                "  x# = 1",
+                "END");
+            Ok("an OMIT with no terminator in the slot stays code (no new marker on the IF)", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  omit ('zz')",
+                "  END",
+                "  !zz",
+                "END");
+            Ok("lower-case omit with a space before ( is recognised", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('it''s')",
+                "  END",
+                "  ! it's done",
+                "END");
+            Ok("a doubled quote in the terminator is one quote", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  x# = 1 ! OMIT('zz')",
+                "  END",
+                "  !zz",
+                "END");
+            Ok("OMIT( after other text is not a directive: the extra END is still counted",
+                ms.Count == 1 && ((string)ms[0]["message"]).StartsWith("END has no matching structure") && (int)ms[0]["line"] == 5, Show(ms));
+
+            var sliceOmit = new List<ModernEmbeditorDiagnostics.SlotText> {
+                new ModernEmbeditorDiagnostics.SlotText { Start = 40, Text = "IF a = 1\r\nOMIT('zz')\r\n  END\r\n!zz\r\nEND" } };
+            var sm = ModernEmbeditorDiagnostics.ComputeSlotChecks(sliceOmit, new string[0]);
+            Ok("slice form (slot starting at line 40): the OMIT body is skipped there too", sm.Count == 0, Show(sm));
+
+            // The undefined-routine check runs only when the procedure has routines, hence RealRtn.
+            ms = Diag(
+                "TestProc PROCEDURE",
+                "  CODE",
+                "  OMIT('***')",
+                "  DO NoSuchRoutine",
+                "  !***",
+                "  DO RealRtn",
+                "RealRtn ROUTINE",
+                "  x# = 0");
+            Ok("a DO in an OMIT body is not checked", ms.Count == 0, Show(ms));
+
+            ms = Diag(
+                "IF a = 1",
+                "  OMIT('***', _SomeFlag_)",
+                "  END",
+                "  !***",
+                "END");
+            Ok("a conditional OMIT stays code: its extra END is still counted",
+                ms.Count == 1 && ((string)ms[0]["message"]).StartsWith("END has no matching structure") && (int)ms[0]["line"] == 5, Show(ms));
+        }
+
         Console.WriteLine();
         Console.WriteLine("  " + pass + " passed, " + fail + " failed.");
         return fail == 0 ? 0 : 1;
