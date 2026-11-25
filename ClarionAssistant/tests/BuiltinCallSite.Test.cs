@@ -50,7 +50,8 @@ static class BuiltinCallSiteTest
            !At("  x = ErrorCode + 1", "ErrorCode"));
         Ok("N2 the field declaration itself", !At("ErrorCode             LONG", "ErrorCode"));
         Ok("N3 a method with a built-in's name", !At("  SELF.Error('x')", "Error"));
-        Ok("N4 a queue field with a built-in's name", !At("  x = MyQ.ErrorCode", "ErrorCode"));
+        Ok("N3b a method call with a built-in's name and parentheses", !At("  x = SELF.Error()", "Error"));
+        Ok("N4 a queue field called with a built-in's name and parentheses", !At("  x = MyQ.ErrorCode()", "ErrorCode"));
         Ok("N5 a prefixed label", !At("  x = Loc:Clip('a')", "Clip"));
         Ok("N5b a prefixed label, cursor at its end (on the parenthesis)", !At("  x = Loc:Clip('a')", "("));
         Ok("N6 a field equate", !At("  ?Error{PROP:Text} = 'x'", "Error"));

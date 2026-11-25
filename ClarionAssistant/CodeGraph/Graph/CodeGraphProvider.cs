@@ -287,13 +287,16 @@ namespace ClarionCodeGraph.Graph
         /// </summary>
         /// <param name="requestFile">The file the request came from, or null (then: empty).</param>
         /// <param name="requestLine1Based">1-based line of the request, or 0 when unknown.</param>
-        public List<ReferenceLocation> GetReferences(string symbolName, string requestFile, int requestLine1Based)
+        /// <param name="callableOnly">The cursor is on a built-in-named call: only procedure/function rows can be
+        /// its declarations; a same-named variable or field is ignored.</param>
+        public List<ReferenceLocation> GetReferences(string symbolName, string requestFile, int requestLine1Based,
+                                                     bool callableOnly = false)
         {
             var refs = new List<ReferenceLocation>();
             if (_connection == null) return refs;
             try
             {
-                var decls = SelectDeclarations(symbolName, requestFile, requestLine1Based);
+                var decls = SelectDeclarations(symbolName, requestFile, requestLine1Based, callableOnly);
                 if (decls.Count == 0) return refs;
 
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -314,6 +317,15 @@ namespace ClarionCodeGraph.Graph
             }
             catch { }
             return refs;
+        }
+
+        /// <summary>Whether a symbol of this type can be what a CALL names: a procedure or function. A built-in-named
+        /// call (a user Message or Update procedure shadows the built-in) accepts only these; a same-named variable
+        /// or field (ErrorCode LONG in a QUEUE) cannot be called.</summary>
+        internal static bool IsCallableType(string symbolType)
+        {
+            return string.Equals(symbolType, "procedure", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(symbolType, "function", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsLocalScope(CodeGraphSymbol s)
@@ -352,13 +364,18 @@ namespace ClarionCodeGraph.Graph
         /// No request file: empty. <paramref name="requestLine1Based"/> is not used since locals were
         /// cut; it stays in the signature for callers.
         /// </summary>
-        internal List<CodeGraphSymbol> SelectDeclarations(string name, string requestFile, int requestLine1Based)
+        internal List<CodeGraphSymbol> SelectDeclarations(string name, string requestFile, int requestLine1Based,
+                                                          bool callableOnly = false)
         {
             var empty = new List<CodeGraphSymbol>();
             string file = NormPath(requestFile);
             if (file == null) return empty;
 
             var all = FindAllSymbolsByName(name, 100000);
+            // A built-in-named call can only mean a procedure/function; dropping the rest first also stops a
+            // same-named local variable of the requesting file from emptying the answer.
+            if (callableOnly)
+                all = all.FindAll(s => IsCallableType(s.Type));
             if (all.Count == 0) return empty;
 
             // A local of this name in the requesting file may be what is meant: not provable, so empty.

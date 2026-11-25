@@ -383,11 +383,13 @@ namespace ClarionAssistant.Services
                 return target != null ? WrapResult(new System.Collections.ArrayList { CgLocation(target, 1) }) : primary;
             }
 
-            // A built-in call (ERRORCODE(), CLIP(x)) has no source declaration: the name lookup below would only
-            // find an unrelated symbol of the same name, such as an ErrorCode field in some QUEUE.
-            if (BuiltinCallSite.IsBuiltinCallAt(lineText, character)) return primary;
+            // A built-in call (ERRORCODE(), CLIP(x)) usually has no source declaration, and the name lookup would
+            // then find an unrelated symbol of the same name, such as an ErrorCode field in some QUEUE. But a MAP
+            // prototype may shadow a built-in's name (a user Message procedure), so the lookup still runs and
+            // accepts only a procedure/function, as hover does.
+            bool builtinCall = BuiltinCallSite.IsBuiltinCallAt(lineText, character);
 
-            var cgResult = CodeGraphDefinition(filePath, line, character, bufferText);
+            var cgResult = CodeGraphDefinition(filePath, line, character, bufferText, builtinCall);
             if (IsSelfReferential(cgResult, filePath, line)) return primary;
             return cgResult ?? primary;
         }
@@ -527,9 +529,9 @@ namespace ClarionAssistant.Services
                 ? (LspClient.Active != null ? LspClient.Active.GetReferences(filePath, line, character) : null)
                 : SharedGetReferences(c, filePath, line, character);
             if (!IsEmptyResult(primary)) return primary;
-            // A built-in call has no declaration to collect references for (see GetDefinition).
-            if (BuiltinCallSite.IsBuiltinCallAt(CgLineAt(null, filePath, line), character)) return primary;
-            return CodeGraphReferences(filePath, line, character) ?? primary;
+            // A built-in-named call collects references only for a user procedure of that name (see GetDefinition).
+            bool builtinCall = BuiltinCallSite.IsBuiltinCallAt(CgLineAt(null, filePath, line), character);
+            return CodeGraphReferences(filePath, line, character, builtinCall) ?? primary;
         }
 
         /// <summary>textDocument/documentSymbol (optionally syncing a live buffer) → raw LSP dict.</summary>
@@ -1999,7 +2001,8 @@ namespace ClarionAssistant.Services
             };
         }
 
-        private static Dictionary<string, object> CodeGraphDefinition(string filePath, int line, int character, string bufferText)
+        private static Dictionary<string, object> CodeGraphDefinition(string filePath, int line, int character, string bufferText,
+                                                                      bool callableOnly = false)
         {
             try
             {
@@ -2018,8 +2021,8 @@ namespace ClarionAssistant.Services
                 // library include the module never includes.
                 string projectDb = ResolveCodeGraphDb(filePath), libraryDb = ClarionGraphService.ResolveDbPath();
                 var closureDbs = new[] { projectDb, libraryDb };
-                return CgDefinitionFromDb(word, projectDb, filePath, closureDbs)
-                    ?? CgDefinitionFromDb(word, libraryDb, filePath, closureDbs);
+                return CgDefinitionFromDb(word, projectDb, filePath, closureDbs, callableOnly)
+                    ?? CgDefinitionFromDb(word, libraryDb, filePath, closureDbs, callableOnly);
             }
             catch { return null; }
         }
@@ -2089,7 +2092,8 @@ namespace ClarionAssistant.Services
         /// this file's own local/routine/module scope and found nothing), and so is an equate from an include
         /// file the context file never includes. Mirrors CgHoverFromDb. Never throws.</summary>
         private static Dictionary<string, object> CgDefinitionFromDb(string word, string db,
-                                                                     string contextFile = null, string[] closureDbs = null)
+                                                                     string contextFile = null, string[] closureDbs = null,
+                                                                     bool callableOnly = false)
         {
             try
             {
@@ -2097,7 +2101,7 @@ namespace ClarionAssistant.Services
                 using (var p = new CodeGraphProvider())
                 {
                     if (!p.Open(db)) return null;
-                    var sym = SymbolIndex.FirstVisibleByName(p, word, contextFile, closureDbs, s => IsUnreachableLocalVariable(p, s));
+                    var sym = SymbolIndex.FirstVisibleByName(p, word, contextFile, closureDbs, s => IsUnreachableLocalVariable(p, s), callableOnly);
                     if (sym == null || string.IsNullOrEmpty(sym.FilePath)) return null;
                     return WrapResult(new System.Collections.ArrayList { CgLocation(sym.FilePath, sym.LineNumber) });
                 }
@@ -2308,7 +2312,7 @@ namespace ClarionAssistant.Services
                    SymbolIndex.LocationLine(s.FilePath, s.LineNumber);
         }
 
-        private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character)
+        private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character, bool callableOnly = false)
         {
             try
             {
@@ -2321,7 +2325,7 @@ namespace ClarionAssistant.Services
                     if (!p.Open(db)) return null;
                     // The request position scopes the answer: the requester's own local, or its own
                     // project's declarations - never every same-named row in the db (pipeline run 1).
-                    var refs = p.GetReferences(word, filePath, line + 1);
+                    var refs = p.GetReferences(word, filePath, line + 1, callableOnly);
                     if (refs == null || refs.Count == 0) return null;
                     var list = new System.Collections.ArrayList();
                     // The symbol's real width where the provider found it on the line (77aceec5);
