@@ -13,8 +13,11 @@
 // on Enter). The diff editor is read-only, so those rules never fire there — harmless.
 // Keep the grammar in THIS file only; do not re-inline copies into the HTML.
 
-function registerClarionLanguage() {
-    monaco.languages.setLanguageConfiguration('clarion', {
+// langId defaults to 'clarion'. The editor page also registers 'clarion-ref', the same grammar for the
+// read-only previews in its references view, so none of the 'clarion' providers run on those.
+function registerClarionLanguage(langId) {
+    langId = langId || 'clarion';
+    monaco.languages.setLanguageConfiguration(langId, {
         comments: { lineComment: '!' },
         brackets: [['(', ')'], ['[', ']'], ['{', '}']],
         // Treat the Clarion prefix separator ':' as part of a word so double-click selects
@@ -48,7 +51,7 @@ function registerClarionLanguage() {
             decreaseIndentPattern: /^\s*(?:(?:END|OF|OROF|ELSE|ELSIF|UNTIL|WHILE)\b(?!:)|\.\s*$)/i
         }
     });
-    monaco.languages.setMonarchTokensProvider('clarion', {
+    monaco.languages.setMonarchTokensProvider(langId, {
         ignoreCase: true,
         keywords: [
             'PROGRAM', 'MEMBER', 'MAP', 'MODULE', 'CLASS', 'INTERFACE', 'PROCEDURE', 'FUNCTION',

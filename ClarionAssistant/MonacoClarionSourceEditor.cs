@@ -1010,6 +1010,32 @@ namespace ClarionAssistant
             });
         }
 
+        // Find All References (Shift+F12, right-click, hover footer link). The page shows the locations in
+        // Monaco's references view; a hit in this file is a line of this buffer (identity +1 mapping).
+        void IMonacoEditorHost.OnReferences(MonacoEditorControl editor, string rawJson)
+        {
+            int reqId, line, col; string buffer;
+            if (!ParseLspRequest(editor, rawJson, out reqId, out line, out col, out buffer)) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                Dictionary<string, object> reply = null;
+                try
+                {
+                    EnsureLsp();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        if (!string.IsNullOrEmpty(buffer)) SharedLspBridge.EnsureBufferSynced(_filePath, buffer);
+                        bool fromIndex;   // the CodeGraph fallback's lines are the saved file's: the same file here
+                        var refs = SharedLspBridge.GetReferences(_filePath, Math.Max(0, line - 1), Math.Max(0, col - 1),
+                            buffer, out fromIndex);
+                        reply = ReferenceLocations.Build(refs, SameSourceFile, l0 => l0 + 1);
+                    }
+                }
+                catch (Exception ex) { MonacoSpikeLog.Write("overlay references error: " + ex.Message); }
+                editor.PostResponse(reqId, reply ?? new Dictionary<string, object> { { "locations", new object[0] } });
+            });
+        }
+
         // LSP signature help — parameter hints when typing '(' or ',' at a call site. Same
         // position/buffer contract as OnHover; the page hides the widget on a null reply.
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson)

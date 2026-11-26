@@ -40,6 +40,9 @@ namespace ClarionAssistant.Services
         // Horizontal scrollbar visibility → Monaco editor option scrollbar.horizontal:
         //   "auto" (show when needed) | "visible" (show always) | "hidden" (show never). Default auto.
         public string HorizontalScrollbar = "auto";
+        // Enter on a reference in the References list (Shift+F12): "show" shows it in the preview (Monaco's
+        // own behaviour, the default) | "goto" goes to it, as a double-click does (VS Code's behaviour).
+        public string ReferencesEnter = "show";
         // Split-editor pane orientation: "v" (side by side) | "h" (top / bottom). Default v.
         public string SplitOrientation = "v";
         // Document-structure fly-out: how many tree levels are visible when it opens (1..4; 0 = all expanded,
@@ -122,6 +125,7 @@ namespace ClarionAssistant.Services
                 s.FontFamily = SanitizeFontFamily(sv.Get(Prefix + "FontFamily"));
                 s.OccurrenceHighlight = GetBool(sv, "OccurrenceHighlight", s.OccurrenceHighlight);
                 s.HorizontalScrollbar = NormalizeScrollbar(sv.Get(Prefix + "HorizontalScrollbar"));
+                s.ReferencesEnter = NormalizeReferencesEnter(sv.Get(Prefix + "ReferencesEnter"));
                 s.SplitOrientation = NormalizeSplitOrientation(sv.Get(Prefix + "SplitOrientation"));
                 s.CursorBehindEOL = GetBool(sv, "CursorBehindEOL", s.CursorBehindEOL);
                 s.KeyProfile = NormalizeKeyProfile(sv.Get(Prefix + "KeyProfile"));
@@ -149,6 +153,7 @@ namespace ClarionAssistant.Services
             sv.Set(Prefix + "FontFamily", SanitizeFontFamily(FontFamily));
             sv.Set(Prefix + "OccurrenceHighlight", OccurrenceHighlight ? "true" : "false");
             sv.Set(Prefix + "HorizontalScrollbar", NormalizeScrollbar(HorizontalScrollbar));
+            sv.Set(Prefix + "ReferencesEnter", NormalizeReferencesEnter(ReferencesEnter));
             sv.Set(Prefix + "SplitOrientation", NormalizeSplitOrientation(SplitOrientation));
             sv.Set(Prefix + "CursorBehindEOL", CursorBehindEOL ? "true" : "false");
             sv.Set(Prefix + "OutlineLevel", Clamp(OutlineLevel, 0, 4).ToString());
@@ -182,6 +187,9 @@ namespace ClarionAssistant.Services
             object hs;
             if (d.TryGetValue("horizontalScrollbar", out hs) && hs != null)
                 s.HorizontalScrollbar = NormalizeScrollbar(hs.ToString());
+            object re;
+            if (d.TryGetValue("referencesEnter", out re) && re != null)
+                s.ReferencesEnter = NormalizeReferencesEnter(re.ToString());
             object so;
             if (d.TryGetValue("splitOrientation", out so) && so != null)
                 s.SplitOrientation = NormalizeSplitOrientation(so.ToString());
@@ -226,6 +234,7 @@ namespace ClarionAssistant.Services
                 { "fontFamily", SanitizeFontFamily(FontFamily) },
                 { "occurrenceHighlight", OccurrenceHighlight },
                 { "horizontalScrollbar", HorizontalScrollbar },
+                { "referencesEnter", ReferencesEnter },
                 { "splitOrientation", SplitOrientation },
                 { "cursorBehindEOL", CursorBehindEOL },
                 { "keyProfile", NormalizeKeyProfile(KeyProfile) },
@@ -410,6 +419,11 @@ namespace ClarionAssistant.Services
         private static string NormalizeScrollbar(string v)
         {
             return (v == "visible" || v == "hidden") ? v : "auto";
+        }
+
+        private static string NormalizeReferencesEnter(string v)
+        {
+            return v == "goto" ? "goto" : "show";
         }
 
         /// <summary>

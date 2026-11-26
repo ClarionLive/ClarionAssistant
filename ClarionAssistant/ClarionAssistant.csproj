@@ -192,6 +192,7 @@
     <Compile Include="Services\IdeSolutionRecord.cs" />
     <Compile Include="Services\SolutionFollower.cs" />
     <Compile Include="Services\IdeEndpointRecord.cs" />
+    <Compile Include="Services\ReferenceLocations.cs" />
     <Compile Include="Services\SharedLspBridge.cs" />
     <Compile Include="Services\ColonQualifierScope.cs" />
     <Compile Include="Services\LocalScopeIndex.cs" />

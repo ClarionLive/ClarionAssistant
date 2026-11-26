@@ -22,6 +22,8 @@ const { load, flush, check, section, finish, html } = require('./local-first-loa
 const DOC = 'H:\\Demo\\demoleg018.clw';
 const LINES = ['  CODE', '  DO PrepareProcedure', '  RETURN'];
 const POS = { lineNumber: 2, column: 8 };
+// The footer's Find References link (hover-footer-row.test.js pins it); these tests are about the location links.
+const noRefs = (v) => String(v).replace(/ \[Find References[^\]]*\]\(command:clarion\.findReferences[^)]*\)/, '');
 
 // A Monaco URI the way URI.parse(href) builds it: query and fragment split off, fsPath decoded with a
 // lower-case drive letter and backslashes (Windows).
@@ -158,7 +160,7 @@ async function main() {
             const e = rig(opts);
             const md = await serverCard(e, ROUTINE_CARD);
             // GH #270: the link line moves to the footer row (cardText joins the card and the footer with one \n).
-            check(what + ': label unchanged', md === ROUTINE_CARD.replace('\n\n[', '\n['), md);
+            check(what + ': label unchanged', noRefs(md) === ROUTINE_CARD.replace('\n\n[', '\n['), md);
             click(e, 'file:///H:/Demo/demoleg018.clw#L474');
             const nav = opened(e);
             check(what + ': the click opens the file (openLocation, line 474)', nav.length === 1 && nav[0].line === 474 && e.reveals.length === 0, JSON.stringify(nav));
@@ -197,7 +199,7 @@ async function main() {
         await flush();
         const c = out[1] && out[1].contents;
         check('two entries: the card, then the footer row', !!c && c.length === 2, JSON.stringify(c));
-        check('the footer row holds the relabelled self link "line 473"', !!c && c[1] && c[1].value === '[line 473](file:///H:/Demo/demoleg018.clw#L473)', c && c[1] && c[1].value);
+        check('the footer row holds the relabelled self link "line 473"', !!c && c[1] && noRefs(c[1].value) === '[line 473](file:///H:/Demo/demoleg018.clw#L473)', c && c[1] && c[1].value);
         check('...and the card no longer does', !!c && c[0] && c[0].value.indexOf('](file:') < 0, c && c[0] && c[0].value);
         click(e, 'file:///H:/Demo/demoleg018.clw#L473');
         check('click: revealed here (caret on 473), NO openLocation', e.ed.pos.lineNumber === 473 && opened(e).length === 0, JSON.stringify(e.ed.pos));
@@ -213,7 +215,7 @@ async function main() {
         await flush();
         const c = out && out.contents;
         check('a local card\'s ?ondisk link moves to the footer row, label kept',
-            !!c && c.length === 2 && c[1].value === '[demoleg018.clw:88](file:///H:/Demo/demoleg018.clw?ondisk#L88)', JSON.stringify(c));
+            !!c && c.length === 2 && noRefs(c[1].value) === '[demoleg018.clw:88](file:///H:/Demo/demoleg018.clw?ondisk#L88)', JSON.stringify(c));
         click(e, 'file:///H:/Demo/demoleg018.clw?ondisk#L88');
         const nav = opened(e);
         check('...its click opens the .clw (openLocation 88), nothing revealed here', nav.length === 1 && nav[0].line === 88 && e.reveals.length === 0, JSON.stringify(nav));
@@ -228,7 +230,7 @@ async function main() {
         e.reply('hover', { contents: ROUTINE_CARD });
         await flush();
         const c = out[1] && out[1].contents;
-        check('file mode: the link sits in the footer row, label unchanged', !!c && c.length === 2 && c[1].value === '[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)', JSON.stringify(c));
+        check('file mode: the link sits in the footer row, label unchanged', !!c && c.length === 2 && noRefs(c[1].value) === '[demoleg018.clw:474](file:///H:/Demo/demoleg018.clw#L474)', JSON.stringify(c));
         click(e, 'file:///H:/Demo/demoleg018.clw#L474');
         e.api.revealLineFromHost({ line: 474, column: 1 });
         e.api.cmdNavBack();

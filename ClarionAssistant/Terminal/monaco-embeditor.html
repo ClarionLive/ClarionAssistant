@@ -765,6 +765,12 @@
         box-shadow: 0 0 0 1px var(--vscode-textLink-foreground, #3794ff);
         filter: brightness(1.15);
     }
+    /* The references view's list (Shift+F12): Monaco sets its line height but no font size, so it took the
+       page's 13px while the preview beside it follows the editor's Font size. The variable is the editor's
+       font size (syncRefTreeFont). */
+    .monaco-editor .reference-zone-widget .ref-tree {
+        font-size: var(--ca-ref-tree-font-size, 13px);
+    }
     /* The hover footer row (hoverContentsWithFooter): a card's second content entry, drawn like the bar
        Monaco puts under a problem hover (View Problem / Quick Fix) — its background, a rule above it,
        12px text on a 22px line, the links 16px apart. Monaco renders every entry of one hover result as a
@@ -862,6 +868,11 @@
                 <option value="auto">Show when needed</option>
                 <option value="visible">Show always</option>
                 <option value="hidden">Show never</option>
+            </select></label>
+        <label title="What Enter does on a reference in the References list (Shift+F12). Double-click always goes to it.">Enter in the References list
+            <select id="setReferencesEnter">
+                <option value="show">Show in preview (Monaco)</option>
+                <option value="goto">Go to the reference (VS Code)</option>
             </select></label>
         <label title="How many levels of the Document structure pane are visible when it opens. 1 = top level only; 3 = e.g. Class &#8250; Methods &#8250; method names. &#8220;All&#8221; opens it fully expanded.">Document structure: open at level
             <select id="setOutlineLevel">
@@ -1633,6 +1644,10 @@
                     }
                     registerClarionFolding();
                     registerClarionProviders();
+                }
+                if (!monaco.languages.getLanguages().some(function (l) { return l.id === 'clarion-ref'; })) {
+                    monaco.languages.register({ id: 'clarion-ref' });   // references-view previews (see referenceLocationsFromHost)
+                    registerClarionLanguage('clarion-ref');
                 }
                 editor = monaco.editor.create(document.getElementById('editor'), {
                     value: '',
@@ -6602,13 +6617,18 @@
         // A card that is nothing but its links keeps them: Monaco skips an empty entry, so the footer would
         // be the row's only entry and draw as a card anyway.
         if (parts.length && !/\S/.test(kept.join(''))) { kept = lines; parts = []; }
+        var references = parts.length ? referencesActionFor(model, position) : '';
+        if (references) parts.push(references);
         var designer = designerActionFor(content.value, model, position);
         if (designer) parts.push(designer);
         if (!parts.length) return [content];
         var body = { value: kept.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') };
         if (content.isTrusted) body.isTrusted = content.isTrusted;
         var footer = { value: parts.join(' ') };
-        if (designer) footer.isTrusted = { enabledCommands: [STRUCTURE_DESIGNER_COMMAND] };
+        var commands = [];
+        if (references) commands.push(FIND_REFERENCES_COMMAND);
+        if (designer) commands.push(STRUCTURE_DESIGNER_COMMAND);
+        if (commands.length) footer.isTrusted = { enabledCommands: commands };
         return [body, footer];
     }
 
@@ -6644,7 +6664,165 @@
             return true;
         } catch (e) { return false; }
     }
+
+    // Clarion structure/statement keywords, offered as completion items so typing a full keyword has an
+    // exact-match, preselected item that outranks look-alike equates (END vs EndKey/ENDPAGE). Combined
+    // with acceptSuggestionOnEnter:'smart', an exact keyword match is a no-op accept, so Enter inserts a
+    // newline instead of clobbering the word. (task 8933fa05) Also the words the hover footer offers no
+    // Find References on (referencesActionFor).
+    var CLARION_KEYWORDS = [
+        'END', 'RETURN', 'EXIT', 'CYCLE', 'BREAK', 'LOOP', 'CASE', 'IF', 'ELSE', 'ELSIF', 'OF', 'OROF',
+        'WHILE', 'UNTIL', 'DO', 'THEN', 'BEGIN', 'EXECUTE', 'ACCEPT', 'CODE', 'DATA', 'MAP', 'MODULE',
+        'CLASS', 'INTERFACE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT',
+        'PROCEDURE', 'FUNCTION', 'ROUTINE', 'MEMBER', 'PROGRAM', 'SECTION'
+    ];
+    var CLARION_KEYWORD_SET = {};
+    CLARION_KEYWORDS.forEach(function (k) { CLARION_KEYWORD_SET[k] = true; });
+
+    // The footer's "Find References" action, offered on a card that has location links (a symbol with a
+    // declaration) hovered over a name, not a keyword (a LOOP card links its END, but LOOP has no references).
+    // Shift+F12 is Monaco's own key for it (editor.action.goToReferences).
+    var FIND_REFERENCES_COMMAND = 'clarion.findReferences';
+    var referencesCardTarget = null;   // { model, line, column } — where the card last offering it was hovered
+    function referencesActionFor(model, position) {
+        if (!model || !position) return '';
+        var word = '', line = model.getLineContent(position.lineNumber), rx = /[A-Za-z_][A-Za-z0-9_:]*/g, m;
+        while ((m = rx.exec(line)) !== null) {
+            if (position.column - 1 >= m.index && position.column - 1 <= m.index + m[0].length) { word = m[0]; break; }
+        }
+        if (!word || CLARION_KEYWORD_SET[word.toUpperCase()]) return '';
+        referencesCardTarget = { model: model, line: position.lineNumber, column: position.column };
+        return '[Find References (Shift+F12)](command:' + FIND_REFERENCES_COMMAND + ' "Show every reference to this symbol")';
+    }
+    // Clicked: put the cursor where the card was hovered and run Go to References there, as Shift+F12 would.
+    function findReferencesFromCard() {
+        var t = referencesCardTarget;
+        try {
+            if (!t || !t.model || t.model.isDisposed()) return false;
+            var ed = editorShowingModel(t.model);
+            if (!ed) return false;
+            hideHoverCard(ed);
+            ed.setPosition({ lineNumber: t.line, column: t.column });
+            ed.focus();
+            // trigger, not getAction: Monaco registers Go to References with registerAction2, which getAction
+            // never returns (it knows only editor actions and addAction ones). trigger falls through to the
+            // command service, which runs it on the focused editor.
+            ed.trigger('hover', 'editor.action.goToReferences', null);
+            return true;
+        } catch (e) { return false; }
+    }
     // ---- end hover footer row ----
+
+    // ---- Find All References: Shift+F12, right-click Go to References / Peek References, the footer link ----
+    // The host answers {locations: [{path, line, column, endLine, endColumn}], files: {path: preview}}, 1-based.
+    // Every hit is shown on a preview model under the ca-ref: scheme, in language 'clarion-ref' (same grammar,
+    // none of the 'clarion' providers), because the references view names a group by its model's URI: the
+    // editor's own model has Monaco's default inmemory://model/1, which it listed as "1".
+    //   * path null = a line of this editor's own document (the host has mapped it): a copy of this editor's
+    //     text, named after the file (CA Editor) or the procedure (CA Embeditor, whose lines are not the
+    //     module's). Opening one reveals the line here (revealLineFromHost, so Back returns).
+    //   * any other file: its text is SPARSE (only the lines near a hit, see the host's ReferenceLocations),
+    //     and opening one goes to the IDE (openLocation).
+    // The preview editor is read-only either way.
+    var REFERENCES_TIMEOUT_MS = 20000;
+    var REF_SELF_KEY = '\u0000self';
+    var refPreviewModels = {};   // lower-cased path (or REF_SELF_KEY) -> preview model
+    var refPreviewPaths = {};    // preview model uri -> path ('' for this editor's own document)
+    function refPreviewModel(key, path, uriPath, text) {
+        var m = refPreviewModels[key];
+        if (m && !m.isDisposed() && m.uri.path !== uriPath) { delete refPreviewPaths[m.uri.toString()]; m.dispose(); m = null; }
+        if (m && !m.isDisposed()) { if (m.getValue() !== text) m.setValue(text); return m; }
+        m = monaco.editor.createModel(text, 'clarion-ref', monaco.Uri.from({ scheme: 'ca-ref', path: uriPath }));
+        refPreviewModels[key] = m;
+        refPreviewPaths[m.uri.toString()] = path;
+        return m;
+    }
+    // The URI path naming this editor's own document in the references view.
+    function refSelfUriPath() {
+        if (fileMode && currentFilePath) return '/' + String(currentFilePath).replace(/\\/g, '/');
+        var module = String(embedDocPath || '').replace(/^.*[\\\/]/, '');
+        var name = String(baseTitle || 'Embeditor').replace(/[\\\/]/g, '_');
+        return (module ? '/' + module : '') + '/' + name;
+    }
+    function referenceLocationsFromHost(model, resp) {
+        var locs = (resp && resp.locations) || [], files = (resp && resp.files) || {};
+        // used: key -> this search's preview model. Each preview is built once per search, not once per hit:
+        // model.getValue() (and refPreviewModel's reuse compare) joins the whole text, and a generated module
+        // of 60k lines with up to 1000 hits made that seconds of a frozen page.
+        var used = {}, out = [];
+        for (var i = 0; i < locs.length; i++) {
+            var l = locs[i], key = l.path ? String(l.path).toLowerCase() : REF_SELF_KEY, target = used[key];
+            if (!target) {
+                if (!l.path) target = refPreviewModel(REF_SELF_KEY, '', refSelfUriPath(), model.getValue());
+                else {
+                    var text = files[l.path];
+                    target = typeof text === 'string'
+                        ? refPreviewModel(key, l.path, '/' + String(l.path).replace(/\\/g, '/'), text)
+                        : refPreviewModels[key];
+                    if (!target || target.isDisposed()) continue;   // no preview: the file is not on disk
+                }
+                used[key] = target;
+            }
+            out.push({ uri: target.uri, range: new monaco.Range(l.line, l.column, l.endLine || l.line, l.endColumn || l.column) });
+        }
+        // Previews of an earlier search this one does not show.
+        Object.keys(refPreviewModels).forEach(function (k) {
+            if (used[k]) return;
+            var m = refPreviewModels[k];
+            delete refPreviewModels[k];
+            if (m && !m.isDisposed()) { delete refPreviewPaths[m.uri.toString()]; m.dispose(); }
+        });
+        return out;
+    }
+    // Every editor but the page's own two is the references view's preview: read-only. Its models are copies
+    // (sparse ones for other files), so an edit there would go nowhere. The page's main editor instead keeps
+    // the list's font size in step with its own (see the .ref-tree CSS rule).
+    // Deferred: monaco.editor.create announces the editor before `editor`/`editor2` are assigned.
+    function markRefPreviewEditor(ed) {
+        setTimeout(function () {
+            try {
+                if (ed === editor) { syncRefTreeFont(); ed.onDidChangeConfiguration(syncRefTreeFont); }
+                else if (ed !== editor2) { ed.updateOptions({ readOnly: true }); refPreviewEditor = ed; }
+            } catch (e) { }
+        }, 0);
+    }
+    // Enter on a reference in the list. Monaco shows it in the preview and only a double-click goes to it;
+    // the gear setting "Enter in the References list" = 'goto' makes Enter go to it too, as in VS Code.
+    // Monaco binds Enter to that (revealReference) as well, but in a standalone editor the list consumes
+    // the key first, and the command only reveals in the preview anyway. So the key is left to Monaco,
+    // which shows the reference in the preview; then the preview's file and selection are the target:
+    // the list is closed and the target opened the way a double-click opens it (see registerEditorOpener).
+    // Enter on a file line is left alone: it expands or collapses the file.
+    var refsEnterAction = 'show';   // 'show' (Monaco) | 'goto' (VS Code); from the gear setting
+    var refPreviewEditor = null;    // the references view's preview editor (markRefPreviewEditor)
+    function setRefsEnterAction(v) { refsEnterAction = (v === 'goto') ? 'goto' : 'show'; }
+    function onRefTreeEnter(ev) {
+        if (refsEnterAction !== 'goto') return;
+        if (ev.key !== 'Enter' || ev.ctrlKey || ev.altKey || ev.shiftKey || ev.metaKey) return;
+        var tree = ev.target && ev.target.closest ? ev.target.closest('.reference-zone-widget .ref-tree') : null;
+        var row = tree ? tree.querySelector('.monaco-list-row.focused') : null;
+        if (!row || row.querySelector('.reference-file')) return;
+        var owner = [editor, editor2].filter(function (e) { return e && e.getDomNode() && e.getDomNode().contains(tree); })[0];
+        if (owner) setTimeout(function () { gotoPreviewedReference(owner); }, 50);   // after Monaco's preview update
+    }
+    function gotoPreviewedReference(owner) {
+        try {
+            var m = refPreviewEditor && refPreviewEditor.getModel(), sel = m && refPreviewEditor.getSelection();
+            var path = m ? refPreviewPaths[m.uri.toString()] : undefined;
+            if (!sel || path === undefined) return;
+            owner.trigger('keyboard', 'closeReferenceSearch', null);
+            if (path === '') revealLineFromHost({ line: sel.startLineNumber, column: sel.startColumn });
+            else postToHost({ action: 'openLocation', path: path, line: sel.startLineNumber });
+        } catch (e) { }
+    }
+    document.addEventListener('keydown', onRefTreeEnter, true);
+    function syncRefTreeFont() {
+        try {
+            var px = editor.getOption(monaco.editor.EditorOption.fontSize);
+            if (px > 0) document.documentElement.style.setProperty('--ca-ref-tree-font-size', px + 'px');
+        } catch (e) { }
+    }
+    // ---- end Find All References ----
 
     function registerClarionProviders() {
         // ----- Column-1 typing = no completion (native Clarion parity, task 8933fa05) -----
@@ -6670,18 +6848,6 @@
             return false;
         }
 
-        // Clarion structure/statement keywords, offered as completion items so typing a full keyword has an
-        // exact-match, preselected item that outranks look-alike equates (END vs EndKey/ENDPAGE). Combined
-        // with acceptSuggestionOnEnter:'smart', an exact keyword match is a no-op accept, so Enter inserts a
-        // newline instead of clobbering the word. (task 8933fa05)
-        var CLARION_KEYWORDS = [
-            'END', 'RETURN', 'EXIT', 'CYCLE', 'BREAK', 'LOOP', 'CASE', 'IF', 'ELSE', 'ELSIF', 'OF', 'OROF',
-            'WHILE', 'UNTIL', 'DO', 'THEN', 'BEGIN', 'EXECUTE', 'ACCEPT', 'CODE', 'DATA', 'MAP', 'MODULE',
-            'CLASS', 'INTERFACE', 'GROUP', 'QUEUE', 'RECORD', 'FILE', 'VIEW', 'WINDOW', 'REPORT',
-            'PROCEDURE', 'FUNCTION', 'ROUTINE', 'MEMBER', 'PROGRAM', 'SECTION'
-        ];
-        var CLARION_KEYWORD_SET = {};
-        CLARION_KEYWORDS.forEach(function (k) { CLARION_KEYWORD_SET[k] = true; });
         // Build keyword suggestions for the word being typed (bare context only — not after '.'/':' where the
         // server owns member access). Exact match (case-insensitive) is preselected so it wins over equates.
         function clarionKeywordSuggestions(before, range, seenLabels) {
@@ -6957,6 +7123,11 @@
                     openDesignerFromCard();
                     return true;
                 }
+                // The hover footer's Find References action (see referencesActionFor).
+                if (uri && uri.scheme === 'command' && uri.path === FIND_REFERENCES_COMMAND) {
+                    findReferencesFromCard();
+                    return true;
+                }
                 if (isAttributeLinkUri(uri)) {
                     var payload = attributeEditPayloadOfUri(uri);
                     if (payload) applyAttributeEditLink(payload);
@@ -6990,6 +7161,31 @@
                 return true;   // handled — suppresses the external-open fallback
             }
         });
+        // Find All References (see referenceLocationsFromHost). Registering the provider is what gives
+        // Shift+F12 and the right-click Go to References / Peek References; a single hit jumps straight to it.
+        monaco.languages.registerReferenceProvider('clarion', {
+            provideReferences: function (model, position) {
+                if (isInClarionComment(model.getLineContent(position.lineNumber), position.column - 1)) return [];
+                return whenIdleSynced(model, { line: position.lineNumber, column: position.column })
+                    .then(function (payload) { return payload ? requestFromHost('references', payload, REFERENCES_TIMEOUT_MS) : null; })
+                    .then(function (resp) { return referenceLocationsFromHost(model, resp); })
+                    .catch(function () { return []; });
+            }
+        });
+        // Opening a hit (double-click / Enter in the references view, or the single-hit jump): one in this
+        // editor's own document is revealed here; one in another file is opened by the IDE, as for a hover link.
+        monaco.editor.registerEditorOpener({
+            openCodeEditor: function (source, resource, selectionOrPosition) {
+                var path = resource ? refPreviewPaths[resource.toString()] : undefined;
+                if (path === undefined) return false;
+                var sp = selectionOrPosition || {};
+                var line = sp.startLineNumber || sp.lineNumber || 1, column = sp.startColumn || sp.column || 1;
+                if (path === '') revealLineFromHost({ line: line, column: column });
+                else postToHost({ action: 'openLocation', path: path, line: line });
+                return true;
+            }
+        });
+        monaco.editor.onDidCreateEditor(markRefPreviewEditor);
         // Signature help — parameter hints when typing '(' or ',' at a call site (mirrors VS Code).
         // The host answers {signatureHelp: {signatures, activeSignature, activeParameter}|null}; a null
         // (comment position, no LSP, bare identifier) simply keeps the widget hidden.
@@ -7392,6 +7588,7 @@
         opts.wordWrap = s.wordWrap ? 'on' : 'off';
         opts.minimap = { enabled: !!s.minimap };
         opts.scrollbar = { horizontal: s.horizontalScrollbar || 'auto' };   // auto | visible | hidden (task 37e2079f)
+        setRefsEnterAction(s.referencesEnter);   // not an editor option: onRefTreeEnter reads it
         opts.autoIndent = effIde(followIde, 'autoIndent', s.autoIndent ? 'full' : 'keep');
         // --- Swept Options → Text Editor keys. None of these ever had a gear pref: the `stored` argument is
         // the literal that used to be hardcoded at editor-create time, so with follow-mode OFF this block is
@@ -7545,6 +7742,7 @@
         }
         if ((el = document.getElementById('setOccurrenceHighlight'))) el.checked = (s.occurrenceHighlight !== false);   // default ON (#62)
         if ((el = document.getElementById('setHorizontalScrollbar'))) el.value = s.horizontalScrollbar || 'auto';
+        if ((el = document.getElementById('setReferencesEnter'))) el.value = (s.referencesEnter === 'goto') ? 'goto' : 'show';
         if ((el = document.getElementById('setOutlineLevel'))) el.value = String(typeof s.outlineLevel === 'number' ? s.outlineLevel : 0);
         if ((el = document.getElementById('setOutlineSortLevel'))) el.checked = !!s.outlineSortLevel;
         syncOutlineSettingsUi();
@@ -7633,6 +7831,7 @@
             fontFamily: storedPref('fontFamily', (function () { var e = document.getElementById('setFontFamily'); return e ? e.value.trim().slice(0, 64) : ''; })()),
             occurrenceHighlight: (function () { var e = document.getElementById('setOccurrenceHighlight'); return e ? !!e.checked : true; })(),
             horizontalScrollbar: sel('setHorizontalScrollbar', 'auto'),
+            referencesEnter: sel('setReferencesEnter', 'show'),
             outlineLevel: Math.max(0, Math.min(4, parseInt(sel('setOutlineLevel', '0'), 10) || 0)),
             outlineSortLevel: chk('setOutlineSortLevel'),
             // ----- Smart Formatter -----
@@ -8344,7 +8543,7 @@
             // reopening later must not offer a stale "current → imported" the developer has since changed.
             if (p.classList.contains('hidden')) vscHide();
         });
-        var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar', 'setOutlineLevel', 'setOutlineSortLevel',
+        var ids = ['setCursorBehindEol', 'setTabSize', 'setInsertSpaces', 'setAutoIndent', 'setWordWrap', 'setMinimap', 'setCompleteOnInsertKey', 'setFontSize', 'setFontFamily', 'setOccurrenceHighlight', 'setHorizontalScrollbar', 'setReferencesEnter', 'setOutlineLevel', 'setOutlineSortLevel',
             // Smart Formatter controls
             'setPreferredColumn', 'setContLineMultiplier', 'setIndentComments', 'setDontIndentCol1Comments', 'setFormatLineOnEnter',
             'setAutoSpaceEquals', 'setLiveKeywordCase',
@@ -8505,9 +8704,9 @@
                     requestFromHost('implementation', withBuffer(editor.getModel(), { line: ipos.lineNumber, column: ipos.column }));
                 }
             } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
-                // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
-                // It used to match here and silently go to definition (77aceec5); now it falls through to
-                // Monaco, whose references action is inert without a reference provider.
+                // NOT Shift+F12: that is Find All References. It used to match here and silently go to
+                // definition (77aceec5); now it falls through to Monaco's references action, which the
+                // reference provider answers (GH #287, registerReferenceProvider).
                 ev.preventDefault(); ev.stopImmediatePropagation();
                 var dpos = editor && editor.getPosition();
                 if (dpos) {

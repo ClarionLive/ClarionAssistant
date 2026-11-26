@@ -112,9 +112,12 @@ function load(opts) {
                 // Two since 1c685f2e item 6: the local card first, the LSP one (which waits for local) last.
                 registerHoverProvider(lang, p) { if (providers.hover) providers.hoverLocal = providers.hover; providers.hover = p; },
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp = p; },
+                registerReferenceProvider(lang, p) { providers.references = p; },
             },
             editor: {
                 registerLinkOpener() { },
+                registerEditorOpener() { },
+                onDidCreateEditor() { },
                 // markersSet = the LSP owner's paints; the slot owner (1c685f2e item 7) is recorded apart.
                 setModelMarkers(m, owner, list) {
                     if (owner === 'clarion') (env.markersSet = env.markersSet || []).push(list.length);

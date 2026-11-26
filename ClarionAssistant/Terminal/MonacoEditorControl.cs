@@ -101,6 +101,10 @@ namespace ClarionAssistant.Terminal
         /// host navigates (same- or cross-file) then replies via PostResponse with {navigated:bool}.</summary>
         void OnImplementation(MonacoEditorControl editor, string rawJson);
 
+        /// <summary>{action:"references"} — Find All References (Shift+F12, right-click, hover footer link);
+        /// host replies via PostResponse with {locations:[...], files:{path: preview}} (see ReferenceLocations).</summary>
+        void OnReferences(MonacoEditorControl editor, string rawJson);
+
         /// <summary>{action:"documentStructure"} — outline/document-symbol tree for the current buffer;
         /// host replies via PostResponse with {symbols:[{name,kind,detail,line,children}], fileMode}.</summary>
         void OnDocumentStructure(MonacoEditorControl editor, string rawJson);
@@ -722,6 +726,7 @@ namespace ClarionAssistant.Terminal
                     case "diagnostics":       h.OnDiagnostics(this, json); break;
                     case "signatureHelp":     h.OnSignatureHelp(this, json); break;
                     case "implementation":    h.OnImplementation(this, json); break;
+                    case "references":        h.OnReferences(this, json); break;
                     case "documentStructure": h.OnDocumentStructure(this, json); break;
                     case "localCompletion":   h.OnLocalCompletion(this, json); break;
                     case "localHover":        h.OnLocalHover(this, json); break;
