@@ -524,14 +524,27 @@ namespace ClarionAssistant.Services
         /// <summary>textDocument/references → raw LSP-response-shaped dict. CodeGraph fallback when empty.</summary>
         public static Dictionary<string, object> GetReferences(string filePath, int line, int character)
         {
+            bool fromIndex;
+            return GetReferences(filePath, line, character, null, out fromIndex);
+        }
+
+        /// <summary><see cref="GetReferences(string,int,int)"/> for an editor that sent the server its own text
+        /// (<paramref name="bufferText"/>, so the CodeGraph fallback reads the word there, not on disk).
+        /// <paramref name="fromIndex"/>: the locations came from that fallback, so their lines are lines of
+        /// the files ON DISK, not of the text sent (as for <see cref="GetHover(string,int,int,string,out bool)"/>).</summary>
+        public static Dictionary<string, object> GetReferences(string filePath, int line, int character, string bufferText, out bool fromIndex)
+        {
+            fromIndex = false;
             var c = Shared;
             Dictionary<string, object> primary = (c == null)
                 ? (LspClient.Active != null ? LspClient.Active.GetReferences(filePath, line, character) : null)
                 : SharedGetReferences(c, filePath, line, character);
             if (!IsEmptyResult(primary)) return primary;
             // A built-in-named call collects references only for a user procedure of that name (see GetDefinition).
-            bool builtinCall = BuiltinCallSite.IsBuiltinCallAt(CgLineAt(null, filePath, line), character);
-            return CodeGraphReferences(filePath, line, character, builtinCall) ?? primary;
+            bool builtinCall = BuiltinCallSite.IsBuiltinCallAt(CgLineAt(bufferText, filePath, line), character);
+            var cg = CodeGraphReferences(filePath, line, character, builtinCall, bufferText);
+            if (cg != null) { fromIndex = true; return cg; }
+            return primary;
         }
 
         /// <summary>textDocument/documentSymbol (optionally syncing a live buffer) → raw LSP dict.</summary>
@@ -2312,11 +2325,12 @@ namespace ClarionAssistant.Services
                    SymbolIndex.LocationLine(s.FilePath, s.LineNumber);
         }
 
-        private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character, bool callableOnly = false)
+        private static Dictionary<string, object> CodeGraphReferences(string filePath, int line, int character, bool callableOnly = false,
+            string bufferText = null)
         {
             try
             {
-                string word = CgWordAt(filePath, line, character);
+                string word = CgWordAt(filePath, line, character, bufferText);
                 if (string.IsNullOrEmpty(word)) return null;
                 string db = ResolveCodeGraphDb(filePath);
                 if (string.IsNullOrEmpty(db)) return null;

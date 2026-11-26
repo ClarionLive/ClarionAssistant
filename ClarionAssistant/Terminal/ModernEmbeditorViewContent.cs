@@ -1920,6 +1920,7 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnDiagnostics(MonacoEditorControl editor, string rawJson) { HandleDiagnostics(rawJson); }
         void IMonacoEditorHost.OnSignatureHelp(MonacoEditorControl editor, string rawJson) { HandleSignatureHelp(rawJson); }
         void IMonacoEditorHost.OnImplementation(MonacoEditorControl editor, string rawJson) { HandleImplementation(rawJson); }
+        void IMonacoEditorHost.OnReferences(MonacoEditorControl editor, string rawJson) { HandleReferences(rawJson); }
         void IMonacoEditorHost.OnDocumentStructure(MonacoEditorControl editor, string rawJson) { HandleDocumentStructure(rawJson); }
         void IMonacoFoldingHost.OnFoldingRanges(MonacoEditorControl editor, string rawJson) { HandleFoldingRanges(rawJson); }
         // 1c685f2e item 4: the instant local layer, each in its own newest-wins lane (never behind the LSP).
@@ -4315,6 +4316,43 @@ namespace ClarionAssistant.Terminal
                 }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] implementation: " + ex.Message); }
                 PostResponse(reqId, new Dictionary<string, object> { { "navigated", navigated } });
+            });
+        }
+
+        /// <summary>Find All References from the embed editor (Shift+F12, right-click, hover footer link).
+        /// The server analyses this editor's text under the module's path, so a hit in its own document is a
+        /// line of the wrapped buffer: shifted back by the #56 header offset, and dropped when it falls in
+        /// the header. Every other hit is a file location, and so is every hit from the CodeGraph fallback
+        /// (fromIndex): its lines are the module's lines on disk, not this editor's. Replies {locations, files}
+        /// (ReferenceLocations).</summary>
+        private void HandleReferences(string json)
+        {
+            int reqId, line, column; string buffer;
+            if (!ParseRequest(json, out reqId, out line, out column, out buffer)) return;
+            Task.Run(() =>
+            {
+                Dictionary<string, object> reply = null;
+                try
+                {
+                    EnsureLspStarted();
+                    if (SharedLspBridge.IsRunning)
+                    {
+                        string lspBuffer = LspBuffer(buffer);
+                        if (!string.IsNullOrEmpty(lspBuffer)) SharedLspBridge.EnsureBufferSynced(_lspFileName, lspBuffer);
+                        bool fromIndex;
+                        var refs = SharedLspBridge.GetReferences(_lspFileName, LspLine0(buffer, line), Math.Max(0, column - 1),
+                            lspBuffer, out fromIndex);
+                        int offset = (_lspContext != null) ? _lspContext.LineOffsetFor(buffer) : 0;
+                        int lineCount = string.IsNullOrEmpty(buffer) ? 0 : buffer.Split('\n').Length;
+                        reply = ReferenceLocations.Build(refs, p => !fromIndex && IsSameLspFile(p), l0 =>
+                        {
+                            int l1 = l0 + 1 - offset;
+                            return (l1 >= 1 && l1 <= lineCount) ? l1 : 0;
+                        });
+                    }
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[ModernEmbeditor] references: " + ex.Message); }
+                PostResponse(reqId, reply ?? new Dictionary<string, object> { { "locations", new object[0] } });
             });
         }
 

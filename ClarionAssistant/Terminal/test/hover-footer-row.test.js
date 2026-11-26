@@ -15,6 +15,9 @@
 //     overlay, or a designer already open; nor on other cards
 //   * a click puts the cursor where the card was hovered, closes the card and runs the command once
 //   * the local card, the LSP card and the fallback path all go through it
+//   * a footer with location links, hovered over a name, ends in "Find References (Shift+F12)", trusted for
+//     that command; not over a keyword (a LOOP card links its END); a click puts the cursor where the card
+//     was hovered and runs Monaco's Go to References (editor.action.goToReferences) once
 
 const { load, flush, check, section, finish } = require('./local-first-loader');
 
@@ -23,6 +26,8 @@ const LINES = ['Window WINDOW', "  BUTTON('OK'),AT(1,1,20,10),USE(?OK)", '  END'
 const POS = { lineNumber: 2, column: 4 };   // on BUTTON
 const LINK = '[Main.clw:233](file:///d%3A/src/Main.clw#L233)';
 const LINK2 = '[Main.inc:12](file:///d%3A/src/Main.inc#L12)';
+const REFS_CMD = 'clarion.findReferences';
+const REFS = ' [Find References (Shift+F12)](command:' + REFS_CMD + ' "Show every reference to this symbol")';
 const VAR_CARD = '**MyVar** — `LONG`\n\n```clarion\nMyVar LONG\n```\n' + LINK + '\n\nA counter.';
 const CONTROL_CARD = '**BUTTON** — Declares a pushbutton control\n\n**Attributes:** `AT` `USE`\n\n**Available:** DEFAULT · FLAT';
 const HEADER_CARD = '**MyWindow WINDOW**\n*Test*\n\n📐 AT(,,300,200)';
@@ -65,6 +70,7 @@ async function localHover(e, md) {
     return out && out.contents;
 }
 const click = (e) => e.linkOpeners[0].open({ scheme: 'command', authority: '', path: CMD, query: '', fragment: '' });
+const refsTrusted = (c) => !!(c && c.isTrusted && c.isTrusted.enabledCommands && c.isTrusted.enabledCommands.length === 1 && c.isTrusted.enabledCommands[0] === REFS_CMD);
 const designerTrusted = (c) => !!(c && c.isTrusted && c.isTrusted.enabledCommands && c.isTrusted.enabledCommands.length === 1 && c.isTrusted.enabledCommands[0] === CMD);
 
 async function main() {
@@ -73,19 +79,19 @@ async function main() {
         const e = load({ lines: LINES }); rig(e);
         const c = await lspHover(e, VAR_CARD);
         check('two entries: the card, then the footer', c && c.length === 2, JSON.stringify(c));
-        check('the footer is the link', c[1].value === LINK, c[1].value);
+        check('the footer is the link, then Find References', c[1].value === LINK + REFS, c[1].value);
         check('the card no longer holds it, the rest kept in order', c[0].value === '**MyVar** — `LONG`\n\n```clarion\nMyVar LONG\n```\n\nA counter.', JSON.stringify(c[0].value));
-        check('a footer of links only needs no trust', !c[1].isTrusted);
+        check('a footer of links is trusted for Find References only', refsTrusted(c[1]), JSON.stringify(c[1].isTrusted));
 
         const both = await lspHover(load({ lines: LINES }), '**Foo** 🌍 Global Procedure\n\n```clarion\nFoo PROCEDURE\n```\n' + LINK2 + ' → ' + LINK);
-        check('a declaration → implementation line moves whole', both && both.length === 2 && both[1].value === LINK2 + ' → ' + LINK, both && both[1] && both[1].value);
+        check('a declaration → implementation line moves whole', both && both.length === 2 && both[1].value === LINK2 + ' → ' + LINK + REFS, both && both[1] && both[1].value);
 
         const pin = await lspHover(load({ lines: LINES }), '**Routine:** `Init`\n\n📍 ' + LINK + '\n\n```clarion\nInit ROUTINE\n```');
-        check('a 📍 line moves, without the pin', pin && pin.length === 2 && pin[1].value === LINK, pin && pin[1] && pin[1].value);
+        check('a 📍 line moves, without the pin', pin && pin.length === 2 && pin[1].value === LINK + REFS, pin && pin[1] && pin[1].value);
         check('...and the card closes the gap it left', pin && pin[0].value === '**Routine:** `Init`\n\n```clarion\nInit ROUTINE\n```', JSON.stringify(pin && pin[0].value));
 
         const two = await lspHover(load({ lines: LINES }), '**X**\n\n' + LINK2 + '\n' + LINK);
-        check('two link lines share one footer, in order', two && two.length === 2 && two[1].value === LINK2 + ' ' + LINK, two && two[1] && two[1].value);
+        check('two link lines share one footer, in order', two && two.length === 2 && two[1].value === LINK2 + ' ' + LINK + REFS, two && two[1] && two[1].value);
     }
 
     section('links that stay in the card');
@@ -101,7 +107,7 @@ async function main() {
         check('a card with no links is returned as it was', c && c.length === 1 && c[0].value === plain, JSON.stringify(c));
         const warn = '**LOOP** — closed by END on line 9\n\n' + LINK + '\n\n⚠️ This END is lined up with the IF on line 2.';
         c = await lspHover(load({ lines: LINES }), warn);
-        check('a warning after the link stays in the card, the link goes', c && c.length === 2 && c[0].value === '**LOOP** — closed by END on line 9\n\n⚠️ This END is lined up with the IF on line 2.' && c[1].value === LINK, JSON.stringify(c));
+        check('a warning after the link stays in the card, the link goes', c && c.length === 2 && c[0].value === '**LOOP** — closed by END on line 9\n\n⚠️ This END is lined up with the IF on line 2.' && c[1].value === LINK + REFS, JSON.stringify(c));
     }
 
     section('the Structure Designer action');
@@ -127,7 +133,7 @@ async function main() {
         check('an APPLICATION header does not (the designer lookup takes WINDOW/REPORT)', c && c.length === 1, JSON.stringify(c));
         const v = load({ lines: LINES }); rig(v);
         c = await lspHover(v, VAR_CARD);
-        check('a variable card gets its link only', c && c.length === 2 && c[1].value === LINK && !c[1].isTrusted, JSON.stringify(c));
+        check('a variable card gets its link and Find References only', c && c.length === 2 && c[1].value === LINK + REFS && refsTrusted(c[1]), JSON.stringify(c));
 
         const k = load({ lines: LINES }); rig(k, { key: 'Ctrl+Shift+D' });
         c = await lspHover(k, CONTROL_CARD);
@@ -176,6 +182,31 @@ async function main() {
         check('a click with no card shown does nothing', !threw2 && nlog.designer === 0 && n.requests('openLocation').length === 0);
     }
 
+    section('Find References: offered over a name, not a keyword; a click runs Go to References there');
+    {
+        const KW_LINES = ['  LOOP', '    X += 1', '  END'];
+        const k = load({ lines: KW_LINES }); rig(k);
+        let out;
+        k.providers.hover[1].provideHover(k.model, { lineNumber: 1, column: 4 }).then(v => { out = v; });
+        k.reply('localHover', { contents: null });
+        await flush();
+        k.reply('hover', { contents: '**LOOP** — closed by END on line 3\n\n' + LINK });
+        await flush();
+        const kc = out && out.contents;
+        check('over LOOP: the link moves, no Find References', kc && kc.length === 2 && kc[1].value === LINK && !kc[1].isTrusted, JSON.stringify(kc));
+
+        const e = load({ lines: LINES }); const log = rig(e);
+        // getAction returns null for it in Monaco 0.52 (registerAction2), as here: the click must go through trigger.
+        e.editor.getAction = () => null;
+        await lspHover(e, VAR_CARD);
+        const handled = e.linkOpeners[0].open({ scheme: 'command', authority: '', path: REFS_CMD, query: '', fragment: '' });
+        check('the opener reports the link handled', handled === true);
+        check('the cursor goes where the card was hovered', log.setPos.length === 1 && log.setPos[0].lineNumber === 2 && log.setPos[0].column === 4, JSON.stringify(log.setPos));
+        check('the card closes and the editor has focus', log.hide === 1 && log.focus === 1);
+        check('Go to References runs once, through trigger', e.triggers.filter(t => t === 'editor.action.goToReferences').length === 1, JSON.stringify(e.triggers));
+        check('...and not the Structure Designer', log.designer === 0);
+    }
+
     section('chips and the footer together');
     {
         const e = load({ lines: LINES }); rig(e);
@@ -190,7 +221,7 @@ async function main() {
     {
         const e = load({ lines: LINES }); rig(e);
         const c = await localHover(e, VAR_CARD);
-        check('local card: link in the footer', c && c.length === 2 && c[1].value === LINK, JSON.stringify(c));
+        check('local card: link in the footer', c && c.length === 2 && c[1].value === LINK + REFS, JSON.stringify(c));
 
         const f = load({ lines: LINES }); rig(f);
         let out;
@@ -223,10 +254,10 @@ async function main() {
     {
         const titled = '[Main.clw:233](file:///d%3A/src/Main.clw#L233 "Go to the declaration")';
         let c = await lspHover(load({ lines: LINES }), '**MyVar** — `LONG`\n\n' + titled);
-        check('a link with a "title" moves', c && c.length === 2 && c[1].value === titled, JSON.stringify(c));
+        check('a link with a "title" moves', c && c.length === 2 && c[1].value === titled + REFS, JSON.stringify(c));
         const esc = '[My\\_Mod.clw:7](file:///d%3A/src/My_Mod.clw#L7)';
         c = await lspHover(load({ lines: LINES }), '**X**\n\n' + esc);
-        check('a label with an escaped character moves', c && c.length === 2 && c[1].value === esc, JSON.stringify(c));
+        check('a label with an escaped character moves', c && c.length === 2 && c[1].value === esc + REFS, JSON.stringify(c));
         c = await lspHover(load({ lines: LINES }), LINK);
         check('a card that is nothing but its link keeps it (one entry: Monaco would skip an empty card)', c && c.length === 1 && c[0].value === LINK, JSON.stringify(c));
     }

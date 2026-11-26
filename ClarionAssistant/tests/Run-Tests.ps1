@@ -255,6 +255,12 @@ if (-not $NodeOnly -and -not $InstallerOnly) {
                Sources = @("tests\EmbedLspContext.SelfLinks.cs", "tests\EmbedLspContext.LineMapping.Stubs.cs",
                            "Services\EmbedLspContext.cs", "Services\RedFileService.cs", "Services\EncodingHelper.cs")
                Refs = @("System.dll", "System.Core.dll") }
+            # GH #287: Find All References. The reply the Monaco page gets: own-document hits mapped (and
+            # dropped in the embeditor's header), other files with a sparse preview, dedup, the 1000 cap.
+            @{ Name = "ReferenceLocations.Build"
+               Sources = @("tests\ReferenceLocations.Build.cs", "tests\ReferenceLocations.Build.Stubs.cs",
+                           "Services\ReferenceLocations.cs", "Services\EncodingHelper.cs")
+               Refs = @("System.dll", "System.Core.dll") }
             # 16d140e9: the CA Explorer header's APP/VERSION/ROOT values and the path check in front of
             # the "open in Windows Explorer" clicks. Existence probes injected; touches no real path.
             @{ Name = "ExplorerHeader.Test"

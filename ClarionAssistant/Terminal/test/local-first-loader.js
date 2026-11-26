@@ -100,9 +100,12 @@ function load(opts) {
                 registerCompletionItemProvider(lang, p) { providers.completion.push(p); },
                 registerHoverProvider(lang, p) { providers.hover.push(p); },
                 registerSignatureHelpProvider(lang, p) { providers.signatureHelp.push(p); },
+                registerReferenceProvider(lang, p) { (providers.references = providers.references || []).push(p); },
             },
             editor: {
                 registerLinkOpener(o) { env.linkOpeners.push(o); },   // GH #263: hover-attribute-chips.test.js clicks through it
+                registerEditorOpener(o) { (env.editorOpeners = env.editorOpeners || []).push(o); },
+                onDidCreateEditor() { },
                 setModelMarkers(m, owner, list) { (env.markers = env.markers || {})[owner] = list; },
                 getModelMarkers(f) { return (env.markers && env.markers[f.owner]) || []; },
                 TrackedRangeStickiness: { AlwaysGrowsWhenTypingAtEdges: 0 },
@@ -127,7 +130,8 @@ function load(opts) {
         'prepareAttributeLinks', 'applyAttributeEditLink', 'decodeAttributeEdits', 'isAttributeLinkUri', 'applyGeneratedSourceFlag',
         'serverCardContent', 'snippetToPlainText', 'decodeAttributeEditQuery', 'attributeEditPayloadOfUri',   // GH #281
         'setEmbedDocPath', 'prepareSelfLinks', 'markDiskSelfLinks',   // H1-a: hover-self-links.test.js
-        'revealLineFromHost', 'cmdNavBack', 'cmdNavForward'];        // H1-b: with load({ nav: true })
+        'revealLineFromHost', 'cmdNavBack', 'cmdNavForward',   // H1-b: with load({ nav: true })
+        'onRefTreeEnter', 'markRefPreviewEditor', 'setRefsEnterAction'];   // references-view.test.js
     const ret = '{' + exportsList.map(n => n + ': ' + (DECLARED.has(n) ? n : 'undefined')).join(', ') + '}';
     // eslint-disable-next-line no-new-func
     env.api = new Function('__scope', 'with (__scope) {\n' + src + '\nreturn ' + ret + ';\n}')(scope);
