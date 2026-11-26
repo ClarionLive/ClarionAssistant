@@ -48,10 +48,11 @@ function rig(opts) {
     return e;
 }
 
-async function refs(e, reply) {
+async function refs(e, reply, beforeReply) {
     let out;
     e.providers.references[0].provideReferences(e.model, { lineNumber: 180, column: 12 }).then(v => { out = v; });
     await flush();
+    if (beforeReply) beforeReply();
     e.reply('references', reply);
     await flush();
     return out;
@@ -103,6 +104,30 @@ async function main() {
         check('the other file\'s preview is disposed', other.disposed === true);
         check('the own-document preview is kept and reused', self.disposed === false && e.created.length === 2);
         check('a hit in a file with no preview text is left out', (await refs(e, { locations: [{ path: 'D:\\gone.clw', line: 1, column: 1 }], files: {} })).length === 0);
+    }
+
+    section('many hits: each preview\'s text is read and built once per search, not once per hit');
+    {
+        // A generated module can run to 60k lines and the host sends up to 1000 hits. getValue() joins the
+        // whole model into one string, so doing it per hit (plus the reuse compare) froze the page.
+        const e = rig({ fileMode: true });
+        let reads = 0;
+        const own = e.model.getValue;
+        e.model.getValue = function () { reads++; return own.apply(this, arguments); };
+        const locations = [];
+        for (let i = 1; i <= 200; i++) {
+            locations.push({ path: null, line: i, column: 1 });
+            locations.push({ path: OTHER, line: i, column: 1 });
+        }
+        // Counted from the host's reply on: the request itself may read the text to sync it.
+        const out = await refs(e, { locations, files: { [OTHER]: 'x\n'.repeat(200) } }, () => { reads = 0; });
+        check('all 400 hits listed', out && out.length === 400, out && out.length);
+        check('the editor\'s text is read once, not once per hit', reads === 1, 'reads=' + reads);
+        let previewReads = 0;
+        e.created.forEach(m => { const g = m.getValue; m.getValue = function () { previewReads++; return g.apply(this, arguments); }; });
+        await refs(e, { locations, files: { [OTHER]: 'x\n'.repeat(200) } }, () => { reads = 0; previewReads = 0; });
+        check('a repeat search reads the editor once and each reused preview once', reads === 1 && previewReads === 2,
+            'reads=' + reads + ' previewReads=' + previewReads);
     }
 
     section('Enter in the list: Monaco shows in the preview; the "goto" setting goes to the reference');

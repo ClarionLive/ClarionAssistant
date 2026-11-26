@@ -6746,19 +6746,22 @@
     }
     function referenceLocationsFromHost(model, resp) {
         var locs = (resp && resp.locations) || [], files = (resp && resp.files) || {};
+        // used: key -> this search's preview model. Each preview is built once per search, not once per hit:
+        // model.getValue() (and refPreviewModel's reuse compare) joins the whole text, and a generated module
+        // of 60k lines with up to 1000 hits made that seconds of a frozen page.
         var used = {}, out = [];
         for (var i = 0; i < locs.length; i++) {
-            var l = locs[i], target;
-            if (!l.path) {
-                target = refPreviewModel(REF_SELF_KEY, '', refSelfUriPath(), model.getValue());
-                used[REF_SELF_KEY] = true;
-            } else {
-                var key = String(l.path).toLowerCase(), text = files[l.path];
-                target = typeof text === 'string'
-                    ? refPreviewModel(key, l.path, '/' + String(l.path).replace(/\\/g, '/'), text)
-                    : refPreviewModels[key];
-                if (!target || target.isDisposed()) continue;   // no preview: the file is not on disk
-                used[key] = true;
+            var l = locs[i], key = l.path ? String(l.path).toLowerCase() : REF_SELF_KEY, target = used[key];
+            if (!target) {
+                if (!l.path) target = refPreviewModel(REF_SELF_KEY, '', refSelfUriPath(), model.getValue());
+                else {
+                    var text = files[l.path];
+                    target = typeof text === 'string'
+                        ? refPreviewModel(key, l.path, '/' + String(l.path).replace(/\\/g, '/'), text)
+                        : refPreviewModels[key];
+                    if (!target || target.isDisposed()) continue;   // no preview: the file is not on disk
+                }
+                used[key] = target;
             }
             out.push({ uri: target.uri, range: new monaco.Range(l.line, l.column, l.endLine || l.line, l.endColumn || l.column) });
         }
@@ -8701,9 +8704,9 @@
                     requestFromHost('implementation', withBuffer(editor.getModel(), { line: ipos.lineNumber, column: ipos.column }));
                 }
             } else if (!ev.shiftKey && (ev.keyCode === 123 || ev.key === 'F12')) {          // F12 → go to definition (#40)
-                // NOT Shift+F12: that is Find All References elsewhere, and this editor has no references UI.
-                // It used to match here and silently go to definition (77aceec5); now it falls through to
-                // Monaco, whose references action is inert without a reference provider.
+                // NOT Shift+F12: that is Find All References. It used to match here and silently go to
+                // definition (77aceec5); now it falls through to Monaco's references action, which the
+                // reference provider answers (GH #287, registerReferenceProvider).
                 ev.preventDefault(); ev.stopImmediatePropagation();
                 var dpos = editor && editor.getPosition();
                 if (dpos) {
