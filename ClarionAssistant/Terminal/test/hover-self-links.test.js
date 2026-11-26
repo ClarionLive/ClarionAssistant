@@ -7,6 +7,7 @@
 // card's "demoleg018.clw:474" link is line 474 of the EMBEDITOR text, not of demoleg018.clw on disk. Pinned:
 //   * embed mode, a link to docPath (the embeditor's module): the click reveals the line in the editor
 //     (revealLineFromHost) and posts NO openLocation; the label reads "line 474"
+//   * a bare line-number label (the CASE branch list) stays a bare number: the shifted one, title kept
 //   * the server's encoded drive colon (file:///h%3A/...) and another case are the same document
 //   * a link to ANOTHER file still posts openLocation, label unchanged
 //   * a local (index) card's own-document link is a disk line: marked ?ondisk, label kept, the click opens the .clw
@@ -115,6 +116,17 @@ async function main() {
         check('the opener reports the link handled', handled === true);
         check('the line is revealed in the editor, caret on it', e.reveals.length === 1 && e.reveals[0].line === 474 && e.reveals[0].column === 1, JSON.stringify(e.reveals));
         check('NO openLocation reaches the host (the .clw is not opened)', opened(e).length === 0, JSON.stringify(opened(e)));
+    }
+
+    section('embed mode: a bare line-number label (the CASE branch list) stays a bare number');
+    {
+        const e = rig();
+        // The host has already shifted #L past the MEMBER header (server line 214 -> 213); the label is the server's.
+        const md = await serverCard(e, '| [214](file:///H:/Demo/demoleg018.clw#L213 "Go to branch") | `OF ?Ok` |');
+        check('the label is THIS text\'s number (213), not "line 213", title kept',
+            md && md.indexOf('| [213](file:///H:/Demo/demoleg018.clw#L213 "Go to branch") |') >= 0, md);
+        const other = await serverCard(rig(), '[7](file:///H:/Demo/demoleg.inc#L7)');
+        check('...a bare number to ANOTHER file is left alone', other && other.indexOf('[7](file:///H:/Demo/demoleg.inc#L7)') >= 0, other);
     }
 
     section('the same document spelled differently');

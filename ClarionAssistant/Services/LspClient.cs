@@ -304,9 +304,17 @@ namespace ClarionAssistant.Services
                     // links the server puts on a hover card (command:clarion.applyAttributeEdit?..., server
                     // 1.0.9+, GH #281; see monaco-embeditor.html applyAttributeEditLink). A server that does
                     // not know it ignores it.
+                    // experimental.clarionCaseBranchListAll: the CASE / OF / END cards list every branch of
+                    // the CASE instead of the first 40; the page limits the list's height and scrolls it
+                    // (monaco-embeditor.html, table:has(a[title="Go to branch"]) and branchListWheel).
                     { "capabilities", new Dictionary<string, object>
                         {
-                            { "experimental", new Dictionary<string, object> { { "clarionAttributeEditLinks", true } } }
+                            { "experimental", new Dictionary<string, object>
+                                {
+                                    { "clarionAttributeEditLinks", true },
+                                    { "clarionCaseBranchListAll", true }
+                                }
+                            }
                         }
                     },
                     { "rootUri", workspaceUri },
