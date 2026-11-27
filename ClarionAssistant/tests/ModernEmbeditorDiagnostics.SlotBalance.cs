@@ -388,6 +388,151 @@ static class SlotBalance
             Ok("x = 1.. closes the IF and the LOOP", ms.Count == 0, Show(ms));
         }
 
+        // --- MAP / MODULE / JOIN / ITEMIZE spelled as a data label are not openers ---
+        {
+            // The reported shape: a QUEUE field labelled Module took the QUEUE's END as a MODULE
+            // block's, and the QUEUE was reported "not terminated".
+            var ms = Diag(
+                "PendingQ     QUEUE",
+                "Module         LONG",
+                "Item           &ItemType",
+                "             END");
+            Ok("QUEUE with a field labelled Module: no markers", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "Settings     GROUP",
+                "Map            &MapType",
+                "Join           LONG",
+                "Itemize        LONG(0)",
+                "             END");
+            Ok("GROUP with fields labelled Map / Join / Itemize: no markers", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "module         long",
+                "map            long",
+                "  x# = 1",
+                "END");
+            Ok("lowercase module / map labels open nothing (the END is stray)",
+                ms.Count == 1 && ((string)ms[0]["message"]).StartsWith("END has no matching"), Show(ms));
+        }
+        {
+            // The real structures still open and still balance.
+            var ms = Diag(
+                "  MAP",
+                "    MODULE('helpers.clw')",
+                "Helper PROCEDURE(LONG pValue),LONG",
+                "    END",
+                "    module ('other.clw')   ! space before the paren",
+                "Other PROCEDURE",
+                "    END",
+                "  END");
+            Ok("MAP with MODULE('x') blocks: balanced, no markers", ms.Count == 0, Show(ms));
+        }
+        {
+            var ms = Diag(
+                "  MAP",
+                "    MODULE('helpers.clw')",
+                "Helper PROCEDURE",
+                "    END");
+            Ok("MAP left open after its MODULE's END is still flagged",
+                ms.Count == 1 && (int)ms[0]["line"] == 1 &&
+                ((string)ms[0]["message"]).StartsWith("MAP is not terminated"), Show(ms));
+        }
+        {
+            // The ';' form: MAP opens, the MODULE after ';' is not walked, and the line-leading END of
+            // "END; END" closes the MAP, so nothing is reported. Without ';' in the lookahead the MAP
+            // never opened and that END was reported as having no matching structure.
+            var ms = Diag(
+                "  MAP; MODULE('helpers.clw')",
+                "Helper PROCEDURE",
+                "  END; END");
+            Ok("MAP; MODULE('x') .. END; END: no markers", ms.Count == 0, Show(ms));
+            ms = Diag(
+                "  MAP; MODULE('helpers.clw')",
+                "Helper PROCEDURE");
+            Ok("MAP; MODULE('x') never closed: the MAP is flagged",
+                ms.Count == 1 && (int)ms[0]["line"] == 1 &&
+                ((string)ms[0]["message"]).StartsWith("MAP is not terminated"), Show(ms));
+        }
+        {
+            var ms = Diag(
+                "Color        ITEMIZE(1),PRE(Clr)",
+                "Red            EQUATE",
+                "             END",
+                "             ITEMIZE,PRE(Shp)",
+                "Square         EQUATE",
+                "             END",
+                "             ITEMIZE",
+                "Low            EQUATE",
+                "             END");
+            Ok("labelled, bare and bare-with-attributes ITEMIZE: balanced", ms.Count == 0, Show(ms));
+        }
+        {
+            // In code: an assignment to a variable named map is a statement, not a MAP.
+            var ms = Diag(
+                "LOOP",
+                "  map &= otherMap",
+                "  x# += 1",
+                "END");
+            Ok("map &= otherMap inside a LOOP: no markers", ms.Count == 0, Show(ms));
+        }
+        {
+            // An empty MAP closed on its own line opens and closes itself; Map.Init() is a call.
+            var ms = Diag(
+                "LOOP",
+                "  MAP.",
+                "  Map.Init()",
+                "END");
+            Ok("MAP. and Map.Init() inside a LOOP: no markers", ms.Count == 0, Show(ms));
+        }
+        {
+            // A header continued on the next line still opens its block (PR #316 review): '|' counts.
+            var ms = Diag(
+                "  MAP |",
+                "  END",
+                "Clr  ITEMIZE |",
+                "       ,PRE(C)",
+                "Red    EQUATE",
+                "     END");
+            Ok("MAP | and ITEMIZE | (continued headers): balanced", ms.Count == 0, Show(ms));
+        }
+        {
+            // A structure whose label is itself a declaration keyword still opens.
+            var ms = Diag(
+                "Window       ITEMIZE(1),PRE(W)",
+                "A              EQUATE",
+                "             END",
+                "File         GROUP,PRE(F)",
+                "B              LONG",
+                "             END");
+            Ok("Window ITEMIZE(1) and File GROUP: balanced", ms.Count == 0, Show(ms));
+            ms = Diag("Window       ITEMIZE(1),PRE(W)", "A              EQUATE");
+            Ok("Window ITEMIZE(1) left open is flagged",
+                ms.Count == 1 && ((string)ms[0]["message"]).StartsWith("ITEMIZE is not terminated"), Show(ms));
+        }
+        {
+            var ms = Diag("Color        ITEMIZE(1),PRE(Clr)", "Red            EQUATE");
+            Ok("unterminated ITEMIZE still flagged",
+                ms.Count == 1 && ((string)ms[0]["message"]).StartsWith("ITEMIZE is not terminated"), Show(ms));
+        }
+        {
+            var ms = Diag(
+                "OrderView    VIEW(Orders)",
+                "               JOIN(Itm:OrderKey,Ord:Id)",
+                "               END",
+                "             END");
+            Ok("VIEW with a JOIN: balanced", ms.Count == 0, Show(ms));
+            ms = Diag(
+                "OrderView    VIEW(Orders)",
+                "               JOIN(Itm:OrderKey,Ord:Id)",
+                "             END");
+            Ok("VIEW whose JOIN took the only END: the VIEW is flagged",
+                ms.Count == 1 && (int)ms[0]["line"] == 1 &&
+                ((string)ms[0]["message"]).StartsWith("VIEW is not terminated"), Show(ms));
+        }
+
         // --- 1c685f2e 8.6: [diag-timing] names WHY the LSP pass did not run (skip=) ---
         {
             var one = new List<int[]> { new[] { 1, 1 } };
