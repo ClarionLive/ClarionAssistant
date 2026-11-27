@@ -231,6 +231,61 @@ static class StructureScan
                 hit.Found ? (hit.Type + " Start=" + hit.StartLine) : "not found");
         }
 
+        // --- APPLICATION (MDI frame): designable, with its MENUBAR/MENU/TOOLBAR nesting balanced ---
+
+        {
+            string src = Src(
+                "Main PROCEDURE()",
+                "AppFrame APPLICATION('My App'),AT(,,400,240),MDI,MAX,SYSTEM,RESIZE",
+                "       MENUBAR,USE(?Menubar)",
+                "         MENU('&File'),USE(?FileMenu)",
+                "           ITEM('E&xit'),USE(?Exit),STD(STD:Close)",
+                "         END",
+                "       END",
+                "       TOOLBAR,AT(0,0,400,16),USE(?Toolbar)",
+                "         BUTTON('Go'),AT(2,2,30,12),USE(?Go)",
+                "       END",
+                "     END",
+                "  CODE",
+                "  OPEN(AppFrame)");
+            var onItem = Hit(src, 5);
+            Ok("APPLICATION: caret on a MENU ITEM finds the enclosing APPLICATION",
+                onItem.Found && onItem.Type == "APPLICATION" && onItem.Name == "AppFrame",
+                onItem.Found ? (onItem.Type + " " + onItem.Name) : "not found");
+            Ok("APPLICATION: range runs from its opener to its own END, past the nested MENUBAR/TOOLBAR ENDs",
+                onItem.StartLine == 2 && onItem.EndLine == 11, "Start=" + onItem.StartLine + " End=" + onItem.EndLine);
+            var onHeader = Hit(src, 2);
+            Ok("APPLICATION: caret on the opener line counts as inside",
+                onHeader.Found && onHeader.Type == "APPLICATION", onHeader.Found ? onHeader.Type : "not found");
+            var onButton = Hit(src, 9);
+            Ok("APPLICATION: caret on a TOOLBAR button finds the APPLICATION",
+                onButton.Found && onButton.Type == "APPLICATION" && onButton.EndLine == 11,
+                onButton.Found ? (onButton.Type + " End=" + onButton.EndLine) : "not found");
+            var inCode = Hit(src, 13);
+            Ok("APPLICATION: a code line after the frame is not inside it", !inCode.Found, inCode.Found ? inCode.Type : null);
+        }
+
+        {
+            // Wrapped attributes (continuation lines) and a data item that merely contains the word.
+            string src = Src(
+                "Main PROCEDURE()",
+                "Application STRING(20)",
+                "AppFrame APPLICATION('My App'),AT(,,400,240), |",
+                "       MDI,MAX,SYSTEM",
+                "       MENUBAR",
+                "         MENU('&File')",
+                "         END",
+                "       END",
+                "     END",
+                "  CODE");
+            var onWrap = Hit(src, 4);
+            Ok("APPLICATION: caret on a wrapped attribute line finds it (opener 3, END 9)",
+                onWrap.Found && onWrap.Type == "APPLICATION" && onWrap.StartLine == 3 && onWrap.EndLine == 9,
+                onWrap.Found ? (onWrap.Type + " " + onWrap.StartLine + "-" + onWrap.EndLine) : "not found");
+            var onData = Hit(src, 2);
+            Ok("APPLICATION: a data item labelled Application is not a structure", !onData.Found, onData.Found ? onData.Type : null);
+        }
+
         // --- no structure at all: must refuse, not guess ---
 
         {
