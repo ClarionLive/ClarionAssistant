@@ -94,7 +94,10 @@ function loadDiag() {
     const slotSlicePayload = () => env.slotSlice;
     const api = new Function('editor', 'monaco', 'requestFromHost', 'liveEditableRanges', 'setTimeout', 'clearTimeout', 'withBuffer', 'bufferKey',
         'typingUnsynced', 'idleWaiters', 'slotSlicePayload', 'LOCAL_TIMEOUT_MS', 'rtNow',
-        'var diagTimer = null;\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
+        // PR #310: refreshDiagnostics also wakes the status-bar count (diagStatusAsked / diagStatusRefresh), which
+        // the page declares outside the sliced section. Inert stand-ins here; the count has its own tests.
+        'var diagTimer = null;\nvar diagStatusAsked = false, diagStatusAnswered = false, diagStatusSig = null;\n' +
+        'function diagStatusRefresh() {}\nfunction diagStatusReset() {}\nfunction closeDiagPopup() {}\n' + diagSrc + '\nreturn { refreshDiagnostics: refreshDiagnostics, scheduleDiagnostics: scheduleDiagnostics,' +
         ' resetDiagnosticsForNewSource: resetDiagnosticsForNewSource, setSlotChecks: function (on) { slotChecksEnabled = on; } };')(
         env.editor, monaco, requestFromHost, () => [[1, 10]], fakeSetTimeout, fakeClearTimeout, withBuffer, bufferKey,
         typingUnsynced, env.idleWaiters, slotSlicePayload, 400, () => env.clock);

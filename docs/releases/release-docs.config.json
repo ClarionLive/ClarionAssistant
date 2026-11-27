@@ -185,7 +185,6 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "2281ac2": "ClarionLAA.exe recognition - documented by the 'Clarion Assistant recognises ClarionLAA.exe' entry; unprefixed subject.",
-    "5f94467": "ClarionLAA.exe review fixes (verbatim names) - documented by the same 'recognises ClarionLAA.exe' entry; unprefixed subject."
+    "d45d986": "Plugin 2.1.3 version bump for the safety hook changes - documented by the 'safety hook checks PowerShell commands' entry and the 2.1.3 upgrade note; unprefixed subject."
   }
 }
