@@ -5168,16 +5168,32 @@
             try { ed.setPosition(pos); ed.revealPositionInCenterIfOutsideViewport(pos); }
             finally { navSuppress = false; }
             if (go) {
-                recordNavAt(pos.lineNumber, pos.column);
-                flashDiagTarget(ed, m);
-                // Live test 2026-11-13: focusing inside the pop-up's keydown did not stick (the list was being
-                // hidden under it), so the caret and the current-line highlight never showed. Focus once the
-                // pop-up is gone.
-                ed.focus();
-                setTimeout(function () { try { ed.focus(); } catch (e2) { } }, 0);
+                // Live tests 2026-11-13 and 2026-11-27: after Enter the line showed but typing did not reach the
+                // editor. Each step gets its own try so none of them can skip the focus, and the focus is
+                // checked rather than assumed (focusAfterDiagJump).
+                try { recordNavAt(pos.lineNumber, pos.column); } catch (e3) { }
+                try { flashDiagTarget(ed, m); } catch (e4) { }
+                focusAfterDiagJump(ed);
             }
             else diagPreviewMoved = true;
         } catch (e) { }
+    }
+    // Focus the editor after a Problems jump. The list that had focus is hidden in the same keydown, so focus
+    // now, again once the pop-up is gone (next tick and next frame), and if Monaco still reports no text focus
+    // after that, ask the host to activate this tab at the window level (the same path as a Data pad drop,
+    // where OS focus is elsewhere and a page-level focus() alone does not reach the editor).
+    function focusAfterDiagJump(ed) {
+        var focusNow = function () { try { window.focus(); ed.focus(); } catch (e) { } };
+        focusNow();
+        setTimeout(focusNow, 0);
+        try { requestAnimationFrame(focusNow); } catch (e) { }
+        setTimeout(function () {
+            try {
+                if (ed.hasTextFocus && ed.hasTextFocus()) return;
+                focusNow();
+                postToHost({ action: 'focusEditor' });
+            } catch (e) { }
+        }, 60);
     }
     // Going to a problem selects its text and flashes the whole line for a moment, so the jump is visible
     // even where the problem is only a squiggle (live test 2026-11-13: only the line number turned bold).
