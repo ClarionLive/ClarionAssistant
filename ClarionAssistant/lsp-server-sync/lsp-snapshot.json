@@ -28,17 +28,17 @@
   },
   "targetPin": {
     "note": "Tag to sync toward; -Tag overrides. AUTO-UPDATED to the last successfully synced tag by Sync-LspServer.ps1 -- edit by hand only to stage a pin to a NEWER release before running the sync.",
-    "tag": "v1.0.9"
+    "tag": "v1.0.11"
   },
   "currentPin": {
     "note": "AUTO-UPDATED by Sync-LspServer.ps1 on each successful sync -- the observed state of the just-synced checkout. Historical hand-audit notes live in git history (pre-#77 revisions of this file).",
-    "tag": "v1.0.9",
-    "commit": "a33c4564",
-    "commitDate": "2026-10-24"
+    "tag": "v1.0.11",
+    "commit": "aa1f9611",
+    "commitDate": "2026-11-26"
   },
   "pure": true,
-  "resolvedCommit": "a33c4564",
-  "resolvedServerSha256": "c8f4c5694a3fed12bcf334d1ed822762021949090821f9470ef9e09dbe01f1f3",
-  "resolvedTag": "v1.0.9",
-  "lastSync": "2026-10-24"
+  "resolvedCommit": "aa1f9611",
+  "resolvedServerSha256": "69df56b31a7c3864b8b096f202bfd93b566d4bf9f74d151d728bcb9cd27d5bd1",
+  "resolvedTag": "v1.0.11",
+  "lastSync": "2026-11-27"
 }
