@@ -76,9 +76,15 @@ It needs a recent Claude Code signed in with a claude.ai account, and does not w
 
 The Structure Designer (Ctrl+D) in the CA Editor and the CA Embeditor opened only a WINDOW or a REPORT. With the caret anywhere in an existing APPLICATION (an MDI frame, with its menubar, menus and toolbar), it now opens that frame in the window designer, the way creating a new APPLICATION from a blank line already did, and your changes go back into the source. The hover card of an APPLICATION header now offers **Open Structure Designer** too, and the message shown when the caret is not on a designable structure names APPLICATION as well.
 
+<!-- release-docs: covered=installer-permissions -->
+### Installer no longer pre-approves the removed open_app tool
+
+The installer added `mcp__clarion-assistant__open_app` to the allow-list in `%USERPROFILE%\.claude\settings.json`, although that tool was removed (open an `.app` with `open_file`). It no longer does. An entry an earlier install already wrote stays, because the installer only ever adds entries; it is harmless and you can delete the line. Your `settings.json` may hold two sets of names, and that is expected: `mcp__clarion-assistant__<tool>` is for the chat tab inside the IDE, and `mcp__plugin_clarion-assistant_clarion-tools__<tool>` is for the plugin's server (MultiTerminal, VS Code, standalone `claude`), which Claude Code adds as you choose "always allow". Fixes [#309](https://github.com/ClarionLive/ClarionAssistant/issues/309). Thanks to [@KevinErskine](https://github.com/KevinErskine) for the report.
+
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; [PR #316](https://github.com/ClarionLive/ClarionAssistant/pull/316): Map, Module, Join and Itemize labels kept out of the slot balance check; [PR #317](https://github.com/ClarionLive/ClarionAssistant/pull/317): Ctrl+D on an existing APPLICATION frame.
+- **[@KevinErskine](https://github.com/KevinErskine)** &mdash; [#309](https://github.com/ClarionLive/ClarionAssistant/issues/309): the report on the installer's settings.json entries.
 
 ---
 ## What's New in v6.4
