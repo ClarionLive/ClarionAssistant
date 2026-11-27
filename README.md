@@ -73,6 +73,10 @@ Screenshots are kept with the chat. A screenshot you paste into a CA tab is save
 It is **off by default**. The file holds everything typed or shown in the chat, passwords and keys included, and screenshots can show as much, so Clarion Assistant writes a `.gitignore` containing `*` into `.CAChats` and git never offers its files for commit. Saving when Clarion closes is a separate step with a 3-second limit, so it cannot hold the IDE open: a 10 MB chat takes about a quarter of a second. If Clarion crashes or is killed, chats still open at that moment are not saved; chats of tabs closed earlier already were. A chat you `/clear` away from inside a tab is not tracked after the `/clear`.
 
 ---
+<!-- release-docs: covered=home -->
+### The Home tab's button tooltips stay inside the pane, by geircodes ([PR #307](https://github.com/ClarionLive/ClarionAssistant/pull/307))
+
+In a narrow pane, the tooltip of the **Resume last session** button was cut off at the pane's left edge ("esume last session · ..."), because the tooltips of the three Work With Open Solution buttons were centred on the button with no way to see the window's edge. They are now placed by the page: above the button as before, moved sideways to stay inside the window, below the button when there is no room above, and wrapped when the pane is narrower than the text. They also disappear when the pointer leaves the pane.
 
 ## What's New in v6.3
 

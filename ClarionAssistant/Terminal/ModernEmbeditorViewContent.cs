@@ -1958,7 +1958,9 @@ namespace ClarionAssistant.Terminal
         void IMonacoEditorHost.OnSaveBookmarks(MonacoEditorControl editor, string rawJson) { HandleSaveBookmarks(rawJson); }
         void IMonacoEditorHost.OnSaveFolds(MonacoEditorControl editor, string rawJson) { HandleSaveFolds(rawJson); }
         void IMonacoEditorHost.OnSelectionChanged(MonacoEditorControl editor, string rawJson) { HandleSelectionChanged(rawJson); }
-        void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { BringToFront(); }   // Data-pad drag-drop
+        // Data-pad drag-drop, and a Problems-list jump (PR #310): raise the tab, then hand the WebView2 Windows
+        // keyboard focus so the page's editor.focus() reaches the keyboard (BringToFront alone does not).
+        void IMonacoEditorHost.OnFocusEditor(MonacoEditorControl editor) { BringToFront(); try { editor?.FocusEditor(); } catch { } }
         void IMonacoEditorHost.OnReload(MonacoEditorControl editor) { HandleReload(); }        // file mode
         void IMonacoEditorHost.OnFileState(MonacoEditorControl editor, string rawJson) { HandleFileState(rawJson); }  // file mode
 

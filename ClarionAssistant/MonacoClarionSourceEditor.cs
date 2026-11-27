@@ -1529,8 +1529,14 @@ namespace ClarionAssistant
             {
                 object wbw = _wbWindow;
                 if (wbw == null) { try { wbw = GetType().GetProperty("WorkbenchWindow")?.GetValue(this, null); } catch { } }
-                if (wbw == null) { MonacoSpikeLog.Write("focusEditor: WorkbenchWindow not available"); return; }
-                wbw.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(wbw, null);
+                if (wbw == null) { MonacoSpikeLog.Write("focusEditor: WorkbenchWindow not available"); }
+                else wbw.GetType().GetMethod("SelectWindow", Type.EmptyTypes)?.Invoke(wbw, null);
+                // SelectWindow raises the tab but does not give the WebView2 Windows keyboard focus. FocusEditor
+                // is the full hand-off (Focus + MoveFocus into Chromium, verified and retried), so the page's
+                // own editor.focus() reaches the keyboard: a Problems-list jump (PR #310 live test 2026-11-27)
+                // left the line shown but typing went nowhere.
+                MonacoSpikeLog.Write("focusEditor: host focus hand-off");
+                editor?.FocusEditor();
             }
             catch (Exception ex) { MonacoSpikeLog.Write("OnFocusEditor error: " + ex.Message); }
         }
