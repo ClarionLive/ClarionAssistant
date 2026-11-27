@@ -66,6 +66,16 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 It needs a recent Claude Code signed in with a claude.ai account, and does not work with an API key (`ANTHROPIC_API_KEY`). It is **off by default**: the remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.
 
+
+<!-- release-docs: covered=designer -->
+### Ctrl+D designs an APPLICATION frame, by geircodes ([PR #317](https://github.com/ClarionLive/ClarionAssistant/pull/317))
+
+The Structure Designer (Ctrl+D) in the CA Editor and the CA Embeditor opened only a WINDOW or a REPORT. With the caret anywhere in an existing APPLICATION (an MDI frame, with its menubar, menus and toolbar), it now opens that frame in the window designer, the way creating a new APPLICATION from a blank line already did, and your changes go back into the source. The hover card of an APPLICATION header now offers **Open Structure Designer** too, and the message shown when the caret is not on a designable structure names APPLICATION as well.
+
+### Thanks
+
+- **[@geircodes](https://github.com/geircodes)** &mdash; [PR #317](https://github.com/ClarionLive/ClarionAssistant/pull/317): Ctrl+D on an existing APPLICATION frame.
+
 ---
 ## What's New in v6.4
 

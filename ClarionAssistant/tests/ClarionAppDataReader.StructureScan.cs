@@ -265,6 +265,27 @@ static class StructureScan
             Ok("APPLICATION: a code line after the frame is not inside it", !inCode.Found, inCode.Found ? inCode.Type : null);
         }
 
+        {
+            // Wrapped attributes (continuation lines) and a data item that merely contains the word.
+            string src = Src(
+                "Main PROCEDURE()",
+                "Application STRING(20)",
+                "AppFrame APPLICATION('My App'),AT(,,400,240), |",
+                "       MDI,MAX,SYSTEM",
+                "       MENUBAR",
+                "         MENU('&File')",
+                "         END",
+                "       END",
+                "     END",
+                "  CODE");
+            var onWrap = Hit(src, 4);
+            Ok("APPLICATION: caret on a wrapped attribute line finds it (opener 3, END 9)",
+                onWrap.Found && onWrap.Type == "APPLICATION" && onWrap.StartLine == 3 && onWrap.EndLine == 9,
+                onWrap.Found ? (onWrap.Type + " " + onWrap.StartLine + "-" + onWrap.EndLine) : "not found");
+            var onData = Hit(src, 2);
+            Ok("APPLICATION: a data item labelled Application is not a structure", !onData.Found, onData.Found ? onData.Type : null);
+        }
+
         // --- no structure at all: must refuse, not guess ---
 
         {
