@@ -499,6 +499,24 @@ static class SlotBalance
             Ok("MAP | and ITEMIZE | (continued headers): balanced", ms.Count == 0, Show(ms));
         }
         {
+            // Combined with the OMIT skip (PR #323) and inline closers (PR #311): an OMITted MAP block
+            // contributes nothing, the real MAP after it balances, and an inline END on a statement
+            // line inside a LOOP closes only that LOOP.
+            var ms = Diag(
+                "  OMIT('***')",
+                "  MAP",
+                "***",
+                "  MAP",
+                "    MODULE('x.clw')",
+                "    END",
+                "  END",
+                "LOOP",
+                "  CASE a",
+                "  OF 1; CYCLE END",
+                "END");
+            Ok("OMIT'd MAP + real MAP + inline END: balanced", ms.Count == 0, Show(ms));
+        }
+        {
             // A structure whose label is itself a declaration keyword still opens.
             var ms = Diag(
                 "Window       ITEMIZE(1),PRE(W)",
