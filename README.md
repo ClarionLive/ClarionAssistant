@@ -66,6 +66,11 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 It needs a recent Claude Code signed in with a claude.ai account, and does not work with an API key (`ANTHROPIC_API_KEY`). It is **off by default**: the remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.
 
+<!-- release-docs: covered=editor-indent -->
+### A label named like a structure word no longer indents the next line
+
+In the CA Editor and CA Embeditor, a declaration whose label is spelled like a structure word (`Module  LONG`, `Map  PROCEDURE(*CRecordSet Rs)`, `Queue  &MyQueue`) was read as the start of a block, so the line after it was indented. Such a line is now a plain declaration. A real header still indents: the structure word is followed by `(`, `,`, `;`, `|`, a comment or the end of the line. The formatter likewise keeps `Queue &MyQueue` in a GROUP or CLASS as a declaration, and `map &= nameMap` or `Map = 5` in a CODE body as a statement. One limit remains: a call through such a label, `Module(x)` or `Queue(1) = 2`, still indents the next line, because after the keyword `(` looks the same as in `CLASS(Base)`.
+
 ---
 ## What's New in v6.4
 
