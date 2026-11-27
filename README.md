@@ -66,6 +66,10 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 It needs a recent Claude Code signed in with a claude.ai account, and does not work with an API key (`ANTHROPIC_API_KEY`). It is **off by default**: the remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.
 
+<!-- release-docs: covered=embeditor -->
+### A field labelled Module, Map, Join or Itemize no longer makes the slot balance check report its structure as not terminated, by geircodes ([PR #316](https://github.com/ClarionLive/ClarionAssistant/pull/316))
+
+`MAP`, `MODULE`, `JOIN` and `ITEMIZE` are not reserved words, so Clarion lets you use them as labels: a queue field `Module LONG`, a class method `Map PROCEDURE(...)`, a local `map &MapQueue`. Clarion Assistant's structure check in the CA Editor and CA Embeditor read such a label as the start of a block that needs an `END`, so a correctly terminated `QUEUE` holding a field named `Module` was reported "QUEUE is not terminated with END or '.' in this embed slot". A real `MAP`, `MODULE(...)` or `JOIN(...)`, an `ITEMIZE` with or without a label, `MAP; MODULE('x.clw')` on one line, an empty `MAP.`, and a header continued on the next line with `|` still open their block, and a `MAP` or `ITEMIZE` left without its `END` is still reported.
 ---
 ## What's New in v6.4
 
