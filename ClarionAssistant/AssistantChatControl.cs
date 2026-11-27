@@ -4404,6 +4404,14 @@ namespace ClarionAssistant
             string nameFlag = keepTitle ? "" : $" -n '{safeAgentName}'";
             System.Diagnostics.Debug.WriteLine("[LaunchClaude] MultiTerminal identity: name=" + agentName);
 
+            // Remote Control (ticket b17d528b): when the setting is on, the session is also reachable from
+            // claude.ai/code and the Claude app, titled by the -n just before it. A bare flag, placed here
+            // because what follows is always a CA "-" flag, so it can never swallow a word as the name.
+            string remoteControlFlag = Services.ClaudeRemoteControl.Flag(
+                Services.ClaudeRemoteControl.IsOn(_settings.Get(Services.ClaudeRemoteControl.SettingKey)), claudeCmdRaw);
+            if (remoteControlFlag.Length > 0)
+                System.Diagnostics.Debug.WriteLine("[LaunchClaude] Remote Control on for this session (setting)");
+
             // Auto-update Claude Code before launching if enabled in settings
             string updatePrefix = "";
             if ((_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase))
@@ -4416,7 +4424,7 @@ namespace ClarionAssistant
                 updatePrefix = $"Write-Host 'Checking for Claude Code updates...' -ForegroundColor Cyan; {updateCmd} update; ";
             }
 
-            string claudeInvocation = $"{claudeBase}{nameFlag}{sessionFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
+            string claudeInvocation = $"{claudeBase}{nameFlag}{remoteControlFlag}{sessionFlag}{mcpArg}{pluginArg}{claudeModelFlag} --strict-mcp-config --allowedTools '{allowedTools}'{extraFlags}";
 
             if (initialPromptFile != null)
             {

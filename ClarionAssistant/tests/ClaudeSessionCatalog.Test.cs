@@ -505,7 +505,7 @@ static class ClaudeSessionCatalogTest
                     Ok("launch: --resume for a picked session, --session-id for a new one",
                        build.Contains("--resume '{resumeId}'") && build.Contains("--session-id '{tab.ClaudeSessionId}'"));
                     Ok("launch: the session flag is in the claude invocation",
-                       build.Contains("{nameFlag}{sessionFlag}"));
+                       build.Contains("{nameFlag}{remoteControlFlag}{sessionFlag}"));
                     Ok("launch: a resume sends no greeting prompt",
                        build.Contains("string initialPrompt = resumeId == null ? BuildInitialPrompt(ctx.WorkDir) : null;"));
                     Ok("launch: a resume gets no Last Session Recap",

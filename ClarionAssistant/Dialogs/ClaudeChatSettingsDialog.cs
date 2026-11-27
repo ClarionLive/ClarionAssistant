@@ -244,6 +244,7 @@ namespace ClarionAssistant.Dialogs
             string theme = _isDark ? "dark" : "light";
 
             bool autoUpdate = (_settings.Get("Claude.AutoUpdate") ?? "").Equals("true", StringComparison.OrdinalIgnoreCase);
+            bool remoteControl = ClaudeRemoteControl.IsOn(_settings.Get(ClaudeRemoteControl.SettingKey));
 
             bool mtAvailable = File.Exists(MultiTerminalMcpPath);
             string mtEnabled = _settings.Get("MultiTerminal.Enabled");
@@ -352,6 +353,7 @@ namespace ClarionAssistant.Dialogs
                 + ",\"codexProjectsDir\":\""   + EscapeJson(codexProjectsDir)   + "\""
                 + ",\"assistantBackend\":\"" + EscapeJson(backend) + "\""
                 + ",\"autoUpdate\":" + (autoUpdate ? "true" : "false")
+                + ",\"remoteControl\":" + (remoteControl ? "true" : "false")
                 + ",\"mtAvailable\":" + (mtAvailable ? "true" : "false")
                 + ",\"mtEnabled\":" + (mtOn ? "true" : "false")
                 + ",\"agentName\":\"" + EscapeJson(agentName) + "\""
@@ -659,6 +661,7 @@ namespace ClarionAssistant.Dialogs
             string copilotProjectsDir = ExtractJsonValue(data, "copilotProjectsDir") ?? "";
             string codexProjectsDir   = ExtractJsonValue(data, "codexProjectsDir")   ?? "";
             bool autoUpdate = ExtractJsonValue(data, "autoUpdate") == "true";
+            bool remoteControl = ExtractJsonValue(data, "remoteControl") == "true";
             bool mtEnabled = ExtractJsonValue(data, "mtEnabled") == "true";
             string agentName = ExtractJsonValue(data, "agentName") ?? "ClarionIDE";
 
@@ -689,6 +692,7 @@ namespace ClarionAssistant.Dialogs
                 legacyTarget = codexProjectsDir;
             _settings.Set("COM.ProjectsFolder", legacyTarget);
             _settings.Set("Claude.AutoUpdate", autoUpdate.ToString().ToLower());
+            _settings.Set(ClaudeRemoteControl.SettingKey, remoteControl.ToString().ToLower());
             _settings.Set("MultiTerminal.Enabled", mtEnabled.ToString().ToLower());
             _settings.Set("MultiTerminal.AgentName", agentName);
 

@@ -494,6 +494,13 @@
           </div>
           <div class="field-desc" style="margin-top:4px">When enabled, checks for Claude Code updates each time a new terminal session starts.</div>
 
+          <h3>Remote Control</h3>
+          <div class="check-row">
+            <input type="checkbox" id="remoteControl">
+            <label for="remoteControl">Remote Control for every Claude tab</label>
+          </div>
+          <div class="field-desc" style="margin-top:4px">Starts each new Claude tab with <code>--remote-control</code>, so you can continue the session from claude.ai/code or the Claude app. The session keeps the tab's name. Only tabs opened after saving use it. Requires a recent Claude Code signed in with a claude.ai account; it does not work with an API key (<code>ANTHROPIC_API_KEY</code>). The remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.</div>
+
           <h3>MultiTerminal</h3>
           <div class="check-row">
             <input type="checkbox" id="mtEnabled">
@@ -1664,6 +1671,7 @@
       codexProjectsDir:   _paths.Codex.projectsDir,
       assistantBackend: _savedDefault,
       autoUpdate: document.getElementById('autoUpdate').checked,
+      remoteControl: document.getElementById('remoteControl').checked,
       mtEnabled: document.getElementById('mtEnabled').checked,
       agentName: document.getElementById('agentName').value,
       docPaths: currentSettings.docPaths || [],
@@ -1827,6 +1835,7 @@
 
       // Auto-Update
       document.getElementById('autoUpdate').checked = !!s.autoUpdate;
+      document.getElementById('remoteControl').checked = !!s.remoteControl;
 
       // Lib status
       var libStat = document.getElementById('libStatus');
