@@ -66,6 +66,11 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 It needs a recent Claude Code signed in with a claude.ai account, and does not work with an API key (`ANTHROPIC_API_KEY`). It is **off by default**: the remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.
 
+<!-- release-docs: covered=installer-permissions -->
+### Installer no longer pre-approves the removed open_app tool
+
+The installer added `mcp__clarion-assistant__open_app` to the allow-list in `%USERPROFILE%\.claude\settings.json`, although that tool was removed (open an `.app` with `open_file`). It no longer does. An entry an earlier install already wrote stays, because the installer only ever adds entries; it is harmless and you can delete the line. Your `settings.json` may hold two sets of names, and that is expected: `mcp__clarion-assistant__<tool>` is for the chat tab inside the IDE, and `mcp__plugin_clarion-assistant_clarion-tools__<tool>` is for the plugin's server (MultiTerminal, VS Code, standalone `claude`), which Claude Code adds as you choose "always allow". Fixes [#309](https://github.com/ClarionLive/ClarionAssistant/issues/309). Thanks to [@KevinErskine](https://github.com/KevinErskine) for the report.
+
 ---
 ## What's New in v6.4
 
