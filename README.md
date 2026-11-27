@@ -81,6 +81,11 @@ The Structure Designer (Ctrl+D) in the CA Editor and the CA Embeditor opened onl
 
 The installer added `mcp__clarion-assistant__open_app` to the allow-list in `%USERPROFILE%\.claude\settings.json`, although that tool was removed (open an `.app` with `open_file`). It no longer does. An entry an earlier install already wrote stays, because the installer only ever adds entries; it is harmless and you can delete the line. Your `settings.json` may hold two sets of names, and that is expected: `mcp__clarion-assistant__<tool>` is for the chat tab inside the IDE, and `mcp__plugin_clarion-assistant_clarion-tools__<tool>` is for the plugin's server (MultiTerminal, VS Code, standalone `claude`), which Claude Code adds as you choose "always allow". Fixes [#309](https://github.com/ClarionLive/ClarionAssistant/issues/309). Thanks to [@KevinErskine](https://github.com/KevinErskine) for the report.
 
+<!-- release-docs: covered=editor-indent -->
+### A label named like a structure word no longer indents the next line
+
+In the CA Editor and CA Embeditor, a declaration whose label is spelled like a structure word (`Module  LONG`, `Map  PROCEDURE(*CRecordSet Rs)`, `Queue  &MyQueue`) was read as the start of a block, so the line after it was indented. Such a line is now a plain declaration. A real header still indents: the structure word is followed by `(`, `,`, `;`, `|`, a comment or the end of the line. The formatter likewise keeps `Queue &MyQueue` in a GROUP or CLASS as a declaration, and `map &= nameMap` or `Map = 5` in a CODE body as a statement. One limit remains: a call through such a label, `Module(x)` or `Queue(1) = 2`, still indents the next line, because after the keyword `(` looks the same as in `CLASS(Base)`.
+
 ### Thanks
 
 - **[@geircodes](https://github.com/geircodes)** &mdash; [PR #316](https://github.com/ClarionLive/ClarionAssistant/pull/316): Map, Module, Join and Itemize labels kept out of the slot balance check; [PR #317](https://github.com/ClarionLive/ClarionAssistant/pull/317): Ctrl+D on an existing APPLICATION frame.

@@ -29,25 +29,37 @@ function registerClarionLanguage(langId) {
         // structures, outdent on END / lone '.' / CASE & IF sub-keywords. The negative lookahead
         // skips one-line forms that self-terminate with a trailing '.' (e.g. IF x THEN y.).
         indentationRules: {
-            // TOOLBAR is split out of the shared alternation with its own tight lookahead
-            // (require '(', ',', '!' or end-of-line right after the keyword) — the ABC toolbar
-            // template ubiquitously declares a plain variable literally named "Toolbar"
-            // ("Toolbar ToolbarClass"), which the other keywords' bare \b boundary would
-            // otherwise misread as opening a block and auto-indent the next line. Mirrors the
-            // same fix in ModernEmbeditorDiagnostics.cs (C#) and Clarion-Extension's
-            // TokenPatterns.ts (PR #378).
-            // MENUBAR/MENU/SHEET/TAB/OPTION share TOOLBAR's exact ambiguity (nested inside
-            // WINDOW/REPORT bodies, legitimately bare — e.g. "OPTION,USE(?opt)") and are split
-            // out alongside it for the same reason (e.g. "option     LONG(0)", a plain local
-            // variable named "option", was misread as opening a block).
-            // A keyword that is part of a NAME is not the keyword (46506010). \b alone matches before ':' and
-            // '.', so 'While:Count += 1' outdented and the line after 'Loop:Idx = 1' or 'Queue.Id = 3'
-            // indented. Increase: (?![:.]) -- a prefix (Loop:Idx) or a structure label used as a qualifier
-            // (Queue.Id, Group.Name, Window.x: GROUP..CLASS may be labels; the reserved words IF/LOOP/CASE...
-            // may not, so they never come before a '.'). Decrease: (?!:) -- END/OF/ELSE/... are reserved
-            // words, so only a prefix (End:Date) reaches them. TOOLBAR..OPTION already require '(', ',', '!'
-            // or end of line after the keyword. A control equate (?If) starts with '?' and never matches.
-            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|OF|OROF|ELSE|ELSIF)\b(?![:.])|(?:TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!]|$)))(?![^!]*\.\s*$).*$/i,
+            // The rule sees ONE line, so it decides from the leading word alone. Three groups:
+            //
+            // 1. Reserved openers: IF LOOP CASE BEGIN EXECUTE ACCEPT OF OROF ELSE ELSIF.
+            //    Reserved words can never be labels, so the leading word is the keyword unless it is
+            //    part of a NAME (46506010): (?![:.]) rejects a prefix ('Loop:Idx = 1', 'If:Flag') and
+            //    a qualifier. Any text may follow ('IF x = 1', 'LOOP i = 1 TO 3', 'CASE a').
+            //
+            // 2. Structure words: GROUP QUEUE RECORD FILE VIEW REPORT WINDOW APPLICATION CLASS
+            //    INTERFACE MAP MODULE ITEMIZE JOIN TOOLBAR MENUBAR MENU SHEET TAB OPTION.
+            //    None is reserved (Clarion Language Reference, "Reserved Words"), so each may be a
+            //    LABEL: 'Module  LONG', 'Map  PROCEDURE(*CRecordSet Rs)', 'Queue  &MyQueue',
+            //    'Toolbar  ToolbarClass' (the ABC toolbar template), '  map &= nameMap',
+            //    'option  LONG(0)'. A real header puts '(' ',' '!' ';' '|' or the end of the line
+            //    right after the keyword (optional spaces between): 'GROUP', 'GROUP,PRE(G)',
+            //    'CLASS(WindowManager)', "MODULE('x.clw')", 'MAP; MODULE(...)', 'QUEUE |',
+            //    'GROUP ! c'. A label is normally followed by its data type, '&', '=', '.', ':' or
+            //    '{', so it does not match (b13bc411). Known limit: a call or array access through a
+            //    label, 'Module(x)' or 'Queue(1) = 2', still matches -- after the keyword, '(' looks
+            //    exactly like 'CLASS(Base)' or "MODULE('x')", and one line cannot tell them apart.
+            //    Same shape as UnlabeledBlockOpen / ItemizeOpen in ModernEmbeditorDiagnostics.cs and
+            //    Clarion-Extension's TokenPatterns.ts (TOOLBAR).
+            //    A column-1 LABELLED header ('Rec  GROUP', 'ThisWindow  CLASS(WindowManager)') does
+            //    not match on purpose: its fields and methods are labels, which must stay in column 1,
+            //    so the next line must not indent.
+            //
+            // 3. One-liners: (?![^!]*\.\s*$) skips a line that self-terminates with a trailing '.'
+            //    outside a comment ('IF x THEN y.', 'GROUP,PRE(G).', 'MAP.').
+            //
+            // Decrease: (?!:) -- END/OF/ELSE/... are reserved words, so only a prefix (End:Date)
+            // reaches them. A control equate (?If) starts with '?' and never matches either pattern.
+            increaseIndentPattern: /^\s*(?:(?:IF|LOOP|CASE|BEGIN|EXECUTE|ACCEPT|OF|OROF|ELSE|ELSIF)\b(?![:.])|(?:GROUP|QUEUE|RECORD|FILE|VIEW|REPORT|WINDOW|APPLICATION|CLASS|INTERFACE|MAP|MODULE|ITEMIZE|JOIN|TOOLBAR|MENUBAR|MENU|SHEET|TAB|OPTION)\b(?=\s*(?:[(,!;|]|$)))(?![^!]*\.\s*$).*$/i,
             decreaseIndentPattern: /^\s*(?:(?:END|OF|OROF|ELSE|ELSIF|UNTIL|WHILE)\b(?!:)|\.\s*$)/i
         }
     });

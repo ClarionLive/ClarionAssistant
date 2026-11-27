@@ -186,6 +186,7 @@
   ],
   "acknowledgedCommits": {
     "dd07dec": "Remote Control setting (ticket b17d528b) - documented by the 'Remote Control for every Claude tab' entry; ticket-prefixed subject, no scope.",
-    "dc36bf2": "Remote Control settings note (ticket b17d528b review) - documented by the same entry; ticket-prefixed subject, no scope."
+    "dc36bf2": "Remote Control settings note (ticket b17d528b review) - documented by the same entry; ticket-prefixed subject, no scope.",
+    "b5bf505": "Indent fix review follow-up (b13bc411) - documented by the 'A label named like a structure word no longer indents the next line' entry; its 'docs+test' type carries no scope the checker can read."
   }
 }
