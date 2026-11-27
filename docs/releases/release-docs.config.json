@@ -185,6 +185,7 @@
     "Scoped to one release cycle — clear this map when a version is cut."
   ],
   "acknowledgedCommits": {
-    "d45d986": "Plugin 2.1.3 version bump for the safety hook changes - documented by the 'safety hook checks PowerShell commands' entry and the 2.1.3 upgrade note; unprefixed subject."
+    "dd07dec": "Remote Control setting (ticket b17d528b) - documented by the 'Remote Control for every Claude tab' entry; ticket-prefixed subject, no scope.",
+    "dc36bf2": "Remote Control settings note (ticket b17d528b review) - documented by the same entry; ticket-prefixed subject, no scope."
   }
 }

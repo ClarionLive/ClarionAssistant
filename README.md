@@ -55,6 +55,18 @@ Ask it to write Clarion code, explain procedures, refactor classes, build COM co
 
 ---
 
+## What's New (Unreleased)
+
+<!-- Entries for the next release go here, in the same shape as the release blocks below. -->
+
+<!-- release-docs: covered=remote-control -->
+### Remote Control for every Claude tab
+
+**Options > Clarion Assistant > Claude Chat Settings** has a new **Remote Control for every Claude tab** setting. With it ticked, each new Claude tab starts with Claude Code's own `--remote-control`, so you can continue the session from claude.ai/code or the Claude app. The remote session keeps the tab's name (`CA1`, `CA2`). Only tabs opened after saving use it, and when your Claude command in the Commands list already asks for Remote Control (`--remote-control` or `--rc`), the flag is not added a second time.
+
+It needs a recent Claude Code signed in with a claude.ai account, and does not work with an API key (`ANTHROPIC_API_KEY`). It is **off by default**: the remote session can run tools exactly as the tab can, and anyone signed in to the claude.ai account Claude Code uses on this PC can see and drive it.
+
+---
 ## What's New in v6.4
 
 6.4 adds Find All References (Shift+F12) to the CA Editor and CA Embeditor, puts a diagnostics count and a Problems list in their status bar, keeps every chat tab reachable when the tab strip overflows, and adds a **Compare with saved file** button to the CA Editor. Each CA chat can be saved as a Markdown file in the solution folder. The bundled language server moves to Clarion Extension v1.0.11, and the plugin's safety hook now checks PowerShell commands too: the plugin is version 2.1.3, update it as described below. Full notes: **[docs/releases/v6.4.0.md](docs/releases/v6.4.0.md)**.
