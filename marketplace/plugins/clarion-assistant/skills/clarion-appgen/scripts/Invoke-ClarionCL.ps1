@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs ClarionCL.exe headlessly with modal-dialog detection, capture, and honest exit reporting.
 

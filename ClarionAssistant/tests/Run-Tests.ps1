@@ -1,4 +1,4 @@
-# Run-Tests.ps1 — single entry point for ClarionAssistant's standalone test harnesses.
+﻿# Run-Tests.ps1 — single entry point for ClarionAssistant's standalone test harnesses.
 #
 #   .\tests\Run-Tests.ps1                 # everything runnable on this machine
 #   .\tests\Run-Tests.ps1 -Probe          # also run the read-only live VS Code probe (diagnostic)

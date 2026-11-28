@@ -1,4 +1,4 @@
-# End-to-end test for the standalone MCP server's stdio transport (ticket d051fbd1).
+﻿# End-to-end test for the standalone MCP server's stdio transport (ticket d051fbd1).
 #
 # WHY A SUBPROCESS AND NOT JUST --selftest-stdio. The in-process self-test drives the real
 # read/dispatch/write loop, but over a StringReader/StringWriter. Three things that decide
