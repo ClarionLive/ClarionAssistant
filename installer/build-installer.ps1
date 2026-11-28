@@ -1,4 +1,4 @@
-# Build Clarion Assistant Installer
+﻿# Build Clarion Assistant Installer
 # Builds all components, then compiles the Inno Setup installer
 # Optionally signs the output with Sectigo USB dongle
 param(

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Round-trip-to-zero rig: authored text (.dctx + .txa) -> .dct -> .app -> source -> .exe -> runs.
     One command, one honest pass/fail, full diagnostics on failure.

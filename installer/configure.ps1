@@ -1,4 +1,4 @@
-# Clarion Assistant - Post-Install Configuration
+﻿# Clarion Assistant - Post-Install Configuration
 # Merges Claude Code settings non-destructively
 param(
     [string]$ClarionRoot,
