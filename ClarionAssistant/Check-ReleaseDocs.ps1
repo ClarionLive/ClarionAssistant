@@ -1,4 +1,4 @@
-# Check-ReleaseDocs.ps1
+﻿# Check-ReleaseDocs.ps1
 # Bidirectional release-docs drift reconciler.
 #
 # Answers one question: "is everything that landed since the last release tag actually
