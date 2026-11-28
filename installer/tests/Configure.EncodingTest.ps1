@@ -114,7 +114,10 @@ $controlAddsBom = (HasBom $ctlBytes)
 
 Write-Host ""
 Write-Host "negative control (the two defective calls, unfixed)"
-& $PS51 -NoProfile -Command '"  host " + $PSVersionTable.PSVersion.ToString() + ", ANSI codepage " + [System.Text.Encoding]::Default.WebName'
+# A script block, not a string: Windows PowerShell 5.1 drops the embedded double quotes when it
+# passes a string argument to a native exe, so the child ran `host + ...` (Get-Host) and failed.
+# A script block goes to powershell.exe encoded, which survives both 5.1 and 7.
+& $PS51 -NoProfile -Command { "  host " + $PSVersionTable.PSVersion.ToString() + ", ANSI codepage " + [System.Text.Encoding]::Default.WebName }
 if (-not $controlMangles -or -not $controlAddsBom) {
     CannotRun ("the GH #200 defect does not reproduce on this machine " +
                "(mangles=$controlMangles, addsBom=$controlAddsBom). " +
